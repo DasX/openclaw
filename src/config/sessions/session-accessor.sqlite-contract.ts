@@ -17,7 +17,7 @@ import type {
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
-import type { InternalSessionEntry as SessionEntry } from "./types.js";
+import type { CodeModeWaitingClaimIntent, InternalSessionEntry as SessionEntry } from "./types.js";
 
 export type SessionAccessScope = {
   agentId?: string;
@@ -175,6 +175,7 @@ export type LatestTranscriptAssistantMessage = {
 };
 
 export type SessionTranscriptTurnMessageAppend = TranscriptMessageAppendOptions<unknown> & {
+  codeModeClaimIntent?: CodeModeWaitingClaimIntent;
   shouldAppend?: (context: SessionTranscriptTurnWriteContext) => Promise<boolean> | boolean;
   /**
    * Rechecks the newest assistant row after the write transaction begins.

@@ -20,6 +20,13 @@ import type {
   SessionLifecycleStoreTarget,
 } from "./session-accessor.lifecycle-types.js";
 import type {
+  LatestTranscriptAssistantText as SqliteLatestTranscriptAssistantText,
+  SessionTranscriptTurnMessageAppend as SqliteSessionTranscriptTurnMessageAppend,
+  SessionTranscriptTurnWriteContext as SqliteSessionTranscriptTurnWriteContext,
+  TranscriptMessageAppendOptions as SqliteTranscriptMessageAppendOptions,
+  TranscriptMessageAppendResult as SqliteTranscriptMessageAppendResult,
+} from "./session-accessor.sqlite-contract.js";
+import type {
   SessionLifecycleRevisionExpectation,
   SessionTranscriptTurnExpectedState,
   SessionTranscriptTurnLifecyclePatch,
@@ -297,50 +304,14 @@ export type SessionTranscriptVisibleMessageDeltaResult =
     }
   | { kind: "missing" };
 
-export type TranscriptMessageAppendOptions<TMessage> = {
-  /** Rebase a stale explicit parent when the current tail still descends from it. */
-  appendIntent?: "active-branch";
-  /** Runtime config used for message redaction and transcript header metadata. */
-  config?: OpenClawConfig;
-  /** Working directory recorded in a newly created transcript header. */
-  cwd?: string;
-  /** How duplicate message idempotency keys are detected before append. */
-  idempotencyLookup?: "scan" | "scan-assistant" | "caller-checked";
-  /** Provider/channel message payload to persist. */
-  message: TMessage;
-  /** Testable timestamp override for the generated transcript entry. */
-  now?: number;
-  /** Existing transcript event id owned by a caller with its own session tree. */
-  eventId?: string;
-  /** Existing parent id owned by a caller with its own session tree. */
-  parentId?: string | null;
-  /** Optional finalizer that runs after duplicate detection but before persistence. */
-  prepareMessageAfterIdempotencyCheck?: (message: TMessage) => TMessage | undefined;
-  /** Allow append without parent-link migration for large legacy linear transcripts. */
-  useRawWhenLinear?: boolean;
-};
-
-export type TranscriptMessageAppendResult<TMessage> = {
-  /** False when idempotency lookup found an existing transcript message. */
-  appended: boolean;
-  /** Redacted message payload as persisted or replayed from the transcript. */
-  message: TMessage;
-  /** Existing or newly generated transcript message id. */
-  messageId: string;
-  /** Parent id actually used by the durable transcript append. */
-  effectiveParentId?: string | null;
-  /** Authoritative immutable identity issued by the append transaction. */
-  anchor?: TranscriptEntryAnchor;
-};
+export type TranscriptMessageAppendOptions<TMessage> =
+  SqliteTranscriptMessageAppendOptions<TMessage>;
+export type TranscriptMessageAppendResult<TMessage> = SqliteTranscriptMessageAppendResult<TMessage>;
 
 /** Transcript update fields supplied by callers; the target is resolved here. */
 export type TranscriptUpdatePayload = Partial<SessionTranscriptUpdate>;
 
-export type LatestTranscriptAssistantText = {
-  id?: string;
-  text: string;
-  timestamp?: number;
-};
+export type LatestTranscriptAssistantText = SqliteLatestTranscriptAssistantText;
 
 export type SessionTranscriptWriteLockAccessorContext = {
   appendMessage: <TMessage>(
@@ -373,26 +344,9 @@ export type SessionTranscriptWriteTransactionContext = {
 
 export type SessionTranscriptTurnUpdateMode = "inline" | "file-only" | "none";
 
-export type SessionTranscriptTurnMessageAppend = TranscriptMessageAppendOptions<unknown> & {
-  /**
-   * Runs inside the session writer queue before the SQLite transaction begins.
-   * The commit phase revalidates session ownership and database idempotency
-   * after asynchronous predicate work finishes.
-   */
-  shouldAppend?: (context: SessionTranscriptTurnWriteContext) => Promise<boolean> | boolean;
-  /**
-   * Rechecks the newest assistant row after the write transaction begins.
-   * Direct synchronous writers bypass the process queue, so prepared facts can be stale.
-   */
-  shouldAppendInTransaction?: (latestAssistantMessage: unknown) => boolean;
-};
+export type SessionTranscriptTurnMessageAppend = SqliteSessionTranscriptTurnMessageAppend;
 
-export type SessionTranscriptTurnWriteContext = {
-  agentId?: string;
-  sessionId?: string;
-  sessionKey?: string;
-  storePath?: string;
-};
+export type SessionTranscriptTurnWriteContext = SqliteSessionTranscriptTurnWriteContext;
 
 export type SessionTranscriptTurnPersistOptions = {
   /** Runtime config used for lock settings, redaction, and header metadata. */

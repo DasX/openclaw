@@ -618,6 +618,8 @@ export type InternalSessionEntryCore = SessionEntryCore & {
   lastRunId?: string;
   /** Run admitted by the session lane; overwritten at admission and checked by transcript writes. */
   activeWriterRunId?: string;
+  /** Private durable evidence for process-local suspended Code Mode runs. */
+  codeModeWaitingClaims?: Record<string, CodeModeWaitingClaim>;
   /** Canonical remote repository awaiting preparation by this exact session generation. */
   pendingProjectGitUrl?: string;
   /** Authorized worktree intent awaiting preparation by an admitted turn. */
@@ -636,6 +638,21 @@ export type InternalSessionEntryCore = SessionEntryCore & {
   /** Private per-generation ownership for the pre-runtime checkout baseline capture. */
   sessionDiffBaselineCapture?: import("./session-diff-baseline-capture.js").SessionDiffBaselineCapture;
   mainRestartRecovery?: MainRestartRecoveryState;
+};
+
+export type CodeModeWaitingClaim = Readonly<{
+  anchor: import("./transcript-entry-anchor.js").TranscriptEntryAnchor;
+  expiresAt: number;
+  predecessorEntryId?: string;
+  sourceDigest: string;
+  sourceToolCallId: string;
+  sourceToolName: string;
+}>;
+export type CodeModeWaitingClaimIntent = Omit<CodeModeWaitingClaim, "anchor"> & {
+  lifecycleRevision: string;
+  outcome: "remove" | "replace";
+  runId: string;
+  writerRunId: string;
 };
 
 export interface InternalSessionEntry extends InternalSessionEntryCore {}
