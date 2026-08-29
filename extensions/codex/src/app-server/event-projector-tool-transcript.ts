@@ -209,11 +209,17 @@ export class CodexToolTranscriptProjection {
     return toolApprovalReviewOutcome(state);
   }
 
-  recordDynamicToolCall(params: { callId: string; tool: string; arguments?: JsonValue }): void {
+  recordDynamicToolCall(params: {
+    callId: string;
+    tool: string;
+    arguments?: JsonValue;
+    sourceFingerprint?: string;
+  }): void {
     this.recordToolCall({
       id: params.callId,
       name: params.tool,
       arguments: sanitizeCodexToolArguments(params.arguments),
+      sourceFingerprint: params.sourceFingerprint,
     });
   }
 
@@ -224,6 +230,7 @@ export class CodexToolTranscriptProjection {
       success: boolean;
       contentItems: CodexDynamicToolCallOutputContentItem[];
       details?: unknown;
+      sourceFingerprint?: string;
     },
     resultContentSource?: "network",
   ): void {
@@ -234,6 +241,7 @@ export class CodexToolTranscriptProjection {
       isError: !params.success,
       details: params.details,
       ...(resultContentSource ? { resultContentSource } : {}),
+      sourceFingerprint: params.sourceFingerprint,
     });
   }
 
@@ -611,7 +619,10 @@ export class CodexToolTranscriptProjection {
       `${this.turnId}:tool:${params.id}:call`,
     );
     this.messages.push(message);
-    this.options.checkpointMessage?.({ read: () => message });
+    this.options.checkpointMessage?.({
+      read: () => message,
+      sourceFingerprint: params.sourceFingerprint,
+    });
   }
 
   private recordToolResult(params: ToolTranscriptResultInput): void {
@@ -630,6 +641,7 @@ export class CodexToolTranscriptProjection {
       // A linked raw patch output enriches FileChange after item/completed.
       // Keep that result mutable only until the promised raw output arrives.
       ready: () => !this.pendingRawPatchOutputIds.has(params.id),
+      sourceFingerprint: params.sourceFingerprint,
     });
   }
 
@@ -733,3 +745,5 @@ function resolveStartedAtFromDurationMs(durationMs: unknown): number | undefined
   }
   return asDateTimestampMs(Date.now() - Math.max(0, durationMs));
 }
+
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

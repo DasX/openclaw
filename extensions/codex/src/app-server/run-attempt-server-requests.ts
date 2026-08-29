@@ -25,7 +25,11 @@ import type { JsonValue } from "./protocol.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import { emitCodexAppServerEvent } from "./run-attempt-lifecycle.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
-import { toTranscriptToolResult } from "./run-attempt-tools.js";
+import {
+  fingerprintCodexDynamicToolRequest,
+  fingerprintCodexDynamicToolResponse,
+  toTranscriptToolResult,
+} from "./run-attempt-tools.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import {
   inferCodexDynamicToolMeta,
@@ -167,6 +171,7 @@ export function createCodexAttemptServerRequestController(
         callId: call.callId,
         tool: call.tool,
         arguments: call.arguments,
+        sourceFingerprint: fingerprintCodexDynamicToolRequest(call),
       });
       emitExecutionPhaseOnce(`tool:${call.callId}`, {
         phase: "tool_execution_started",
@@ -250,11 +255,13 @@ export function createCodexAttemptServerRequestController(
               });
             },
           });
+          const protocolResponse = toCodexDynamicToolProtocolResponse(response);
           recordCodexDynamicToolResult(
             projector,
             call,
             response,
-            toCodexDynamicToolProtocolResponse(response),
+            protocolResponse,
+            fingerprintCodexDynamicToolResponse(call, protocolResponse),
           );
           await projector?.transcriptCheckpoint.flush();
           return response;

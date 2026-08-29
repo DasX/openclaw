@@ -8,7 +8,10 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { readStringField as readString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { AttemptFailureSource, EmbeddedRunAttemptResult } from "./attempt-terminal.js";
-import { persistCodexContextCompactionActivity } from "./context-compaction-activity.js";
+import {
+  buildCodexContextCompactionActivity,
+  fingerprintCodexContextCompaction,
+} from "./context-compaction-activity.js";
 import { CodexAssistantProjection } from "./event-projector-assistant.js";
 import { CodexAsyncDeliveryProjection } from "./event-projector-async-delivery.js";
 import { CodexProjectionDiagnostics } from "./event-projector-diagnostics.js";
@@ -401,7 +404,12 @@ export class CodexAppServerEventProjector {
     });
   }
 
-  recordDynamicToolCall(params: { callId: string; tool: string; arguments?: JsonValue }): void {
+  recordDynamicToolCall(params: {
+    callId: string;
+    tool: string;
+    arguments?: JsonValue;
+    sourceFingerprint?: string;
+  }): void {
     this.toolTranscriptProjection.recordDynamicToolCall(params);
   }
 
@@ -425,6 +433,7 @@ export class CodexAppServerEventProjector {
     sideEffectEvidence?: boolean;
     contentItems: CodexDynamicToolCallOutputContentItem[];
     details?: unknown;
+    sourceFingerprint?: string;
   }): void {
     this.toolProgressProjection.recordDynamicToolResult(params);
     const source = this.options.resolveDynamicToolResultContentSource?.(params.tool);
@@ -518,6 +527,7 @@ export class CodexAppServerEventProjector {
     if (item?.type === "contextCompaction" && itemId) {
       this.activeCompactionItemIds.delete(itemId);
       this.completedCompactionCount += 1;
+      await this.transcriptCheckpoint.flush();
       await this.options.onContextCompacted?.();
       if (this.projectionClosed) {
         return;
@@ -531,16 +541,27 @@ export class CodexAppServerEventProjector {
       if (this.projectionClosed) {
         return;
       }
-      await persistCodexContextCompactionActivity({
-        sessionTarget: this.params.sessionTarget,
-        config: this.params.config,
-        cwd: this.params.workspaceDir,
+      const activity = buildCodexContextCompactionActivity({
         runId: this.params.runId,
         threadId: this.threadId,
         turnId: this.turnId,
         itemId,
         timestamp: this.transcriptCheckpoint.nextTimestamp(),
       });
+      if (this.transcriptCheckpoint.usesProviderCapability()) {
+        this.transcriptCheckpoint.enqueue({
+          read: () => activity,
+          sourceFingerprint: fingerprintCodexContextCompaction({
+            threadId: this.threadId,
+            turnId: this.turnId,
+            item,
+          }),
+        });
+        await this.transcriptCheckpoint.flush();
+        if (this.projectionClosed) {
+          return;
+        }
+      }
       this.eventProjection.emitCompactionEnd(itemId, true);
     }
     this.toolProgressProjection.recordToolMeta(item);
@@ -733,3 +754,5 @@ export class CodexAppServerEventProjector {
     return threadId === this.threadId && (turnId === this.turnId || turnId === null);
   }
 }
+
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

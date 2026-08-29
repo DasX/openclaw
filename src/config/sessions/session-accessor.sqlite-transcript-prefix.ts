@@ -25,6 +25,7 @@ export type SessionTranscriptPrefixEntry<T = unknown> = {
   eventId: string;
   identity: string;
   message: T;
+  sourceFingerprint?: string;
 };
 const conflict = (reason: string) => ({ kind: "conflict" as const, reason });
 

@@ -1,3 +1,4 @@
+/* oxlint-disable eslint/curly, max-lines -- Keep provider completion ownership in the attempt. */
 import type {
   AgentMessage,
   AnyAgentTool,
@@ -45,6 +46,7 @@ import type {
   CopilotAttemptParams,
 } from "./attempt-types.js";
 import { createCopilotByokProxy } from "./byok-proxy.js";
+import { sanitizeToolDetailText } from "./event-bridge-transcript.js";
 import { attachEventBridge, type SessionLike } from "./event-bridge.js";
 import { createCopilotNativeSubagentTaskMirror } from "./native-subagent-task-mirror.js";
 import { classifyResumeFailure, decideReplayAction } from "./replay-shim.js";
@@ -283,7 +285,7 @@ export async function runCopilotExecution(context: {
             yieldDetected = true;
             yieldAcknowledgment = acknowledgment;
           },
-          onToolCompleted: async ({ args, error, result, startedAt, toolCallId, toolName }) => {
+          onToolObserved: async ({ args, error, result, startedAt, toolCallId, toolName }) => {
             const acceptedSessionSpawnDetails =
               toolName === "sessions_spawn" && !error
                 ? asOptionalRecord(asOptionalRecord(result)?.details)
@@ -312,6 +314,31 @@ export async function runCopilotExecution(context: {
               ...(result !== undefined ? { result } : {}),
               ...(error ? { error } : {}),
               startedAt,
+            });
+          },
+          onProviderToolCompleted: async ({ providerResult, result, toolCallId, toolName }) => {
+            if (!providerResult || typeof providerResult.resultType !== "string")
+              throw new Error("Copilot provider completion requires providerResult");
+            if (!transcriptJournal)
+              throw new Error("Copilot provider result arrived before transcript journal");
+            const resultContentSource = resultContentSourceByToolName.get(toolName);
+            await transcriptJournal.recordProviderToolResult({
+              providerResult,
+              message: {
+                role: "toolResult",
+                toolCallId,
+                toolName,
+                content: [
+                  {
+                    type: "text",
+                    text: sanitizeToolDetailText(providerResult.textResultForLlm),
+                  },
+                ],
+                ...(result !== undefined ? { details: result } : {}),
+                isError: providerResult.resultType !== "success",
+                timestamp: now(),
+                ...(resultContentSource ? { __openclaw: { resultContentSource } } : {}),
+              },
             });
           },
         });
@@ -477,6 +504,7 @@ export async function runCopilotExecution(context: {
         journal: transcriptJournal,
         modelRef,
         now,
+        providerToolResultsOwned: input.disableTools !== true,
         resultContentSourceByToolName,
       },
     });
