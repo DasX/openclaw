@@ -148,7 +148,7 @@ export class NewSessionTitleController implements ReactiveController {
   takePreparedTitle(): string | undefined {
     const input = this.input();
     const title = this.preparation.titleFor(input);
-    this.submitted = input;
+    this.submitted = input ?? this.submitted;
     this.preparation.sync(null);
     return title;
   }

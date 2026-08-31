@@ -102,6 +102,22 @@ describe("prepared title creation handoff", () => {
     flow.disconnect();
   });
 
+  it("does not restart speculation when a submitted draft is retried", async () => {
+    const { flow, request, titles } = titleFixture();
+    flow.setMessage("repair the sidebar naming");
+    titles.hostUpdated();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flow.submit();
+    await flow.submit();
+    titles.hostUpdated();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(
+      request.mock.calls.filter(([method]) => method === "sessions.title.prepare"),
+    ).toHaveLength(1);
+    titles.hostDisconnected();
+    flow.disconnect();
+  });
+
   it("rejects a stale title even when Send beats the next UI update", async () => {
     const { flow, context, titles } = titleFixture();
     flow.setMessage("repair the sidebar naming");
