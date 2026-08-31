@@ -1,10 +1,14 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
+import { buildModelAliasIndex, resolveModelRefFromString } from "../agents/model-selection.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
 import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
-import { generateConversationLabelWithFallback } from "../auto-reply/reply/conversation-label-generator.js";
+import {
+  generateConversationLabel,
+  generateConversationLabelWithFallback,
+} from "../auto-reply/reply/conversation-label-generator.js";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import { loadSessionEntry, patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -164,6 +168,7 @@ async function generateDashboardSessionTitle(params: {
   userMessage: string;
   attachments?: readonly ChatAttachment[];
   timeoutMs?: number;
+  utilityOnly?: boolean;
 }): Promise<string | null> {
   const sourceText = buildDashboardSessionTitleSource({
     message: params.userMessage,
@@ -193,20 +198,76 @@ async function generateDashboardSessionTitle(params: {
     primaryProvider: regularModel.provider,
     primaryModelRef: regularModelRef,
   });
-  const generated = await generateConversationLabelWithFallback({
+  const labelParams = {
     userMessage: truncateUtf16Safe(sourceText, DASHBOARD_SESSION_TITLE_SOURCE_MAX_CHARS),
     prompt: DASHBOARD_SESSION_TITLE_PROMPT,
     cfg: params.cfg,
     agentId: params.agentId,
     ...(agentHarnessRuntimeOverride ? { agentHarnessRuntimeOverride } : {}),
+    maxLength: DASHBOARD_SESSION_TITLE_MAX_CHARS,
+    ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
+  };
+  if (params.utilityOnly) {
+    if (!utilityModelRef) {
+      return null;
+    }
+    const split = splitTrailingAuthProfile(utilityModelRef);
+    const aliasIndex = buildModelAliasIndex({
+      cfg: params.cfg,
+      agentId: params.agentId,
+      defaultProvider: regularModel.provider,
+    });
+    const utility = resolveModelRefFromString({
+      cfg: params.cfg,
+      agentId: params.agentId,
+      raw: split.model,
+      defaultProvider: regularModel.provider,
+      aliasIndex,
+    });
+    if (!utility) {
+      return null;
+    }
+    const profile =
+      split.profile ??
+      (utility.ref.provider === regularModel.provider ? preferredProfile : undefined);
+    const modelRef = `${utility.ref.provider}/${utility.ref.model}${profile ? `@${profile}` : ""}`;
+    // Passing a concrete model makes this exactly one attempt. Draft speculation
+    // must never spend on the normal primary-model fallback after a utility failure.
+    const utilityRuntime = resolveSessionRuntimeOverrideForProvider({
+      provider: utility.ref.provider,
+      entry: params.entry,
+      cfg: params.cfg,
+    });
+    const generated = await generateConversationLabel({
+      ...labelParams,
+      agentHarnessRuntimeOverride: utilityRuntime,
+      modelRef,
+    });
+    return generated ? normalizeDashboardSessionTitle(generated) : null;
+  }
+  const generated = await generateConversationLabelWithFallback({
+    ...labelParams,
     ...(utilityModelRef ? { utilityModelRef } : {}),
     regularModelRef,
     ...(preferredProfile ? { preferredProfile } : {}),
     normalizeLabel: normalizeDashboardSessionTitle,
-    maxLength: DASHBOARD_SESSION_TITLE_MAX_CHARS,
-    ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
   });
   return generated ? normalizeDashboardSessionTitle(generated) : null;
+}
+
+/** Prepares a creation draft's title without creating or updating a session. */
+export async function prepareDashboardSessionTitle(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  entry?: DashboardSessionTitleModelEntry;
+  userMessage: string;
+}): Promise<string | null> {
+  try {
+    return await generateDashboardSessionTitle({ ...params, utilityOnly: true });
+  } catch {
+    // Speculation is optional; provider diagnostics and draft contents stay private.
+    return null;
+  }
 }
 
 /** Worktree callers bound their own wait without cancelling another naming owner's request. */

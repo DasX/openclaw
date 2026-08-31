@@ -211,13 +211,34 @@ export class DraftSubmissionFlow {
     return canShowNewSessionTerminalStart(this.read(), Boolean(this.placement().target));
   }
 
+<<<<<<< HEAD
   private buildDraftSessionCreateParams(options: DraftSessionCreateOverrides = {}) {
     return this.place.buildSessionCreateParams({
+=======
+  private buildDraftSessionCreateParams(
+    options: Partial<Pick<SessionCreateParams, "message" | "attachments" | "label">> & {
+      visibility?: NewSessionVisibility;
+    } = {},
+  ): SessionCreateParams {
+    return assembleDraftSessionCreateParams({
+      ...options,
+      agentId: this.place.agentId,
+>>>>>>> 15f864223a2 (feat: prepare new-session names after idle typing)
       message: options.message ?? "",
       toolOverrides: this.capabilities.toolOverrides,
       permissionMode: this.permission.value,
       visibility: options.visibility ?? this.visibilityValue,
+<<<<<<< HEAD
       attachments: options.attachments,
+=======
+      projectId: this.place.browser.remoteProject?.projectId ?? this.place.browser.projectId,
+      projectGitUrl: this.place.browser.remoteProject?.cloneUrl,
+      worktree: this.place.worktree,
+      baseRef: this.place.baseRef,
+      worktreeName: this.place.worktreeName,
+      cwd: this.place.folder,
+      workspace: this.place.workspacePath(),
+>>>>>>> 15f864223a2 (feat: prepare new-session names after idle typing)
       catalogId: this.read().data?.catalogId,
       category: this.gateway.resolvedGroupCategory(),
     });
@@ -389,6 +410,7 @@ export class DraftSubmissionFlow {
       this.noteBlockedSubmitAttempt();
       return;
     }
+    const preparedTitle = this.callbacks.takePreparedTitle?.();
     this.blockedSubmitGate = null;
     const pendingPlacement = !startup && Boolean(this.pendingPlacement.sessionKey);
     const message =
@@ -471,6 +493,7 @@ export class DraftSubmissionFlow {
         startup?.params ??
         this.buildDraftSessionCreateParams({
           message: placementTarget ? "" : message,
+          label: preparedTitle,
           visibility:
             this.visibilityValue === "draft" &&
             !this.capabilities.canStartAsDraft(this.read().context)

@@ -649,6 +649,13 @@ const CORE_GATEWAY_METHOD_SPECS = [
     "2026.8",
     { startup: true, controlPlaneWrite: true },
   ],
+  [
+    "sessions.title.prepare",
+    "sessions-title",
+    "operator.write",
+    "2026.8",
+    { controlPlaneWrite: true },
+  ],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];
 
 export type CoreGatewayHandlerFamily = Exclude<(typeof CORE_GATEWAY_METHOD_SPECS)[number][1], null>;
