@@ -45,7 +45,10 @@ capability and keep their data channel and client transcript reporting.
 
 Closing a native transport fences new delegations and late provider delivery;
 already accepted agent work retains its own cancellation lifetime. Spoken run
-cancellation is separate from ending the audio connection.
+cancellation is separate from ending the audio connection. Gateway-controlled
+native sessions acknowledge cancellation without speaking the canceled task's
+partial answer, empty-result fallback, or failed-task retry prompt. Timeouts
+remain failures rather than being silently treated as cancellations.
 
 Finalized realtime user and assistant utterances are always appended live to the active agent session, so later chat and voice turns share one history. Client-owned transports report their finalized transcripts with stable entry ids; Gateway relay and Gateway-controlled WebRTC sessions append the same events server-side. Provider sessions also receive the bounded realtime profile context used by Discord voice.
 

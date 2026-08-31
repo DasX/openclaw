@@ -603,6 +603,42 @@ describe("realtime voice agent consult runtime", () => {
     expect(call.agentId).toBe("voice");
   });
 
+  it.each([
+    { label: "cancellation", meta: { aborted: true }, errorName: "AbortError" },
+    {
+      label: "timeout",
+      meta: {
+        aborted: true,
+        stopReason: "timeout",
+        timeoutPhase: "provider",
+        providerStarted: true,
+      },
+      errorName: "TimeoutError",
+    },
+  ])("preserves $label instead of speaking a partial result", async ({ meta, errorName }) => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const cleanup = vi.fn();
+    runEmbeddedAgent.mockResolvedValueOnce({ payloads: [{ text: "Partial answer." }], meta });
+
+    await expect(
+      consultRealtimeVoiceAgent({
+        cfg: {},
+        agentRuntime: runtime as never,
+        logger: { warn: vi.fn() },
+        sessionKey: "agent:main:voice-interruption",
+        messageProvider: "voice",
+        lane: "voice",
+        runIdPrefix: "voice-interruption",
+        args: { question: "Read the project." },
+        transcript: [],
+        surface: "a live voice session",
+        userLabel: "User",
+        onRunStarted: () => ({ cleanup }),
+      }),
+    ).rejects.toMatchObject({ name: errorName });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it("returns a speakable fallback when the embedded agent has no visible text", async () => {
     const warn = vi.fn();
     const { runtime } = createAgentRuntime([{ text: "hidden", isReasoning: true }]);

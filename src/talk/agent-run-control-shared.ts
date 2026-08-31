@@ -275,7 +275,7 @@ function parseRealtimeVoiceAgentControlToolArgsRecord(args: unknown): unknown {
 export function buildRealtimeVoiceAgentControlSpeechMessage(text: string): string {
   return [
     "Internal OpenClaw voice control result.",
-    "Do not call openclaw_agent_consult or any other tool for this message.",
+    "Do not delegate this message or call any tools.",
     "Speak this exact OpenClaw status to the voice call, without adding, removing, or rephrasing words.",
     `Status: ${JSON.stringify(text)}`,
   ].join("\n");

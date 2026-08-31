@@ -1,9 +1,16 @@
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawPluginDefinition } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { createMockIncomingRequest } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
+import {
+  clearActiveEmbeddedRun,
+  setActiveEmbeddedRun,
+} from "../../agents/embedded-agent-runner/runs.js";
+import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
@@ -16,6 +23,7 @@ import {
   restoreActivePluginRegistrySnapshot,
   setActivePluginRegistry,
 } from "../../plugins/runtime.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { flushClientVoiceSessionWrites } from "../../talk/client-voice-session.js";
 import { resolveRelativeBundledPluginPublicModuleId } from "../../test-utils/bundled-plugin-public-surface.js";
@@ -74,6 +82,7 @@ const upstream = await vi.hoisted(async () => {
     NativeSocket,
     sockets,
     fetch: vi.fn<typeof fetch>(),
+    runEmbeddedAgent: vi.fn<typeof import("../../agents/embedded-agent.js").runEmbeddedAgent>(),
     authConfigured: vi.fn(
       ({ profileTypes }: { profileTypes?: readonly string[] }) =>
         profileTypes?.includes("oauth") === true,
@@ -84,6 +93,9 @@ const upstream = await vi.hoisted(async () => {
   };
 });
 
+vi.mock("../../agents/embedded-agent.js", () => ({
+  runEmbeddedAgent: upstream.runEmbeddedAgent,
+}));
 vi.mock("ws", async (importOriginal) => ({
   ...(await importOriginal<typeof import("ws")>()),
   default: upstream.NativeSocket,
@@ -151,6 +163,7 @@ async function withNativePlugin(
       response: ReturnType<typeof createResponse>;
     };
     broadcast: ReturnType<typeof vi.fn>;
+    chatAbortControllers: GatewayRequestContext["chatAbortControllers"];
   }) => Promise<void>,
 ): Promise<void> {
   await withOpenClawTestState(
@@ -275,6 +288,7 @@ async function withNativePlugin(
             return { handling, response };
           },
           broadcast,
+          chatAbortControllers: context.chatAbortControllers,
         });
       } finally {
         if (voiceSessionId) {
@@ -322,6 +336,9 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     vi.stubGlobal("fetch", upstream.fetch);
     upstream.authConfigured.mockClear();
     upstream.resolveAuth.mockClear();
+    upstream.runEmbeddedAgent
+      .mockReset()
+      .mockRejectedValue(new Error("Unexpected model invocation"));
   });
 
   afterEach(() => {
@@ -371,6 +388,142 @@ describe("native Talk through the public OpenAI plugin registration", () => {
       expect(socket.readyState).toBe(upstream.NativeSocket.CLOSED);
     });
   });
+
+  it.each(["empty", "partial", "rejection"] as const)(
+    "preserves intentional native cancellation after %s backend settlement",
+    async (settlement) => {
+      const releaseBackend = createDeferredCore();
+      let activeRun: RunEmbeddedAgentParams | undefined;
+      let backendAborted = false;
+      const abortOwned = vi.fn(() => {
+        backendAborted = true;
+      });
+      upstream.runEmbeddedAgent
+        .mockImplementationOnce(async (params) => {
+          const handle = {
+            ...createEmbeddedRunHandle({ runId: params.runId, abort: abortOwned }),
+            isAborted: () => backendAborted,
+          };
+          setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
+          activeRun = params;
+          try {
+            await releaseBackend.promise;
+            if (settlement === "rejection") {
+              params.abortSignal?.throwIfAborted();
+              throw new Error("Expected the model's actual cancellation signal");
+            }
+            return {
+              payloads: settlement === "partial" ? [{ text: "Canceled partial output." }] : [],
+              meta: { durationMs: 0, aborted: true },
+            };
+          } finally {
+            clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
+          }
+        })
+        .mockResolvedValueOnce({
+          payloads: [{ text: "Fresh consult completed." }],
+          meta: { durationMs: 0 },
+        });
+      const settleBackend = async () => {
+        releaseBackend.resolve();
+        await Promise.allSettled(
+          upstream.runEmbeddedAgent.mock.results
+            .filter((result) => result.type === "return")
+            .map((result) => result.value),
+        );
+        // Drain the consult/broker Promise continuations before another delegation
+        // could supersede the original signal and hide a canceled-result append.
+        await nextEventLoopTurn();
+      };
+
+      await withNativePlugin(async ({ create, offer, broadcast, chatAbortControllers }) => {
+        try {
+          const result = await create(true);
+          expect(result.clientControl).toEqual({ owner: "gateway" });
+          const { handling, response } = offer(requireString(result, "clientSecret"), AUDIO_SDP);
+          await vi.waitFor(() => expect(upstream.sockets).toHaveLength(1));
+          const socket = upstream.sockets[0];
+          if (!socket) {
+            throw new Error("Missing native sideband");
+          }
+          socket.open();
+          await handling;
+          expect(response.res.statusCode).toBe(200);
+          const sentFrames = () => socket.sent.map((frame): unknown => JSON.parse(frame));
+          socket.serverEvent({
+            type: "delegation.created",
+            item: {
+              type: "delegation",
+              target: "client",
+              id: "canceled-delegation",
+              content: [{ type: "input_text", text: "Keep working until I cancel." }],
+            },
+          });
+          await vi.waitFor(() => expect(activeRun).toBeDefined());
+          if (!activeRun) {
+            throw new Error("Native delegation did not reach the model backend");
+          }
+          const { runId, abortSignal } = activeRun;
+          expect(chatAbortControllers.get(runId)).toMatchObject({
+            agentId: AGENT_ID,
+            sessionKey: SESSION_KEY,
+            sessionId: SESSION_ID,
+            ownerConnId: CONNECTION_ID,
+          });
+          expect(abortSignal?.aborted).toBe(false);
+
+          socket.serverEvent({ type: "turn.done", turn: { role: "user", transcript: "cancel" } });
+          await vi.waitFor(() => expect(abortOwned).toHaveBeenCalledOnce());
+          await vi.waitFor(() =>
+            expect(sentFrames()).toContainEqual(
+              expect.objectContaining({
+                type: "session.context.append",
+                channel: "speakable",
+                content: [
+                  expect.objectContaining({
+                    type: "input_text",
+                    text: expect.stringContaining("Cancelled the active OpenClaw run."),
+                  }),
+                ],
+              }),
+            ),
+          );
+          expect(abortSignal?.aborted).toBe(true);
+          expect(socket.readyState).toBe(upstream.NativeSocket.OPEN);
+
+          await settleBackend();
+          expect(sentFrames()).not.toContainEqual(
+            expect.objectContaining({
+              type: "delegation.context.append",
+              delegation_item_id: "canceled-delegation",
+            }),
+          );
+          socket.serverEvent({
+            type: "delegation.created",
+            item: {
+              type: "delegation",
+              target: "client",
+              id: "after-cancel",
+              content: [{ type: "input_text", text: "Start a fresh small task." }],
+            },
+          });
+          await vi.waitFor(() =>
+            expect(sentFrames()).toContainEqual({
+              type: "delegation.context.append",
+              delegation_item_id: "after-cancel",
+              channel: "speakable",
+              content: [{ type: "input_text", text: "Fresh consult completed." }],
+            }),
+          );
+          expect(upstream.runEmbeddedAgent).toHaveBeenCalledTimes(2);
+          expect(socket.readyState).toBe(upstream.NativeSocket.OPEN);
+          expect(talkEventTypes(broadcast)).not.toContain("session.error");
+        } finally {
+          await settleBackend();
+        }
+      });
+    },
+  );
 
   it("keeps legacy native data-channel and client transcript ownership unchanged", async () => {
     await withNativePlugin(async ({ create, offer, invoke, broadcast }) => {

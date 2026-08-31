@@ -585,7 +585,11 @@ describe.each(["browser-rpc", "browser-provider", "relay"] as const)(
         config.session = { scope: "global" };
         const started = createDeferredCore<RunEmbeddedAgentParams>();
         const finish = createDeferredCore();
-        const abortOwned = vi.fn(() => finish.resolve());
+        let aborted = false;
+        const abortOwned = vi.fn(() => {
+          aborted = true;
+          finish.resolve();
+        });
         const abortOther = vi.fn();
         mocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
           const handle = {
@@ -599,7 +603,10 @@ describe.each(["browser-rpc", "browser-provider", "relay"] as const)(
           started.resolve(params);
           try {
             await finish.promise;
-            return { payloads: [{ text: "Synthetic consult answer" }], meta: { durationMs: 0 } };
+            return {
+              payloads: [{ text: "Synthetic consult answer" }],
+              meta: { durationMs: 0, aborted },
+            };
           } finally {
             clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
           }
@@ -684,9 +691,15 @@ describe.each(["browser-rpc", "browser-provider", "relay"] as const)(
               result.voiceSessionId ?? result.sessionId!,
             )?.sessionKey,
           ).toBe("main");
+          finish.resolve();
+          if (replacement === "foreign global") {
+            await expect(consult).rejects.toMatchObject({ name: "AbortError" });
+          } else {
+            await expect(consult).resolves.toEqual({ text: "Synthetic consult answer" });
+          }
         } finally {
           finish.resolve();
-          await consult;
+          await Promise.allSettled([consult]);
         }
       },
     );

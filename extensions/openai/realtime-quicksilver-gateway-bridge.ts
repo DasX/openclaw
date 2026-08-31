@@ -36,18 +36,6 @@ const QUICKSILVER_SESSION_TTL_MS = 30 * 60_000;
 const QUICKSILVER_CONNECT_TIMEOUT_MS = 30_000;
 const WEBSOCKET_OPEN = 1;
 
-function isAbortLikeError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const value = error as { code?: unknown; message?: unknown; name?: unknown };
-  return (
-    value.name === "AbortError" ||
-    value.code === "ABORT_ERR" ||
-    value.message === "This operation was aborted"
-  );
-}
-
 type OpenAIQuicksilverBridgeConfig = RealtimeVoiceBridgeCreateRequest & {
   model: string;
   voice: string;
@@ -126,7 +114,6 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
     if (config.runAgentConsult) {
       this.delegations = new OpenAIQuicksilverDelegationController({
         getSocket: () => this.sideband?.socket,
-        isCanceledError: isAbortLikeError,
         logger: config.logger,
         onError: config.onError,
         onFatalError: (error) => this.fail(error),

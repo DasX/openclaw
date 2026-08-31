@@ -95,71 +95,82 @@ describe("Talk client Gateway control owner", () => {
     },
   );
 
-  it("persists sideband transcripts, completes consults, and closes idempotently", async () => {
-    const consultResult = deferred<{ text: string }>();
-    const runAgentConsult = vi.fn(async () => await consultResult.promise);
-    const appendTranscript = vi.fn(
-      async (_entry: { entryId: string; role: "user" | "assistant"; text: string }) => undefined,
-    );
-    const closeLogicalSession = vi.fn(async () => undefined);
-    const closeProvider = vi.fn(async () => undefined);
-    const bridge = {
-      connect: vi.fn(async () => undefined),
-      close: vi.fn(),
-      sendAudio: vi.fn(),
-      setMediaTimestamp: vi.fn(),
-      sendUserMessage: vi.fn(),
-      submitToolResult: vi.fn(async () => undefined),
-      acknowledgeMark: vi.fn(),
-      isConnected: vi.fn(() => true),
-    } satisfies RealtimeVoiceBridge;
-    const owner = createTalkClientGatewayControlOwner({
-      voiceSessionId: "voice-gateway",
-      sessionTarget,
-      connId: "conn-gateway",
-      context: controlContext(),
-      runAgentConsult,
-      appendTranscript,
-      flushTranscript: vi.fn(async () => undefined),
-      closeLogicalSession,
-    });
-    owner.control.bindBridge(bridge);
-    await owner.adoptProvider(closeProvider);
-    owner.activate();
+  it.each(["completed", "cancelled"] as const)(
+    "persists sideband transcripts, settles a %s consult, and closes idempotently",
+    async (outcome) => {
+      const consultResult = deferred<{ text: string }>();
+      const runAgentConsult = vi.fn(async () => {
+        const result = await consultResult.promise;
+        if (outcome === "cancelled") {
+          throw new DOMException("Host cancelled the consult", "AbortError");
+        }
+        return result;
+      });
+      const appendTranscript = vi.fn(
+        async (_entry: { entryId: string; role: "user" | "assistant"; text: string }) => undefined,
+      );
+      const closeLogicalSession = vi.fn(async () => undefined);
+      const closeProvider = vi.fn(async () => undefined);
+      const bridge = {
+        connect: vi.fn(async () => undefined),
+        close: vi.fn(),
+        sendAudio: vi.fn(),
+        setMediaTimestamp: vi.fn(),
+        sendUserMessage: vi.fn(),
+        submitToolResult: vi.fn(async () => undefined),
+        acknowledgeMark: vi.fn(),
+        isConnected: vi.fn(() => true),
+      } satisfies RealtimeVoiceBridge;
+      const owner = createTalkClientGatewayControlOwner({
+        voiceSessionId: "voice-gateway",
+        sessionTarget,
+        connId: "conn-gateway",
+        context: controlContext(),
+        runAgentConsult,
+        appendTranscript,
+        flushTranscript: vi.fn(async () => undefined),
+        closeLogicalSession,
+      });
+      owner.control.bindBridge(bridge);
+      await owner.adoptProvider(closeProvider);
+      owner.activate();
 
-    owner.control.onTranscript?.("user", "check the repository", true);
-    owner.control.onToolCall?.({
-      itemId: "item-consult",
-      callId: "call-consult",
-      name: "openclaw_agent_consult",
-      args: { question: "check the repository" },
-    });
-    await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledOnce());
-    consultResult.resolve({ text: "The repository is clean." });
-    await vi.waitFor(() =>
-      expect(bridge.submitToolResult).toHaveBeenCalledWith("call-consult", {
-        result: "The repository is clean.",
-      }),
-    );
-    expect(appendTranscript).toHaveBeenCalledWith({
-      entryId: expect.stringMatching(/^gateway-[0-9a-f-]+-1$/),
-      role: "user",
-      text: "check the repository",
-    });
+      owner.control.onTranscript?.("user", "check the repository", true);
+      owner.control.onToolCall?.({
+        itemId: "item-consult",
+        callId: "call-consult",
+        name: "openclaw_agent_consult",
+        args: { question: "check the repository" },
+      });
+      await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledOnce());
+      consultResult.resolve({ text: "The repository is clean." });
+      const expectedResult =
+        outcome === "cancelled"
+          ? expect.objectContaining({ status: "cancelled" })
+          : { result: "The repository is clean." };
+      await vi.waitFor(() =>
+        expect(bridge.submitToolResult).toHaveBeenCalledWith("call-consult", expectedResult),
+      );
+      expect(appendTranscript).toHaveBeenCalledWith({
+        entryId: expect.stringMatching(/^gateway-[0-9a-f-]+-1$/),
+        role: "user",
+        text: "check the repository",
+      });
 
-    const closeParams = {
-      voiceSessionId: "voice-gateway",
-      sessionKey: sessionTarget.sessionKey,
-      connId: "conn-gateway",
-    };
-    await expect(
-      closeTalkClientGatewayControlSession({ ...closeParams, connId: "conn-other" }),
-    ).rejects.toThrow("not owned by this client");
-    await expect(closeTalkClientGatewayControlSession(closeParams)).resolves.toBe(true);
-    await expect(closeTalkClientGatewayControlSession(closeParams)).resolves.toBe(false);
-    expect(closeProvider).toHaveBeenCalledOnce();
-    expect(closeLogicalSession).toHaveBeenCalledOnce();
-  });
+      const closeParams = {
+        voiceSessionId: "voice-gateway",
+        sessionKey: sessionTarget.sessionKey,
+        connId: "conn-gateway",
+      };
+      await expect(
+        closeTalkClientGatewayControlSession({ ...closeParams, connId: "conn-other" }),
+      ).rejects.toThrow("not owned by this client");
+      await expect(closeTalkClientGatewayControlSession(closeParams)).resolves.toBe(true);
+      await expect(closeTalkClientGatewayControlSession(closeParams)).resolves.toBe(false);
+      expect(closeProvider).toHaveBeenCalledOnce();
+      expect(closeLogicalSession).toHaveBeenCalledOnce();
+    },
+  );
 
   it("routes control tool results without starting another consult", async () => {
     const bridge = {

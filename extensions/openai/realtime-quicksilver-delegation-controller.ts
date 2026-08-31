@@ -1,4 +1,9 @@
-import { formatErrorMessage, toErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import {
+  extractErrorCode,
+  formatErrorMessage,
+  readErrorName,
+  toErrorObject,
+} from "openclaw/plugin-sdk/error-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import type { RealtimeVoiceAgentConsultRunner } from "openclaw/plugin-sdk/realtime-voice";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
@@ -27,7 +32,6 @@ type PendingDelegation = {
 
 type OpenAIQuicksilverDelegationControllerOptions = {
   getSocket: () => OpenAIQuicksilverSocket | undefined;
-  isCanceledError?: (error: unknown) => boolean;
   logger: Pick<PluginLogger, "debug" | "warn">;
   onError?: (error: Error) => void;
   onFatalError: (error: Error) => void;
@@ -234,8 +238,13 @@ export class OpenAIQuicksilverDelegationController {
       }
       text = boundOpenAIQuicksilverDelegationResult(result.text);
     } catch (error) {
-      // Host steering can reject with an abort marker outside this controller's own signal.
-      if (signal.aborted || this.options.isCanceledError?.(error)) {
+      // Browser and relay host cancellation may belong to a different signal.
+      // Both consumers must preserve the host's abort outcome, not offer a retry.
+      if (
+        signal.aborted ||
+        readErrorName(error) === "AbortError" ||
+        extractErrorCode(error) === "ABORT_ERR"
+      ) {
         return;
       }
       this.options.logger.warn(

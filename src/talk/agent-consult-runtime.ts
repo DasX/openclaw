@@ -1,7 +1,12 @@
 // Agent consult runtime starts agent consultation flows from talk sessions.
 import { randomUUID } from "node:crypto";
+import {
+  buildAgentRunTerminalOutcomeFromLifecycleEvent,
+  classifyAgentRunTerminalOutcome,
+} from "../agents/agent-run-terminal-outcome.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
+import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
 import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
@@ -268,6 +273,26 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
   throw new Error("realtime voice agent consult session could not be initialized");
 }
 
+function assertRealtimeVoiceConsultNotInterrupted(
+  abortSignal: AbortSignal,
+  meta?: EmbeddedAgentRunMeta,
+): void {
+  const outcome = buildAgentRunTerminalOutcomeFromLifecycleEvent({
+    phase: "end",
+    data: meta,
+    abortSignal,
+  });
+  const classification = classifyAgentRunTerminalOutcome(outcome);
+  // Preserve the run owner's interruption before projecting partial or empty text
+  // into speech. A timeout must remain a failure, not a silent cancellation.
+  if (classification === "cancellation") {
+    throw new DOMException("Realtime voice agent consult cancelled", "AbortError");
+  }
+  if (classification === "timeout") {
+    throw new DOMException("Realtime voice agent consult timed out", "TimeoutError");
+  }
+}
+
 /**
  * Runs an embedded agent consult and returns concise speakable text for realtime voice playback.
  */
@@ -468,14 +493,19 @@ export async function consultRealtimeVoiceAgent(params: {
         agentDir,
         abortSignal,
       });
-      const result = await runPromise.finally(() => runRegistration?.cleanup?.());
+      const result = await runPromise
+        .catch((error: unknown) => {
+          assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+          throw error;
+        })
+        .finally(() => runRegistration?.cleanup?.());
+      assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
 
       const text = collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? []);
       if (!text) {
-        const reason = result.meta?.aborted
-          ? "agent run aborted"
-          : "agent returned no speakable text";
-        params.logger.warn(`[talk] agent consult produced no answer: ${reason}`);
+        params.logger.warn(
+          "[talk] agent consult produced no answer: agent returned no speakable text",
+        );
         return { text: params.fallbackText ?? "I need a moment to verify that before answering." };
       }
       return { text };

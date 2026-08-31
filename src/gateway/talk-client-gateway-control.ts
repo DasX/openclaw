@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readErrorName } from "../infra/errors.js";
 import { BoundedSerialQueue } from "../shared/bounded-serial-queue.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -300,9 +301,10 @@ export function createTalkClientGatewayControlOwner(params: {
       if (signal.aborted) {
         return;
       }
-      const result = controller.signal.aborted
-        ? buildRealtimeVoiceAgentCancelProviderResult()
-        : { error: formatError(error) };
+      const result =
+        controller.signal.aborted || readErrorName(error) === "AbortError"
+          ? buildRealtimeVoiceAgentCancelProviderResult()
+          : { error: formatError(error) };
       await submit(event.callId, result);
     } finally {
       if (consultControllers.get(event.callId)?.controller === controller) {

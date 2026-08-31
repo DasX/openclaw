@@ -1013,6 +1013,12 @@ catalog, API-key auth, and dynamic model resolution.
         contract and is removed only with a versioned SDK break. The Gateway
         remains the owner of tool policy and run lifecycle; never infer control
         ownership from a model name or duplicate client-owned transcript writes.
+
+        A host `runAgentConsult` rejection named `AbortError` represents
+        cancellation, even when the provider's own signal is still live. Do not
+        turn it into a failed-task or retry reply. `TimeoutError` remains a
+        failure. Closing a transport and canceling accepted host work are
+        separate lifecycle operations.
       </Tab>
       <Tab title="Media understanding">
         ```typescript

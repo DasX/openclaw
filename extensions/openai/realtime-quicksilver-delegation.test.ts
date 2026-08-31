@@ -12,10 +12,7 @@ type ConsultRunner = (params: {
   signal?: AbortSignal;
 }) => Promise<{ text: string }>;
 
-function createDelegationHarness(params?: {
-  isCanceledError?: (error: unknown) => boolean;
-  runAgentConsult?: ConsultRunner;
-}) {
+function createDelegationHarness(params?: { runAgentConsult?: ConsultRunner }) {
   const socket = new FakeSocket("manual");
   socket.readyState = 1;
   const logger = { debug: vi.fn(), warn: vi.fn() };
@@ -24,7 +21,6 @@ function createDelegationHarness(params?: {
   const runAgentConsult = params?.runAgentConsult ?? vi.fn(async () => ({ text: "Done" }));
   const controller = new OpenAIQuicksilverDelegationController({
     getSocket: () => socket,
-    isCanceledError: params?.isCanceledError,
     logger,
     onFatalError,
     runAgentConsult,
@@ -324,9 +320,12 @@ describe("GPT-Live sideband protocol", () => {
     );
   });
 
-  it("returns only a fixed speakable failure when the delegated agent fails", async () => {
+  it.each([
+    { kind: "failure", error: new Error("workspace unavailable") },
+    { kind: "timeout", error: new DOMException("agent timed out", "TimeoutError") },
+  ])("returns a speakable failure for a delegated $kind", async ({ error }) => {
     const runAgentConsult = vi.fn<ConsultRunner>(async () => {
-      throw new Error("workspace unavailable");
+      throw error;
     });
     const { controller, logger, socket } = createDelegationHarness({ runAgentConsult });
 
@@ -345,8 +344,8 @@ describe("GPT-Live sideband protocol", () => {
         ],
       }),
     );
-    expect(socket.sent.join("\n")).not.toContain("workspace unavailable");
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("workspace unavailable"));
+    expect(socket.sent.join("\n")).not.toContain(error.message);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining(error.message));
   });
 
   it("handles structured delegated failures with a non-string message", async () => {
@@ -391,7 +390,6 @@ describe("GPT-Live sideband protocol", () => {
       throw abortError;
     });
     const { controller, logger, socket } = createDelegationHarness({
-      isCanceledError: (error) => error === abortError,
       runAgentConsult,
     });
 
