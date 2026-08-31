@@ -202,94 +202,283 @@ describe("Talk client Gateway control owner", () => {
     await owner.close();
   });
 
-  it("handles spoken status, steering, and cancellation while a consult is active", async () => {
-    const controlAgentRun = vi.fn(async ({ text }: { text: string }) => ({
-      ok: true,
-      mode:
-        text === "cancel"
-          ? ("cancel" as const)
-          : text === "status"
-            ? ("status" as const)
-            : ("steer" as const),
-      sessionKey: sessionTarget.canonicalKey,
-      active: true,
-      ...(text === "cancel" ? { aborted: true } : { queued: text !== "status" }),
-      message: `${text} accepted`,
-      speak: true,
-      show: true,
-      suppress: false,
-    }));
-    const runStarted = deferred<void>();
-    const runAgentConsult = vi.fn(
-      async (_args: unknown, signal: AbortSignal) =>
-        await new Promise<{ text: string }>((_resolve, reject) => {
-          runStarted.resolve();
-          signal.addEventListener(
-            "abort",
-            () =>
-              reject(
-                signal.reason instanceof Error
-                  ? signal.reason
-                  : new Error("Realtime voice consult aborted"),
-              ),
-            { once: true },
+  it.each(["tool", "delegation"] as const)(
+    "handles spoken status, steering, and cancellation during a %s consult",
+    async (entry) => {
+      const controlAgentRun = vi.fn(async ({ text }: { text: string }) => ({
+        ok: true,
+        mode:
+          text === "cancel"
+            ? ("cancel" as const)
+            : text === "status"
+              ? ("status" as const)
+              : ("steer" as const),
+        sessionKey: sessionTarget.canonicalKey,
+        active: true,
+        ...(text === "cancel" ? { aborted: true } : { queued: text !== "status" }),
+        message: `${text} accepted`,
+        speak: true,
+        show: true,
+        suppress: false,
+      }));
+      const runStarted = deferred<void>();
+      const runAgentConsult = vi.fn(
+        async (_args: unknown, signal: AbortSignal) =>
+          await new Promise<{ text: string }>((_resolve, reject) => {
+            runStarted.resolve();
+            signal.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  signal.reason instanceof Error
+                    ? signal.reason
+                    : new Error("Realtime voice consult aborted"),
+                ),
+              { once: true },
+            );
+          }),
+      );
+      const bridge = {
+        connect: vi.fn(async () => undefined),
+        close: vi.fn(),
+        sendAudio: vi.fn(),
+        setMediaTimestamp: vi.fn(),
+        sendUserMessage: vi.fn(),
+        submitToolResult: vi.fn(async () => undefined),
+        acknowledgeMark: vi.fn(),
+        isConnected: vi.fn(() => true),
+      } satisfies RealtimeVoiceBridge;
+      const owner = createTalkClientGatewayControlOwner({
+        voiceSessionId: `voice-spoken-control-${entry}`,
+        sessionTarget,
+        connId: `conn-spoken-control-${entry}`,
+        context: controlContext(),
+        runAgentConsult,
+        controlAgentRun,
+        appendTranscript: vi.fn(async () => undefined),
+        flushTranscript: vi.fn(async () => undefined),
+        closeLogicalSession: vi.fn(async () => undefined),
+      });
+      if (entry === "delegation") {
+        owner.control.bindControl?.({ sendUserMessage: bridge.sendUserMessage });
+      } else {
+        owner.control.bindBridge(bridge);
+      }
+      await owner.adoptProvider(vi.fn(async () => undefined));
+      owner.activate();
+      const delegationController = new AbortController();
+      const delegation =
+        entry === "delegation"
+          ? owner
+              .runAgentConsult({ prompt: "long task", signal: delegationController.signal })
+              .catch((error: unknown) => error)
+          : undefined;
+      if (entry === "tool") {
+        owner.control.onToolCall?.({
+          itemId: "item-long",
+          callId: "call-long",
+          name: "openclaw_agent_consult",
+          args: { question: "long task" },
+        });
+      }
+      try {
+        await runStarted.promise;
+        for (const text of ["status", "use the release branch instead", "cancel"]) {
+          owner.control.onTranscript?.("user", text, true);
+          await vi.waitFor(() =>
+            expect(controlAgentRun).toHaveBeenCalledTimes(
+              text === "status" ? 1 : text === "cancel" ? 3 : 2,
+            ),
           );
+        }
+        expect(controlAgentRun.mock.calls.map(([input]) => input.text)).toEqual([
+          "status",
+          "use the release branch instead",
+          "cancel",
+        ]);
+        expect(bridge.sendUserMessage).toHaveBeenCalledTimes(3);
+        if (delegation) {
+          await expect(delegation).resolves.toBeInstanceOf(Error);
+          expect(bridge.submitToolResult).not.toHaveBeenCalled();
+        } else {
+          await vi.waitFor(() =>
+            expect(bridge.submitToolResult).toHaveBeenCalledWith(
+              "call-long",
+              expect.objectContaining({ status: "cancelled" }),
+            ),
+          );
+        }
+      } finally {
+        delegationController.abort(new Error("test cleanup"));
+        await owner.close();
+        await delegation;
+      }
+    },
+  );
+
+  it.each([
+    { entry: "tool", transition: "close" },
+    { entry: "tool", transition: "replace" },
+    { entry: "delegation", transition: "close" },
+    { entry: "delegation", transition: "replace" },
+  ] as const)(
+    "fences $entry admission when $transition occurs during transcript flush",
+    async ({ entry, transition }) => {
+      const flush = deferred<void>();
+      const flushTranscript = vi.fn(() => flush.promise);
+      const runAgentConsult = vi.fn(async () => ({ text: "must not run" }));
+      const common = {
+        voiceSessionId: `voice-flush-${entry}-${transition}`,
+        sessionTarget,
+        connId: `conn-flush-${entry}-${transition}`,
+        context: controlContext(),
+        runAgentConsult,
+        appendTranscript: vi.fn(async () => undefined),
+        closeLogicalSession: vi.fn(async () => undefined),
+      };
+      const owner = createTalkClientGatewayControlOwner({ ...common, flushTranscript });
+      let replacement: ReturnType<typeof createTalkClientGatewayControlOwner> | undefined;
+      let delegation: Promise<unknown> | undefined;
+      await owner.adoptProvider(vi.fn(async () => undefined));
+      owner.activate();
+      try {
+        if (entry === "delegation") {
+          delegation = owner
+            .runAgentConsult({ prompt: "queued task" })
+            .catch((error: unknown) => error);
+        } else {
+          owner.control.onToolCall?.({
+            itemId: "item-flush",
+            callId: "call-flush",
+            name: "openclaw_agent_consult",
+            args: { question: "queued task" },
+          });
+        }
+        await vi.waitFor(() => expect(flushTranscript).toHaveBeenCalledOnce());
+        if (transition === "replace") {
+          replacement = createTalkClientGatewayControlOwner({
+            ...common,
+            flushTranscript: vi.fn(async () => undefined),
+          });
+          await replacement.adoptProvider(vi.fn(async () => undefined));
+          replacement.activate();
+        } else {
+          void owner.close();
+        }
+        flush.resolve();
+        await owner.close();
+        if (delegation) {
+          await expect(delegation).resolves.toBeInstanceOf(Error);
+        }
+        expect(runAgentConsult).not.toHaveBeenCalled();
+      } finally {
+        flush.resolve();
+        await owner.close();
+        await replacement?.close();
+        await delegation;
+      }
+    },
+  );
+
+  it.each(["tool", "delegation"] as const)(
+    "never admits a %s consult after flush completion schedules closure",
+    async (entry) => {
+      const flush = deferred<void>();
+      const transitioned = deferred<void>();
+      const admissionsAfterClose: boolean[] = [];
+      let closed = false;
+      const flushTranscript = vi.fn(() => flush.promise);
+      const owner = createTalkClientGatewayControlOwner({
+        voiceSessionId: `voice-flush-completion-${entry}`,
+        sessionTarget,
+        connId: `conn-flush-completion-${entry}`,
+        context: controlContext(),
+        runAgentConsult: vi.fn(async () => {
+          admissionsAfterClose.push(closed);
+          return { text: "accepted while open" };
         }),
-    );
-    const bridge = {
-      connect: vi.fn(async () => undefined),
-      close: vi.fn(),
-      sendAudio: vi.fn(),
-      setMediaTimestamp: vi.fn(),
-      sendUserMessage: vi.fn(),
-      submitToolResult: vi.fn(async () => undefined),
-      acknowledgeMark: vi.fn(),
-      isConnected: vi.fn(() => true),
-    } satisfies RealtimeVoiceBridge;
+        appendTranscript: vi.fn(async () => undefined),
+        flushTranscript,
+        closeLogicalSession: vi.fn(async () => undefined),
+      });
+      // Another completion observer may close the owner between an async
+      // preparation helper returning and its caller admitting the actual run.
+      void flush.promise.then(() => {
+        queueMicrotask(() => {
+          closed = true;
+          void owner.close();
+          transitioned.resolve();
+        });
+      });
+      await owner.adoptProvider(vi.fn(async () => undefined));
+      owner.activate();
+      let delegation: Promise<unknown> | undefined;
+      try {
+        if (entry === "delegation") {
+          delegation = owner.runAgentConsult({ prompt: "queued task" }).catch(() => undefined);
+        } else {
+          owner.control.onToolCall?.({
+            itemId: "item-flush-completion",
+            callId: "call-flush-completion",
+            name: "openclaw_agent_consult",
+            args: { question: "queued task" },
+          });
+        }
+        await vi.waitFor(() => expect(flushTranscript).toHaveBeenCalledOnce());
+        flush.resolve();
+        await transitioned.promise;
+        await owner.close();
+        await delegation;
+        expect(admissionsAfterClose).not.toContain(true);
+      } finally {
+        flush.resolve();
+        await owner.close();
+        await delegation;
+      }
+    },
+  );
+
+  it("detaches accepted provider consultations without extending admission", async () => {
+    const result = deferred<{ text: string }>();
+    const started = deferred<void>();
+    const providerController = new AbortController();
+    let acceptedSignal: AbortSignal | undefined;
+    const runAgentConsult = vi.fn(async (_args: unknown, signal: AbortSignal) => {
+      acceptedSignal = signal;
+      started.resolve();
+      return await result.promise;
+    });
     const owner = createTalkClientGatewayControlOwner({
-      voiceSessionId: "voice-spoken-control",
+      voiceSessionId: "voice-delegation-detach",
       sessionTarget,
-      connId: "conn-spoken-control",
+      connId: "conn-delegation-detach",
       context: controlContext(),
       runAgentConsult,
-      controlAgentRun,
       appendTranscript: vi.fn(async () => undefined),
       flushTranscript: vi.fn(async () => undefined),
       closeLogicalSession: vi.fn(async () => undefined),
     });
-    owner.control.bindBridge(bridge);
     await owner.adoptProvider(vi.fn(async () => undefined));
     owner.activate();
-    owner.control.onToolCall?.({
-      itemId: "item-long",
-      callId: "call-long",
-      name: "openclaw_agent_consult",
-      args: { question: "long task" },
+    const accepted = owner.runAgentConsult({
+      prompt: "accepted task",
+      signal: providerController.signal,
     });
-    await runStarted.promise;
-
-    for (const text of ["status", "use the release branch instead", "cancel"]) {
-      owner.control.onTranscript?.("user", text, true);
-      await vi.waitFor(() =>
-        expect(controlAgentRun).toHaveBeenCalledTimes(
-          text === "status" ? 1 : text === "cancel" ? 3 : 2,
-        ),
-      );
+    try {
+      await started.promise;
+      await owner.close();
+      expect(acceptedSignal?.aborted).toBe(false);
+      await expect(owner.runAgentConsult({ prompt: "late task" })).rejects.toThrow("closed");
+      expect(runAgentConsult).toHaveBeenCalledOnce();
+      providerController.abort(new Error("provider cancelled accepted work"));
+      expect(acceptedSignal?.aborted).toBe(true);
+      result.resolve({ text: "accepted task finished" });
+      await expect(accepted).resolves.toEqual({ text: "accepted task finished" });
+    } finally {
+      result.resolve({ text: "test cleanup" });
+      await accepted;
+      await owner.close();
     }
-
-    expect(controlAgentRun.mock.calls.map(([input]) => input.text)).toEqual([
-      "status",
-      "use the release branch instead",
-      "cancel",
-    ]);
-    expect(bridge.sendUserMessage).toHaveBeenCalledTimes(3);
-    await vi.waitFor(() =>
-      expect(bridge.submitToolResult).toHaveBeenCalledWith(
-        "call-long",
-        expect.objectContaining({ status: "cancelled" }),
-      ),
-    );
-    await owner.close();
   });
 
   it("closes the provider and logical session when the owning client disconnects", async () => {
@@ -389,6 +578,7 @@ describe("Talk client Gateway control owner", () => {
     await second.adoptProvider(closeSecond);
     second.activate();
     await vi.waitFor(() => expect(closeFirst).toHaveBeenCalledOnce());
+    expect(() => first.control.bindControl?.({ sendUserMessage: vi.fn() })).toThrow("closed");
     first.control.onClose?.("completed");
     first.control.onTranscript?.("user", "stale transport", true);
     second.control.onTranscript?.("user", "second transport", true);
@@ -406,6 +596,7 @@ describe("Talk client Gateway control owner", () => {
     await vi.waitFor(() => expect(closeFirst).toHaveBeenCalledOnce());
     expect(firstBridge.submitToolResult).not.toHaveBeenCalled();
     await second.close();
+    expect(() => second.control.bindBridge(secondBridge)).toThrow("closed");
     expect(closeSecond).toHaveBeenCalledOnce();
     expect(closeLogicalSession).toHaveBeenCalledOnce();
   });

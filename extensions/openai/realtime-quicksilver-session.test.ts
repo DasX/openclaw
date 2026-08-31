@@ -158,6 +158,7 @@ describe("GPT-Live offer broker", () => {
           providerConfig: {},
           model: "gpt-realtime-2.1",
           gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
+          clientControl: { owner: "gateway" },
           gaSideband: {
             createBridge,
           },
@@ -245,6 +246,7 @@ describe("GPT-Live offer broker", () => {
           providerConfig: {},
           model: "gpt-realtime-2.1",
           gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
+          clientControl: { owner: "gateway" },
           gaSideband: {
             createBridge: () => bridge,
           },
@@ -297,6 +299,7 @@ describe("GPT-Live offer broker", () => {
           providerConfig: {},
           model: "gpt-realtime-2.1",
           gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
+          clientControl: { owner: "gateway" },
           gaSideband: {
             createBridge: () => bridge,
           },
@@ -344,6 +347,7 @@ describe("GPT-Live offer broker", () => {
             providerConfig: {},
             model: "gpt-realtime-2.1",
             gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
+            clientControl: { owner: "gateway" },
             gaSideband: {
               createBridge: vi.fn(),
             },
@@ -826,6 +830,7 @@ describe("GPT-Live offer broker", () => {
           model: "gpt-realtime-2.1",
           gatewayControl: { bindBridge: vi.fn(), onClose },
           gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
+          clientControl: { owner: "gateway" },
           gaSideband: {
             createBridge: vi.fn(),
           },
@@ -878,6 +883,7 @@ describe("GPT-Live offer broker", () => {
       model: "gpt-realtime-2.1",
       ownerConnId,
       gaSession: { type: "realtime" as const, model: "gpt-realtime-2.1" },
+      clientControl: { owner: "gateway" as const },
       gaSideband: {
         createBridge: vi.fn(),
       },

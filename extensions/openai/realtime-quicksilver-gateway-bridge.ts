@@ -174,7 +174,7 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
   setMediaTimestamp(_ts: number): void {}
 
   sendUserMessage(text: string): void {
-    this.delegations?.sendToActiveDelegation(text, "speakable");
+    this.delegations?.sendSessionContext(text, "speakable");
   }
 
   submitToolResult(): void {

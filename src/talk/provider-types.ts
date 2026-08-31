@@ -246,6 +246,8 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
   reasoningEffort?: string;
   /** Host-injected agent delegation runner for provider-owned realtime control channels. */
   runAgentConsult?: RealtimeVoiceAgentConsultRunner;
+  /** Explicitly negotiated control ownership; lifecycle callbacks alone do not select this mode. */
+  clientControl?: { owner: "gateway" };
   /** Host-owned control callbacks for browser media sessions whose provider wire stays server-side. */
   gatewayControl?: RealtimeVoiceGatewayControl;
 };
@@ -255,6 +257,11 @@ export type RealtimeVoiceGatewayControl = Omit<
   RealtimeVoiceBridgeCallbacks,
   "onAudio" | "onClearAudio" | "onMark"
 > & {
+  /** Bind only supported sideband commands; client-owned media needs no audio bridge. */
+  bindControl?: (
+    control: Partial<Pick<RealtimeVoiceBridge, "submitToolResult" | "sendUserMessage">>,
+  ) => void;
+  /** @deprecated Stable 2026.8.1 SDK contract; remove only with a versioned SDK break. */
   bindBridge: (bridge: RealtimeVoiceBridge) => void;
 };
 

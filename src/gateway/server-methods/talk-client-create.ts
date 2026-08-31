@@ -33,9 +33,9 @@ import {
 import { resolveSandboxedSessionCreation } from "../operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import { readSessionPreviewItemsFromTranscript } from "../session-transcript-readers.js";
+import { createTalkClientAgentConsultRunner } from "../talk-client-agent-consult.js";
 import {
   boundTalkClientRealtimeInitialItems,
-  createTalkClientAgentConsultRunner,
   createTalkClientGatewayControlOwner,
   resolveTalkAgentConsultAuthority,
 } from "../talk-client-gateway-control.js";
@@ -105,6 +105,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
       normalizeOptionalLowercaseString(params.transport) ?? realtimeConfig.transport;
     const wantsCameraFrames = params.capabilities?.includes("camera-frame") === true;
     const wantsGatewayControl = params.capabilities?.includes("gateway-control-v1") === true;
+    const clientControl = wantsGatewayControl ? { owner: "gateway" as const } : undefined;
     if (wantsGatewayControl && wantsCameraFrames) {
       rejectTalkClientRequest(
         respond,
@@ -156,6 +157,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
       cfg: runtimeConfig,
       agentId,
       model: launchOptions.model,
+      ...(clientControl ? { clientControl } : {}),
       surface: "browser-session",
     });
     if (wantsGatewayControl && providerCapabilities?.supportsGatewayControl !== true) {
@@ -300,6 +302,9 @@ export const createTalkClient: GatewayRequestHandler = async ({
         instructions,
         initialItems,
         runAgentConsult: gatewayControlOwner?.runAgentConsult ?? consultRunner.runPrompt,
+        // Native delegation also uses lifecycle callbacks without taking client control.
+        // Carry the negotiated fact rather than inferring it from callback presence.
+        ...(clientControl ? { clientControl } : {}),
         ...(gatewayControlOwner ? { gatewayControl: gatewayControlOwner.control } : {}),
         ...(tools.length > 0 ? { tools } : {}),
         ...launchOptions,
@@ -390,7 +395,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
             {
               ...session,
               voiceSessionId,
-              ...(wantsGatewayControl ? { clientControl: { owner: "gateway" as const } } : {}),
+              ...(clientControl ? { clientControl } : {}),
             },
             undefined,
           );

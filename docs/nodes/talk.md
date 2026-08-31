@@ -27,16 +27,25 @@ Status and list are read-only. Setting a voice requires the message-channel owne
 Client-owned realtime Talk normally forwards provider tool calls through `talk.client.toolCall` instead of calling `chat.send` directly. GPT-Live WebRTC sessions delegate on a Gateway-owned sideband, and the Gateway binds each delegation to the browser or Gateway-relay Talk session that owns it. Backend WebSocket bridges use the normal relay consult path. While a realtime consult is active, clients can call `talk.client.steer` or `talk.session.steer` to classify spoken input as `status`, `steer`, `cancel`, or `followup`; this includes GPT-Live delegations. Accepted steering queues into the active embedded run; rejected steering returns a reason such as `no_active_run`, `not_streaming`, or `compacting`. A newer GPT-Live spoken task also supersedes the running delegation.
 
 Thin audio clients can request `gateway-control-v1` in
-`talk.client.create.capabilities`. OpenAI GA Realtime supports this mode only
-with a Platform API key. Success returns `clientControl: { owner: "gateway" }`,
-a 60-second single-use `clientSecret`, and the relative offer URL
-`/plugins/openai/realtime/calls`. The client posts an audio-only SDP offer to
-that Gateway route and opens no provider data channel. The Gateway attaches the
-official OpenAI server sideband and owns tools, transcripts, steering,
-cancellation, and call cleanup while media continues directly between the
-client and OpenAI. OAuth-only setups fail visibly instead of falling back to
-client-owned control. Existing browser clients omit this capability and keep
-their current ephemeral-token and WebRTC data-channel flow.
+`talk.client.create.capabilities`. OpenAI GA Realtime requires a Platform API
+key for this mode. Native GPT-Live uses its existing ChatGPT OAuth or Platform
+authentication; requesting Gateway control does not switch the selected model
+or authentication route.
+
+Success returns `clientControl: { owner: "gateway" }`, a 60-second single-use
+`clientSecret`, and the relative offer URL `/plugins/openai/realtime/calls`.
+The client posts an audio-only SDP offer and opens no provider data channel.
+The Gateway attaches the provider's server sideband and owns tools or native
+agent delegation, transcripts, steering, cancellation, and call cleanup while
+media continues directly between the client and OpenAI. Negotiated sessions
+share a two-session limit per client connection, including pending offers.
+Unsupported combinations, including GA with OAuth only, fail visibly instead
+of falling back to client-owned control. Existing browser clients omit this
+capability and keep their data channel and client transcript reporting.
+
+Closing a native transport fences new delegations and late provider delivery;
+already accepted agent work retains its own cancellation lifetime. Spoken run
+cancellation is separate from ending the audio connection.
 
 Finalized realtime user and assistant utterances are always appended live to the active agent session, so later chat and voice turns share one history. Client-owned transports report their finalized transcripts with stable entry ids; Gateway relay and Gateway-controlled WebRTC sessions append the same events server-side. Provider sessions also receive the bounded realtime profile context used by Discord voice.
 
@@ -255,10 +264,10 @@ Supported keys: `voice` / `voice_id` / `voiceId`, `model` / `model_id` / `modelI
 }
 ```
 
-OpenAI browser WebRTC and Gateway-relay Talk support native GPT-Live. Set `talk.realtime.model` to
-`gpt-live-1-codex`; `gpt-live-1`
-and `gpt-live-1-mini` are not valid on this route. Browser and Gateway-relay
-WebRTC prefer a ChatGPT OAuth subscription profile and fall back to Platform
+OpenAI browser WebRTC and Gateway-relay Talk support native GPT-Live. Select a
+supported native model in **Settings → Talk**; the provider catalog supplies
+the available model IDs. Browser and Gateway-relay WebRTC prefer a ChatGPT
+OAuth subscription profile and fall back to Platform
 API-key auth. OAuth creates the WebRTC call through the Codex backend using
 JSON `sdp` and `session`; Platform keys use multipart call creation at
 `https://api.openai.com/v1/live`. Both use a Gateway-owned public API sideband.

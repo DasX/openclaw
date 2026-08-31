@@ -90,11 +90,12 @@ Side-effecting methods require idempotency keys (see schema).
 
 ## Gateway-controlled WebRTC Talk
 
-`talk.client.create` accepts the additive capability
-`gateway-control-v1`. It is currently available only for OpenAI GA Realtime
-sessions with resolvable Platform API-key authentication. A successful result
-includes `clientControl: { owner: "gateway" }`, a 60-second single-use Gateway
-broker token in `clientSecret`, and the relative
+`talk.client.create` accepts the additive capability `gateway-control-v1`.
+OpenAI GA Realtime requires resolvable Platform API-key authentication for this
+mode. Native GPT-Live retains its configured ChatGPT OAuth or Platform
+API-key authentication. A successful result includes
+`clientControl: { owner: "gateway" }`, a 60-second single-use Gateway broker
+token in `clientSecret`, and the relative
 `offerUrl: "/plugins/openai/realtime/calls"`.
 
 The client sends only `application/sdp` to that route with the broker token. It
@@ -104,6 +105,11 @@ transcript, steering, cancellation, and close lifecycle. Clients that omit the
 capability retain the existing browser session behavior. A Gateway or
 configured authentication path that cannot provide the requested owner returns
 `UNAVAILABLE`; it never downgrades the request to client-owned control.
+
+Clients must close their local media peer if the Gateway connection is lost or
+a `talk.event` for their current `voiceSessionId` contains
+`talkEvent.type: "session.closed"`. Ignore terminal events for other calls;
+a recoverable `session.error` alone is not a close notification.
 
 ## Handshake
 

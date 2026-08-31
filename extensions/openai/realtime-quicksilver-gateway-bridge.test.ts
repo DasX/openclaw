@@ -905,6 +905,14 @@ describe("GPT-Live gateway relay bridge", () => {
       session: { id: "rtc_bridge", expires_at: Math.floor(Date.now() / 1000) + 60 },
     });
     expect(onReady).toHaveBeenCalledOnce();
+    bridge.sendUserMessage("Ready for the next task");
+    expect(parseSent(connectedSocket)).toEqual([
+      {
+        type: "session.context.append",
+        channel: "speakable",
+        content: [{ type: "input_text", text: "Ready for the next task" }],
+      },
+    ]);
 
     emitSideband(connectedSocket, { type: "output_audio.delta", delta: "ignored-media-copy" });
     expect(onEvent).toHaveBeenCalledWith({ direction: "server", type: "output_audio.delta" });

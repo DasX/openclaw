@@ -10,6 +10,7 @@ import type {
 } from "../agents/embedded-agent-runner/runs.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
 import {
   buildRealtimeVoiceAgentCancelProviderResult,
   buildRealtimeVoiceAgentFollowupSteeringText,
@@ -87,45 +88,60 @@ export async function controlRealtimeVoiceAgentRun(
   },
   providedDeps?: RealtimeVoiceAgentControlDeps,
 ): Promise<RealtimeVoiceAgentControlResult> {
-  // Provider registration consumes the shared policy without starting the agent runtime.
-  const deps =
-    providedDeps ?? (await import("./agent-run-control.runtime.js")).realtimeVoiceControlRuntime;
   const sessionKey = params.sessionKey.trim();
   const text = params.text.trim();
-  const intent = resolveRealtimeVoiceAgentControlIntent({ text, mode: params.mode });
-  const mode = intent.mode;
+  const mode = resolveRealtimeVoiceAgentControlIntent({ text, mode: params.mode }).mode;
   const target = params.runTarget;
-  const candidate =
-    target && !target.signal.aborted && target.isCurrent()
-      ? (deps.resolveActiveEmbeddedRunOwnerByRunId?.(target.runId) ??
-        deps.resolveActiveReplyRunOwnerForSignal?.(target.signal))
-      : undefined;
-  const exactOwner =
-    candidate?.sessionKey === sessionKey && target?.isCurrent(candidate.sessionId)
-      ? candidate
-      : undefined;
-  const sessionId =
-    target === undefined
-      ? deps.resolveActiveEmbeddedRunSessionId(sessionKey)
-      : exactOwner?.sessionId;
+  let commands = providedDeps;
+  // Exact registered runs need their owner-bound selector, never a key-only lookup.
+  // Cold requests without a live registration do not load the mutating runtime.
+  if (!commands && target && !target.signal.aborted && target.isCurrent()) {
+    commands = (await import("./agent-run-control.runtime.js")).realtimeVoiceControlRuntime;
+  }
+  const projections =
+    commands ??
+    (target === undefined
+      ? await import("../agents/embedded-agent-runner/active-run-projections.js")
+      : undefined);
+  const resolveCurrentRun = () => {
+    const candidate =
+      target && !target.signal.aborted && target.isCurrent()
+        ? (commands?.resolveActiveEmbeddedRunOwnerByRunId?.(target.runId) ??
+          commands?.resolveActiveReplyRunOwnerForSignal?.(target.signal))
+        : undefined;
+    const exactOwner =
+      candidate?.sessionKey === sessionKey && target?.isCurrent(candidate.sessionId)
+        ? candidate
+        : undefined;
+    const sessionId =
+      target === undefined
+        ? projections?.resolveActiveEmbeddedRunSessionId(sessionKey)
+        : exactOwner?.sessionId;
+    return { sessionId, exactOwner };
+  };
+  let current = resolveCurrentRun();
+  const readActivity =
+    providedDeps?.getDiagnosticSessionActivitySnapshot ?? getDiagnosticSessionActivitySnapshot;
   // Global keys are shared across agents. Exact selectors never consult another
   // session's key-only diagnostics, including when their live owner disappeared.
   const activity =
     target === undefined
-      ? deps.getDiagnosticSessionActivitySnapshot({ sessionId, sessionKey })
-      : sessionId
-        ? deps.getDiagnosticSessionActivitySnapshot({ sessionId })
+      ? readActivity({ sessionId: current.sessionId, sessionKey })
+      : current.sessionId
+        ? readActivity({ sessionId: current.sessionId })
         : undefined;
-  const active = Boolean(sessionId || activity?.activeWorkKind || activity?.hasActiveEmbeddedRun);
+  const active = Boolean(
+    current.sessionId || activity?.activeWorkKind || activity?.hasActiveEmbeddedRun,
+  );
 
-  // Status is read-only and can answer from diagnostic activity even when the
-  // active embedded run id has already disappeared.
+  // Without an exact live registration, status stays on lightweight diagnostics
+  // and remains available even when the mutating runtime cannot load.
   if (mode === "status") {
     return {
       ok: true,
       mode,
       sessionKey,
-      ...(sessionId ? { sessionId } : {}),
+      ...(current.sessionId ? { sessionId: current.sessionId } : {}),
       active,
       message: formatRealtimeVoiceAgentStatus({
         active,
@@ -138,25 +154,36 @@ export async function controlRealtimeVoiceAgentRun(
     };
   }
 
-  // Cancellation requires a concrete embedded-run id; activity-only snapshots
-  // are not abortable and should return an explicit no-active-run response.
+  const noActiveRun = (): RealtimeVoiceAgentControlResult => ({
+    ok: false,
+    mode,
+    sessionKey,
+    active: false,
+    ...(mode === "cancel" ? { aborted: false } : { queued: false }),
+    reason: "no_active_run",
+    message: `There is no active OpenClaw run to ${mode === "cancel" ? "cancel" : "steer"}.`,
+    speak: true,
+    show: true,
+    suppress: false,
+  });
+  if (!current.sessionId) {
+    return noActiveRun();
+  }
+  if (!commands) {
+    commands = (await import("./agent-run-control.runtime.js")).realtimeVoiceControlRuntime;
+    // Loading commands can outlive admission; resolve the exact target again
+    // in the continuation that performs the action.
+    current = resolveCurrentRun();
+  }
+  const { sessionId, exactOwner } = current;
+  if (!sessionId) {
+    return noActiveRun();
+  }
   if (mode === "cancel") {
-    if (!sessionId) {
-      return {
-        ok: false,
-        mode,
-        sessionKey,
-        active: false,
-        aborted: false,
-        reason: "no_active_run",
-        message: "There is no active OpenClaw run to cancel.",
-        speak: true,
-        show: true,
-        suppress: false,
-      };
-    }
     const aborted =
-      target === undefined ? deps.abortEmbeddedAgentRun(sessionId) : exactOwner?.abort() === true;
+      target === undefined
+        ? commands.abortEmbeddedAgentRun(sessionId)
+        : exactOwner?.abort() === true;
     const message = aborted
       ? "Cancelled the active OpenClaw run."
       : "OpenClaw could not cancel the active run.";
@@ -176,25 +203,10 @@ export async function controlRealtimeVoiceAgentRun(
     };
   }
 
-  if (!sessionId) {
-    return {
-      ok: false,
-      mode,
-      sessionKey,
-      active: false,
-      queued: false,
-      reason: "no_active_run",
-      message: "There is no active OpenClaw run to steer.",
-      speak: true,
-      show: true,
-      suppress: false,
-    };
-  }
-
   // Steering and follow-up both enqueue to the active run; follow-up is wrapped
   // so the runner treats it as deferred context instead of an immediate pivot.
   const steerText = mode === "followup" ? buildRealtimeVoiceAgentFollowupSteeringText(text) : text;
-  const outcome = await deps.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, {
+  const outcome = await commands.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, {
     steeringMode: "all",
     debounceMs: 0,
     isInboundUserMessage: true,

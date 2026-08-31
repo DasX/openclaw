@@ -10,6 +10,10 @@ import {
 } from "./agent-run-control.js";
 import type { TalkEvent } from "./talk-events.js";
 
+vi.mock("../agents/embedded-agent-runner/runs.js", () => {
+  throw new Error("mutating run commands unavailable");
+});
+
 function createDeps(options: {
   activeSessionId?: string;
   queued?: boolean;
@@ -181,6 +185,29 @@ describe("controlRealtimeVoiceAgentRun", () => {
     expect(deps.resolveActiveEmbeddedRunSessionId).not.toHaveBeenCalled();
     expect(deps.abortEmbeddedAgentRun).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, null])(
+    "answers read-only status without mutating commands (target=%s)",
+    async (runTarget) => {
+      if (runTarget === null) {
+        vi.doMock("../agents/embedded-agent-runner/active-run-projections.js", () => {
+          throw new Error("session-key projections unavailable");
+        });
+      }
+      try {
+        await expect(
+          controlRealtimeVoiceAgentRun({
+            sessionKey: "agent:status-probe:main",
+            runTarget,
+            text: "status",
+            mode: "status",
+          }),
+        ).resolves.toMatchObject({ ok: true, mode: "status", active: false, speak: true });
+      } finally {
+        vi.doUnmock("../agents/embedded-agent-runner/active-run-projections.js");
+      }
+    },
+  );
 
   it("queues steering into the active embedded run", async () => {
     const deps = createDeps({ activeSessionId: "session-active" });

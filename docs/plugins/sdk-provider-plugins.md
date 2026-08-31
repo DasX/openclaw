@@ -997,13 +997,22 @@ catalog, API-key auth, and dynamic model resolution.
         interruption by calling `onClearAudio("barge-in")`. Providers that omit
         the flag use OpenClaw's local input-audio fallback detection.
 
-        A browser-session request can include `gatewayControl` when the host has
-        explicitly negotiated server-owned provider control. The provider keeps
-        vendor authentication and signaling private, calls
-        `gatewayControl.bindBridge(bridge)` before connecting the attached
-        control transport, and forwards bridge events through the supplied
-        callbacks. The Gateway remains the owner of tool policy and run
-        lifecycle. Do not infer or enable this mode from a model name alone.
+        A browser-session request's `clientControl: { owner: "gateway" }`
+        records explicitly negotiated server-owned control. The presence of
+        `gatewayControl` callbacks alone is not that negotiation: native
+        delegation can also use them for lifecycle handling while the browser
+        retains its data channel and transcript reporting.
+
+        For negotiated control, keep vendor authentication and signaling
+        private, bind supported `submitToolResult` and `sendUserMessage`
+        commands with `gatewayControl.bindControl(...)`, and forward provider
+        readiness, transcripts, and terminal events through the supplied
+        callbacks. Bind instance methods to their receiver. A sideband does not
+        need to invent media methods or create another audio peer.
+        `bindBridge(fullBridge)` remains available for the stable 2026.8.1 SDK
+        contract and is removed only with a versioned SDK break. The Gateway
+        remains the owner of tool policy and run lifecycle; never infer control
+        ownership from a model name or duplicate client-owned transcript writes.
       </Tab>
       <Tab title="Media understanding">
         ```typescript

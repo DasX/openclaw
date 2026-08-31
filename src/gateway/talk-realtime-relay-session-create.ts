@@ -10,10 +10,8 @@ import {
 import { createRealtimeVoiceSessionHarness } from "../talk/realtime-session-harness.js";
 import type { TalkEventInput } from "../talk/talk-session-controller.js";
 import { VOICE_TRANSCRIPT_QUEUE_POLICY } from "../talk/voice-transcript.js";
-import {
-  createTalkClientAgentConsultRunner,
-  createTalkRealtimeRunControlOwner,
-} from "./talk-client-gateway-control.js";
+import { createTalkClientAgentConsultRunner } from "./talk-client-agent-consult.js";
+import { createTalkRealtimeRunControlOwner } from "./talk-client-gateway-control.js";
 import {
   buildAlreadyDeliveredToolResult,
   scheduleForcedAgentConsult,

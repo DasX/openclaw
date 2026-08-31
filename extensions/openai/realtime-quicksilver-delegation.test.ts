@@ -47,6 +47,47 @@ afterEach(() => {
 });
 
 describe("GPT-Live sideband protocol", () => {
+  it("keeps standalone speech at session scope while a delegation owns its result", async () => {
+    let finish!: (result: { text: string }) => void;
+    const result = new Promise<{ text: string }>((resolve) => {
+      finish = resolve;
+    });
+    const { controller, socket } = createDelegationHarness({
+      runAgentConsult: async () => await result,
+    });
+    try {
+      controller.sendSessionContext("Ready", "speakable");
+      delegate(controller, "work", "Check the project");
+      controller.sendSessionContext("Still checking", "speakable");
+      finish({ text: "Finished checking" });
+      await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+      expect(parseSent(socket)).toEqual([
+        {
+          type: "session.context.append",
+          channel: "speakable",
+          content: [{ type: "input_text", text: "Ready" }],
+        },
+        {
+          type: "session.context.append",
+          channel: "speakable",
+          content: [{ type: "input_text", text: "Still checking" }],
+        },
+        {
+          type: "delegation.context.append",
+          delegation_item_id: "work",
+          channel: "speakable",
+          content: [{ type: "input_text", text: "Finished checking" }],
+        },
+      ]);
+      controller.detach();
+      controller.sendSessionContext("Late speech", "speakable");
+      expect(socket.sent).toHaveLength(3);
+    } finally {
+      finish({ text: "Finished" });
+      controller.stop(new Error("test complete"));
+    }
+  });
+
   it("ignores session.updated server-side", () => {
     const type = "session.updated";
     expect(parseOpenAIQuicksilverEvent(JSON.stringify({ type }))).toEqual({

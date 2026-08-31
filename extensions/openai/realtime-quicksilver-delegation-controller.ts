@@ -53,7 +53,6 @@ function readWireEventType(payload: string): string | undefined {
 
 /** Owns the provider's single active delegation and its once-consumed transcript context. */
 export class OpenAIQuicksilverDelegationController {
-  private activeDelegationId: string | undefined;
   private consultController: AbortController | undefined;
   private readonly onSessionAbort = () => {
     const reason = this.options.signal.reason;
@@ -73,6 +72,9 @@ export class OpenAIQuicksilverDelegationController {
   }
 
   handleFrame(data: RawData, isBinary: boolean): void {
+    if (this.stopped) {
+      return;
+    }
     if (isBinary) {
       this.fail(new Error("OpenAI GPT-Live sideband returned an unexpected binary frame"));
       return;
@@ -124,10 +126,11 @@ export class OpenAIQuicksilverDelegationController {
     this.startDelegation(event.id, event.prompt);
   }
 
-  sendToActiveDelegation(text: string, channel: "speakable" | "commentary"): void {
+  sendSessionContext(text: string, channel: "speakable" | "commentary"): void {
     const content = text.trim();
-    if (this.activeDelegationId && content) {
-      this.sendAppend(this.activeDelegationId, content, channel);
+    if (content) {
+      // Standalone speech must not become the result of whichever delegation is active.
+      this.sendAppend({ type: "session.context.append" }, content, channel);
     }
   }
 
@@ -182,7 +185,6 @@ export class OpenAIQuicksilverDelegationController {
       id,
       prompt: buildOpenAIQuicksilverDelegationPrompt({ input, transcript }),
     };
-    this.activeDelegationId = id;
     if (this.consultController) {
       // Frameless bidi has one active handoff: retain only the newest queued request.
       this.pendingDelegation = delegation;
@@ -198,7 +200,6 @@ export class OpenAIQuicksilverDelegationController {
     }
     const controller = new AbortController();
     this.consultController = controller;
-    this.activeDelegationId = delegation.id;
     void this.runDelegation(delegation, controller.signal)
       .catch((error: unknown) =>
         this.fail(toErrorObject(error, "OpenAI GPT-Live delegation failed")),
@@ -212,8 +213,6 @@ export class OpenAIQuicksilverDelegationController {
         this.pendingDelegation = undefined;
         if (pending) {
           this.launchDelegation(pending);
-        } else {
-          this.activeDelegationId = undefined;
         }
       });
   }
@@ -222,7 +221,6 @@ export class OpenAIQuicksilverDelegationController {
     this.stopped = true;
     this.options.signal.removeEventListener("abort", this.onSessionAbort);
     this.pendingDelegation = undefined;
-    this.activeDelegationId = undefined;
     this.partialTranscriptRole = undefined;
     this.transcript = [];
   }
@@ -245,11 +243,17 @@ export class OpenAIQuicksilverDelegationController {
       );
       text = CONSULT_FAILURE_TEXT;
     }
-    this.sendAppend(delegation.id, text, "speakable");
+    this.sendAppend(
+      { type: "delegation.context.append", delegation_item_id: delegation.id },
+      text,
+      "speakable",
+    );
   }
 
   private sendAppend(
-    delegationId: string,
+    target:
+      | { type: "session.context.append" }
+      | { type: "delegation.context.append"; delegation_item_id: string },
     text: string,
     channel: "speakable" | "commentary",
   ): void {
@@ -260,8 +264,7 @@ export class OpenAIQuicksilverDelegationController {
     for (const chunk of chunkOpenAIQuicksilverAppendText(text)) {
       socket.send(
         JSON.stringify({
-          type: "delegation.context.append",
-          delegation_item_id: delegationId,
+          ...target,
           channel,
           content: [{ type: "input_text", text: chunk }],
         }),
