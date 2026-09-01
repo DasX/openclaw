@@ -11,7 +11,7 @@ import type { CodexAppServerStartOptions } from "./config.js";
 import { acquireCodexNativeConfigFence } from "./native-config-fence.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import { withCodexAppServerJsonClient } from "./request.js";
-import { createClientHarness } from "./test-support.js";
+import { codexTestFutureVersion, createClientHarness } from "./test-support.js";
 import { CodexAdoptedThreadActiveError } from "./thread-lifecycle-errors.js";
 import { CODEX_APP_SERVER_VERSION, MIN_SUPPORTED_CODEX_APP_SERVER_VERSION } from "./version.js";
 
@@ -845,12 +845,13 @@ describe("shared Codex app-server client", () => {
   });
 
   it("keeps a supported desktop prerelease instead of falling back by version", async () => {
+    const version = `${codexTestFutureVersion()}-alpha.4`;
     const desktop = createClientHarness();
     const startSpy = vi.spyOn(CodexAppServerClient, "start").mockResolvedValueOnce(desktop.client);
     const startOptions = configureManagedDesktopFallback();
 
     const acquire = getSharedCodexAppServerClient({ startOptions, timeoutMs: 1_000 });
-    await sendInitializeResult(desktop, "openclaw/0.152.0-alpha.4 (macOS; test)");
+    await sendInitializeResult(desktop, `openclaw/${version} (macOS; test)`);
     const client = await acquire;
 
     expect(client).toBe(desktop.client);
@@ -861,10 +862,10 @@ describe("shared Codex app-server client", () => {
       managedFallbackCommandPaths: ["/cache/openclaw/codex"],
     });
     expect(desktop.process.stdin.destroyed).toBe(false);
-    expect(mocks.embeddedAgentLog.warn).toHaveBeenCalledWith(
+    expect(mocks.embeddedAgentLog.warn).toHaveBeenCalledExactlyOnceWith(
       "codex app-server is newer than OpenClaw's managed runtime; continuing with normal startup validation",
       {
-        detectedVersion: "0.152.0-alpha.4",
+        detectedVersion: version,
         validatedVersion: CODEX_APP_SERVER_VERSION,
       },
     );

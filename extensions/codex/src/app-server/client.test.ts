@@ -7,7 +7,7 @@ import {
   isCodexAppServerIndeterminateTransportError,
 } from "./client.js";
 import { resetSharedCodexAppServerClientForTests } from "./shared-client.js";
-import { createClientHarness } from "./test-support.js";
+import { codexTestFutureVersion, createClientHarness } from "./test-support.js";
 import { CODEX_APP_SERVER_VERSION, MIN_SUPPORTED_CODEX_APP_SERVER_VERSION } from "./version.js";
 
 const CODEX_DYNAMIC_TOOL_SERVER_REQUEST_TIMEOUT_MS = 660_000;
@@ -500,9 +500,11 @@ describe("CodexAppServerClient", () => {
 
   it.each([
     ["0.149.0", 0],
-    ["0.152.0-alpha.4", 1],
-    ["0.152.0", 1],
-    ["1.0.0", 1],
+    [`${CODEX_APP_SERVER_VERSION}-alpha.4`, 0],
+    [CODEX_APP_SERVER_VERSION, 0],
+    [`${codexTestFutureVersion()}-alpha.4`, 1],
+    [codexTestFutureVersion(), 1],
+    [codexTestFutureVersion("major"), 1],
   ])("accepts app-server version %s for normal startup validation", async (version, warnings) => {
     const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
     const { harness, initializing, outbound } = startInitialize();

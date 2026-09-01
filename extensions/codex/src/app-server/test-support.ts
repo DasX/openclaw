@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { Model } from "openclaw/plugin-sdk/llm";
+import { SemVer } from "semver";
 import { expect, vi } from "vitest";
 import { resolveCodexAppServerHomeDir } from "./auth-start-options.js";
 import { CodexAppServerClient } from "./client.js";
@@ -17,6 +18,11 @@ import {
   type CodexAppServerClientFactory,
   type CodexAppServerClientOptions,
 } from "./shared-client.js";
+import { CODEX_APP_SERVER_VERSION } from "./version.js";
+
+export function codexTestFutureVersion(release: "major" | "minor" = "minor"): string {
+  return new SemVer(CODEX_APP_SERVER_VERSION).inc(release).version;
+}
 
 /** Minimal deterministic host terminal observer for Codex harness tests. */
 export function createCodexTestToolTerminalObserver(): NonNullable<
