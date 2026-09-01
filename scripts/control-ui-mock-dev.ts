@@ -2530,6 +2530,11 @@ async function createChatPickerScenario(
       "plugins.list": buildPluginCatalogMock(),
       "plugins.inspect": buildPluginInspectMock(),
       "plugins.setEnabled": buildPluginSetEnabledMock(),
+      "skills.status": {
+        workspaceDir: "/Users/demo/Projects/openclaw",
+        managedSkillsDir: "/Users/demo/.openclaw/skills",
+        skills: [],
+      },
       "channels.status": buildChannelsStatusMock(baseTime),
       "channels.pairing.list": buildChannelsPairingMock(baseTime),
       "channels.pairing.approve": {
