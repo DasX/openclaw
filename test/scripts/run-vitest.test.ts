@@ -465,6 +465,11 @@ describe("scripts/run-vitest", () => {
     expect(resolveTestProjectsDelegationArgs(["--watch", directory])).toBeNull();
   });
 
+  it("delegates a plugin browser directory to its Control UI project owner", () => {
+    const directory = "extensions/workboard/browser";
+    expect(resolveTestProjectsDelegationArgs([directory])).toEqual([directory]);
+  });
+
   it("delegates owned agent directories with separate Vitest option values", () => {
     const directory = "src/agents/embedded-agent-runner/run";
 

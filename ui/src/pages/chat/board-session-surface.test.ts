@@ -28,55 +28,6 @@ beforeEach(() => {
 });
 
 describe("board session shell", () => {
-  it("delegates the optional Workboard chip to its lazy element", () => {
-    const linked = createContainer();
-    const unlinked = createContainer();
-    const provider = boardProviderForSession({ sessionKey: "agent:main:workboard-link" });
-    const client = {
-      request: vi.fn(async () => ({ cards: [] })),
-      addEventListener: vi.fn(() => () => {}),
-    } as never;
-    const props = {
-      active: true,
-      snapshot: provider.snapshot$.value,
-      activeTabId: "main",
-      dock: "right" as const,
-      dockSize: { height: 300 },
-      chat: html`<div>chat</div>`,
-      divider: html`<div></div>`,
-      canMutate: true,
-      canGrant: true,
-      callbacks: {
-        applyOps: (ops: Parameters<typeof provider.applyOps>[0]) => provider.applyOps(ops),
-        grant: (...args: Parameters<typeof provider.grant>) => provider.grant(...args),
-        selectTab: () => {},
-      },
-      widgetFrameUrl: (name: string, revision: number) => provider.widgetFrameUrl(name, revision),
-    };
-
-    render(
-      renderBoardSessionSurface({
-        ...props,
-        workboardCardChip: {
-          active: true,
-          basePath: "",
-          client,
-          sessionKey: "agent:main:workboard-link",
-        },
-      }),
-      linked,
-    );
-    render(renderBoardSessionSurface(props), unlinked);
-
-    const chip = linked.querySelector<HTMLElementTagNameMap["openclaw-workboard-card-chip"]>(
-      "openclaw-workboard-card-chip",
-    );
-    expect(chip?.sessionKey).toBe("agent:main:workboard-link");
-    expect(chip?.client).toBe(client);
-    expect(chip?.active).toBe(true);
-    expect(unlinked.querySelector("openclaw-workboard-card-chip")).toBeNull();
-  });
-
   it("renders nothing without a board", () => {
     const container = createContainer();
     render(
@@ -222,6 +173,7 @@ describe("board session shell", () => {
       renderBoardSessionSurface({
         active: true,
         snapshot: provider.snapshot$.value,
+        sessionKey: provider.snapshot$.value.sessionKey,
         activeTabId: "main",
         dock,
         dockSize: { height: 300 },
@@ -252,6 +204,7 @@ describe("board session shell", () => {
       renderBoardSessionSurface({
         active: true,
         snapshot: provider.snapshot$.value,
+        sessionKey: provider.snapshot$.value.sessionKey,
         activeTabId: "main",
         dock: "hidden",
         dockSize: { height: 300 },
@@ -280,6 +233,7 @@ describe("board session shell", () => {
     const props = {
       active: true,
       snapshot: provider.snapshot$.value,
+      sessionKey: provider.snapshot$.value.sessionKey,
       activeTabId: "main",
       dockSize: { height: 300 },
       chat: html`<div data-test-chat>chat</div>`,

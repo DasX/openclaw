@@ -102,6 +102,10 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   connect: () => import("./server-methods/connect.js").then((module) => module.connectHandlers),
   "control-ui": () =>
     import("./server-methods/control-ui.js").then((module) => module.controlUiHandlers),
+  "plugins-control-ui": () =>
+    import("./server-methods/plugins-control-ui.js").then(
+      (module) => module.pluginsControlUiHandlers,
+    ),
   cron: () => import("./server-methods/cron.js").then((module) => module.cronHandlers),
   devices: () => import("./server-methods/devices.js").then((module) => module.deviceHandlers),
   "device-pair-setup": () =>
@@ -306,10 +310,6 @@ const SUSPEND_CONTROL_METHODS = new Set([
   "gateway.suspend.status",
   "gateway.suspend.resume",
 ]);
-
-function isGatewayMethodAllowedDuringSuspension(method: string): boolean {
-  return SUSPEND_CONTROL_METHODS.has(method);
-}
 
 function runGatewayPendingWorkContinuation<T>(params: {
   method: string;
@@ -606,7 +606,7 @@ export async function runWithGatewayRequestEnvelope<T>(
       }),
     );
   }
-  if (!rootWorkAdmission && !isGatewayMethodAllowedDuringSuspension(method)) {
+  if (!rootWorkAdmission && !SUSPEND_CONTROL_METHODS.has(method)) {
     const restartDraining = isGatewayRestartDraining();
     return await options.reject(
       errorShape(

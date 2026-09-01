@@ -266,6 +266,7 @@ export function projectChatTranscript(
   const messageRowKeysById = new Map<string, string>();
   const resolveReplyPreview = createReplyPreviewResolver(loadedReplySources, props);
   const sharedMessageRenderOptions = {
+    presented: props.presented,
     onReply: props.onSetReply
       ? (target) => state.transcriptRenderContext.onSetReply?.(target)
       : undefined,
@@ -612,6 +613,7 @@ export function projectChatTranscript(
     getToolTitlesVersion(),
     JSON.stringify([...latestBrowserTabs]),
     props.sessionKey,
+    props.presented,
     props.selectedSession,
     props.boardProvider,
     props.boardProvider?.canPinWidgets,

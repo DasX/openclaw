@@ -897,7 +897,9 @@ describe("normalizeInitialApplicationLocation", () => {
 
     try {
       const start = runtime.start();
-      await vi.waitFor(() => expect(activeSubscriptions.size).toBe(1), STARTUP_STEP_WAIT);
+      // Native plugin connection ownership and the cold released-link resolver
+      // both subscribe; stopping must release both before late startup resumes.
+      await vi.waitFor(() => expect(activeSubscriptions.size).toBe(2), STARTUP_STEP_WAIT);
       runtime.stop();
       await start;
 

@@ -81,6 +81,7 @@ import {
 import {
   isUnavailableNpmTarget,
   PLUGIN_INSTALL_ERROR_CODE,
+  type PluginInstallArtifactConsentRequest,
   type PluginInstallLogger,
 } from "./install-types.js";
 import {
@@ -204,6 +205,8 @@ export type ManagedPluginSourceInstallRequest =
   | {
       source: "local";
       path: string;
+      /** Stable source provenance when installing an owner-verified temporary copy. */
+      recordPath?: string;
       recordSource: "archive" | "path";
       mode: "install" | "update";
       link?: boolean;
@@ -1365,6 +1368,7 @@ async function persistManagedSourceInstall(params: {
   runtime?: RuntimeEnv;
   successMessage?: string;
   beforePersistentApply?: () => void;
+  beforePersistentEffect?: () => void | Promise<void>;
 }): Promise<{ config: OpenClawConfig; warnings: string[] }> {
   const warnings: string[] = [];
   let committed = false;
@@ -1377,6 +1381,7 @@ async function persistManagedSourceInstall(params: {
       runtime: params.runtime,
       persistenceLogger: { warn: (message) => warnings.push(message) },
       beforePersistentApply: params.beforePersistentApply,
+      beforePersistentEffect: params.beforePersistentEffect,
       // Only the persistence owner can distinguish rejection from a late refresh failure.
       onCommitted: () => {
         committed = true;
@@ -1483,6 +1488,8 @@ type ManagedPluginSourceInstallParams = {
   acknowledgeCapabilities?: PluginCapabilityConsentAcknowledgment;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentApply?: () => void;
+  /** Revalidate the initiating owner after artifact review and before durable activation. */
+  beforePersistentEffect?: () => void | Promise<void>;
 };
 
 /**
@@ -1605,8 +1612,13 @@ async function installResolvedManagedPluginSource(
     extensionsDir,
     logger: params.logger,
     beforePersistentApply: params.beforePersistentApply,
-    ...(capabilityConsent
-      ? { onBeforePluginArtifactCommit: capabilityConsent.onBeforePluginArtifactCommit }
+    ...(capabilityConsent || params.beforePersistentEffect
+      ? {
+          onBeforePluginArtifactCommit: async (artifact: PluginInstallArtifactConsentRequest) => {
+            await capabilityConsent?.onBeforePluginArtifactCommit(artifact);
+            await params.beforePersistentEffect?.();
+          },
+        }
       : {}),
   });
   const complete = async <T extends SourceInstallerResult>(
@@ -1692,7 +1704,7 @@ async function installResolvedManagedPluginSource(
         successMessage: request.successMessage,
         install: (result) => ({
           source: request.recordSource,
-          sourcePath: request.path,
+          sourcePath: request.recordPath ?? request.path,
           installPath: installPath ?? result.targetDir,
           version: result.version,
         }),

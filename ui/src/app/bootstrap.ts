@@ -25,13 +25,13 @@ import { createChannelCapability } from "../lib/channels/index.ts";
 import { createRuntimeConfigCapability } from "../lib/config/runtime-config-capability.ts";
 import { createSessionCapability } from "../lib/sessions/index.ts";
 import { parseAgentSessionKey } from "../lib/sessions/session-key.ts";
-import { createWorkboardCapability } from "../lib/workboard/capability.ts";
 import { loadChatObserverDisplayPreference } from "../pages/chat/chat-observer-display.ts";
 import { sendSessionObserverVisibility } from "../pages/chat/chat-observer.ts";
 import {
   isDefaultChatLanding,
   startModelSetupFirstRunRedirectAfterLocation,
 } from "../pages/model-setup/first-run.ts";
+import { ControlUiPluginRuntime } from "../plugins/control-ui-runtime.ts";
 import { createAgentSelectionCapability } from "./agent-selection.ts";
 import { resolveControlUiDocumentMode, type ControlUiDocumentMode } from "./approval-deep-link.ts";
 import { createApplicationTheme } from "./bootstrap-theme.ts";
@@ -285,7 +285,6 @@ export function bootstrapApplication(
     },
   });
   const sessions = createSessionCapability(gateway);
-  const workboard = createWorkboardCapability();
   const runtimeConfig = createRuntimeConfigCapability(gateway);
   const overlays = createApplicationOverlays(gateway, {
     connectionBootstrap,
@@ -440,6 +439,7 @@ export function bootstrapApplication(
   };
   const navigateAndWait = (routeId: RouteId, options?: ApplicationNavigationOptions) =>
     navigateWithMode(routeId, options, "push");
+  const plugins = new ControlUiPluginRuntime(() => context);
   const context: ApplicationContext<RouteId> = {
     basePath,
     resourceBasePath,
@@ -455,7 +455,7 @@ export function bootstrapApplication(
     runtimeConfig,
     sessions,
     placementStartup,
-    workboard,
+    plugins,
     overlays,
     navigation,
     theme,
@@ -495,6 +495,10 @@ export function bootstrapApplication(
           return () => gateway.stop();
         },
         () => startGatewayPageActivation(gateway, document, window),
+        () => {
+          plugins.start();
+          return () => plugins.dispose();
+        },
         () => sessionPathBuilderReady,
       ];
       // Resolve first-run setup before routing: the default Chat route owns the
@@ -575,7 +579,6 @@ export function bootstrapApplication(
       scopeUpgrade.dispose();
       placementStartup.dispose();
       sessions.dispose();
-      workboard.dispose();
       stopConfigWriteSuspension();
       runtimeConfig.dispose();
       overlays.dispose();

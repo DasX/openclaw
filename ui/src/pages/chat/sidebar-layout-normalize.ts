@@ -18,7 +18,9 @@ function isSlotId(value: unknown): value is SidebarSlotId {
     value === "discussion" ||
     value === "tasks" ||
     value === "terminal" ||
-    value === "workspace"
+    value === "workspace" ||
+    (typeof value === "string" &&
+      /^plugin:[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value))
   );
 }
 

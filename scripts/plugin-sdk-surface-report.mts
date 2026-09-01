@@ -200,7 +200,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: diagnostic flag checks without event, trace, or redaction initialization.
       // +1: restore the shipped read-only conversation-binding inspection facade.
       // +1: canonical node CLI owners for plugin-provided node commands.
-      149,
+      // +3: typed feature contracts, backend registration, and native Control UI hosting.
+      152,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -338,7 +339,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: shipped conversation-binding inspection function and result type.
       // +4: canonical node CLI option, envelope, presentation, and error owners.
       // +1: Gateway caller ownership for standalone browser routing.
-      4369,
+      // +44: feature operation/client and native Control UI contribution/host contracts.
+      // +1: explicit native page history and query preservation options.
+      4414,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -451,7 +454,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shipped read-only conversation-binding inspection function.
       // +4: canonical node CLI option, envelope, presentation, and error owners.
       // +1: Gateway caller ownership for standalone browser routing.
-      2603,
+      // +4: defineFeatureContract, createFeatureClient, defineFeaturePlugin, defineControlUiPlugin.
+      2607,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

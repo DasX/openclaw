@@ -101,6 +101,7 @@ function externalPluginConfig(
     allowExternalEmbedUrls: false,
     automaticallyFetchFavicons: false,
     terminalEnabled: false,
+    pluginAssetsRequireAuth: true,
     pluginFrameGrants,
   };
 }
