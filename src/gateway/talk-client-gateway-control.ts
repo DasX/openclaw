@@ -43,7 +43,7 @@ type GatewayControlOwner = {
     skipProvider?: boolean;
   }) => Promise<void>;
   connId: string;
-  control: RealtimeVoiceGatewayControl;
+  control: RealtimeVoiceGatewayControl & Required<Pick<RealtimeVoiceGatewayControl, "bindControl">>;
   runAgentConsult: RealtimeVoiceAgentConsultRunner;
   sessionTarget: PreparedTalkSessionTarget;
   voiceSessionId: string;

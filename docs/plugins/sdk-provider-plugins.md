@@ -998,7 +998,9 @@ catalog, API-key auth, and dynamic model resolution.
         the flag use OpenClaw's local input-audio fallback detection.
 
         A browser-session request's `clientControl: { owner: "gateway" }`
-        records explicitly negotiated server-owned control. The presence of
+        records explicitly negotiated server-owned control. The request type
+        requires `gatewayControl.bindControl` with that claim; requests without
+        it retain the legacy callback shape. The presence of
         `gatewayControl` callbacks alone is not that negotiation: native
         delegation can also use them for lifecycle handling while the browser
         retains its data channel and transcript reporting.

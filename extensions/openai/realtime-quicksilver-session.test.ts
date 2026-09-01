@@ -157,6 +157,7 @@ describe("GPT-Live offer broker", () => {
         {
           providerConfig: {},
           model: "gpt-realtime-2.1",
+          gatewayControl: { bindBridge: vi.fn() },
           gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
           clientControl: { owner: "gateway" },
           gaSideband: {
@@ -245,6 +246,7 @@ describe("GPT-Live offer broker", () => {
         {
           providerConfig: {},
           model: "gpt-realtime-2.1",
+          gatewayControl: { bindBridge: vi.fn() },
           gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
           clientControl: { owner: "gateway" },
           gaSideband: {
@@ -298,6 +300,7 @@ describe("GPT-Live offer broker", () => {
         {
           providerConfig: {},
           model: "gpt-realtime-2.1",
+          gatewayControl: { bindBridge: vi.fn() },
           gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
           clientControl: { owner: "gateway" },
           gaSideband: {
@@ -346,6 +349,7 @@ describe("GPT-Live offer broker", () => {
           {
             providerConfig: {},
             model: "gpt-realtime-2.1",
+            gatewayControl: { bindBridge: vi.fn() },
             gaSession: { type: "realtime", model: "gpt-realtime-2.1" },
             clientControl: { owner: "gateway" },
             gaSideband: {
@@ -882,6 +886,7 @@ describe("GPT-Live offer broker", () => {
       providerConfig: {},
       model: "gpt-realtime-2.1",
       ownerConnId,
+      gatewayControl: { bindBridge: vi.fn() },
       gaSession: { type: "realtime" as const, model: "gpt-realtime-2.1" },
       clientControl: { owner: "gateway" as const },
       gaSideband: {

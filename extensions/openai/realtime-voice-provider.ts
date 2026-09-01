@@ -236,6 +236,7 @@ async function createOpenAIRealtimeBrowserSession(
         model,
         voice,
         clientControl: { owner: "gateway" },
+        gatewayControl,
         gaSession: sessionConfig,
         gaSideband: {
           createBridge: ({ apiKey, callId, onTerminal }) => {

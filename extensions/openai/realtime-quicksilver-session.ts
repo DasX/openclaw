@@ -55,18 +55,29 @@ const OPENAI_QUICKSILVER_MAX_SDP_BYTES = 256 * 1024;
 const OPENAI_QUICKSILVER_UPSTREAM_TIMEOUT_MS = 30_000;
 const WEBSOCKET_OPEN = 1;
 
-type OpenAIQuicksilverSessionRequest = RealtimeVoiceBrowserSessionCreateRequest & {
+type OpenAIQuicksilverSessionRequest = {
   initialItems?: OpenAIQuicksilverInitialItem[];
   ownerConnId?: string;
-  gaSession?: Record<string, unknown> & { model: string };
-  gaSideband?: {
-    createBridge: (params: {
-      apiKey: string;
-      callId: string;
-      onTerminal: () => void;
-    }) => RealtimeVoiceBridge;
-  };
-};
+} & (
+  | (RealtimeVoiceBrowserSessionCreateRequest & {
+      gaSession?: Record<string, unknown> & { model: string };
+      gaSideband?: never;
+    })
+  // Stable GA hosts bind a full bridge. Keep that broker-only mode separate
+  // from the public negotiated request, which requires command binding.
+  | (Omit<RealtimeVoiceBrowserSessionCreateRequest, "clientControl" | "gatewayControl"> & {
+      clientControl: { owner: "gateway" };
+      gatewayControl: RealtimeVoiceGatewayControl;
+      gaSession: Record<string, unknown> & { model: string };
+      gaSideband: {
+        createBridge: (params: {
+          apiKey: string;
+          callId: string;
+          onTerminal: () => void;
+        }) => RealtimeVoiceBridge;
+      };
+    })
+);
 
 type PreparedOpenAIQuicksilverSessionRequest = OpenAIQuicksilverSessionRequest & {
   model: string;

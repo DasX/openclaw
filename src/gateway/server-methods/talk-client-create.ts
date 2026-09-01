@@ -294,6 +294,13 @@ export const createTalkClient: GatewayRequestHandler = async ({
             },
           })
         : undefined;
+      // Native delegation can use lifecycle callbacks without negotiated control.
+      // Keep the ownership claim and its required binding in one request variant.
+      const controlRequest = gatewayControlOwner
+        ? clientControl
+          ? { clientControl, gatewayControl: gatewayControlOwner.control }
+          : { gatewayControl: gatewayControlOwner.control }
+        : {};
       const browserSessionRequest: InternalRealtimeVoiceBrowserSessionCreateRequest = {
         cfg: runtimeConfig,
         agentId,
@@ -303,10 +310,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         instructions,
         initialItems,
         runAgentConsult: gatewayControlOwner?.runAgentConsult ?? consultRunner.runPrompt,
-        // Native delegation also uses lifecycle callbacks without taking client control.
-        // Carry the negotiated fact rather than inferring it from callback presence.
-        ...(clientControl ? { clientControl } : {}),
-        ...(gatewayControlOwner ? { gatewayControl: gatewayControlOwner.control } : {}),
+        ...controlRequest,
         ...(tools.length > 0 ? { tools } : {}),
         ...launchOptions,
       };

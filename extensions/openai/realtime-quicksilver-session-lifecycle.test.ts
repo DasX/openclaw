@@ -19,6 +19,7 @@ describe("GPT-Live browser session lifecycle", () => {
     try {
       await expect(
         realtime.broker.createBrowserSession(
+          // @ts-expect-error JavaScript callers must still fail before reserving a native session.
           {
             providerConfig: {},
             model: OPENAI_GPT_LIVE_MODELS[0],

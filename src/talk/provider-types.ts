@@ -248,11 +248,15 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
   reasoningEffort?: string;
   /** Host-injected agent delegation runner for provider-owned realtime control channels. */
   runAgentConsult?: RealtimeVoiceAgentConsultRunner;
-  /** Explicitly negotiated control ownership; lifecycle callbacks alone do not select this mode. */
-  clientControl?: { owner: "gateway" };
-  /** Host-owned control callbacks for browser media sessions whose provider wire stays server-side. */
-  gatewayControl?: RealtimeVoiceGatewayControl;
-};
+} & (
+  | { clientControl?: undefined; gatewayControl?: RealtimeVoiceGatewayControl }
+  | {
+      /** Explicit ownership requires command binding; lifecycle callbacks alone do not select it. */
+      clientControl: { owner: "gateway" };
+      gatewayControl: RealtimeVoiceGatewayControl &
+        Required<Pick<RealtimeVoiceGatewayControl, "bindControl">>;
+    }
+);
 
 /** Narrow host/plugin seam for Gateway-owned control of a client-owned media session. */
 export type RealtimeVoiceGatewayControl = Omit<
