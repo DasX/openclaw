@@ -103,8 +103,6 @@ async function createDescendantScope() {
   const run = await supervisor.spawn({
     mode: "anchored-shell",
     command: "node root.cjs",
-    sessionId: "anchored-shell-real",
-    backendId: "anchored-shell-real",
     scopeKey,
     cwd,
     env:
@@ -183,11 +181,8 @@ describe("supervisor anchored shell real process ownership", () => {
       supervisor.waitForScope(scopeKey),
       supervisor.waitForScope(scopeKey),
     ]);
-    expect(supervisor.getRecord(run.runId)).toMatchObject({
-      state: "exited",
-      terminationReason: "exit",
-      exitCode: 0,
-    });
+    expect(run.activity.rootExited).toBe(true);
+    await expect(run.wait()).resolves.toBe(result);
     await waitForDead(descendantPid, 5_000);
   });
 });

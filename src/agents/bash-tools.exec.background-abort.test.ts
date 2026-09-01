@@ -51,6 +51,12 @@ vi.mock("../process/supervisor/index.js", () => {
           }
         });
         return {
+          activity: {
+            get rootExited() {
+              return settled;
+            },
+            lastOutputAtMs: Date.now(),
+          },
           runId,
           startedAtMs: Date.now(),
           stdin: undefined,
@@ -63,7 +69,6 @@ vi.mock("../process/supervisor/index.js", () => {
       },
       cancel: vi.fn(),
       cancelScope: vi.fn(),
-      getRecord: vi.fn(),
     }),
   };
 });

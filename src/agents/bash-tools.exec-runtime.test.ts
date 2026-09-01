@@ -120,6 +120,7 @@ function runtimeManagedRun(input: SpawnInput, stdout = ""): ManagedRun {
     input.onStdout?.(stdout);
   }
   return {
+    activity: { rootExited: true, lastOutputAtMs: Date.now() },
     runId: input.runId ?? "test-run",
     pid: 1234,
     startedAtMs: Date.now(),

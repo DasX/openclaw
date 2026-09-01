@@ -46,7 +46,6 @@ describe("process supervisor scope extinction", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "ordinary-child",
       scopeKey: "scope:ordinary-child",
       argv: createSilentIdleArgv(),
     });
@@ -73,7 +72,6 @@ describe("process supervisor scope extinction", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s1",
       argv: createWriteStdoutArgv("ok"),
       timeoutMs: 1_000,
       stdinMode: "pipe-closed",
@@ -83,6 +81,7 @@ describe("process supervisor scope extinction", () => {
     extinction.resolve();
     await Promise.resolve();
     expect(adapter.disposeMock).not.toHaveBeenCalled();
+    expect(run.activity.rootExited).toBe(false);
     adapter.emitStdout("ok");
     adapter.settle(0);
 
@@ -105,7 +104,6 @@ describe("process supervisor scope extinction", () => {
     createChildAdapterMock.mockResolvedValue(adapter);
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "root-result-before-extinction",
       scopeKey: "scope:root-result-before-extinction",
       argv: createSilentIdleArgv(),
     });
@@ -118,11 +116,7 @@ describe("process supervisor scope extinction", () => {
     expect(adapter.disposeMock).not.toHaveBeenCalled();
     supervisor.cancelScope("scope:root-result-before-extinction");
     expect(adapter.killMock).toHaveBeenCalledWith("SIGKILL");
-    expect(supervisor.getRecord(run.runId)).toMatchObject({
-      state: "exited",
-      terminationReason: "exit",
-      exitCode: 23,
-    });
+    expect(run.activity.rootExited).toBe(true);
 
     if (failure) {
       extinction.reject(new Error("cleanup identity lost"));
@@ -147,9 +141,9 @@ describe("process supervisor scope extinction", () => {
     createChildAdapterMock.mockReturnValueOnce(startup.promise).mockResolvedValueOnce(sibling);
 
     const supervisor = createProcessSupervisor();
-    const pending = ["failed-owner", "pending-owner"].map((sessionId) =>
+    const pending = ["failed-owner", "pending-owner"].map((runId) =>
       spawnChild(supervisor, {
-        sessionId,
+        runId,
         scopeKey: "scope:failed-drain",
         argv: createSilentIdleArgv(),
       }),

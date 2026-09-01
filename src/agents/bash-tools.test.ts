@@ -200,7 +200,9 @@ vi.mock("../process/supervisor/index.js", () => {
         if (stagedOutput) {
           input.onStdout?.(stagedOutput);
         }
+        const activity = { rootExited: false, lastOutputAtMs: Date.now() };
         return {
+          activity,
           runId: "mock-bash-run",
           startedAtMs: Date.now(),
           pid: 123,
@@ -210,7 +212,9 @@ vi.mock("../process/supervisor/index.js", () => {
             await immediate();
             if (deferredOutput) {
               input.onStdout?.(deferredOutput);
+              activity.lastOutputAtMs = Date.now();
             }
+            activity.rootExited = true;
             return {
               reason: "exit" as const,
               exitCode,
@@ -227,7 +231,6 @@ vi.mock("../process/supervisor/index.js", () => {
       },
       cancel: vi.fn(),
       cancelScope: vi.fn(),
-      getRecord: vi.fn(),
     }),
   };
 });

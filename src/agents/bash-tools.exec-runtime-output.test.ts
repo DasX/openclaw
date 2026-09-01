@@ -66,6 +66,7 @@ function successfulSupervisorRun() {
 
 function runtimeManagedRun(input: SpawnInput): ManagedRun {
   return {
+    activity: { rootExited: true, lastOutputAtMs: Date.now() },
     runId: input.runId ?? "test-run",
     pid: 1234,
     startedAtMs: Date.now(),

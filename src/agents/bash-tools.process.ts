@@ -7,7 +7,6 @@ import { getAgentToolExecutionContext } from "../../packages/agent-core/src/tool
 import { createAbortError as createNamedAbortError } from "../infra/abort-signal.js";
 import { formatDurationCompact } from "../infra/format-time/format-duration.ts";
 import { getDiagnosticSessionState } from "../logging/diagnostic-session-state.js";
-import { getProcessSupervisor } from "../process/supervisor/index.js";
 import { cancelBackgroundExecSession } from "./bash-process-control.js";
 import {
   acknowledgeNotifyOnExit,
@@ -271,7 +270,6 @@ export function createProcessTool(
     setJobTtlMs(defaults.cleanupMs);
   }
   const scopeKey = defaults?.scopeKey;
-  const supervisor = getProcessSupervisor();
   const inputWaitIdleMs = clampWithDefault(
     defaults?.inputWaitIdleMs ?? readEnvInt("OPENCLAW_PROCESS_INPUT_WAIT_IDLE_MS"),
     DEFAULT_INPUT_WAIT_IDLE_MS,
@@ -282,8 +280,7 @@ export function createProcessTool(
     !scopeKey || session?.scopeKey === scopeKey;
 
   const describeRunningSession = (session: ProcessSession): RunningSessionRuntime => {
-    const record = supervisor.getRecord(session.id);
-    const lastOutputAt = record?.lastOutputAtMs ?? session.startedAt;
+    const lastOutputAt = session.processActivity?.lastOutputAtMs ?? session.startedAt;
     const idleMs = Math.max(0, Date.now() - lastOutputAt);
     const stdinWritable = isWritableStdin(resolveSessionStdin(session));
     return {

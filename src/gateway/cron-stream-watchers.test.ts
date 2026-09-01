@@ -118,18 +118,21 @@ describe("cron stream watchers", () => {
     vi.useFakeTimers();
     const inputs: Array<{ jobId: string }> = [];
     const cancels: Record<string, ReturnType<typeof vi.fn>> = {};
-    const spawn = vi.fn(async (input: { sessionId: string }) => {
-      const jobId = input.sessionId.replace("cron-stream:", "");
+    const spawn = vi.fn(async (input: { scopeKey: string }) => {
+      const jobId = input.scopeKey.replace("cron-stream:", "");
       inputs.push({ jobId });
       const stubborn = jobId === "stubborn-job";
       const { promise: wait, resolve: resolveWait } = createDeferred<RunExit>();
+      const activity = { rootExited: false, lastOutputAtMs: Date.now() };
       const cancel = vi.fn(() => {
         if (!stubborn) {
+          activity.rootExited = true;
           resolveWait(exitResult({ reason: "manual-cancel" }));
         }
       });
       cancels[jobId] = cancel;
       return {
+        activity,
         runId: `run-${jobId}`,
         startedAtMs: Date.now(),
         cancel,
@@ -141,7 +144,6 @@ describe("cron stream watchers", () => {
       spawn,
       cancel: vi.fn(),
       cancelScope: vi.fn(),
-      getRecord: vi.fn(),
     } as unknown as ProcessSupervisor;
     const watchers = createWatchers({
       getProcessSupervisor: () => supervisor,
@@ -169,17 +171,20 @@ describe("cron stream watchers", () => {
   it("continues reconciling after a stubborn schedule replacement fails", async () => {
     vi.useFakeTimers();
     const cancels: Record<string, ReturnType<typeof vi.fn>> = {};
-    const spawn = vi.fn(async (input: { sessionId: string; argv: string[] }) => {
-      const jobId = input.sessionId.replace("cron-stream:", "");
+    const spawn = vi.fn(async (input: { scopeKey: string; argv: string[] }) => {
+      const jobId = input.scopeKey.replace("cron-stream:", "");
       const stubborn = jobId === "stubborn-job" && input.argv[0] === "stream-source";
       const { promise: wait, resolve: resolveWait } = createDeferred<RunExit>();
+      const activity = { rootExited: false, lastOutputAtMs: Date.now() };
       const cancel = vi.fn(() => {
         if (!stubborn) {
+          activity.rootExited = true;
           resolveWait(exitResult({ reason: "manual-cancel" }));
         }
       });
       cancels[jobId] = cancel;
       return {
+        activity,
         runId: `run-${jobId}-${input.argv[0]}`,
         startedAtMs: Date.now(),
         cancel,
@@ -191,7 +196,6 @@ describe("cron stream watchers", () => {
       spawn,
       cancel: vi.fn(),
       cancelScope: vi.fn(),
-      getRecord: vi.fn(),
     } as unknown as ProcessSupervisor;
     const watchers = createWatchers({
       getProcessSupervisor: () => supervisor,
@@ -250,6 +254,7 @@ describe("cron stream watchers", () => {
     const spawn = vi.fn(async () => {
       const result = exitResult();
       return {
+        activity: { rootExited: true, lastOutputAtMs: Date.now() },
         runId: `run-${spawn.mock.calls.length}`,
         startedAtMs: Date.now(),
         cancel: vi.fn(),
@@ -261,7 +266,6 @@ describe("cron stream watchers", () => {
       spawn,
       cancel: vi.fn(),
       cancelScope: vi.fn(),
-      getRecord: vi.fn(),
     } satisfies ProcessSupervisor;
     const recordFailure = vi.fn(async () => {});
     const watchers = createWatchers({
@@ -422,13 +426,16 @@ describe("cron stream watchers", () => {
       vi.useFakeTimers();
       const { promise: spawned, resolve: resolveSpawn } = createDeferred<ManagedRun>();
       const { promise: wait, resolve: resolveWait } = createDeferred<RunExit>();
+      const activity = { rootExited: false, lastOutputAtMs: Date.now() };
       let cancelAttempts = 0;
       const run: ManagedRun = {
+        activity,
         runId: "late-run",
         startedAtMs: Date.now(),
         cancel: vi.fn(() => {
           cancelAttempts += 1;
           if (cancelAttempts === 2) {
+            activity.rootExited = true;
             resolveWait(exitResult({ reason: "manual-cancel" }));
           }
         }),
@@ -439,7 +446,6 @@ describe("cron stream watchers", () => {
         spawn: vi.fn(async () => await spawned),
         cancel: vi.fn(),
         cancelScope: vi.fn(),
-        getRecord: vi.fn(),
       } satisfies ProcessSupervisor;
       const watchers = createWatchers({
         getProcessSupervisor: () => supervisor,

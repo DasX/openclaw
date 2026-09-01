@@ -121,8 +121,6 @@ describe("process supervisor first cancellation reason", () => {
               const input: SpawnInput = {
                 runId,
                 scopeKey,
-                sessionId: "first-cancellation-reason",
-                backendId: "test",
                 mode,
                 argv: [process.execPath, "-e", ""],
               };
@@ -132,16 +130,9 @@ describe("process supervisor first cancellation reason", () => {
               cancelThrough(supervisor, path.first, runId, scopeKey, firstReason);
               for (const laterReason of laterReasons) {
                 cancelThrough(supervisor, path.later, runId, scopeKey, laterReason);
-                expect(supervisor.getRecord(runId), `after ${laterReason}`).toMatchObject({
-                  state: "exiting",
-                  terminationReason: firstReason,
-                });
+                expect(run.activity.rootExited, `after ${laterReason}`).toBe(false);
               }
 
-              expect(supervisor.getRecord(runId)).toMatchObject({
-                state: "exiting",
-                terminationReason: firstReason,
-              });
               expect(adapter.killMock).toHaveBeenCalledTimes(1);
 
               const signal =
@@ -157,11 +148,7 @@ describe("process supervisor first cancellation reason", () => {
                 timedOut: firstReason !== "manual-cancel",
                 noOutputTimedOut: firstReason === "no-output-timeout",
               });
-              expect(supervisor.getRecord(runId)).toMatchObject({
-                state: "exited",
-                terminationReason: firstReason,
-                exitSignal: signal,
-              });
+              expect(run.activity.rootExited).toBe(true);
               expect(adapter.disposeMock).toHaveBeenCalledTimes(1);
               expect(vi.getTimerCount()).toBe(0);
             },

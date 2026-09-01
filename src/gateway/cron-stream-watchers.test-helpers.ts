@@ -64,11 +64,16 @@ export function fakeSupervisor() {
   const exits: Array<(result: RunExit) => void> = [];
   const spawn = vi.fn(async (input: SpawnInput) => {
     inputs.push(input);
+    const activity = { rootExited: false, lastOutputAtMs: Date.now() };
     let resolveWait!: (result: RunExit) => void;
     const wait = new Promise<RunExit>((resolve) => {
-      resolveWait = resolve;
+      resolveWait = (result) => {
+        activity.rootExited = true;
+        resolve(result);
+      };
     });
     const run: ManagedRun = {
+      activity,
       runId: `run-${runs.length + 1}`,
       startedAtMs: Date.now(),
       stdin: undefined,
@@ -84,7 +89,6 @@ export function fakeSupervisor() {
     spawn,
     cancel: vi.fn(),
     cancelScope: vi.fn(),
-    getRecord: vi.fn(),
   } satisfies ProcessSupervisor;
   return { inputs, runs, exits, spawn, supervisor };
 }

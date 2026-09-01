@@ -222,6 +222,26 @@ describe("bash process registry", () => {
     expect(listFinishedSessions()).toHaveLength(0);
   });
 
+  it("releases process activity before a prepared stdin destructor can throw", () => {
+    const session = createRegistrySession({
+      maxOutputChars: 100,
+      pendingMaxOutputChars: 100,
+      backgrounded: true,
+    });
+    Object.assign(session, { processActivity: { rootExited: true, lastOutputAtMs: 1_000 } });
+    session.stdin = {
+      write: vi.fn(),
+      end: vi.fn(),
+      destroy: () => {
+        throw new Error("stdin destruction failed");
+      },
+    };
+    addSession(session);
+
+    expect(() => markExited(session, 0, null, "completed")).toThrow("stdin destruction failed");
+    expect(session).not.toHaveProperty("processActivity");
+  });
+
   it("retains unread output on its exact process and consumes it once", () => {
     const session = createRegistrySession({
       id: "exact-finished-output",

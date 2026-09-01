@@ -1,6 +1,4 @@
-// Process supervisor types describe supervised runs, states, and termination reasons.
-export type RunState = "starting" | "running" | "exiting" | "exited";
-
+// Process supervisor types describe supervised runs and termination reasons.
 export type TerminationReason =
   | "manual-cancel"
   | "overall-timeout"
@@ -9,21 +7,10 @@ export type TerminationReason =
   | "signal"
   | "exit";
 
-export type RunRecord = {
-  runId: string;
-  sessionId: string;
-  backendId: string;
-  scopeKey?: string;
-  pid?: number;
-  processGroupId?: number;
-  startedAtMs: number;
-  lastOutputAtMs: number;
-  createdAtMs: number;
-  updatedAtMs: number;
-  state: RunState;
-  terminationReason?: TerminationReason;
-  exitCode?: number | null;
-  exitSignal?: NodeJS.Signals | number | null;
+/** Producer-owned root result and output time; descendant extinction is independent. */
+export type ProcessRunActivity = {
+  readonly rootExited: boolean;
+  readonly lastOutputAtMs: number;
 };
 
 export type RunExit = {
@@ -39,6 +26,7 @@ export type RunExit = {
 };
 
 export type ManagedRun = {
+  activity: ProcessRunActivity;
   runId: string;
   pid?: number;
   startedAtMs: number;
@@ -80,8 +68,6 @@ export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
 
 type SpawnBaseInput = {
   runId?: string;
-  sessionId: string;
-  backendId: string;
   scopeKey?: string;
   replaceExistingScope?: boolean;
   cwd?: string;
@@ -133,5 +119,4 @@ export interface ProcessSupervisor {
   cancel(runId: string, reason?: TerminationReason): void;
   cancelScope(scopeKey: string, reason?: TerminationReason): void;
   waitForScope?: (scopeKey: string) => Promise<void>;
-  getRecord(runId: string): RunRecord | undefined;
 }

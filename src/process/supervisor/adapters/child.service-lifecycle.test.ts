@@ -131,8 +131,6 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
         'sleep 60 >/dev/null 2>&1 & child=$!; printf "%s %s\\n" "$$" "$child"; wait',
       ],
       stdinMode: "pipe-closed",
-      sessionId: "service-lifecycle-test",
-      backendId: "service-lifecycle-test",
       timeoutMs: timing.timeoutMs,
       noOutputTimeoutMs: timing.noOutputTimeoutMs,
     });
@@ -358,8 +356,6 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
       mode: "child",
       argv: [process.execPath, rootPath],
       stdinMode: "pipe-closed",
-      sessionId: "service-term-grace-test",
-      backendId: "service-term-grace-test",
       onStdout: (chunk) => {
         streamedStdout += chunk;
       },
@@ -493,8 +489,6 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
       mode: "child",
       argv: [process.execPath, "-e", rootScript],
       stdinMode: "pipe-closed",
-      sessionId: "service-incomplete-utf8-test",
-      backendId: "service-incomplete-utf8-test",
       onStdout: (chunk) => {
         streamed += chunk;
       },

@@ -79,7 +79,6 @@ setCliRunnerExecuteTestDeps({
         activeRuns.get(runId)?.cancel(reason);
       }),
       cancelScope: vi.fn(),
-      getRecord: vi.fn(),
     };
   },
   enqueueSystemEvent: (
@@ -122,6 +121,7 @@ export function createManagedRun(
   pid = 1234,
 ): ManagedRunMock & Awaited<ReturnType<SupervisorSpawnFn>> {
   return {
+    activity: { rootExited: true, lastOutputAtMs: Date.now() },
     runId: "run-supervisor",
     pid,
     startedAtMs: Date.now(),

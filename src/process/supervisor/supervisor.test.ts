@@ -51,7 +51,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s1",
       argv: createWriteStdoutArgv("ok"),
       exactEnv: true,
       secretInput,
@@ -75,7 +74,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s1",
       argv: createSilentIdleArgv(),
       timeoutMs: 300,
       noOutputTimeoutMs: 5,
@@ -105,7 +103,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s-windows-timeout-overlap",
       argv: createSilentIdleArgv(),
       timeoutMs: 20,
       noOutputTimeoutMs: 5,
@@ -138,7 +135,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s1",
       argv: createSilentIdleArgv(),
       timeoutMs: 1_000,
       stdinMode: "pipe-closed",
@@ -181,34 +177,25 @@ describe("process supervisor", () => {
         mode === "pty"
           ? supervisor.spawn({
               runId,
-              sessionId: "cancel-starting",
-              backendId: "test",
               mode: "pty",
               argv: ["/bin/sh", "-c", "printf cancelled"],
               scopeKey: "scope:cancel-starting",
             })
           : spawnChild(supervisor, {
               runId,
-              sessionId: "cancel-starting",
               scopeKey: "scope:cancel-starting",
               argv: createSilentIdleArgv(),
             });
 
-      expect(supervisor.getRecord(runId)).toMatchObject({ state: "starting" });
+      expect(mode === "pty" ? createPtyAdapterMock : createChildAdapterMock).toHaveBeenCalledOnce();
       supervisor.cancel(runId, "manual-cancel");
-      expect(supervisor.getRecord(runId)).toMatchObject({
-        state: "exiting",
-        terminationReason: "manual-cancel",
-      });
+      expect(adapter.killMock).not.toHaveBeenCalled();
 
       startup.resolve(adapter);
       const run = await pendingRun;
       expect(adapter.killMock).toHaveBeenCalledWith("SIGTERM");
       await expect(run.wait()).resolves.toMatchObject({ reason: "manual-cancel" });
-      expect(supervisor.getRecord(runId)).toMatchObject({
-        state: "exited",
-        terminationReason: "manual-cancel",
-      });
+      expect(run.activity.rootExited).toBe(true);
     },
   );
 
@@ -223,7 +210,6 @@ describe("process supervisor", () => {
     const supervisor = createProcessSupervisor();
     const pendingRun = spawnChild(supervisor, {
       runId: "shutdown-starting",
-      sessionId: "shutdown-starting",
       argv: createSilentIdleArgv(),
     });
 
@@ -231,7 +217,6 @@ describe("process supervisor", () => {
     await expect(
       spawnChild(supervisor, {
         runId: "shutdown-late",
-        sessionId: "shutdown-late",
         argv: createSilentIdleArgv(),
       }),
     ).rejects.toThrow("process supervisor is shut down");
@@ -257,7 +242,6 @@ describe("process supervisor", () => {
     const supervisor = createProcessSupervisor();
     await spawnChild(supervisor, {
       runId: "shutdown-failed-extinction",
-      sessionId: "shutdown-failed-extinction",
       argv: createSilentIdleArgv(),
     });
 
@@ -268,7 +252,6 @@ describe("process supervisor", () => {
     await expect(
       spawnChild(supervisor, {
         runId: "shutdown-after-failed-extinction",
-        sessionId: "shutdown-after-failed-extinction",
         argv: createSilentIdleArgv(),
       }),
     ).rejects.toThrow("process supervisor is shut down");
@@ -304,7 +287,6 @@ describe("process supervisor", () => {
     const pendingRuns = Array.from({ length: runCount }, (_unused, index) =>
       spawnChild(supervisor, {
         runId: `cancel-scope-starting-${index}`,
-        sessionId: "cancel-scope-starting",
         scopeKey: "scope:cancel-every-start",
         argv: createSilentIdleArgv(),
       }),
@@ -312,16 +294,12 @@ describe("process supervisor", () => {
 
     expect(createChildAdapterMock).toHaveBeenCalledTimes(runCount);
     supervisor.cancelScope("scope:cancel-every-start", "manual-cancel");
-    for (let index = 0; index < runCount; index += 1) {
-      expect(supervisor.getRecord(`cancel-scope-starting-${index}`)).toMatchObject({
-        state: "exiting",
-        terminationReason: "manual-cancel",
-      });
+    for (const adapter of adapters) {
+      expect(adapter.killMock).not.toHaveBeenCalled();
     }
 
     const laterRun = await spawnChild(supervisor, {
       runId: "cancel-scope-later-arrival",
-      sessionId: "cancel-scope-starting",
       scopeKey: "scope:cancel-every-start",
       argv: createSilentIdleArgv(),
     });
@@ -362,13 +340,11 @@ describe("process supervisor", () => {
     const supervisor = createProcessSupervisor();
     const firstRunPromise = spawnChild(supervisor, {
       runId: "cancel-fenced-first",
-      sessionId: "cancel-fenced",
       scopeKey: "scope:cancel-fenced",
       argv: createSilentIdleArgv(),
     });
     const replacementPromise = spawnChild(supervisor, {
       runId: "cancel-fenced-replacement",
-      sessionId: "cancel-fenced",
       scopeKey: "scope:cancel-fenced",
       replaceExistingScope: true,
       argv: createSilentIdleArgv(),
@@ -379,7 +355,6 @@ describe("process supervisor", () => {
 
     const laterPromise = spawnChild(supervisor, {
       runId: "cancel-fenced-later",
-      sessionId: "cancel-fenced",
       scopeKey: "scope:cancel-fenced",
       argv: createSilentIdleArgv(),
     });
@@ -417,7 +392,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const firstRun = await spawnChild(supervisor, {
-      sessionId: "s1",
       scopeKey: "scope:a",
       argv: [process.execPath, "-e", "setTimeout(() => {}, 80)"],
       timeoutMs: 1_000,
@@ -425,7 +399,6 @@ describe("process supervisor", () => {
     });
 
     const secondRun = await spawnChild(supervisor, {
-      sessionId: "s1",
       scopeKey: "scope:a",
       replaceExistingScope: true,
       argv: createWriteStdoutArgv("new"),
@@ -457,13 +430,11 @@ describe("process supervisor", () => {
     const supervisor = createProcessSupervisor();
     const firstRunPromise = spawnChild(supervisor, {
       runId: "scoped-start-first",
-      sessionId: "scoped-start",
       scopeKey: "scope:overlap",
       argv: createSilentIdleArgv(),
     });
     const replacementPromise = spawnChild(supervisor, {
       runId: "scoped-start-replacement",
-      sessionId: "scoped-start",
       scopeKey: "scope:overlap",
       replaceExistingScope: true,
       argv: createWriteStdoutArgv("replacement"),
@@ -497,12 +468,10 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const firstRunPromise = spawnChild(supervisor, {
-      sessionId: "shared-scope-first",
       scopeKey: "scope:shared-concurrent",
       argv: createSilentIdleArgv(),
     });
     const secondRunPromise = spawnChild(supervisor, {
-      sessionId: "shared-scope-second",
       scopeKey: "scope:shared-concurrent",
       argv: createSilentIdleArgv(),
     });
@@ -542,20 +511,17 @@ describe("process supervisor", () => {
     const supervisor = createProcessSupervisor();
     const firstRunPromise = spawnChild(supervisor, {
       runId: "replacement-fence-first",
-      sessionId: "replacement-fence",
       scopeKey: "scope:replacement-fence",
       argv: createSilentIdleArgv(),
     });
     const replacementPromise = spawnChild(supervisor, {
       runId: "replacement-fence-replacement",
-      sessionId: "replacement-fence",
       scopeKey: "scope:replacement-fence",
       replaceExistingScope: true,
       argv: createSilentIdleArgv(),
     });
     const newerRunPromise = spawnChild(supervisor, {
       runId: "replacement-fence-newer",
-      sessionId: "replacement-fence",
       scopeKey: "scope:replacement-fence",
       argv: createSilentIdleArgv(),
     });
@@ -616,14 +582,12 @@ describe("process supervisor", () => {
     const pendingRuns = Array.from({ length: runCount }, (_unused, index) =>
       spawnChild(supervisor, {
         runId: `shared-scope-${index}`,
-        sessionId: "shared-scope",
         scopeKey: "scope:shared-replacement",
         argv: createSilentIdleArgv(),
       }),
     );
     const replacementPromise = spawnChild(supervisor, {
       runId: "shared-scope-replacement",
-      sessionId: "shared-scope",
       scopeKey: "scope:shared-replacement",
       replaceExistingScope: true,
       argv: createWriteStdoutArgv("replacement"),
@@ -669,13 +633,11 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const firstRunPromise = spawnChild(supervisor, {
-      sessionId: "independent-a",
       scopeKey: "scope:independent-a",
       replaceExistingScope: true,
       argv: createSilentIdleArgv(),
     });
     const secondRunPromise = spawnChild(supervisor, {
-      sessionId: "independent-b",
       scopeKey: "scope:independent-b",
       replaceExistingScope: true,
       argv: createSilentIdleArgv(),
@@ -707,13 +669,11 @@ describe("process supervisor", () => {
     const supervisor = createProcessSupervisor();
     const firstRunPromise = spawnChild(supervisor, {
       runId: "failed-scoped-start",
-      sessionId: "failed-scoped-start",
       scopeKey: "scope:recover-start",
       argv: createSilentIdleArgv(),
     });
     const replacementPromise = spawnChild(supervisor, {
       runId: "recovered-scoped-start",
-      sessionId: "failed-scoped-start",
       scopeKey: "scope:recover-start",
       replaceExistingScope: true,
       argv: createWriteStdoutArgv("recovered"),
@@ -727,10 +687,6 @@ describe("process supervisor", () => {
     await expect(replacement.wait()).resolves.toMatchObject({
       reason: "exit",
       stdout: "recovered",
-    });
-    expect(supervisor.getRecord("failed-scoped-start")).toMatchObject({
-      state: "exited",
-      terminationReason: "spawn-error",
     });
   });
 
@@ -757,7 +713,6 @@ describe("process supervisor", () => {
     const pendingRuns = Array.from({ length: runCount }, (_unused, index) =>
       spawnChild(supervisor, {
         runId: `scope-stress-${index}`,
-        sessionId: "scope-stress",
         scopeKey: "scope:stress",
         replaceExistingScope: true,
         argv: createSilentIdleArgv(),
@@ -811,7 +766,6 @@ describe("process supervisor", () => {
     const pendingRuns = Array.from({ length: runCount }, (_unused, index) =>
       spawnChild(supervisor, {
         runId: `scope-recovery-${index}`,
-        sessionId: "scope-recovery",
         scopeKey: "scope:interleaved-recovery",
         replaceExistingScope: true,
         argv: createSilentIdleArgv(),
@@ -826,10 +780,6 @@ describe("process supervisor", () => {
         if (result.status === "rejected") {
           expect(result.reason).toMatchObject({ message: `adapter ${index} could not start` });
         }
-        expect(supervisor.getRecord(`scope-recovery-${index}`)).toMatchObject({
-          state: "exited",
-          terminationReason: "spawn-error",
-        });
         continue;
       }
       expect(result.status, `started adapter ${index}`).toBe("fulfilled");
@@ -877,7 +827,6 @@ describe("process supervisor", () => {
     const pendingRuns = Array.from({ length: scopeCount }, (_unused, index) =>
       spawnChild(supervisor, {
         runId: `independent-scope-${index}`,
-        sessionId: "scope-independence",
         scopeKey: `scope:independent-${index}`,
         replaceExistingScope: true,
         argv: createSilentIdleArgv(),
@@ -916,7 +865,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s-timeout",
       argv: createSilentIdleArgv(),
       timeoutMs: 1,
       stdinMode: "pipe-closed",
@@ -941,7 +889,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s-timeout-race",
       argv: createSilentIdleArgv(),
       timeoutMs: 10,
       stdinMode: "pipe-closed",
@@ -965,7 +912,6 @@ describe("process supervisor", () => {
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
-      sessionId: "s-no-output-race",
       argv: createSilentIdleArgv(),
       timeoutMs: 100,
       noOutputTimeoutMs: 10,
@@ -992,7 +938,6 @@ describe("process supervisor", () => {
     const supervisor = createProcessSupervisor();
     let streamed = "";
     const run = await spawnChild(supervisor, {
-      sessionId: "s-capture",
       argv: createWriteStdoutArgv("streamed"),
       timeoutMs: 1_000,
       stdinMode: "pipe-closed",
@@ -1024,7 +969,6 @@ describe("process supervisor", () => {
     const stdoutChunk = `${"a".repeat(stdoutMarker.length)}😀${"s".repeat(retainedChars)}`;
     const stderrChunk = `${"b".repeat(stderrMarker.length)}😀${"e".repeat(retainedChars)}`;
     const run = await spawnChild(supervisor, {
-      sessionId: "s-capture-cap",
       argv: createWriteStdoutArgv(stdoutChunk),
       timeoutMs: 1_000,
       stdinMode: "pipe-closed",

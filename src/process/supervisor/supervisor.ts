@@ -9,12 +9,10 @@ import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { createChildAdapter } from "./adapters/child.js";
 import { createPtyAdapter } from "./adapters/pty.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "./cancellation-policy.js";
-import { createRunRegistry } from "./registry.js";
 import type {
   ManagedRun,
   ProcessSupervisor,
   RunExit,
-  RunRecord,
   SpawnInput,
   TerminationReason,
 } from "./types.js";
@@ -100,7 +98,6 @@ export function createProcessSupervisor(): ProcessSupervisor & {
   shutdown: () => Promise<void>;
   waitForScope: (scopeKey: string) => Promise<void>;
 } {
-  const registry = createRunRegistry();
   const active = new Map<string, ActiveRun>();
   const startingRuns = new Map<string, StartingRun>();
   const startingScopes = new Map<string, StartingScope>();
@@ -119,9 +116,6 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       return;
     }
     starting.terminationReason ??= reason;
-    registry.updateState(runId, "exiting", {
-      terminationReason: starting.terminationReason,
-    });
     starting.cancel?.(starting.terminationReason);
   };
 
@@ -182,19 +176,6 @@ export function createProcessSupervisor(): ProcessSupervisor & {
   ): Promise<ManagedRun> => {
     const startedAtMs = Date.now();
     const startingTerminationReason = startingRun.terminationReason;
-    const record: RunRecord = {
-      runId,
-      sessionId: input.sessionId,
-      backendId: input.backendId,
-      scopeKey,
-      state: startingTerminationReason ? "exiting" : "starting",
-      ...(startingTerminationReason ? { terminationReason: startingTerminationReason } : {}),
-      startedAtMs,
-      lastOutputAtMs: startedAtMs,
-      createdAtMs: startedAtMs,
-      updatedAtMs: startedAtMs,
-    };
-    registry.add(record);
 
     if (startingTerminationReason) {
       // A replacement can be cancelled behind its scope fence. Never launch
@@ -209,14 +190,10 @@ export function createProcessSupervisor(): ProcessSupervisor & {
         timedOut: isTimeoutReason(startingTerminationReason),
         noOutputTimedOut: startingTerminationReason === "no-output-timeout",
       };
-      registry.finalize(runId, {
-        reason: exit.reason,
-        exitCode: exit.exitCode,
-        exitSignal: exit.exitSignal,
-      });
       return {
         runId,
         startedAtMs,
+        activity: Object.freeze({ rootExited: true, lastOutputAtMs: startedAtMs }),
         wait: async () => exit,
         cancel: () => undefined,
       };
@@ -230,6 +207,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
 
     let forcedReason: TerminationReason | null = startingRun.terminationReason ?? null;
     let resultSettled = false;
+    let lastOutputAtMs = startedAtMs;
     let ownershipExtinct = false;
     let stdout = "";
     let stderr = "";
@@ -258,7 +236,6 @@ export function createProcessSupervisor(): ProcessSupervisor & {
         return;
       }
       forcedReason = reason;
-      registry.updateState(runId, "exiting", { terminationReason: reason });
     };
 
     let cancelAdapter: ((reason: TerminationReason) => void) | null = null;
@@ -296,7 +273,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
     };
 
     const touchOutput = () => {
-      registry.touchOutput(runId);
+      lastOutputAtMs = Date.now();
       if (!noOutputTimeoutMs || resultSettled) {
         return;
       }
@@ -340,11 +317,6 @@ export function createProcessSupervisor(): ProcessSupervisor & {
                 stdinMode: input.stdinMode,
                 secretInput: input.secretInput,
               });
-
-      registry.updateState(runId, forcedReason ? "exiting" : "running", {
-        pid: adapter.pid,
-        ...(forcedReason ? { terminationReason: forcedReason } : {}),
-      });
 
       const clearResultTimers = () => {
         if (timeoutTimer) {
@@ -490,20 +462,10 @@ export function createProcessSupervisor(): ProcessSupervisor & {
           timedOut: isTimeoutReason(reason),
           noOutputTimedOut: terminalReason === "no-output-timeout",
         };
-        registry.finalize(runId, {
-          reason: exit.reason,
-          exitCode: exit.exitCode,
-          exitSignal: exit.exitSignal,
-        });
         return exit;
       })().catch((err: unknown) => {
         if (!resultSettled) {
           settleResult();
-          registry.finalize(runId, {
-            reason: "spawn-error",
-            exitCode: null,
-            exitSignal: null,
-          });
         }
         throw err;
       });
@@ -516,6 +478,14 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       void extinctionPromise.catch(() => undefined);
 
       const managedRun: ManagedRun = {
+        activity: Object.freeze({
+          get rootExited() {
+            return resultSettled;
+          },
+          get lastOutputAtMs() {
+            return lastOutputAtMs;
+          },
+        }),
         runId,
         pid: adapter.pid,
         startedAtMs,
@@ -538,11 +508,6 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       }
       return managedRun;
     } catch (err) {
-      registry.finalize(runId, {
-        reason: "spawn-error",
-        exitCode: null,
-        exitSignal: null,
-      });
       const { warnProcessSupervisorSpawnFailure } = await loadSupervisorLogRuntime();
       warnProcessSupervisorSpawnFailure(`spawn failed: runId=${runId} reason=${String(err)}`);
       throw err;
@@ -623,6 +588,5 @@ export function createProcessSupervisor(): ProcessSupervisor & {
     cancelScope,
     shutdown,
     waitForScope,
-    getRecord: (runId: string) => registry.get(runId),
   };
 }

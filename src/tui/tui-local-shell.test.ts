@@ -65,7 +65,6 @@ function createShellHarness(params?: {
       cancel: vi.fn(),
       cancelScope: vi.fn(),
       waitForScope: vi.fn(async () => {}),
-      getRecord: vi.fn(),
     } satisfies ShellSupervisor);
   vi.mocked(getProcessSupervisor).mockReturnValue(supervisor);
   const { runLocalShellLine, shutdown } = createLocalShellRunner({
@@ -103,12 +102,15 @@ function createSettlingSpawn(params: { stdout?: string[]; stderr?: string[]; err
       timedOut: false,
       noOutputTimedOut: false,
     };
+    const activity = { rootExited: false, lastOutputAtMs: 0 };
     return {
+      activity,
       runId: "local-shell-run",
       startedAtMs: 0,
       wait: async () => {
         params.stdout?.forEach((chunk) => input.onStdout?.(chunk));
         params.stderr?.forEach((chunk) => input.onStderr?.(chunk));
+        activity.rootExited = true;
         if (params.error) {
           throw params.error;
         }

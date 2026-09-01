@@ -263,8 +263,6 @@ export async function executeCliProcess(params: {
     try {
       const managedRun = await supervisor.spawn({
         runId: runParams.runId,
-        sessionId: runParams.sessionId,
-        backendId: context.backendResolved.id,
         scopeKey,
         replaceExistingScope: Boolean(params.useResume && scopeKey),
         mode: "child",

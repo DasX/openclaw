@@ -979,8 +979,6 @@ export async function runExecProcess({
     usingPty = spawnSpec.mode === "pty";
     const spawnBase = {
       runId: sessionId,
-      sessionId: opts.sessionKey?.trim() || sessionId,
-      backendId: opts.sandbox ? "exec-sandbox" : "exec-host",
       scopeKey: opts.scopeKey,
       cwd: opts.workdir,
       env: spawnSpec.env,
@@ -1039,6 +1037,7 @@ export async function runExecProcess({
     startupSignal = undefined;
     beforeSpawn = undefined;
   }
+  session.processActivity = managedRun.activity;
   session.stdin = managedRun.stdin;
   session.pid = managedRun.pid;
 

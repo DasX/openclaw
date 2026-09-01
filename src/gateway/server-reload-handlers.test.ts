@@ -2050,10 +2050,7 @@ describe("gateway hot reload model state", () => {
           await handlers.applyHotReload(createCronRestartPlan(), config);
         });
 
-        expect(supervisor.getRecord(watchedRun.runId)).toMatchObject({
-          pid: watchedRun.pid,
-          state: "running",
-        });
+        expect(watchedRun.activity.rootExited).toBe(false);
         expect(await readFile(markerPath, "utf8")).toBe("run\n");
         expect(spawn).toHaveBeenCalledOnce();
 
