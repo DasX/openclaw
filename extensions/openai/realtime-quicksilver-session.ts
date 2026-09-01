@@ -576,6 +576,7 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
         ...(nativeControl
           ? {
               onTranscript: nativeControl.onTranscript,
+              getInputDisposition: nativeControl.getInputDisposition,
               onWireEventType: (type: string) =>
                 nativeControl.onEvent?.({ direction: "server", type }),
             }

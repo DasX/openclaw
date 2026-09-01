@@ -1,8 +1,10 @@
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { RealtimeVoiceBridge } from "../talk/provider-types.js";
 import {
   closeTalkClientGatewayControlSession,
   createTalkClientGatewayControlOwner,
+  createTalkRealtimeRunControlOwner,
 } from "./talk-client-gateway-control.js";
 import { cleanupTalkConnection } from "./talk-session-registry.js";
 
@@ -36,7 +38,64 @@ function controlContext(
   } as never;
 }
 
+function controlBridge() {
+  return {
+    connect: vi.fn(async () => undefined),
+    close: vi.fn(),
+    sendAudio: vi.fn(),
+    setMediaTimestamp: vi.fn(),
+    sendUserMessage: vi.fn(),
+    submitToolResult: vi.fn(async () => undefined),
+    acknowledgeMark: vi.fn(),
+    isConnected: vi.fn(() => true),
+  } satisfies RealtimeVoiceBridge;
+}
+
 describe("Talk client Gateway control owner", () => {
+  it.each([
+    ["Status?", false, false, "control", true],
+    ["cancel", false, false, "control", true],
+    ["cancel", true, true, undefined, true],
+    ["Status?", false, true, undefined, false],
+    ["cancel", false, true, undefined, false],
+    ["Status?", false, undefined, undefined, false],
+    ["use the release branch instead", false, false, "consult", false],
+    ["use the release branch instead", true, false, "consult", true],
+    ["cancel my meeting tomorrow", true, false, "consult", false],
+    ["hello", false, false, "consult", false],
+  ] as const)(
+    "classifies intrinsic control %s (active=%s, tools=%s)",
+    async (text, active, supportsToolCalls, disposition, handled) => {
+      const execute = vi.fn(async () => ({
+        ok: true,
+        mode: "status" as const,
+        sessionKey: sessionTarget.canonicalKey,
+        active,
+        message: "Visible control outcome.",
+        speak: true,
+        show: true,
+        suppress: false,
+      }));
+      const speak = vi.fn();
+      const owner = createTalkRealtimeRunControlOwner({
+        supportsToolCalls,
+        hasActiveRun: () => active,
+        execute,
+        speak,
+        warn: vi.fn(),
+      });
+      expect(owner.getInputDisposition).toEqual(
+        supportsToolCalls === false ? expect.any(Function) : undefined,
+      );
+      expect(owner.getInputDisposition?.(text)).toBe(disposition);
+      expect(execute).not.toHaveBeenCalled();
+      expect(owner.handleSpoken(text)).toBe(handled);
+      await owner.close();
+      expect(execute).toHaveBeenCalledTimes(handled ? 1 : 0);
+      expect(speak).toHaveBeenCalledTimes(handled ? 1 : 0);
+    },
+  );
+
   it.each(["failed", "incomplete"] as const)(
     "keeps Gateway-controlled browser Talk reusable after a %s response",
     async (status) => {
@@ -99,9 +158,30 @@ describe("Talk client Gateway control owner", () => {
     "persists sideband transcripts, settles a %s consult, and closes idempotently",
     async (outcome) => {
       const consultResult = deferred<{ text: string }>();
-      const runAgentConsult = vi.fn(async () => {
+      const cancelled = {
+        ok: true,
+        mode: "cancel" as const,
+        sessionKey: sessionTarget.canonicalKey,
+        active: true,
+        aborted: true,
+        message: "Cancelled the active OpenClaw run.",
+        speak: true,
+        show: true,
+        suppress: false,
+      };
+      const controlAgentRun = vi
+        .fn(async () => ({
+          ...cancelled,
+          ok: false,
+          active: false,
+          aborted: false,
+          message: "There is no active OpenClaw run to cancel.",
+        }))
+        .mockResolvedValueOnce(cancelled);
+      const runAgentConsult = vi.fn(async (_args: unknown, signal: AbortSignal) => {
         const result = await consultResult.promise;
         if (outcome === "cancelled") {
+          expect(signal.aborted).toBe(true);
           throw new DOMException("Host cancelled the consult", "AbortError");
         }
         return result;
@@ -111,22 +191,15 @@ describe("Talk client Gateway control owner", () => {
       );
       const closeLogicalSession = vi.fn(async () => undefined);
       const closeProvider = vi.fn(async () => undefined);
-      const bridge = {
-        connect: vi.fn(async () => undefined),
-        close: vi.fn(),
-        sendAudio: vi.fn(),
-        setMediaTimestamp: vi.fn(),
-        sendUserMessage: vi.fn(),
-        submitToolResult: vi.fn(async () => undefined),
-        acknowledgeMark: vi.fn(),
-        isConnected: vi.fn(() => true),
-      } satisfies RealtimeVoiceBridge;
+      const bridge = controlBridge();
       const owner = createTalkClientGatewayControlOwner({
         voiceSessionId: "voice-gateway",
+        supportsToolCalls: true,
         sessionTarget,
         connId: "conn-gateway",
         context: controlContext(),
         runAgentConsult,
+        controlAgentRun,
         appendTranscript,
         flushTranscript: vi.fn(async () => undefined),
         closeLogicalSession,
@@ -143,6 +216,19 @@ describe("Talk client Gateway control owner", () => {
         args: { question: "check the repository" },
       });
       await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledOnce());
+      const cancelToolCall = (callId: string) =>
+        owner.control.onToolCall?.({
+          itemId: callId,
+          callId,
+          name: "openclaw_agent_control",
+          args: { text: "cancel", mode: "cancel" },
+        });
+      if (outcome === "cancelled") {
+        cancelToolCall("call-cancel");
+        await vi.waitFor(() =>
+          expect(bridge.submitToolResult).toHaveBeenCalledWith("call-cancel", cancelled),
+        );
+      }
       consultResult.resolve({ text: "The repository is clean." });
       const expectedResult =
         outcome === "cancelled"
@@ -156,6 +242,20 @@ describe("Talk client Gateway control owner", () => {
         role: "user",
         text: "check the repository",
       });
+      if (outcome === "cancelled") {
+        await nextEventLoopTurn();
+        owner.control.onTranscript?.("user", "cancel", true);
+        // A later explicit tool call drains the same control FIFO after the late ASR event.
+        cancelToolCall("call-next-cancel");
+        await vi.waitFor(() =>
+          expect(bridge.submitToolResult).toHaveBeenCalledWith(
+            "call-next-cancel",
+            expect.objectContaining({ active: false }),
+          ),
+        );
+        expect(controlAgentRun).toHaveBeenCalledTimes(2);
+        expect(bridge.sendUserMessage).not.toHaveBeenCalled();
+      }
 
       const closeParams = {
         voiceSessionId: "voice-gateway",
@@ -173,15 +273,7 @@ describe("Talk client Gateway control owner", () => {
   );
 
   it("routes control tool results without starting another consult", async () => {
-    const bridge = {
-      connect: vi.fn(async () => undefined),
-      close: vi.fn(),
-      sendAudio: vi.fn(),
-      setMediaTimestamp: vi.fn(),
-      submitToolResult: vi.fn(async () => undefined),
-      acknowledgeMark: vi.fn(),
-      isConnected: vi.fn(() => true),
-    } satisfies RealtimeVoiceBridge;
+    const bridge = controlBridge();
     const runAgentConsult = vi.fn(async () => ({ text: "unexpected" }));
     const owner = createTalkClientGatewayControlOwner({
       voiceSessionId: "voice-control",
@@ -249,16 +341,7 @@ describe("Talk client Gateway control owner", () => {
             );
           }),
       );
-      const bridge = {
-        connect: vi.fn(async () => undefined),
-        close: vi.fn(),
-        sendAudio: vi.fn(),
-        setMediaTimestamp: vi.fn(),
-        sendUserMessage: vi.fn(),
-        submitToolResult: vi.fn(async () => undefined),
-        acknowledgeMark: vi.fn(),
-        isConnected: vi.fn(() => true),
-      } satisfies RealtimeVoiceBridge;
+      const bridge = controlBridge();
       const owner = createTalkClientGatewayControlOwner({
         voiceSessionId: `voice-spoken-control-${entry}`,
         sessionTarget,
@@ -556,15 +639,7 @@ describe("Talk client Gateway control owner", () => {
       flushTranscript: vi.fn(async () => undefined),
       closeLogicalSession,
     };
-    const firstBridge = {
-      connect: vi.fn(async () => undefined),
-      close: vi.fn(),
-      sendAudio: vi.fn(),
-      setMediaTimestamp: vi.fn(),
-      submitToolResult: vi.fn(),
-      acknowledgeMark: vi.fn(),
-      isConnected: vi.fn(() => true),
-    } satisfies RealtimeVoiceBridge;
+    const firstBridge = controlBridge();
     const secondBridge = {
       ...firstBridge,
       submitToolResult: vi.fn(),

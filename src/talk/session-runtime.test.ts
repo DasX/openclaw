@@ -1,9 +1,10 @@
 // Talk session runtime tests cover provider lifecycle and session events.
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
   type RealtimeVoiceBridge,
+  type RealtimeVoiceBridgeCallbacks,
 } from "./provider-types.js";
 import { createRealtimeVoiceBridgeSession } from "./session-runtime.js";
 
@@ -108,14 +109,25 @@ describe("realtime voice bridge session runtime", () => {
       },
     };
 
+    expectTypeOf<() => Promise<void>>().toExtend<
+      NonNullable<RealtimeVoiceBridgeCallbacks["onTranscript"]>
+    >();
+    const getInputDisposition = vi.fn(() => "control" as const);
+    const onTranscript = vi.fn();
     createRealtimeVoiceBridgeSession({
       provider,
+      getInputDisposition,
+      onTranscript,
       agentId: "voice-agent",
       providerConfig: {},
       audioFormat: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
       audioSink: { sendAudio: vi.fn() },
     });
 
+    expect(expectBridgeRequest(request).getInputDisposition?.("status")).toBe("control");
+    expect(getInputDisposition).toHaveBeenCalledExactlyOnceWith("status");
+    expectBridgeRequest(request).onTranscript?.("user", "status", true);
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith("user", "status", true);
     expect(expectBridgeRequest(request).agentId).toBe("voice-agent");
     expect(expectBridgeRequest(request).audioFormat).toEqual(
       REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,

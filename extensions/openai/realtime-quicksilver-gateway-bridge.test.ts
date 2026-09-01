@@ -861,6 +861,9 @@ describe("GPT-Live gateway relay bridge", () => {
       close: closePeer,
     };
     const runAgentConsult = vi.fn(async () => ({ text: "Delegated result" }));
+    const getInputDisposition = vi.fn((text: string): "control" | "consult" =>
+      text === "Status?" ? "control" : "consult",
+    );
     const onAudio = vi.fn();
     const onClearAudio = vi.fn();
     const onEvent = vi.fn();
@@ -877,6 +880,7 @@ describe("GPT-Live gateway relay bridge", () => {
       onEvent,
       onReady,
       onClose,
+      getInputDisposition,
       runAgentConsult,
       logger: { debug: vi.fn(), warn: vi.fn() },
       resolveAuth: vi.fn(async () => ({
@@ -920,6 +924,18 @@ describe("GPT-Live gateway relay bridge", () => {
 
     emitSideband(connectedSocket, { type: "output_audio_buffer.cleared" });
     expect(onClearAudio).toHaveBeenCalledWith("barge-in");
+
+    emitSideband(connectedSocket, {
+      type: "delegation.created",
+      item: {
+        type: "delegation",
+        target: "client",
+        id: "status-control",
+        content: [{ type: "input_text", text: "Status?" }],
+      },
+    });
+    expect(getInputDisposition).toHaveBeenCalledExactlyOnceWith("Status?");
+    expect(runAgentConsult).not.toHaveBeenCalled();
 
     emitSideband(connectedSocket, {
       type: "delegation.created",

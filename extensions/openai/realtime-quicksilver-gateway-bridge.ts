@@ -129,6 +129,7 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
           }
         },
         onTranscript: (role, text, done) => this.config.onTranscript?.(role, text, done),
+        getInputDisposition: config.getInputDisposition,
         onWireEventType: (eventType) => {
           this.config.onEvent?.({ direction: "server", type: eventType });
           if (eventType === "output_audio_buffer.cleared") {

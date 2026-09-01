@@ -248,6 +248,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ? createTalkClientGatewayControlOwner({
             voiceSessionId: activeVoiceSessionId!,
             providerId: resolution.provider.id,
+            supportsToolCalls: providerCapabilities?.supportsToolCalls,
             sessionTarget: target,
             connId: ownerConnId!,
             context,

@@ -43,6 +43,12 @@ Unsupported combinations, including GA with OAuth only, fail visibly instead
 of falling back to client-owned control. Existing browser clients omit this
 capability and keep their data channel and client transcript reporting.
 
+In Gateway-controlled native calls and native Gateway relays, asking for status
+keeps the current agent task running. Spoken cancellation stops that task without
+starting another consultation, even if the provider delegates the same control
+input. When no task is active, status and cancellation return a spoken no-active-run
+response. Genuine new tasks still supersede the running native delegation.
+
 Closing a native transport fences new delegations and late provider delivery;
 already accepted agent work retains its own cancellation lifetime. Spoken run
 cancellation is separate from ending the audio connection. Gateway-controlled

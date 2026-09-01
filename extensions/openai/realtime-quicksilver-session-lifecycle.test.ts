@@ -323,9 +323,15 @@ describe("GPT-Live browser session lifecycle", () => {
       return await result;
     });
     const { realtime, sockets } = createBroker({ runAgentConsult });
+    const getInputDisposition = vi.fn(() => "control" as const);
     try {
       const reservation = await realtime.broker.createBrowserSession(
-        { providerConfig: {}, model: "gpt-live-test", runAgentConsult },
+        {
+          providerConfig: {},
+          model: "gpt-live-test",
+          runAgentConsult,
+          gatewayControl: { bindBridge: vi.fn(), getInputDisposition, onTranscript: vi.fn() },
+        },
         { type: "api-key", token: "platform-key" },
       );
       if (reservation.transport !== "webrtc") {
@@ -350,6 +356,7 @@ describe("GPT-Live browser session lifecycle", () => {
       };
       emitSideband(socket, delegation);
       await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledOnce());
+      expect(getInputDisposition).not.toHaveBeenCalled();
 
       await realtime.broker.cancelBrowserSession(reservation);
       expect(socket.closed).toBe(true);

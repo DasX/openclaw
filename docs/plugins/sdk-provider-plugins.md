@@ -1014,6 +1014,22 @@ catalog, API-key auth, and dynamic model resolution.
         remains the owner of tool policy and run lifecycle; never infer control
         ownership from a model name or duplicate client-owned transcript writes.
 
+        Bridge requests and negotiated browser `gatewayControl` may provide
+        `getInputDisposition(text): "control" | "consult"`. Consult this pure host
+        decision with raw provider input before consuming transcript context or
+        replacing an active delegation. It classifies host-owned controls; it
+        neither executes a control nor reports that one already executed.
+        The host supplies this hook only for transcript-owned control, where the
+        resolved provider capability is `supportsToolCalls: false`. A `control`
+        input is not a new agent task: forward the transcript normally so the host
+        executes the control once, never again from the delegation path. Status and
+        cancellation remain control inputs even when no run is active. Tool-capable
+        or unspecified providers receive no hook and retain active-run-only transcript
+        control, so late ASR does not repeat a settled control-tool reply. Without the optional
+        hook, retain the existing delegation policy; do not infer ownership from
+        transcript callbacks. `onTranscript` retains its `void` callback contract,
+        including assignable async handlers.
+
         A host `runAgentConsult` rejection named `AbortError` represents
         cancellation, even when the provider's own signal is still live. Do not
         turn it into a failed-task or retry reply. `TimeoutError` remains a

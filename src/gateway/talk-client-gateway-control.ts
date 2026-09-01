@@ -11,6 +11,7 @@ import {
   controlRealtimeVoiceAgentRun,
   parseRealtimeVoiceAgentControlToolArgs,
   REALTIME_VOICE_AGENT_CONTROL_TOOL_NAME,
+  resolveRealtimeVoiceAgentControlIntent,
   shouldAutoControlRealtimeVoiceAgentText,
 } from "../talk/agent-run-control.js";
 import type { RealtimeVoiceAgentControlResult } from "../talk/agent-run-control.js";
@@ -84,6 +85,7 @@ function createRealtimeControlQueue(): BoundedSerialQueue {
 }
 
 export function createTalkRealtimeRunControlOwner(params: {
+  supportsToolCalls?: boolean;
   hasActiveRun: () => boolean;
   execute: (args: unknown) => Promise<RealtimeVoiceAgentControlResult>;
   speak: (message: string) => void;
@@ -119,10 +121,23 @@ export function createTalkRealtimeRunControlOwner(params: {
     });
     return true;
   };
+  const getInputDisposition =
+    params.supportsToolCalls === false
+      ? (text: string): "control" | "consult" => {
+          const intent = resolveRealtimeVoiceAgentControlIntent({ text });
+          // Transcript-owned controls stay non-task input after their target run settles.
+          return intent.shouldAutoControl && (intent.mode === "status" || intent.mode === "cancel")
+            ? "control"
+            : "consult";
+        }
+      : undefined;
   return {
     enqueue,
+    getInputDisposition,
     handleSpoken: (text: string, ready?: Promise<void>): boolean => {
-      if (!params.hasActiveRun() || !shouldAutoControlRealtimeVoiceAgentText(text)) {
+      // Tool results can precede ASR; only transcript-owned providers answer idle controls.
+      const canHandle = params.hasActiveRun() || getInputDisposition?.(text) === "control";
+      if (!canHandle || !shouldAutoControlRealtimeVoiceAgentText(text)) {
         return false;
       }
       enqueue(
@@ -170,6 +185,7 @@ export function boundTalkClientRealtimeInitialItems(
 export function createTalkClientGatewayControlOwner(params: {
   voiceSessionId: string;
   providerId?: string;
+  supportsToolCalls?: boolean;
   sessionTarget: PreparedTalkSessionTarget;
   connId: string;
   context: Pick<
@@ -314,6 +330,7 @@ export function createTalkClientGatewayControlOwner(params: {
   };
 
   const runControl = createTalkRealtimeRunControlOwner({
+    supportsToolCalls: params.supportsToolCalls,
     hasActiveRun: () => consultControllers.size > 0,
     execute: applyControl,
     speak: (message) => {
@@ -436,6 +453,7 @@ export function createTalkClientGatewayControlOwner(params: {
         }
       },
       onTranscript: handleTranscript,
+      getInputDisposition: runControl.getInputDisposition,
       onToolCall: handleToolCall,
       onResponseDone: (outcome) => {
         if (signal.aborted) {

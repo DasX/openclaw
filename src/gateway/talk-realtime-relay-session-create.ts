@@ -3,6 +3,7 @@ import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/n
 import { formatErrorMessage } from "../infra/errors.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../talk/agent-consult-tool.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../talk/agent-run-control-shared.js";
+import { resolveRealtimeVoiceProviderCapabilities } from "../talk/provider-resolver.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
   type RealtimeVoiceCloseReason,
@@ -148,7 +149,16 @@ export function createTalkRealtimeRelaySession(
     }
     return await consultRunner.runPrompt({ prompt, signal });
   };
+  const providerCapabilities = resolveRealtimeVoiceProviderCapabilities({
+    provider: params.provider,
+    providerConfig: params.providerConfig,
+    cfg: params.cfg,
+    agentId: relayAgentId,
+    model: params.model,
+    surface: "gateway-relay",
+  });
   const runControl = createTalkRealtimeRunControlOwner({
+    supportsToolCalls: providerCapabilities?.supportsToolCalls,
     hasActiveRun: () => {
       const relay = getActiveRelay();
       return Boolean(relay && pruneInactiveRelayAgentRuns(relay) > 0);
@@ -191,6 +201,7 @@ export function createTalkRealtimeRelaySession(
     autoRespondToAudio: !forceAgentConsultOnFinalTranscript,
     interruptResponseOnInputAudio: !forceAgentConsultOnFinalTranscript,
     tools: params.tools,
+    getInputDisposition: runControl.getInputDisposition,
     markStrategy: "transport",
     audioSink: {
       isOpen: () => Boolean(getActiveRelay()),

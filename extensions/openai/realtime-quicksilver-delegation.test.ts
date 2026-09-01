@@ -12,7 +12,10 @@ type ConsultRunner = (params: {
   signal?: AbortSignal;
 }) => Promise<{ text: string }>;
 
-function createDelegationHarness(params?: { runAgentConsult?: ConsultRunner }) {
+function createDelegationHarness(params?: {
+  runAgentConsult?: ConsultRunner;
+  getInputDisposition?: (text: string) => "control" | "consult";
+}) {
   const socket = new FakeSocket("manual");
   socket.readyState = 1;
   const logger = { debug: vi.fn(), warn: vi.fn() };
@@ -21,6 +24,7 @@ function createDelegationHarness(params?: { runAgentConsult?: ConsultRunner }) {
   const runAgentConsult = params?.runAgentConsult ?? vi.fn(async () => ({ text: "Done" }));
   const controller = new OpenAIQuicksilverDelegationController({
     getSocket: () => socket,
+    getInputDisposition: params?.getInputDisposition,
     logger,
     onFatalError,
     runAgentConsult,
@@ -258,6 +262,28 @@ describe("GPT-Live sideband protocol", () => {
     ).toBe(true);
   });
 
+  it("does not start a late control after the active consultation settles", async () => {
+    const { controller, socket, runAgentConsult } = createDelegationHarness({
+      getInputDisposition: (text) => (text === "cancel" ? "control" : "consult"),
+    });
+    try {
+      delegate(controller, "finished-task", "first task");
+      await vi.waitFor(() =>
+        expect(parseSent(socket)).toContainEqual({
+          type: "delegation.context.append",
+          delegation_item_id: "finished-task",
+          channel: "speakable",
+          content: [{ type: "input_text", text: "Done" }],
+        }),
+      );
+      delegate(controller, "late-cancel", "cancel");
+      expect(runAgentConsult).toHaveBeenCalledOnce();
+      expect(socket.sent).toHaveLength(1);
+    } finally {
+      controller.stop(new Error("test complete"));
+    }
+  });
+
   it("consumes bounded transcript context once and in event order", async () => {
     const runAgentConsult = vi.fn<ConsultRunner>(async () => ({ text: "Done" }));
     const { controller } = createDelegationHarness({ runAgentConsult });
@@ -292,11 +318,18 @@ describe("GPT-Live sideband protocol", () => {
           );
         }),
     );
-    const { controller } = createDelegationHarness({ runAgentConsult });
+    const getInputDisposition = vi.fn((text: string) =>
+      text === "host-control" ? ("control" as const) : ("consult" as const),
+    );
+    const { controller } = createDelegationHarness({ runAgentConsult, getInputDisposition });
 
     delegate(controller, "delegation-1", "first task");
+    delegate(controller, "control-active", "host-control");
+    expect(signals[0]?.aborted).toBe(false);
+    expect(runAgentConsult).toHaveBeenCalledOnce();
     delegate(controller, "delegation-2", "second task");
     delegate(controller, "delegation-3", "latest task");
+    delegate(controller, "control-pending", "host-control");
 
     expect(signals[0]?.aborted).toBe(true);
     await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledTimes(2));
@@ -305,20 +338,25 @@ describe("GPT-Live sideband protocol", () => {
     controller.stop(new Error("test complete"));
   });
 
-  it("keeps transcript context when it skips an empty delegation", async () => {
-    const runAgentConsult = vi.fn<ConsultRunner>(async () => ({ text: "Done" }));
-    const { controller } = createDelegationHarness({ runAgentConsult });
-    controller.handleEvent({ kind: "transcript-done", role: "user", text: "hello" });
+  it.each(["  ", "host-control"])(
+    "keeps transcript context when it skips delegation %j",
+    async (input) => {
+      const runAgentConsult = vi.fn<ConsultRunner>(async () => ({ text: "Done" }));
+      const getInputDisposition = (text: string): "control" | "consult" =>
+        text === "host-control" ? "control" : "consult";
+      const { controller } = createDelegationHarness({ runAgentConsult, getInputDisposition });
+      controller.handleEvent({ kind: "transcript-done", role: "user", text: "hello" });
 
-    delegate(controller, "empty", "  ");
-    expect(runAgentConsult).not.toHaveBeenCalled();
-    delegate(controller, "delegation-1", "check weather");
+      delegate(controller, "non-task", input);
+      expect(runAgentConsult).not.toHaveBeenCalled();
+      delegate(controller, "delegation-1", "check weather");
 
-    await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledTimes(1));
-    expect(runAgentConsult.mock.calls[0]?.[0].prompt).toContain(
-      "<transcript_delta>user: hello</transcript_delta>",
-    );
-  });
+      await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledTimes(1));
+      expect(runAgentConsult.mock.calls[0]?.[0].prompt).toContain(
+        "<transcript_delta>user: hello</transcript_delta>",
+      );
+    },
+  );
 
   it.each([
     { kind: "failure", error: new Error("workspace unavailable") },

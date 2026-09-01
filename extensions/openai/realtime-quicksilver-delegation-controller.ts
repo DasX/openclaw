@@ -5,7 +5,10 @@ import {
   toErrorObject,
 } from "openclaw/plugin-sdk/error-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
-import type { RealtimeVoiceAgentConsultRunner } from "openclaw/plugin-sdk/realtime-voice";
+import type {
+  RealtimeVoiceAgentConsultRunner,
+  RealtimeVoiceGatewayControl,
+} from "openclaw/plugin-sdk/realtime-voice";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import type { RawData } from "ws";
 import {
@@ -37,6 +40,7 @@ type OpenAIQuicksilverDelegationControllerOptions = {
   onFatalError: (error: Error) => void;
   onSessionStarted?: (expiresAt: number | undefined) => void;
   onTranscript?: (role: "user" | "assistant", text: string, done: boolean) => void;
+  getInputDisposition?: RealtimeVoiceGatewayControl["getInputDisposition"];
   onWireEventType?: (eventType: string) => void;
   runAgentConsult: RealtimeVoiceAgentConsultRunner;
   signal: AbortSignal;
@@ -179,6 +183,10 @@ export class OpenAIQuicksilverDelegationController {
 
   private startDelegation(id: string, input: string): void {
     if (this.stopped || this.options.signal.aborted || !input.trim()) {
+      return;
+    }
+    // Transcripts execute host controls; a duplicate delegation must not replace active work.
+    if (this.options.getInputDisposition?.(input) === "control") {
       return;
     }
     // Transcript is a once-delivered delta. Empty delegations must not consume it.
