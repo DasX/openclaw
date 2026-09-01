@@ -1,6 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  assertInsideWorkspace,
+  assertInsideSkillsRoot,
   readWorkspaceSkillFile,
   readWorkspaceSupportFile,
 } from "../lifecycle/workspace-skill-write.js";
@@ -28,6 +28,7 @@ import {
   normalizeProposalOrigin,
 } from "./service-propose.js";
 import { readRequiredProposal } from "./service-query.js";
+import { resolveWorkshopSkillsDir } from "./skills-root.js";
 import {
   hashSkillProposalContent,
   readSkillProposalRecord,
@@ -85,8 +86,9 @@ export async function reviseSkillProposal(
   const config = resolveSkillWorkshopConfig(input.config);
   const revision = withPendingSkillProposalRevision(input, async (read) => {
     const { record } = read;
-    assertInsideWorkspace(input.workspaceDir, record.target.skillFile, "skill file");
-    assertInsideWorkspace(input.workspaceDir, record.target.skillDir, "skill directory");
+    const skillsRoot = resolveWorkshopSkillsDir(input.env);
+    assertInsideSkillsRoot(skillsRoot, record.target.skillFile, "skill file");
+    assertInsideSkillsRoot(skillsRoot, record.target.skillDir, "skill directory");
 
     if (record.kind === "create") {
       const currentContent = await readWorkspaceSkillFile(record.target.skillFile);
@@ -323,7 +325,6 @@ async function withPendingSkillProposalRevision<T>(
   };
   const initial = await readRequiredProposal(
     input.proposalId,
-    input.workspaceDir,
     input.env,
     input.agentId,
     recoveryReadOptions,
@@ -333,7 +334,6 @@ async function withPendingSkillProposalRevision<T>(
     async () => {
       const read = await readRequiredProposal(
         input.proposalId,
-        input.workspaceDir,
         input.env,
         input.agentId,
         lockedReadOptions,

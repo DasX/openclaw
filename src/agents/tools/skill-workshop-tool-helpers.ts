@@ -170,7 +170,7 @@ export async function readProposalForInspect(
 ): Promise<SkillProposalReadResult> {
   const proposalId = readToolStringParam(params, "proposal_id", { label: "proposal_id" });
   if (proposalId) {
-    const proposal = await inspectSkillProposal(proposalId, { agentId, workspaceDir, env });
+    const proposal = await inspectSkillProposal(proposalId, { agentId, env });
     if (!proposal) {
       throw new ToolInputError(`Skill proposal not found: ${proposalId}`);
     }
@@ -184,7 +184,6 @@ export async function readProposalForInspect(
   });
   const proposal = await inspectSkillProposal(resolved.record.id, {
     agentId,
-    workspaceDir,
     env,
   });
   if (!proposal) {

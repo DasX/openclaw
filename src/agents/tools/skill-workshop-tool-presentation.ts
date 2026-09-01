@@ -71,7 +71,7 @@ export function formatProposalList(proposals: readonly SkillProposalManifestEntr
   return proposals
     .map(
       (proposal) =>
-        `- ${proposal.id} [${proposal.status}, ${proposal.kind}, ${proposal.scanState}${proposal.workspaceMismatch ? ", previous workspace" : ""}${proposal.degradedState === "draft-missing" ? ", draft missing — reject and re-propose" : ""}] ${proposal.skillKey}: ${proposal.title}`,
+        `- ${proposal.id} [${proposal.status}, ${proposal.kind}, ${proposal.scanState}${proposal.degradedState === "draft-missing" ? ", draft missing — reject and re-propose" : ""}] ${proposal.skillKey}: ${proposal.title}`,
     )
     .join("\n");
 }
