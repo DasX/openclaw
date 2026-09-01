@@ -1,5 +1,5 @@
 // Windows schtasks startup fallback tests cover fallback startup task behavior.
-import type { ChildProcess } from "node:child_process";
+import type { ChildProcess, SpawnSyncOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -51,14 +51,16 @@ type SpawnSyncResult = {
   signal: null;
 };
 const spawnSync = vi.hoisted(() =>
-  vi.fn<(command: string, args?: readonly string[]) => SpawnSyncResult>(() => ({
-    pid: 0,
-    output: [null, "", ""],
-    stdout: "",
-    stderr: "",
-    status: 0,
-    signal: null,
-  })),
+  vi.fn<(command: string, args?: readonly string[], options?: SpawnSyncOptions) => SpawnSyncResult>(
+    () => ({
+      pid: 0,
+      output: [null, "", ""],
+      stdout: "",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }),
+  ),
 );
 const findVerifiedGatewayListenerPidsOnPortSync = vi.hoisted(() =>
   vi.fn<(port: number) => number[]>(() => []),
@@ -376,6 +378,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("Windows startup fallback", () => {
@@ -450,6 +453,7 @@ describe("Windows startup fallback", () => {
   });
 
   it("detaches the direct executable only after it starts", async () => {
+    vi.stubEnv("BOUNDARY_PARENT_ONLY", "synthetic");
     await withWindowsEnv("openclaw-win-startup-", async ({ env }) => {
       await writeGatewayScript(env);
 
@@ -457,7 +461,15 @@ describe("Windows startup fallback", () => {
       expect(spawn).toHaveBeenCalledWith(
         "C:\\Program Files\\nodejs\\node.exe",
         expect.arrayContaining(["gateway", "--port", "18789"]),
-        expect.objectContaining({ detached: true, stdio: "ignore", windowsHide: true }),
+        expect.objectContaining({
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+          env: expect.objectContaining({
+            BOUNDARY_PARENT_ONLY: "synthetic",
+            OPENCLAW_GATEWAY_PORT: "18789",
+          }),
+        }),
       );
       expect(childUnref).toHaveBeenCalledOnce();
     });
@@ -481,6 +493,7 @@ describe("Windows startup fallback", () => {
   });
 
   it("detaches the cmd fallback only after it starts", async () => {
+    vi.stubEnv("BOUNDARY_PARENT_ONLY", "synthetic");
     await withWindowsEnv("openclaw-win-startup-", async ({ env, tmpDir }) => {
       env.OPENCLAW_STATE_DIR = path.join(tmpDir, "state & %USERPROFILE% !");
       const scriptPath = resolveTaskScriptPath(env);
@@ -502,6 +515,10 @@ describe("Windows startup fallback", () => {
       expect(command).toBe(getWindowsCmdExePath());
       expect(args).toEqual(["/d", "/s", "/v:off", "/c", '""%OPENCLAW_TASK_SCRIPT%""']);
       expect(options.env.OPENCLAW_TASK_SCRIPT).toBe(scriptPath);
+      expect(options.env.BOUNDARY_PARENT_ONLY).toBe("synthetic");
+      expect(spawnSync).toHaveBeenCalledOnce();
+      expect(spawnSync.mock.calls[0]?.[2]?.env).toMatchObject({ OPENCLAW_TASK_SCRIPT: scriptPath });
+      expect(spawnSync.mock.calls[0]?.[2]?.env).not.toHaveProperty("BOUNDARY_PARENT_ONLY");
       expect(options.detached).toBe(true);
       expect(options.stdio).toBe("ignore");
       expect(options.windowsHide).toBe(true);
@@ -511,6 +528,7 @@ describe("Windows startup fallback", () => {
   });
 
   it("uses the locale-independent task probe when a scheduled task is missing", async () => {
+    vi.stubEnv("BOUNDARY_PARENT_ONLY", "synthetic");
     await withWindowsEnv("openclaw-win-startup-", async ({ env }) => {
       schtasksResponses.push(
         { code: 0, stdout: "", stderr: "" },
@@ -521,6 +539,11 @@ describe("Windows startup fallback", () => {
       await expect(readScheduledTaskRuntime(env)).resolves.toEqual({
         status: "stopped",
         missingUnit: true,
+      });
+      expect(spawnSync).toHaveBeenCalledOnce();
+      expect(spawnSync.mock.calls[0]?.[2]).toMatchObject({
+        env: expect.not.objectContaining({ BOUNDARY_PARENT_ONLY: "synthetic" }),
+        timeout: 5_000,
       });
     });
   });

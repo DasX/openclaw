@@ -30,6 +30,7 @@ import {
   shouldManageGatewayListenerPort,
   terminateGatewayProcessTree,
 } from "./schtasks-process.js";
+import { resolveServiceManagerEnv } from "./service-process-env.js";
 import {
   createServiceRuntimeInspectionFailure,
   type GatewayServiceRuntime,
@@ -234,7 +235,7 @@ export async function launchFallbackTaskScript(
       ).toString("base64"),
     ],
     {
-      env: scriptEnv,
+      env: { ...resolveServiceManagerEnv(), OPENCLAW_TASK_SCRIPT: scriptPath },
       stdio: "ignore",
       windowsHide: true,
     },
@@ -393,7 +394,7 @@ function probeScheduledTaskState(taskName: string): ScheduledTaskStateProbe {
       "-EncodedCommand",
       Buffer.from(script, "utf16le").toString("base64"),
     ],
-    { encoding: "utf8", timeout: 5_000, windowsHide: true },
+    { env: resolveServiceManagerEnv(), encoding: "utf8", timeout: 5_000, windowsHide: true },
   );
   if (probe.error) {
     return { status: "unknown" };
