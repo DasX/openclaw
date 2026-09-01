@@ -19,6 +19,7 @@ export const vitestWorkerDeclarationEntries = {
   "skills/library/persistence-runtime.test-support":
     "src/skills/library/persistence-runtime.test-support.ts",
   "tui/tui-pty-runtime-test-support": "src/tui/tui-pty-runtime-test-support.ts",
+  "infra/triage-runtime.test-support": "src/infra/triage-runtime.test-support.ts",
 };
 
 export type VitestWorkerDescriptor = { directory: string };

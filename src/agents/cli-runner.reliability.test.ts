@@ -240,6 +240,20 @@ function makeClaudePreparedContext(
   return buildPreparedContext({ provider: "claude-cli", model: "opus", ...overrides });
 }
 
+async function admitPreparedContext(
+  context: PreparedCliRunContext,
+  runtime: "embedded" | "plugin-harness" = "embedded",
+) {
+  const admission = prepareSystemAgentRunAdmission(
+    {},
+    context.params.runId,
+    "main",
+    "cli-recovery-test",
+  );
+  context.params.admittedRunContext = await admission.admit(runtime);
+  return admission;
+}
+
 async function usePluginLiveBackend(context: PreparedCliRunContext, execute: CliBackendExecute) {
   const backend: CliBackendConfig = {
     command: "/bin/sh",
@@ -255,13 +269,7 @@ async function usePluginLiveBackend(context: PreparedCliRunContext, execute: Cli
   context.preparedBackend.backend = backend;
   context.backendResolved.config = backend;
   context.executionTarget = { kind: "plugin", execute };
-  const admission = prepareSystemAgentRunAdmission(
-    {},
-    context.params.runId,
-    "main",
-    "plugin-recovery-test",
-  );
-  context.params.admittedRunContext = await admission.admit("plugin-harness");
+  const admission = await admitPreparedContext(context, "plugin-harness");
   return { admission, context };
 }
 
@@ -716,7 +724,9 @@ describe("runCliAgent reliability", () => {
     expect(freshArgv).not.toContain("--resume-session-at");
   });
 
-  it("falls back to cold reseed when Claude lacks the checkpoint flag", async () => {
+  it("falls back to cold reseed when Claude lacks the checkpoint flag", async ({
+    onTestFinished,
+  }) => {
     supervisorSpawnMock
       .mockResolvedValueOnce(
         makeManagedRun({
@@ -746,6 +756,7 @@ describe("runCliAgent reliability", () => {
       cliSessionId: "old-claude-session",
       openClawHistoryPrompt: CLI_RESEED_PROMPT,
     });
+    onTestFinished((await admitPreparedContext(context)).close);
     context.preparedBackend.backend = {
       ...context.preparedBackend.backend,
       resumeArgs: ["--resume", "{sessionId}"],
@@ -781,7 +792,9 @@ describe("runCliAgent reliability", () => {
     expect(supervisorSpawnMock).toHaveBeenCalledTimes(3);
   });
 
-  it("cold reseeds an initially armed checkpoint after a Claude downgrade", async () => {
+  it("cold reseeds an initially armed checkpoint after a Claude downgrade", async ({
+    onTestFinished,
+  }) => {
     supervisorSpawnMock
       .mockResolvedValueOnce(
         makeManagedRun({
@@ -800,6 +813,7 @@ describe("runCliAgent reliability", () => {
       cliSessionId: "downgraded-session",
       openClawHistoryPrompt: CLI_RESEED_PROMPT,
     });
+    onTestFinished((await admitPreparedContext(context)).close);
     context.preparedBackend.backend = {
       ...context.preparedBackend.backend,
       resumeArgs: ["--resume", "{sessionId}"],
@@ -835,7 +849,9 @@ describe("runCliAgent reliability", () => {
     expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does not treat unsupported-flag wording fragments as a Claude downgrade", async () => {
+  it("does not treat unsupported-flag wording fragments as a Claude downgrade", async ({
+    onTestFinished,
+  }) => {
     supervisorSpawnMock.mockResolvedValueOnce(
       makeManagedRun({
         exitCode: 1,
@@ -850,6 +866,7 @@ describe("runCliAgent reliability", () => {
       cliSessionId: "existing-session",
       openClawHistoryPrompt: CLI_RESEED_PROMPT,
     });
+    onTestFinished((await admitPreparedContext(context)).close);
     context.preparedBackend.backend = {
       ...context.preparedBackend.backend,
       resumeArgs: ["--resume", "{sessionId}"],
