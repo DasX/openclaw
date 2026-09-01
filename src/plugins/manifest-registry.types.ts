@@ -64,7 +64,6 @@ export type PluginManifestRecord = {
   name?: string;
   description?: string;
   catalog?: PluginManifestCatalog;
-  icon?: string;
   iconPath?: string;
   version?: string;
   packageName?: string;

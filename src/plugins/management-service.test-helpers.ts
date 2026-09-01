@@ -23,7 +23,6 @@ export function metadataSnapshot(params: {
   name?: string;
   origin?: "bundled" | "global";
   installRecord?: Record<string, unknown>;
-  icon?: string;
   iconPath?: string;
 }) {
   const id = params.id ?? "workboard";
@@ -36,7 +35,6 @@ export function metadataSnapshot(params: {
     name: params.name ?? "Workboard",
     description: "Coordinate agent work in a shared board.",
     catalog: { featured: true, order: 10 },
-    ...(params.icon ? { icon: params.icon } : {}),
     ...(params.iconPath ? { iconPath: params.iconPath } : {}),
     channels: [],
     providers: [],
