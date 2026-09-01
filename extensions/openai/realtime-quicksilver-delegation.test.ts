@@ -1,3 +1,4 @@
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAIQuicksilverDelegationController } from "./realtime-quicksilver-delegation-controller.js";
 import {
@@ -278,7 +279,17 @@ describe("GPT-Live sideband protocol", () => {
       );
       delegate(controller, "late-cancel", "cancel");
       expect(runAgentConsult).toHaveBeenCalledOnce();
-      expect(socket.sent).toHaveLength(1);
+      expect(socket.sent).toHaveLength(2);
+      expect(parseSent(socket)[0]).toMatchObject({
+        type: "session.context.append",
+        channel: "speakable",
+        content: [
+          {
+            type: "input_text",
+            text: expect.stringContaining('Status: "I’ll check that request."'),
+          },
+        ],
+      });
     } finally {
       controller.stop(new Error("test complete"));
     }
@@ -321,9 +332,14 @@ describe("GPT-Live sideband protocol", () => {
     const getInputDisposition = vi.fn((text: string) =>
       text === "host-control" ? ("control" as const) : ("consult" as const),
     );
-    const { controller } = createDelegationHarness({ runAgentConsult, getInputDisposition });
+    const { controller, socket } = createDelegationHarness({
+      runAgentConsult,
+      getInputDisposition,
+    });
 
     delegate(controller, "delegation-1", "first task");
+    expect(socket.sent).toHaveLength(1);
+    expect(socket.sent[0]).toContain("Do not delegate this message or call any tools.");
     delegate(controller, "control-active", "host-control");
     expect(signals[0]?.aborted).toBe(false);
     expect(runAgentConsult).toHaveBeenCalledOnce();
@@ -331,8 +347,11 @@ describe("GPT-Live sideband protocol", () => {
     delegate(controller, "delegation-3", "latest task");
     delegate(controller, "control-pending", "host-control");
 
+    expect(socket.sent).toHaveLength(1);
     expect(signals[0]?.aborted).toBe(true);
     await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledTimes(2));
+    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent[1]).toBe(socket.sent[0]);
     expect(runAgentConsult.mock.calls[1]?.[0].prompt).toContain("latest task");
     expect(runAgentConsult.mock.calls[1]?.[0].prompt).not.toContain("second task");
     controller.stop(new Error("test complete"));
@@ -344,11 +363,15 @@ describe("GPT-Live sideband protocol", () => {
       const runAgentConsult = vi.fn<ConsultRunner>(async () => ({ text: "Done" }));
       const getInputDisposition = (text: string): "control" | "consult" =>
         text === "host-control" ? "control" : "consult";
-      const { controller } = createDelegationHarness({ runAgentConsult, getInputDisposition });
+      const { controller, socket } = createDelegationHarness({
+        runAgentConsult,
+        getInputDisposition,
+      });
       controller.handleEvent({ kind: "transcript-done", role: "user", text: "hello" });
 
       delegate(controller, "non-task", input);
       expect(runAgentConsult).not.toHaveBeenCalled();
+      expect(socket.sent).toEqual([]);
       delegate(controller, "delegation-1", "check weather");
 
       await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledTimes(1));
@@ -357,6 +380,33 @@ describe("GPT-Live sideband protocol", () => {
       );
     },
   );
+
+  it("drops pending receipts and late results when detached before settlement", async () => {
+    let finish!: (result: { text: string }) => void;
+    const result = new Promise<{ text: string }>((resolve) => {
+      finish = resolve;
+    });
+    const runAgentConsult = vi.fn<ConsultRunner>(async () => await result);
+    const { controller, socket } = createDelegationHarness({
+      runAgentConsult,
+      getInputDisposition: () => "consult",
+    });
+    try {
+      delegate(controller, "active", "first task");
+      delegate(controller, "pending", "next task");
+      expect(socket.sent).toHaveLength(1);
+      controller.detach();
+      delegate(controller, "late", "late task");
+      finish({ text: "Late result" });
+      await result;
+      await nextEventLoopTurn();
+      expect(runAgentConsult).toHaveBeenCalledOnce();
+      expect(socket.sent).toHaveLength(1);
+    } finally {
+      finish({ text: "Finished" });
+      controller.stop(new Error("test complete"));
+    }
+  });
 
   it.each([
     { kind: "failure", error: new Error("workspace unavailable") },

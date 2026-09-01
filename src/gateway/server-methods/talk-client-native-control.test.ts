@@ -467,9 +467,12 @@ describe("native Talk through the public OpenAI plugin registration", () => {
           expect(abortSignal.aborted).toBe(false);
           expect(abortOwned).not.toHaveBeenCalled();
           expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
+          const preControlSocketIndex = socket.sent.length;
           const waitForControlReply = () =>
             vi.waitFor(() =>
-              expect(socket.sent.join("\n")).toContain("Internal OpenClaw voice control result."),
+              expect(socket.sent.slice(preControlSocketIndex).join("\n")).toContain(
+                "Internal OpenClaw voice control result.",
+              ),
             );
           if (eventOrder === "transcript-first") {
             socket.serverEvent(transcript);
@@ -491,9 +494,9 @@ describe("native Talk through the public OpenAI plugin registration", () => {
             agentStarts: upstream.runEmbeddedAgent.mock.calls.length,
           }).toEqual({ originalRunAborted: text === "cancel", agentStarts: 1 });
           expect(
-            socket.sent.filter((frame) =>
-              frame.includes("Internal OpenClaw voice control result."),
-            ),
+            socket.sent
+              .slice(preControlSocketIndex)
+              .filter((frame) => frame.includes("Internal OpenClaw voice control result.")),
           ).toHaveLength(1);
           expect(
             readSessionTranscriptMessageEvents({ agentId: AGENT_ID, sessionId: SESSION_ID }),

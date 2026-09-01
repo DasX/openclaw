@@ -50,6 +50,11 @@ input. When no task is active in that call, status and cancellation return a spo
 no-active-run response, even if another call on the same connection and agent session
 has work in progress. Genuine new tasks still supersede the running native delegation.
 
+These calls disable provider-generated delegation acknowledgments at creation.
+OpenClaw sends one neutral receipt when it launches a real task; status and
+cancellation requests wait for the host result instead. A task receipt is not
+confirmation that a model or tool has started.
+
 Closing a native transport fences new delegations and late provider delivery;
 already accepted agent work retains its own cancellation lifetime. Spoken run
 cancellation is separate from ending the audio connection. Gateway-controlled

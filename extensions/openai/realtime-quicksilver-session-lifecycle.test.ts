@@ -41,6 +41,83 @@ describe("GPT-Live browser session lifecycle", () => {
     }
   });
 
+  it.each([
+    { negotiated: true, classified: true },
+    { negotiated: true, classified: false },
+    { negotiated: false, classified: true },
+    { negotiated: false, classified: false },
+  ])(
+    "owns acknowledgement only with negotiated=$negotiated classified=$classified input",
+    async ({ negotiated, classified }) => {
+      const fetchImpl = vi.fn<typeof fetch>(async () => createCallResponse());
+      const { realtime, sockets, runAgentConsult } = createBroker({ fetchImpl });
+      const getInputDisposition = vi.fn(() => "consult" as const);
+      const gatewayControl = {
+        bindBridge: vi.fn(),
+        bindControl: vi.fn(),
+        ...(classified ? { getInputDisposition } : {}),
+      };
+      const request = {
+        providerConfig: {},
+        model: "gpt-live-test",
+        instructions: "Keep my answers brief.",
+        runAgentConsult,
+        gatewayControl,
+      };
+      try {
+        const reservation = await realtime.broker.createBrowserSession(
+          negotiated ? { ...request, clientControl: { owner: "gateway" } } : request,
+          { type: "oauth", token: "synthetic-oauth", accountId: "synthetic-account" },
+        );
+        if (reservation.transport !== "webrtc") {
+          throw new Error("Expected WebRTC reservation");
+        }
+        const response = createResponseHarness();
+        await realtime.handler(
+          createRequest({ token: reservation.clientSecret, body: AUDIO_ONLY_SDP }),
+          response.res,
+        );
+        expect(response.res.statusCode).toBe(200);
+        const body = fetchImpl.mock.calls[0]?.[1]?.body;
+        if (typeof body !== "string") {
+          throw new Error("Expected initial call JSON");
+        }
+        const { session } = JSON.parse(body);
+        const hostClassified = negotiated && classified;
+        expect(session.delegation).toEqual(
+          hostClassified ? { type: "client", ack_filler: false } : { type: "client" },
+        );
+        if (hostClassified) {
+          expect(session.instructions).toContain("Wait for the host control result");
+          expect(session.instructions).toContain("Keep my answers brief.");
+        } else {
+          expect(session.instructions).toBe("Keep my answers brief.");
+        }
+        const socket = sockets[0];
+        if (!socket) {
+          throw new Error("Expected native sideband socket");
+        }
+        emitSideband(socket, {
+          type: "delegation.created",
+          item: {
+            type: "delegation",
+            target: "client",
+            id: "task",
+            content: [{ type: "input_text", text: "Check the project" }],
+          },
+        });
+        await vi.waitFor(() => expect(socket.sent.join("\n")).toContain("Done"));
+        const receipts = parseSent(socket).filter(
+          (event) => event.type === "session.context.append",
+        );
+        expect(receipts).toHaveLength(hostClassified ? 1 : 0);
+        expect(getInputDisposition).toHaveBeenCalledTimes(hostClassified ? 1 : 0);
+      } finally {
+        await realtime.cleanup();
+      }
+    },
+  );
+
   it.each(["m=application 9 UDP/DTLS/SCTP webrtc-datachannel", "m=video 9 UDP/TLS/RTP/SAVPF 96"])(
     "rejects negotiated native %s media and closes its owner without upstream work",
     async (media) => {

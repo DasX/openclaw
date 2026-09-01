@@ -869,6 +869,9 @@ describe("GPT-Live gateway relay bridge", () => {
     const onEvent = vi.fn();
     const onReady = vi.fn();
     const onClose = vi.fn();
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      createCallResponse("v=answer\r\n", "rtc_bridge"),
+    );
     const bridge = new OpenAIQuicksilverGatewayBridge({
       providerConfig: {},
       model: "gpt-live-1-codex",
@@ -889,7 +892,7 @@ describe("GPT-Live gateway relay bridge", () => {
         accountId: "account-1",
       })),
       createPeer: vi.fn(async () => peer),
-      fetchImpl: vi.fn(async () => createCallResponse("v=answer\r\n", "rtc_bridge")),
+      fetchImpl,
       webSocketFactory: () => {
         socket = new FakeSocket();
         return socket;
@@ -901,6 +904,12 @@ describe("GPT-Live gateway relay bridge", () => {
       throw new Error("expected sideband socket");
     }
     const connectedSocket = socket;
+    const body = fetchImpl.mock.calls[0]?.[1]?.body;
+    if (typeof body !== "string") {
+      throw new Error("Expected initial call JSON");
+    }
+    expect(JSON.parse(body).session.delegation).toEqual({ type: "client", ack_filler: false });
+    expect(JSON.parse(body).session.instructions).toContain("Wait for the host control result");
     expect(createOffer).toHaveBeenCalledOnce();
     expect(applyAnswer).toHaveBeenCalledWith("v=answer\r\n");
     expect(adoptPendingAudio).not.toHaveBeenCalled();
@@ -936,6 +945,7 @@ describe("GPT-Live gateway relay bridge", () => {
     });
     expect(getInputDisposition).toHaveBeenCalledExactlyOnceWith("Status?");
     expect(runAgentConsult).not.toHaveBeenCalled();
+    expect(connectedSocket.sent).toHaveLength(1);
 
     emitSideband(connectedSocket, {
       type: "delegation.created",
@@ -955,6 +965,10 @@ describe("GPT-Live gateway relay bridge", () => {
         content: [{ type: "input_text", text: "Delegated result" }],
       }),
     );
+    expect(
+      parseSent(connectedSocket).filter((event) => event.type === "session.context.append"),
+    ).toHaveLength(2);
+    expect(connectedSocket.sent[1]).toContain("I’ll check that request.");
 
     bridge.close();
     expect(closePeer).toHaveBeenCalledOnce();

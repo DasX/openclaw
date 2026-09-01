@@ -8,6 +8,7 @@ import { readResponseTextPrefix } from "openclaw/plugin-sdk/response-limit-runti
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { z } from "zod";
+import { OPENAI_QUICKSILVER_HOST_CONTROL_INSTRUCTIONS } from "./realtime-quicksilver-instructions.js";
 import {
   isOpenAIGptLiveModel,
   resolveOpenAIQuicksilverVoice,
@@ -60,7 +61,7 @@ type OpenAIQuicksilverSession = {
   model: string;
   instructions: string;
   audio: { output: { voice: OpenAIGptLiveVoice } };
-  delegation: { type: "client" };
+  delegation: { type: "client"; ack_filler?: false };
   initial_items?: Array<{
     type: "message";
     role: "user" | "assistant";
@@ -146,6 +147,7 @@ class OpenAIQuicksilverCallError extends Error {
 
 export function buildOpenAIQuicksilverSession(params: {
   model: string;
+  hostControlsInput?: boolean;
   instructions?: string;
   voice?: string;
   initialItems?: readonly OpenAIQuicksilverInitialItem[];
@@ -164,9 +166,17 @@ export function buildOpenAIQuicksilverSession(params: {
   );
   return {
     model: params.model,
-    instructions: params.instructions?.trim() ?? "",
+    instructions: [
+      params.instructions?.trim(),
+      params.hostControlsInput ? OPENAI_QUICKSILVER_HOST_CONTROL_INSTRUCTIONS : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     audio: { output: { voice: resolveOpenAIQuicksilverVoice(params.voice) } },
-    delegation: { type: "client" },
+    // Set at call creation: an attached sideband cannot change existing-call configuration.
+    delegation: params.hostControlsInput
+      ? { type: "client", ack_filler: false }
+      : { type: "client" },
     ...(initialItems && initialItems.length > 0 ? { initial_items: initialItems } : {}),
   };
 }

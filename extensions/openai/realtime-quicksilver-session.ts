@@ -446,6 +446,7 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       const sessionConfig = isOpenAIGptLiveModel(offer.request.model)
         ? buildOpenAIQuicksilverSession({
             model: offer.request.model,
+            hostControlsInput: Boolean(offer.nativeControl?.getInputDisposition),
             instructions: offer.request.instructions,
             voice: offer.request.voice,
             initialItems: offer.request.initialItems,

@@ -5,9 +5,10 @@ import {
   toErrorObject,
 } from "openclaw/plugin-sdk/error-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
-import type {
-  RealtimeVoiceAgentConsultRunner,
-  RealtimeVoiceGatewayControl,
+import {
+  buildRealtimeVoiceAgentControlSpeechMessage,
+  type RealtimeVoiceAgentConsultRunner,
+  type RealtimeVoiceGatewayControl,
 } from "openclaw/plugin-sdk/realtime-voice";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import type { RawData } from "ws";
@@ -240,6 +241,13 @@ export class OpenAIQuicksilverDelegationController {
   private async runDelegation(delegation: PendingDelegation, signal: AbortSignal): Promise<void> {
     let text: string;
     try {
+      // Host-classified sessions disable vendor filler. Receipt is launch-only, not run admission.
+      if (this.options.getInputDisposition) {
+        this.sendSessionContext(
+          buildRealtimeVoiceAgentControlSpeechMessage("I’ll check that request."),
+          "speakable",
+        );
+      }
       const result = await this.options.runAgentConsult({ prompt: delegation.prompt, signal });
       if (signal.aborted) {
         return;

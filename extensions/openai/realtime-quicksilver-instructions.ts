@@ -4,6 +4,11 @@ Keep the conversation natural while delegated work runs.
 Context on the commentary channel is silent background. You may use it, but never read it aloud.
 Context on the speakable channel is your answer to deliver naturally in your own words. Never mention the channel or the delegation.`;
 
+export const OPENAI_QUICKSILVER_HOST_CONTROL_INSTRUCTIONS = `The host handles spoken status and cancellation requests.
+Wait for the host control result before answering them. Do not add your own acknowledgement or progress claims.
+Only host-provided results establish whether work is active, completed, or cancelled; a delegation is not evidence of progress.
+Speak host-provided task receipts and control results exactly as instructed, without delegating them.`;
+
 export type OpenAIQuicksilverTranscriptEntry = {
   role: "user" | "assistant";
   text: string;

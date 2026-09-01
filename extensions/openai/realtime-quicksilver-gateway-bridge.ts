@@ -246,6 +246,7 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
           sdp: offerSdp,
           session: buildOpenAIQuicksilverSession({
             model: this.config.model,
+            hostControlsInput: Boolean(this.config.getInputDisposition),
             instructions: this.config.instructions,
             voice: this.config.voice,
           }),
