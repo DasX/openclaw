@@ -23,6 +23,7 @@ import {
   controlUiSessionPath,
   createControlUiMockBootstrapConfig,
   createControlUiMockGatewayInitScript,
+  createControlUiMockSameOriginGatewayScript,
   type ControlUiMockGatewayScenario,
 } from "../ui/src/test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../ui/src/test-helpers/control-ui-session-fixtures.ts";
@@ -3078,6 +3079,7 @@ function createMockGatewayPlugin(
   fixture?: CliOptions["fixture"],
 ): Plugin {
   const initScript = escapeScriptContent(createControlUiMockGatewayInitScript(scenario));
+  const sameOriginGatewayScript = escapeScriptContent(createControlUiMockSameOriginGatewayScript());
   const statefulInitScript = escapeScriptContent(
     createControlUiPreviewInitScript() + skillLibraryMockInitScript(scenario.models),
   );
@@ -3161,7 +3163,7 @@ function createMockGatewayPlugin(
     transformIndexHtml(html) {
       return html.replace(
         "</head>",
-        `${attachmentThemeToggle}    <script data-openclaw-control-ui-mock-locale>\n      try { localStorage.setItem("openclaw.i18n.locale", "en"); } catch {}\n    </script>\n    <script data-openclaw-control-ui-mock-gateway>\n${initScript}\n${statefulInitScript}\n    </script>\n  </head>`,
+        `${attachmentThemeToggle}    <script data-openclaw-control-ui-mock-locale>\n      try { localStorage.setItem("openclaw.i18n.locale", "en"); } catch {}\n    </script>\n    <script data-openclaw-control-ui-mock-gateway>\n${sameOriginGatewayScript}\n${initScript}\n${statefulInitScript}\n    </script>\n  </head>`,
       );
     },
   };
