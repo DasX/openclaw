@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { ReplyMessageInjectionOptions } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import {
   abortActiveReplyRuns,
   abortReplyRunBySessionId,
@@ -112,6 +113,7 @@ type PreparedEmbeddedAgentQueueMessage =
   | {
       kind: "embedded_run";
       queueMessage: EmbeddedAgentQueueHandle["queueMessage"];
+      options: EmbeddedAgentQueueMessageOptions;
     };
 
 function createQueueFailureOutcome(
@@ -340,14 +342,14 @@ function clearActiveRunSessionFiles(sessionId: string, sessionFile?: string): vo
 export function queueEmbeddedAgentMessageWithOutcome(
   sessionId: string,
   text: string,
-  options?: EmbeddedAgentQueueMessageOptions,
+  options?: ReplyMessageInjectionOptions,
 ): EmbeddedAgentQueueMessageOutcome {
   const prepared = prepareEmbeddedAgentQueueMessage(sessionId, options);
   if (prepared.kind === "complete") {
     return prepared.outcome;
   }
   logActiveRunMessageAccepted(sessionId);
-  void prepared.queueMessage(text, options ?? { steeringMode: "all" }).catch((err: unknown) => {
+  void prepared.queueMessage(text, prepared.options).catch((err: unknown) => {
     diag.debug(
       `queue message rejected after enqueue: sessionId=${sessionId} err=${formatErrorMessage(err)}`,
     );
@@ -489,14 +491,16 @@ function clearEmbeddedRunAbortability(
 export async function queueEmbeddedAgentMessageWithOutcomeAsync(
   sessionId: string,
   text: string,
-  options?: EmbeddedAgentQueueMessageOptions,
+  options?: ReplyMessageInjectionOptions,
 ): Promise<EmbeddedAgentQueueMessageOutcome> {
   const prepared = prepareEmbeddedAgentQueueMessage(sessionId, options);
   if (prepared.kind === "complete") {
     const activeToolAuthorityFingerprint = normalizeOptionalString(
       ACTIVE_EMBEDDED_RUNS.get(sessionId)?.toolAuthorityFingerprint,
     );
+    // An overlay must never fall back to a caller's copied route-only hash.
     const pendingInputAuthorityProven = Boolean(
+      !options?.toolAuthorityOverlay &&
       activeToolAuthorityFingerprint &&
       (normalizeOptionalString(options?.toolAuthorityFingerprint) ===
         activeToolAuthorityFingerprint ||
@@ -550,7 +554,7 @@ export async function queueEmbeddedAgentMessageWithOutcomeAsync(
   }
   const enqueuedAtMs = Date.now();
   try {
-    const queueResult = await prepared.queueMessage(text, options ?? { steeringMode: "all" });
+    const queueResult = await prepared.queueMessage(text, prepared.options);
     if (queueResult?.transcriptCommit === "unconfirmed") {
       diag.warn(
         `queue message accepted without transcript confirmation: sessionId=${sessionId} err=${queueResult.errorMessage}`,
@@ -585,7 +589,7 @@ export async function queueEmbeddedAgentMessageWithOutcomeAsync(
 
 function prepareEmbeddedAgentQueueMessage(
   sessionId: string,
-  options?: EmbeddedAgentQueueMessageOptions,
+  options?: ReplyMessageInjectionOptions,
 ): PreparedEmbeddedAgentQueueMessage {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
@@ -607,6 +611,7 @@ function prepareEmbeddedAgentQueueMessage(
     }
     return { kind: "complete", outcome: createQueueFailureOutcome(sessionId, "no_active_run") };
   }
+  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
   const queueMessage = resolveEmbeddedQueueMessage(sessionId, handle);
   if (!queueMessage) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
@@ -638,10 +643,30 @@ function prepareEmbeddedAgentQueueMessage(
       outcome: createQueueFailureOutcome(sessionId, "transcript_commit_wait_unsupported"),
     };
   }
+  const operation = resolveActiveReplyOperationForSessionId(sessionId);
+  const ownedOperation =
+    operation && getAttachedBackend(operation) === handle ? operation : undefined;
+  const { toolAuthorityOverlay, ...backendOptions } = options ?? { steeringMode: "all" as const };
+  if (toolAuthorityOverlay) {
+    // An overlay is caller evidence; a supplied raw hash cannot override it.
+    try {
+      backendOptions.toolAuthorityFingerprint = registration?.toolAuthority
+        ? registration.toolAuthority.project(toolAuthorityOverlay)
+        : ownedOperation?.projectToolAuthorityFingerprint(toolAuthorityOverlay);
+    } catch {
+      backendOptions.toolAuthorityFingerprint = undefined;
+    }
+    if (!backendOptions.toolAuthorityFingerprint) {
+      return {
+        kind: "complete",
+        outcome: createQueueFailureOutcome(sessionId, "tool_authority_mismatch"),
+      };
+    }
+  }
   const deliveryModeMismatch = resolveReplyBackendQueueMessageMismatch(
     handle,
-    options,
-    resolveActiveReplyOperationForSessionId(sessionId),
+    backendOptions,
+    ownedOperation,
   );
   if (deliveryModeMismatch) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=${deliveryModeMismatch}`);
@@ -650,7 +675,24 @@ function prepareEmbeddedAgentQueueMessage(
       outcome: createQueueFailureOutcome(sessionId, deliveryModeMismatch),
     };
   }
-  return { kind: "embedded_run", queueMessage };
+  try {
+    registration?.toolAuthority?.assertActive();
+  } catch {
+    return {
+      kind: "complete",
+      outcome: createQueueFailureOutcome(sessionId, "tool_authority_mismatch"),
+    };
+  }
+  if (
+    ACTIVE_EMBEDDED_RUNS.get(sessionId) !== handle ||
+    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
+    (ownedOperation &&
+      (resolveActiveReplyOperationForSessionId(sessionId) !== ownedOperation ||
+        getAttachedBackend(ownedOperation) !== handle))
+  ) {
+    return { kind: "complete", outcome: createQueueFailureOutcome(sessionId, "no_active_run") };
+  }
+  return { kind: "embedded_run", queueMessage, options: backendOptions };
 }
 
 /**
@@ -1280,6 +1322,14 @@ export function setActiveEmbeddedRun(
     handle.abort("restart");
     return;
   }
+  const caller = getGatewayToolCallerIdentity();
+  const toolAuthority = caller?.embeddedRunToolAuthorityBinding?.({
+    sessionId,
+    sessionKey,
+    sessionFile,
+    agentId,
+    handle,
+  });
   const previousHandle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   const wasActive = previousHandle !== undefined;
   if (previousHandle) {
@@ -1287,12 +1337,14 @@ export function setActiveEmbeddedRun(
     clearEmbeddedRunAbortability(previousHandle, { retainFinalizing: true });
     EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.delete(previousHandle);
   }
+  toolAuthority?.assertActive();
   clearEmbeddedRunAbandonment({ sessionId, sessionKey, sessionFile });
   ACTIVE_EMBEDDED_RUNS.set(sessionId, handle);
   // The dispatch scope carries the admitted instance across both core and
   // plugin attempts. A handle's public runId alone cannot confer wait authority.
-  const operationalRunInstance = getGatewayToolCallerIdentity()?.operationalRunInstance;
+  const operationalRunInstance = caller?.operationalRunInstance;
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS.set(handle, {
+    toolAuthority,
     sessionId,
     agentId,
     ...(sessionKey ? { sessionKey } : {}),

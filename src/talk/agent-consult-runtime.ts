@@ -7,6 +7,7 @@ import {
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
+import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
@@ -171,6 +172,59 @@ function resolveRealtimeVoiceAgentDeliveryContext(params: {
     // Best-effort routing enrichment only; consults should still work without it.
   }
   return undefined;
+}
+
+/** Current caller-side facts shared by consultation and inbound voice steering. */
+export function prepareRealtimeVoiceAgentExecutionContext(params: {
+  cfg: OpenClawConfig;
+  agentRuntime: RealtimeVoiceAgentConsultRuntime;
+  agentId?: string;
+  sessionKey: string;
+  storePath?: string;
+  spawnedBy?: string | null;
+  senderId?: string | null;
+  senderIsOwner?: boolean;
+  toolsAllow?: string[];
+  messageProvider: string;
+  sessionEntry?: SessionEntry;
+}) {
+  const agentId =
+    params.agentId ?? resolveSessionAgentId({ config: params.cfg, sessionKey: params.sessionKey });
+  const storePath =
+    params.storePath ??
+    params.agentRuntime.session.resolveStorePath(params.cfg.session?.store, { agentId });
+  const sessionEntry =
+    params.sessionEntry ??
+    params.agentRuntime.session.getSessionEntry({
+      agentId,
+      storePath,
+      sessionKey: params.sessionKey,
+      readConsistency: "latest",
+    });
+  const deliveryContext =
+    resolveRealtimeVoiceAgentDeliveryContext({ ...params, agentId, storePath }) ??
+    deliveryContextFromSession(sessionEntry);
+  const toolAuthorityOverlay: ReplyToolAuthorityOverlay = {
+    permissionMode: sessionEntry?.permissionMode,
+    toolOverrides: sessionEntry?.toolOverrides,
+    messageProvider: deliveryContext?.channel ?? params.messageProvider,
+    agentAccountId: deliveryContext?.accountId,
+    spawnedBy: params.spawnedBy ?? undefined,
+    senderId: params.senderId ?? undefined,
+    senderIsOwner: params.senderIsOwner === true,
+    toolsAllow: params.toolsAllow,
+    disableTools: false,
+    traceAuthorized: false,
+  };
+  return {
+    agentId,
+    storePath,
+    sessionEntry,
+    deliveryContext,
+    toolAuthorityOverlay,
+    agentDir: params.agentRuntime.resolveAgentDir(params.cfg, agentId),
+    workspaceDir: params.agentRuntime.resolveAgentWorkspaceDir(params.cfg, agentId),
+  };
 }
 
 async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
@@ -340,25 +394,13 @@ export async function consultRealtimeVoiceAgent(params: {
     import("../config/sessions/lifecycle.js"),
   ]);
   params.abortSignal?.throwIfAborted();
-  const agentId =
-    params.agentId ??
-    resolveSessionAgentId({
-      config: params.cfg,
-      sessionKey: params.sessionKey,
-    });
-  const agentDir = params.agentRuntime.resolveAgentDir(params.cfg, agentId);
-  const workspaceDir = params.agentRuntime.resolveAgentWorkspaceDir(params.cfg, agentId);
-  const storePath =
-    params.storePath ??
-    params.agentRuntime.session.resolveStorePath(params.cfg.session?.store, {
-      agentId,
-    });
-  const initialSessionEntry = params.agentRuntime.session.getSessionEntry({
+  const {
     agentId,
+    agentDir,
+    workspaceDir,
     storePath,
-    sessionKey: params.sessionKey,
-    readConsistency: "latest",
-  });
+    sessionEntry: initialSessionEntry,
+  } = prepareRealtimeVoiceAgentExecutionContext(params);
   const modelLockParams = {
     cfg: params.cfg,
     agentRuntime: params.agentRuntime,
@@ -428,8 +470,8 @@ export async function consultRealtimeVoiceAgent(params: {
         agentRuntime: params.agentRuntime,
         logger: params.logger,
       });
-      const consultDeliveryContext =
-        resolvedDeliveryContext ?? deliveryContextFromSession(sessionEntry);
+      const { deliveryContext: consultDeliveryContext, toolAuthorityOverlay } =
+        prepareRealtimeVoiceAgentExecutionContext({ ...params, agentId, storePath, sessionEntry });
       const sessionId = sessionEntry.sessionId;
       assertRealtimeVoiceAgentConsultModelSelectionUnlocked(modelLockParams);
 
@@ -454,11 +496,9 @@ export async function consultRealtimeVoiceAgent(params: {
         },
         sandboxSessionKey: resolveRealtimeVoiceAgentSandboxSessionKey(agentId, params.sessionKey),
         agentId,
-        spawnedBy: params.spawnedBy,
-        senderId: params.senderId,
-        senderIsOwner: params.senderIsOwner,
-        messageProvider: consultDeliveryContext?.channel ?? params.messageProvider,
-        agentAccountId: consultDeliveryContext?.accountId,
+        ...toolAuthorityOverlay,
+        // ASR voice ingress has no trace/client-tool or privileged handoff capability.
+        messageProvider: toolAuthorityOverlay.messageProvider,
         messageTo: consultDeliveryContext?.to,
         messageThreadId: consultDeliveryContext?.threadId,
         currentChannelId: consultDeliveryContext?.to,
@@ -483,7 +523,6 @@ export async function consultRealtimeVoiceAgent(params: {
         verboseLevel: "off",
         reasoningLevel: "off",
         toolResultFormat: "plain",
-        toolsAllow: params.toolsAllow,
         timeoutMs,
         runId,
         lane: params.lane,

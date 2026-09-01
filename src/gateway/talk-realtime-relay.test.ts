@@ -28,6 +28,7 @@ import {
 import { resetClientVoiceConfirmationStateForTest } from "../talk/client-voice-confirmation.test-support.js";
 import { ensureClientVoiceAgentSessionEntry } from "../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../talk/client-voice-session.test-support.js";
+import { resolveRealtimeVoiceProviderCapabilities } from "../talk/provider-resolver.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
   type RealtimeVoiceBridge,
@@ -78,14 +79,26 @@ function makeRelayTransport<Overrides extends Partial<RealtimeVoiceBridge> = Rec
 }
 
 function createTalkRealtimeRelaySession(
-  params: Omit<Parameters<typeof createTalkRealtimeRelaySessionRaw>[0], "sessionTarget"> & {
+  params: Omit<
+    Parameters<typeof createTalkRealtimeRelaySessionRaw>[0],
+    "sessionTarget" | "controlSource"
+  > & {
     sessionKey?: string;
   },
 ): ReturnType<typeof createTalkRealtimeRelaySessionRaw> {
   const { sessionKey, ...request } = params;
   const cfg = params.cfg ?? { agents: { entries: { main: { default: true } } } };
+  const capabilities = resolveRealtimeVoiceProviderCapabilities({
+    provider: params.provider,
+    providerConfig: params.providerConfig,
+    cfg,
+    model: params.model,
+    surface: "gateway-relay",
+  });
   const session = createTalkRealtimeRelaySessionRaw({
     ...request,
+    controlSource: capabilities?.handlesAgentConsult === true ? "delegation" : "transcript",
+    supportsToolCalls: capabilities?.supportsToolCalls,
     context: {
       ...request.context,
       chatAbortControllers: request.context.chatAbortControllers ?? new Map(),
@@ -894,6 +907,7 @@ describe("talk realtime gateway relay", () => {
     };
     try {
       const session = createTalkRealtimeRelaySessionRaw({
+        controlSource: "transcript",
         context: {
           broadcastToConnIds: vi.fn(),
           chatAbortControllers: new Map(),
@@ -943,6 +957,7 @@ describe("talk realtime gateway relay", () => {
     setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
     try {
       const session = createTalkRealtimeRelaySessionRaw({
+        controlSource: "transcript",
         context: {
           broadcastToConnIds: vi.fn(),
           chatAbortControllers: new Map(),
@@ -4064,6 +4079,89 @@ describe("talk realtime gateway relay", () => {
     ).toHaveLength(1);
   });
 
+  it.each([
+    [true, "replacement"],
+    [false, "replacement"],
+    [true, "idle"],
+    [false, "idle"],
+    [true, "disconnect"],
+    [false, "disconnect"],
+  ] as const)(
+    "pins control admission before a %s native / %s transition",
+    async (native, transition) => {
+      let request: RealtimeVoiceBridgeCreateRequest | undefined;
+      const bridge = makeRelayTransport({ sendUserMessage: vi.fn() });
+      const capabilities: RealtimeVoiceProviderCapabilities = {
+        transports: ["gateway-relay"],
+        inputAudioFormats: [REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ],
+        outputAudioFormats: [REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ],
+        supportsToolCalls: transition !== "idle",
+      };
+      const provider: RealtimeVoiceProviderPlugin = {
+        id: "relay-test",
+        label: "Relay Test",
+        capabilities,
+        isConfigured: () => true,
+        createBridge: (input) => {
+          request = input;
+          return bridge;
+        },
+      };
+      Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
+        value: {
+          isBrowserSessionConfigured: () => true,
+          resolveGatewayRelayCapabilities: () => ({ ...capabilities, handlesAgentConsult: native }),
+        },
+      });
+      const fixture = createAbortableRelayRunFixture(provider);
+      const relay = relaySessions.get(fixture.session.relaySessionId);
+      if (!relay || !request) {
+        throw new Error("Missing relay fixture");
+      }
+      const controls = relay.context.chatAbortControllers;
+      const original = controls.get("run-1");
+      if (!original) {
+        throw new Error("Missing original registration");
+      }
+      const queueMessage = vi.fn(async () => undefined);
+      const abort = vi.fn();
+      const backend = {
+        runId: "run-1",
+        queueMessage,
+        abort,
+        isStreaming: () => true,
+        isCompacting: () => false,
+      };
+      setActiveEmbeddedRun("run-1", backend, "agent:main:main");
+      if (transition === "idle") {
+        controls.delete("run-1");
+      }
+      const respond = vi.fn();
+      if (native) {
+        expect(request.handleDelegationInput?.("cancel", respond)).toBe("control");
+      } else {
+        request.onTranscript?.("user", "cancel", true);
+      }
+      controls.set("run-1", { ...original });
+      setActiveEmbeddedRun("run-1", { ...backend }, "agent:main:main");
+      if (transition === "disconnect") {
+        cleanupTalkConnection("conn-1", { warn: vi.fn() });
+      }
+      await nextEventLoopTurn();
+      if (transition !== "disconnect") {
+        await vi.waitFor(() =>
+          expect(native ? respond : bridge.sendUserMessage).toHaveBeenCalledWith(
+            expect.stringContaining("There is no active OpenClaw run to cancel."),
+          ),
+        );
+      } else {
+        expect(respond).not.toHaveBeenCalled();
+      }
+      expect(abort).not.toHaveBeenCalled();
+      expect(queueMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("returns structured relay steering status and emits Talk progress", async () => {
     const provider = createIdleRelayProvider();
     const events: Array<{ event: string; payload: unknown; connIds: string[] }> = [];
@@ -4651,18 +4749,33 @@ describe("talk realtime gateway relay", () => {
     {
       text: "status",
       supportsToolCalls: false,
+      handlesAgentConsult: false,
       reply: "I'm not working on an active request right now.",
     },
     {
       text: "cancel",
       supportsToolCalls: false,
+      handlesAgentConsult: false,
       reply: "There is no active OpenClaw run to cancel.",
     },
-    { text: "status", supportsToolCalls: true, reply: undefined },
-    { text: "cancel", supportsToolCalls: true, reply: undefined },
+    { text: "status", supportsToolCalls: true, handlesAgentConsult: false, reply: undefined },
+    { text: "status", supportsToolCalls: undefined, handlesAgentConsult: false, reply: undefined },
+    {
+      text: "status",
+      supportsToolCalls: false,
+      handlesAgentConsult: true,
+      reply: "I'm not working on an active request right now.",
+    },
+    {
+      text: "cancel",
+      supportsToolCalls: false,
+      handlesAgentConsult: true,
+      reply: "There is no active OpenClaw run to cancel.",
+    },
+    { text: "cancel", supportsToolCalls: true, handlesAgentConsult: false, reply: undefined },
   ])(
-    "routes idle $text by resolved relay tool capability $supportsToolCalls",
-    async ({ text, reply, supportsToolCalls }) => {
+    "routes idle $text (tools=$supportsToolCalls, delegation=$handlesAgentConsult)",
+    async ({ text, reply, supportsToolCalls, handlesAgentConsult }) => {
       let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
       const bridge = makeRelayTransport({
         sendUserMessage: vi.fn(),
@@ -4686,7 +4799,11 @@ describe("talk realtime gateway relay", () => {
       Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
         value: {
           isBrowserSessionConfigured: () => true,
-          resolveGatewayRelayCapabilities: () => ({ ...capabilities, supportsToolCalls }),
+          resolveGatewayRelayCapabilities: () => ({
+            ...capabilities,
+            supportsToolCalls,
+            handlesAgentConsult,
+          }),
         },
       });
       const context = {
@@ -4709,15 +4826,16 @@ describe("talk realtime gateway relay", () => {
         callId: "call-1",
       });
 
-      expect(bridgeRequest?.getInputDisposition).toEqual(
-        supportsToolCalls ? undefined : expect.any(Function),
+      const respond = vi.fn();
+      expect(bridgeRequest?.handleDelegationInput).toEqual(
+        handlesAgentConsult ? expect.any(Function) : undefined,
       );
-      expect(bridgeRequest?.getInputDisposition?.(text)).toBe(
-        supportsToolCalls ? undefined : "control",
-      );
-      expect(bridgeRequest?.getInputDisposition?.("use the release branch instead")).toBe(
-        supportsToolCalls ? undefined : "consult",
-      );
+      if (handlesAgentConsult) {
+        expect(bridgeRequest?.handleDelegationInput?.("Check the weather.", respond)).toBe(
+          "consult",
+        );
+        expect(bridgeRequest?.handleDelegationInput?.(text, respond)).toBe("control");
+      }
       bridgeRequest?.onTranscript?.("user", text, true);
 
       await flushTalkRealtimeRelayVoiceWrites({
@@ -4726,11 +4844,21 @@ describe("talk realtime gateway relay", () => {
       });
       await nextEventLoopTurn();
       if (reply) {
-        expect(bridge.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
-          expect.stringContaining(reply),
-        );
+        expect(
+          handlesAgentConsult ? respond : bridge.sendUserMessage,
+        ).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(reply));
       } else {
         expect(bridge.sendUserMessage).not.toHaveBeenCalled();
+      }
+      if (handlesAgentConsult) {
+        expect(bridge.sendUserMessage).not.toHaveBeenCalled();
+        const lateReply = vi.fn();
+        const handleInput = bridgeRequest?.handleDelegationInput;
+        expect(handleInput?.(text, lateReply)).toBe("control");
+        stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId: "conn-1" });
+        expect(handleInput?.("Check another task.", lateReply)).toBe("control");
+        await nextEventLoopTurn();
+        expect(lateReply).not.toHaveBeenCalled();
       }
       expect(bridge.submitToolResult).not.toHaveBeenCalled();
     },

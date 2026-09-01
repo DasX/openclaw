@@ -52,6 +52,7 @@ import type { ToolSearchCatalogToolExecutor } from "../../tool-search.js";
 import { redactTranscriptMessage } from "../../transcript-redact.js";
 import { log } from "../logger.js";
 import {
+  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
   ACTIVE_EMBEDDED_RUNS,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
   setActiveEmbeddedRunLifecycleGeneration,
@@ -513,11 +514,21 @@ export function prepareEmbeddedAttemptStream(input: {
           : undefined;
     input.abortRun(false, abortReason);
   };
-  const queueMessage: AttemptStreamQueueHandle["queueMessage"] = async (text, options) => {
-    const canInject = () =>
+  const canInject = () => {
+    // The session awaits transcript/question preparation after the global queue
+    // check. Revalidate this exact publication and its live scope at the effect.
+    registration?.toolAuthority?.assertActive();
+    return (
       acceptingSteerMessages &&
       !input.getRunState().aborted &&
-      !input.runAbortController.signal.aborted;
+      !input.runAbortController.signal.aborted &&
+      registration !== undefined &&
+      ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle) === registration &&
+      ACTIVE_EMBEDDED_RUNS.get(attempt.sessionId) === queueHandle &&
+      ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId) === queueHandle
+    );
+  };
+  const queueMessage: AttemptStreamQueueHandle["queueMessage"] = async (text, options) => {
     if (!canInject()) {
       throw new Error("active session is finalizing");
     }
@@ -573,9 +584,13 @@ export function prepareEmbeddedAttemptStream(input: {
         }
       : undefined,
     claimPendingUserInputAnswer: (text, options) =>
-      claimEmbeddedPendingUserInputAnswer(text, options, attempt.sessionKey),
+      claimEmbeddedPendingUserInputAnswer(text, options, attempt.sessionKey, canInject),
     cancelPendingUserInput: (resolvedBy) =>
-      cancelPendingAgentQuestionForSession({ sessionKey: attempt.sessionKey, resolvedBy }),
+      cancelPendingAgentQuestionForSession({
+        sessionKey: attempt.sessionKey,
+        resolvedBy,
+        canClaim: canInject,
+      }),
     preemptByVisibleTurn: heartbeatReplyOperation
       ? () => heartbeatReplyOperation.supersede()
       : undefined,
@@ -613,6 +628,7 @@ export function prepareEmbeddedAttemptStream(input: {
     attempt.sessionFile,
     input.hookAgentId,
   );
+  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle);
   if (attempt.deferTerminalLifecycle && attempt.onDeferredLifecycleOwner) {
     deferredLifecycleOwner = createEmbeddedAttemptDeferredLifecycleOwner({
       runId: attempt.runId,

@@ -41,7 +41,7 @@ type OpenAIQuicksilverDelegationControllerOptions = {
   onFatalError: (error: Error) => void;
   onSessionStarted?: (expiresAt: number | undefined) => void;
   onTranscript?: (role: "user" | "assistant", text: string, done: boolean) => void;
-  getInputDisposition?: RealtimeVoiceGatewayControl["getInputDisposition"];
+  handleDelegationInput?: RealtimeVoiceGatewayControl["handleDelegationInput"];
   onWireEventType?: (eventType: string) => void;
   runAgentConsult: RealtimeVoiceAgentConsultRunner;
   signal: AbortSignal;
@@ -186,9 +186,38 @@ export class OpenAIQuicksilverDelegationController {
     if (this.stopped || this.options.signal.aborted || !input.trim()) {
       return;
     }
-    // Transcripts execute host controls; a duplicate delegation must not replace active work.
-    if (this.options.getInputDisposition?.(input) === "control") {
-      return;
+    const handleInput = this.options.handleDelegationInput;
+    if (handleInput) {
+      const socket = this.options.getSocket();
+      let responded = false;
+      const respond = (message: string) => {
+        if (responded) {
+          return;
+        }
+        // Consume before sending: partial chunk delivery or a throwing socket cannot retry an action.
+        responded = true;
+        if (!socket || socket !== this.options.getSocket()) {
+          return;
+        }
+        try {
+          this.sendAppend(
+            { type: "delegation.context.append", delegation_item_id: id },
+            message,
+            "speakable",
+            socket,
+          );
+        } catch (error) {
+          this.fail(toErrorObject(error, "OpenAI GPT-Live control response failed"));
+        }
+      };
+      try {
+        if (handleInput(input, respond) === "control") {
+          return;
+        }
+      } catch (error) {
+        this.fail(toErrorObject(error, "OpenAI GPT-Live control admission failed"));
+        return;
+      }
     }
     // Transcript is a once-delivered delta. Empty delegations must not consume it.
     const transcript = this.transcript;
@@ -242,7 +271,7 @@ export class OpenAIQuicksilverDelegationController {
     let text: string;
     try {
       // Host-classified sessions disable vendor filler. Receipt is launch-only, not run admission.
-      if (this.options.getInputDisposition) {
+      if (this.options.handleDelegationInput) {
         this.sendSessionContext(
           buildRealtimeVoiceAgentControlSpeechMessage("I’ll check that request."),
           "speakable",
@@ -281,12 +310,19 @@ export class OpenAIQuicksilverDelegationController {
       | { type: "delegation.context.append"; delegation_item_id: string },
     text: string,
     channel: "speakable" | "commentary",
+    socket = this.options.getSocket(),
   ): void {
-    const socket = this.options.getSocket();
-    if (this.stopped || !socket || socket.readyState !== WEBSOCKET_OPEN) {
-      return;
-    }
     for (const chunk of chunkOpenAIQuicksilverAppendText(text)) {
+      // A control reply belongs to this call/socket, not the task it may have cancelled.
+      if (
+        this.stopped ||
+        this.options.signal.aborted ||
+        !socket ||
+        socket !== this.options.getSocket() ||
+        socket.readyState !== WEBSOCKET_OPEN
+      ) {
+        return;
+      }
       socket.send(
         JSON.stringify({
           ...target,

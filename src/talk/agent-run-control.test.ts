@@ -23,6 +23,7 @@ function createDeps(options: {
 }) {
   return {
     abortEmbeddedAgentRun: vi.fn(() => options.abortResult ?? true),
+    // Preserve the dependency callback contract exported in v2026.8.1.
     queueEmbeddedAgentMessageWithOutcomeAsync: vi.fn(
       async (
         sessionId: string,

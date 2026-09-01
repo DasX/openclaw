@@ -3,7 +3,6 @@ import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/n
 import { formatErrorMessage } from "../infra/errors.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../talk/agent-consult-tool.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../talk/agent-run-control-shared.js";
-import { resolveRealtimeVoiceProviderCapabilities } from "../talk/provider-resolver.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
   type RealtimeVoiceCloseReason,
@@ -31,7 +30,7 @@ import {
   pruneInactiveRelayAgentRuns,
   registerTalkRealtimeRelayAgentRun,
   resetTalkRealtimeRelayContinuity,
-  steerTalkRealtimeRelayAgentRun,
+  prepareTalkRealtimeRelayAgentControl,
 } from "./talk-realtime-relay-operations.js";
 import { suppressedToolResultOptions } from "./talk-realtime-relay-provider-results.js";
 import {
@@ -149,21 +148,14 @@ export function createTalkRealtimeRelaySession(
     }
     return await consultRunner.runPrompt({ prompt, signal });
   };
-  const providerCapabilities = resolveRealtimeVoiceProviderCapabilities({
-    provider: params.provider,
-    providerConfig: params.providerConfig,
-    cfg: params.cfg,
-    agentId: relayAgentId,
-    model: params.model,
-    surface: "gateway-relay",
-  });
   const runControl = createTalkRealtimeRunControlOwner({
-    supportsToolCalls: providerCapabilities?.supportsToolCalls,
+    controlSource: params.controlSource,
+    supportsToolCalls: params.supportsToolCalls,
     hasActiveRun: () => {
       const relay = getActiveRelay();
       return Boolean(relay && pruneInactiveRelayAgentRuns(relay) > 0);
     },
-    execute: async (args) => {
+    prepare: (args) => {
       const relay = getActiveRelay();
       if (!relay || !args || typeof args !== "object" || Array.isArray(args)) {
         throw new Error("Realtime relay control session is closed");
@@ -172,21 +164,21 @@ export function createTalkRealtimeRelaySession(
       if (typeof text !== "string") {
         throw new Error("Realtime relay control text is required");
       }
-      return await steerTalkRealtimeRelayAgentRun({
+      return prepareTalkRealtimeRelayAgentControl({
         relaySessionId,
         connId: params.connId,
         text,
       });
     },
-    speak: (message) => bridgeRef.current?.sendUserMessage?.(message),
-    warn: (message) => {
-      if (!getActiveRelay()) {
-        return;
+    speak: (message) => {
+      if (getActiveRelay()) {
+        bridgeRef.current?.sendUserMessage?.(message);
       }
-      emit(
-        { relaySessionId, type: "error", message },
-        { type: "session.error", payload: { message }, final: true },
-      );
+    },
+    warn: (message) => {
+      if (getActiveRelay()) {
+        params.context.logGateway.warn(message);
+      }
     },
   });
   const relayProvider = outputOwnership.bind(params.provider, runAgentConsult);
@@ -201,7 +193,21 @@ export function createTalkRealtimeRelaySession(
     autoRespondToAudio: !forceAgentConsultOnFinalTranscript,
     interruptResponseOnInputAudio: !forceAgentConsultOnFinalTranscript,
     tools: params.tools,
-    getInputDisposition: runControl.getInputDisposition,
+    ...(runControl.handleDelegationInput
+      ? {
+          handleDelegationInput: (text, respond) => {
+            const relay = getActiveRelay();
+            if (!relay) {
+              return "control";
+            }
+            return runControl.handleDelegationInput!(text, (message) => {
+              if (getActiveRelay() === relay) {
+                respond(message);
+              }
+            });
+          },
+        }
+      : {}),
     markStrategy: "transport",
     audioSink: {
       isOpen: () => Boolean(getActiveRelay()),
@@ -417,7 +423,7 @@ export function createTalkRealtimeRelaySession(
           final,
         },
       );
-      if (role === "user" && final && text.trim()) {
+      if (params.controlSource === "transcript" && role === "user" && final && text.trim()) {
         const question = text.trim();
         if (isRelayAssistantEchoTranscript(relay, question)) {
           return;
@@ -585,6 +591,7 @@ export function createTalkRealtimeRelaySession(
     closeRelaySession(active, "error");
   };
   const relay: RelaySession = {
+    getToolAuthorityOverlay: consultRunner.getToolAuthorityOverlay,
     id: relaySessionId,
     connId: params.connId,
     context: params.context,

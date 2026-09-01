@@ -446,7 +446,7 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       const sessionConfig = isOpenAIGptLiveModel(offer.request.model)
         ? buildOpenAIQuicksilverSession({
             model: offer.request.model,
-            hostControlsInput: Boolean(offer.nativeControl?.getInputDisposition),
+            hostControlsInput: Boolean(offer.nativeControl?.handleDelegationInput),
             instructions: offer.request.instructions,
             voice: offer.request.voice,
             initialItems: offer.request.initialItems,
@@ -588,7 +588,7 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
         ...(nativeControl
           ? {
               onTranscript: nativeControl.onTranscript,
-              getInputDisposition: nativeControl.getInputDisposition,
+              handleDelegationInput: nativeControl.handleDelegationInput,
               onWireEventType: (type: string) =>
                 nativeControl.onEvent?.({ direction: "server", type }),
             }

@@ -50,6 +50,12 @@ import type {
   EmbeddedRunAttemptParams,
   EmbeddedRunAttemptResult,
 } from "../embedded-agent-runner/run/types.js";
+import {
+  clearActiveEmbeddedRun,
+  queueEmbeddedAgentMessageWithOutcomeAsync,
+  setActiveEmbeddedRun,
+} from "../embedded-agent-runner/runs.js";
+import { createEmbeddedRunHandle } from "../embedded-agent-runner/runs.test-support.js";
 import { getGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
 import { callGatewayTool } from "../tools/gateway.js";
 import type { SystemAgentToolOptions } from "../tools/system-agent-tool.js";
@@ -569,6 +575,38 @@ function registerTestCompactor(
 }
 
 describe("runAgentHarnessAttempt", () => {
+  it.each(["openclaw", "codex"])(
+    "prepares direct tool authority before the %s harness executes",
+    async (harnessId) => {
+      const runAttempt = vi.fn<AgentHarness["runAttempt"]>(async () =>
+        createAttemptResult("direct"),
+      );
+      if (harnessId === "codex") {
+        registerAgentHarness(
+          {
+            id: "codex",
+            label: "Codex",
+            supports: () => ({ supported: true, priority: 100 }),
+            runAttempt,
+          },
+          { ownerPluginId: "codex" },
+        );
+      }
+      const attempt = {
+        ...createAttemptParams(),
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        agentHarnessId: harnessId,
+      };
+      await runAgentHarnessAttempt(attempt);
+      const received = (harnessId === "openclaw" ? agentRunAttempt : runAttempt).mock.calls.at(
+        -1,
+      )?.[0];
+      expect(received?.toolAuthorityFingerprint).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+      expect(attempt.admittedRunContext.executionIdentityToken).toBeUndefined();
+    },
+  );
+
   it("uses registry ownership rather than declared harness metadata for approvals", async () => {
     let observedApprovalOwner: string | undefined;
     mockCallGatewayTool.mockImplementationOnce(async () => {
@@ -1449,7 +1487,34 @@ describe("runAgentHarnessAttempt", () => {
   });
 
   it("collapses channel group sender deny-all to empty toolsAllow for plugin harnesses", async () => {
-    const runAttempt = vi.fn<AgentHarness["runAttempt"]>(async () => createAttemptResult("codex"));
+    const delivered = vi.fn(async () => {});
+    const runAttempt = vi.fn<AgentHarness["runAttempt"]>(async (prepared) => {
+      const handle = createEmbeddedRunHandle({
+        runId: prepared.runId,
+        toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
+        queueMessage: delivered,
+      });
+      setActiveEmbeddedRun(prepared.sessionId, handle, prepared.sessionKey, prepared.sessionFile);
+      try {
+        await expect(
+          queueEmbeddedAgentMessageWithOutcomeAsync(prepared.sessionId, "Continue", {
+            isInboundUserMessage: true,
+            toolAuthorityOverlay: {
+              senderIsOwner: false,
+              disableTools: false,
+              traceAuthorized: false,
+              messageProvider: "telegram",
+              groupId: "test-deny-room",
+              senderId: "test-denied-sender",
+            },
+          }),
+        ).resolves.toMatchObject({ queued: true });
+        expect(delivered).toHaveBeenCalledOnce();
+      } finally {
+        clearActiveEmbeddedRun(prepared.sessionId, handle, prepared.sessionKey);
+      }
+      return createAttemptResult("codex");
+    });
     registerAgentHarness(
       {
         id: "codex",
@@ -1464,6 +1529,7 @@ describe("runAgentHarnessAttempt", () => {
 
     await runAgentHarnessAttempt({
       ...createAttemptParams(groupSenderDenyAllConfig()),
+      agentId: "main",
       sessionKey: "agent:main:telegram:group:test-deny-room",
       messageProvider: "telegram",
       groupId: "test-deny-room",

@@ -86,6 +86,7 @@ let state: OpenClawTestState;
 let config: OpenClawConfig;
 let client: ReturnType<typeof sharingPolicyClient> & { connId: string };
 let callback: RealtimeVoiceAgentConsultRunner | undefined;
+let providerInstructions: string | undefined;
 const browserVoiceSessionIds = new Set<string>();
 let browserControl: RealtimeVoiceGatewayControl | undefined;
 const submitProviderResult = vi.fn();
@@ -136,6 +137,7 @@ beforeEach(async () => {
     connId: "native-consult-client",
   };
   callback = undefined;
+  providerInstructions = undefined;
   browserVoiceSessionIds.clear();
   browserControl = undefined;
   vi.clearAllMocks();
@@ -151,6 +153,7 @@ beforeEach(async () => {
     capabilities: mocks.capabilities,
     isConfigured: () => true,
     createBrowserSession: async (request) => {
+      providerInstructions = request.instructions;
       callback = request.runAgentConsult;
       browserControl = request.gatewayControl;
       browserControl?.bindBridge({
@@ -171,6 +174,7 @@ beforeEach(async () => {
       };
     },
     createBridge: (request) => {
+      providerInstructions = request.instructions;
       callback = request.runAgentConsult;
       return {
         connect: async () => undefined,
@@ -577,6 +581,7 @@ describe.each(["browser", "relay"] as const)("native %s Talk consultation", (tra
     { name: "global", scope: "global" as const, canonicalKey: "global" },
   ])("uses the created $name session in the provider callback", async ({ scope, canonicalKey }) => {
     config.session = { mainKey: "home", scope };
+    config.talk = { ...config.talk, realtime: { instructions: "Keep native answers brief." } };
     const target = prepareTalkSessionTarget(config, "main");
     const method = transport === "browser" ? "talk.client.create" : "talk.session.create";
     const respond = await dispatch(method, {
@@ -587,6 +592,7 @@ describe.each(["browser", "relay"] as const)("native %s Talk consultation", (tra
       ...(transport === "browser" ? { capabilities: ["gateway-control-v1"] } : {}),
     });
     expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
+    expect(providerInstructions).toBe("Keep native answers brief.");
     const result = respond.mock.calls[0]?.[1] as { voiceSessionId?: string; sessionId?: string };
     const storage = { agentId: "voice", sessionKey: canonicalKey, storePath: target.storePath };
     const created = loadSessionEntry(storage);

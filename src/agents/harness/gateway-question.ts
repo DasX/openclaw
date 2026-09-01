@@ -222,9 +222,13 @@ export async function claimPendingAgentQuestionAnswer(params: {
   sessionKey?: string;
   text: string;
   persist?: () => Promise<void>;
+  canClaim?: () => boolean;
 }): Promise<boolean> {
   const sessionKey = params.sessionKey?.trim();
   const state = sessionKey ? pendingAgentQuestions.get(sessionKey) : undefined;
+  if (params.canClaim && !params.canClaim()) {
+    throw new Error("active session is finalizing");
+  }
   if (!state || state.resolving || (state.kind === "gateway" && state.cancelRequested)) {
     return false;
   }
@@ -251,7 +255,16 @@ export async function claimPendingAgentQuestionAnswer(params: {
   // Persist only once this claim is committed to consuming the message;
   // persisting earlier double-records the turn when the claim falls through.
   try {
+    if (params.canClaim && !params.canClaim()) {
+      throw new Error("active session is finalizing");
+    }
     await params.persist?.();
+    if (
+      (params.canClaim && !params.canClaim()) ||
+      pendingAgentQuestions.get(state.sessionKey) !== state
+    ) {
+      throw new Error("active session is finalizing");
+    }
   } catch (error) {
     state.resolving = false;
     throw error;
@@ -271,7 +284,11 @@ export async function claimPendingAgentQuestionAnswer(params: {
 export async function cancelPendingAgentQuestionForSession(params: {
   sessionKey?: string;
   resolvedBy: string;
+  canClaim?: () => boolean;
 }): Promise<boolean> {
+  if (params.canClaim && !params.canClaim()) {
+    throw new Error("active session is finalizing");
+  }
   const sessionKey = params.sessionKey?.trim();
   const state = sessionKey ? pendingAgentQuestions.get(sessionKey) : undefined;
   if (!state || state.resolving) {

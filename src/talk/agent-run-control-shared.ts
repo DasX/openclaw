@@ -271,6 +271,10 @@ function parseRealtimeVoiceAgentControlToolArgsRecord(args: unknown): unknown {
   }
 }
 
+/** Fixed user-visible failure; private execution/readiness errors stay in host diagnostics. */
+export const REALTIME_VOICE_AGENT_CONTROL_FAILURE_MESSAGE =
+  "OpenClaw could not process that voice control. Please try again.";
+
 /** Build the system-style instruction that forces exact spoken status output. */
 export function buildRealtimeVoiceAgentControlSpeechMessage(text: string): string {
   return [

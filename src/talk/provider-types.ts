@@ -176,8 +176,11 @@ export type RealtimeVoiceBridgeCallbacks = {
   onClearAudio: (reason?: RealtimeVoiceAudioClearReason) => void;
   onMark?: (markName: string) => void;
   onTranscript?: (role: RealtimeVoiceRole, text: string, isFinal: boolean) => void;
-  /** Pure classification of host-owned control input; neither executes it nor reports prior execution. */
-  getInputDisposition?: (text: string) => "control" | "consult";
+  /** Synchronously admits native control; only consult permits task fallthrough. Respond is call-bound. */
+  handleDelegationInput?: (
+    text: string,
+    respond: (message: string) => void,
+  ) => "control" | "consult";
   onEvent?: (event: RealtimeVoiceBridgeEvent) => void;
   onResponseDone?: (outcome: RealtimeVoiceResponseOutcome) => void;
   onToolCall?: (event: RealtimeVoiceToolCallEvent) => void;

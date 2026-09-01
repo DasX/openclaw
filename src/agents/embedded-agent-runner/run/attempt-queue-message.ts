@@ -311,7 +311,11 @@ export async function steerActiveSessionWithOptionalDeliveryWait(
   const isPlainTextAnswer = !hasPromptImageInput(options);
   if (isInboundUserMessage && !isPlainTextAnswer) {
     try {
-      await cancelPendingAgentQuestionForSession({ sessionKey, resolvedBy: "image-reply" });
+      await cancelPendingAgentQuestionForSession({
+        sessionKey,
+        resolvedBy: "image-reply",
+        canClaim: canInject,
+      });
     } catch (error) {
       log.warn(`failed to cancel ask_user before image steering: ${String(error)}`);
     }
@@ -321,7 +325,7 @@ export async function steerActiveSessionWithOptionalDeliveryWait(
   if (
     isInboundUserMessage &&
     isPlainTextAnswer &&
-    (await claimEmbeddedPendingUserInputAnswer(text, options, sessionKey))
+    (await claimEmbeddedPendingUserInputAnswer(text, options, sessionKey, canInject))
   ) {
     options?.onQueueAccepted?.(true);
     return;
@@ -371,6 +375,7 @@ export async function claimEmbeddedPendingUserInputAnswer(
   text: string,
   options: EmbeddedAgentQueueMessageOptions | undefined,
   sessionKey?: string,
+  canInject?: () => boolean,
 ): Promise<boolean> {
   if (options?.isInboundUserMessage !== true || hasPromptImageInput(options)) {
     return false;
@@ -378,6 +383,7 @@ export async function claimEmbeddedPendingUserInputAnswer(
   const claimed = await claimPendingAgentQuestionAnswer({
     sessionKey,
     text,
+    canClaim: canInject,
     persist: options.userTurnTranscriptRecorder
       ? async () => {
           await options.userTurnTranscriptRecorder?.persistApproved();

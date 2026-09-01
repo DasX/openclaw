@@ -43,17 +43,22 @@ Unsupported combinations, including GA with OAuth only, fail visibly instead
 of falling back to client-owned control. Existing browser clients omit this
 capability and keep their data channel and client transcript reporting.
 
-In Gateway-controlled native calls and native Gateway relays, asking for status
-keeps the current agent task running. Spoken cancellation stops that task without
-starting another consultation, even if the provider delegates the same control
-input. When no task is active in that call, status and cancellation return a spoken
-no-active-run response, even if another call on the same connection and agent session
-has work in progress. Genuine new tasks still supersede the running native delegation.
+In Gateway-controlled native calls and native Gateway relays, the provider's
+delegation starts each host action. Final speech transcripts are saved to history;
+they neither trigger actions nor repeat a delegation's action. Status keeps the
+current task running, cancellation stops it, and redirects or follow-ups target
+that call's active work. When the call has no active task, status and cancellation
+return a spoken no-active-run response, even if another call on the same connection
+and agent session has work in progress. Ordinary requests such as “Check the
+weather” still start tasks while idle. Genuine new tasks retain the native
+delegation replacement behavior.
 
 These calls disable provider-generated delegation acknowledgments at creation.
 OpenClaw sends one neutral receipt when it launches a real task; status and
-cancellation requests wait for the host result instead. A task receipt is not
-confirmation that a model or tool has started.
+cancellation requests wait for the host result instead, without waiting for final
+speech transcription. A full control queue produces a spoken refusal; retry after
+the pending controls finish. A task receipt is not confirmation that a model or
+tool has started, and submitting a spoken result is not proof of audible delivery.
 
 Closing a native transport fences new delegations and late provider delivery;
 already accepted agent work retains its own cancellation lifetime. Spoken run
@@ -139,6 +144,22 @@ only work bound to that logical voice call. Reusing `voiceSessionId` to replace 
 browser transport preserves control of its accepted work. The legacy
 `talk.client.steer` RPC remains session-scoped: it selects owned work by
 `sessionKey`, not by a voice call ID.
+
+Native steering uses the current caller's tool policy and session permissions. The
+host captures the actual backend attempt's authority after policy preparation and
+checks that exact owner again before delivering a control. Changed caller authority, tool
+allowlists, permission modes, or closed/replaced attempts can produce
+`tool_authority_mismatch`; a run ID or copied fingerprint does not authorize steering.
+Direct voice input does not acquire trace or client-tool capabilities. Chat-backed
+Talk keeps the authenticated caller's normal chat authority, including its reviewer
+and client capabilities, but disables task suggestions because Talk cannot accept
+them. Status and cancellation do not require a tool-policy projection. Controls
+capture their target before queue or transcript waits; they never move to a task
+that starts later. A control received before backend registration returns a visible
+no-active-run response rather than waiting for an unrelated future task.
+
+Managed-room handoffs do not yet supply current-speaker tool authority. Room
+attachment alone cannot authorize steering; status and cancellation remain available.
 
 Keep the original `sessionKey` for client transcript, tool-call, and close requests.
 `talk.client.close` requires both that exact key and the returned `voiceSessionId`;

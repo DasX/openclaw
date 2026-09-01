@@ -1,3 +1,5 @@
+import { resolveCommandAuthorization } from "../auto-reply/command-auth.js";
+import { resolveInboundReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-tool-authority.js";
 import { normalizeTalkSection } from "../config/talk.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
@@ -7,7 +9,10 @@ import {
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
-import { consultRealtimeVoiceAgent } from "../talk/agent-consult-runtime.js";
+import {
+  consultRealtimeVoiceAgent,
+  prepareRealtimeVoiceAgentExecutionContext,
+} from "../talk/agent-consult-runtime.js";
 import { parseRealtimeVoiceAgentConsultArgs } from "../talk/agent-consult-tool.js";
 import {
   authorizeClientVoiceConfirmation,
@@ -85,6 +90,44 @@ function createTalkClientAgentRuntime(params: {
     value: runEmbeddedAgent,
   });
   return agentRuntime;
+}
+
+export function prepareTalkClientControlAuthority(params: {
+  config: OpenClawConfig;
+  sessionTarget: PreparedTalkSessionTarget;
+  authority: TalkAgentConsultAuthority;
+  source?: "reply" | "attempt";
+  agentRuntime: ReturnType<typeof createPluginRuntime>["agent"];
+}) {
+  const prepared = prepareRealtimeVoiceAgentExecutionContext({
+    cfg: params.config,
+    agentRuntime: params.agentRuntime,
+    agentId: params.sessionTarget.agentId,
+    sessionKey: params.sessionTarget.canonicalKey,
+    storePath: params.sessionTarget.storePath,
+    messageProvider: "webchat",
+    ...params.authority,
+  });
+  if (params.source !== "reply") {
+    return prepared.toolAuthorityOverlay;
+  }
+  if (!params.authority.replyCaller) {
+    throw new Error("Talk chat caller authority is unavailable");
+  }
+  // GA consultation uses the normal authenticated chat ingress. Direct voice
+  // has no trace/client/reviewer capabilities and must never inherit these.
+  const ctx = params.authority.replyCaller;
+  return resolveInboundReplyToolAuthorityOverlay({
+    ctx,
+    sessionEntry: prepared.sessionEntry,
+    senderIsOwner: resolveCommandAuthorization({
+      ctx,
+      cfg: params.config,
+      commandAuthorized: false,
+    }).senderIsOwner,
+    toolsAllow: params.authority.toolsAllow,
+    disableTools: false,
+  });
 }
 
 export function createTalkClientAgentConsultRunner(params: {
@@ -189,6 +232,17 @@ export function createTalkClientAgentConsultRunner(params: {
       .finally(admission.release);
   };
   return {
+    getToolAuthorityOverlay: (currentAuthority = authority, source?: "reply" | "attempt") =>
+      prepareTalkClientControlAuthority({
+        config: params.config,
+        sessionTarget: params.sessionTarget,
+        authority: currentAuthority,
+        source,
+        agentRuntime: (agentRuntime ??= createTalkClientAgentRuntime({
+          config: params.config,
+          agentId,
+        })),
+      }),
     runArgs,
     runPrompt: async ({ prompt, signal }: { prompt: string; signal?: AbortSignal }) =>
       await runArgs({ question: prompt }, signal),

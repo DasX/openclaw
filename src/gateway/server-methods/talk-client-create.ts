@@ -205,6 +205,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
             ),
           )
         : [];
+      const controlSource =
+        providerCapabilities?.handlesAgentConsult === true ? "delegation" : "transcript";
       const tools =
         providerCapabilities?.supportsToolCalls === false
           ? []
@@ -213,7 +215,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         tools.push(REALTIME_VOICE_DESCRIBE_VIEW_TOOL);
       }
       const instructions =
-        providerCapabilities?.handlesAgentConsult === true
+        controlSource === "delegation"
           ? normalizeOptionalString(providerInstructions)
           : buildRealtimeInstructions(providerInstructions);
       const requestedVoiceSessionId = normalizeOptionalString(params.voiceSessionId);
@@ -240,7 +242,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         context,
         sessionTarget: target,
         ...(ownerConnId ? { ownerConnId } : {}),
-        authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes),
+        authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
         getVoiceSessionId: () => activeVoiceSessionId,
         initialItems,
       });
@@ -248,6 +250,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ? createTalkClientGatewayControlOwner({
             voiceSessionId: activeVoiceSessionId!,
             providerId: resolution.provider.id,
+            controlSource,
             supportsToolCalls: providerCapabilities?.supportsToolCalls,
             sessionTarget: target,
             connId: ownerConnId!,
@@ -261,6 +264,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
               }
             },
             runAgentConsult: consultRunner.runArgs,
+            getToolAuthorityOverlay: (source) =>
+              consultRunner.getToolAuthorityOverlay(undefined, source),
             appendTranscript: ({ entryId, role, text }) =>
               appendClientVoiceTranscript({
                 agentId,

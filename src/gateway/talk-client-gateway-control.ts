@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
+import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import { readErrorName } from "../infra/errors.js";
 import { BoundedSerialQueue } from "../shared/bounded-serial-queue.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   resolveRealtimeVoiceAgentConsultToolsAllow,
 } from "../talk/agent-consult-tool.js";
+import { REALTIME_VOICE_AGENT_CONTROL_FAILURE_MESSAGE } from "../talk/agent-run-control-shared.js";
 import {
   buildRealtimeVoiceAgentCancelProviderResult,
   buildRealtimeVoiceAgentControlSpeechMessage,
@@ -12,7 +15,6 @@ import {
   parseRealtimeVoiceAgentControlToolArgs,
   REALTIME_VOICE_AGENT_CONTROL_TOOL_NAME,
   resolveRealtimeVoiceAgentControlIntent,
-  shouldAutoControlRealtimeVoiceAgentText,
 } from "../talk/agent-run-control.js";
 import type { RealtimeVoiceAgentControlResult } from "../talk/agent-run-control.js";
 import type {
@@ -27,6 +29,7 @@ import {
 } from "../talk/realtime-session-harness.js";
 import type { TalkEvent } from "../talk/talk-events.js";
 import { ADMIN_SCOPE, WRITE_SCOPE } from "./operator-scopes.js";
+import { resolveChatSendCallerContext } from "./server-methods/gateway-client-identity.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import { resolveOwnedActiveTalkRunTarget } from "./server-methods/talk-client-run-ownership.js";
 import { formatError } from "./server-utils.js";
@@ -62,17 +65,27 @@ const REALTIME_CONTROL_MAX_PENDING = 8;
 export type TalkAgentConsultAuthority = {
   senderIsOwner: boolean;
   toolsAllow?: string[];
+  replyCaller?: ReturnType<typeof resolveChatSendCallerContext>;
 };
 
 export function resolveTalkAgentConsultAuthority(
   scopes: readonly string[] | undefined,
+  client?: Parameters<typeof resolveChatSendCallerContext>[0],
 ): TalkAgentConsultAuthority {
   const senderIsOwner = scopes?.includes(ADMIN_SCOPE) === true;
+  const replyCaller = client ? resolveChatSendCallerContext(client) : undefined;
+  if (replyCaller) {
+    // Talk has no task-suggestion acceptance UI, even when its hosting client does.
+    replyCaller.GatewayClientCaps = replyCaller.GatewayClientCaps.filter(
+      (cap) => cap !== GATEWAY_CLIENT_CAPS.TASK_SUGGESTIONS,
+    );
+  }
   if (senderIsOwner || scopes?.includes(WRITE_SCOPE) === true) {
-    return { senderIsOwner };
+    return { senderIsOwner, ...(replyCaller ? { replyCaller } : {}) };
   }
   return {
     senderIsOwner: false,
+    ...(replyCaller ? { replyCaller } : {}),
     toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow("safe-read-only"),
   };
 }
@@ -85,9 +98,10 @@ function createRealtimeControlQueue(): BoundedSerialQueue {
 }
 
 export function createTalkRealtimeRunControlOwner(params: {
+  controlSource?: "delegation" | "transcript";
   supportsToolCalls?: boolean;
   hasActiveRun: () => boolean;
-  execute: (args: unknown) => Promise<RealtimeVoiceAgentControlResult>;
+  prepare: (args: unknown) => () => Promise<RealtimeVoiceAgentControlResult>;
   speak: (message: string) => void;
   warn: (message: string) => void;
 }) {
@@ -95,23 +109,38 @@ export function createTalkRealtimeRunControlOwner(params: {
   const enqueue = (
     args: unknown,
     options: {
-      ready?: Promise<void>;
+      ready?: () => Promise<void>;
       onResult?: (result: RealtimeVoiceAgentControlResult) => void | Promise<void>;
       onError?: (error: unknown) => void | Promise<void>;
     } = {},
   ): boolean => {
-    const admission = queue.enqueue(async () => {
-      await options.ready;
-      try {
-        const result = await params.execute(args);
-        await options.onResult?.(result);
-      } catch (error) {
-        if (!options.onError) {
-          throw error;
+    // Capture the owner (including absence) before any FIFO/readiness wait.
+    let execute: () => Promise<RealtimeVoiceAgentControlResult>;
+    try {
+      execute = params.prepare(args);
+    } catch (error) {
+      execute = async () => {
+        throw error;
+      };
+    }
+    const admission = queue.enqueue(
+      async () => {
+        let result: RealtimeVoiceAgentControlResult;
+        try {
+          await options.ready?.();
+          result = await execute();
+        } catch (error) {
+          if (!options.onError) {
+            throw error;
+          }
+          await options.onError(error);
+          return;
         }
-        await options.onError(error);
-      }
-    });
+        // Reply failures are transport failures, not another execution failure to answer twice.
+        await options.onResult?.(result);
+      },
+      { sealOnOverflow: false },
+    );
     if (!admission.accepted) {
       params.warn(`realtime Talk control queue rejected work: ${admission.reason}`);
       return false;
@@ -121,38 +150,44 @@ export function createTalkRealtimeRunControlOwner(params: {
     });
     return true;
   };
-  const getInputDisposition =
-    params.supportsToolCalls === false
-      ? (text: string): "control" | "consult" => {
-          const intent = resolveRealtimeVoiceAgentControlIntent({ text });
-          // Transcript-owned controls stay non-task input after their target run settles.
-          return intent.shouldAutoControl && (intent.mode === "status" || intent.mode === "cancel")
-            ? "control"
-            : "consult";
-        }
-      : undefined;
-  return {
-    enqueue,
-    getInputDisposition,
-    handleSpoken: (text: string, ready?: Promise<void>): boolean => {
-      // Tool results can precede ASR; only transcript-owned providers answer idle controls.
-      const canHandle = params.hasActiveRun() || getInputDisposition?.(text) === "control";
-      if (!canHandle || !shouldAutoControlRealtimeVoiceAgentText(text)) {
-        return false;
-      }
-      enqueue(
-        { text },
+  const handleInput = (
+    text: string,
+    respond: (message: string) => void,
+    ready?: () => Promise<void>,
+  ): "control" | "consult" => {
+    const intent = resolveRealtimeVoiceAgentControlIntent({ text });
+    const intrinsic = intent.mode === "status" || intent.mode === "cancel";
+    const allowIdle = params.controlSource === "delegation" || params.supportsToolCalls === false;
+    if (!intent.shouldAutoControl || (!params.hasActiveRun() && !(allowIdle && intrinsic))) {
+      return "consult";
+    }
+    const reply = (message: string) =>
+      respond(buildRealtimeVoiceAgentControlSpeechMessage(message));
+    if (
+      !enqueue(
+        { text, mode: intent.mode },
         {
           ready,
           onResult: (result) => {
             if (result.speak && !result.suppress && result.message.trim()) {
-              params.speak(buildRealtimeVoiceAgentControlSpeechMessage(result.message));
+              reply(result.message);
             }
           },
+          onError: () => reply(REALTIME_VOICE_AGENT_CONTROL_FAILURE_MESSAGE),
         },
+      )
+    ) {
+      reply(
+        "OpenClaw's voice control queue is full. Please try again after the pending controls finish.",
       );
-      return true;
-    },
+    }
+    return "control";
+  };
+  return {
+    enqueue,
+    handleDelegationInput: params.controlSource === "delegation" ? handleInput : undefined,
+    handleSpoken: (text: string, ready?: () => Promise<void>): boolean =>
+      params.controlSource !== "delegation" && handleInput(text, params.speak, ready) === "control",
     close: () => {
       queue.seal();
       return queue.flush();
@@ -186,6 +221,7 @@ export function createTalkClientGatewayControlOwner(params: {
   voiceSessionId: string;
   providerId?: string;
   supportsToolCalls?: boolean;
+  controlSource?: "delegation" | "transcript";
   sessionTarget: PreparedTalkSessionTarget;
   connId: string;
   context: Pick<
@@ -202,6 +238,7 @@ export function createTalkClientGatewayControlOwner(params: {
   flushTranscript: () => Promise<void>;
   closeLogicalSession: () => Promise<void>;
   controlAgentRun?: typeof controlRealtimeVoiceAgentRun;
+  getToolAuthorityOverlay?: (source?: "reply" | "attempt") => ReplyToolAuthorityOverlay;
 }): GatewayControlOwner {
   let commands: GatewayControlCommands | undefined;
   let closeProvider: (() => Promise<void>) | undefined;
@@ -279,29 +316,40 @@ export function createTalkClientGatewayControlOwner(params: {
     });
   };
 
-  const applyControl = async (args: unknown) => {
-    assertActive();
-    const parsed = parseRealtimeVoiceAgentControlToolArgs(args);
-    const runTarget = resolveOwnedActiveTalkRunTarget({
+  const resolveRunTarget = () =>
+    resolveOwnedActiveTalkRunTarget({
       context: params.context,
       clientConnId: params.connId,
       sessionTarget: params.sessionTarget,
       scope: { kind: "voice-session", voiceSessionId: params.voiceSessionId },
       assertCurrent: assertActive,
     });
-    const result = await (params.controlAgentRun ?? controlRealtimeVoiceAgentRun)({
-      sessionKey: params.sessionTarget.canonicalKey,
-      runTarget,
-      text: parsed.text,
-      mode: parsed.mode,
-    });
+
+  const prepareControl = (args: unknown) => {
     assertActive();
-    if (result.mode === "cancel" && result.ok) {
-      for (const { controller } of consultControllers.values()) {
-        controller.abort(new Error("Realtime voice consult cancelled"));
+    const parsed = parseRealtimeVoiceAgentControlToolArgs(args);
+    const runTarget = resolveRunTarget();
+    const admittedConsults = [...consultControllers.values()];
+    const getToolAuthorityOverlay = params.getToolAuthorityOverlay;
+    return async () => {
+      assertActive();
+      const result = await (params.controlAgentRun ?? controlRealtimeVoiceAgentRun)({
+        sessionKey: params.sessionTarget.canonicalKey,
+        runTarget,
+        getToolAuthorityOverlay: getToolAuthorityOverlay
+          ? () => getToolAuthorityOverlay(runTarget?.toolAuthoritySource)
+          : undefined,
+        text: parsed.text,
+        mode: parsed.mode,
+      });
+      assertActive();
+      if (result.mode === "cancel" && result.ok) {
+        for (const { controller } of admittedConsults) {
+          controller.abort(new Error("Realtime voice consult cancelled"));
+        }
       }
-    }
-    return result;
+      return result;
+    };
   };
 
   const runConsult = async (
@@ -331,9 +379,10 @@ export function createTalkClientGatewayControlOwner(params: {
   };
 
   const runControl = createTalkRealtimeRunControlOwner({
+    controlSource: params.controlSource,
     supportsToolCalls: params.supportsToolCalls,
-    hasActiveRun: () => consultControllers.size > 0,
-    execute: applyControl,
+    hasActiveRun: () => consultControllers.size > 0 || resolveRunTarget() !== null,
+    prepare: prepareControl,
     speak: (message) => {
       assertActive();
       if (!commands?.sendUserMessage) {
@@ -403,7 +452,7 @@ export function createTalkClientGatewayControlOwner(params: {
       warn(`talk Gateway control transcript failed: ${formatError(error)}`);
     });
     if (role === "user") {
-      runControl.handleSpoken(text, params.flushTranscript());
+      runControl.handleSpoken(text, params.flushTranscript);
     }
   };
 
@@ -454,7 +503,22 @@ export function createTalkClientGatewayControlOwner(params: {
         }
       },
       onTranscript: handleTranscript,
-      getInputDisposition: runControl.getInputDisposition,
+      ...(runControl.handleDelegationInput
+        ? {
+            handleDelegationInput: (text, respond) => {
+              assertActive();
+              return runControl.handleDelegationInput!(
+                text,
+                (message) => {
+                  // The call owns this reply even when cancellation ended its backing task.
+                  assertActive();
+                  respond(message);
+                },
+                params.flushTranscript,
+              );
+            },
+          }
+        : {}),
       onToolCall: handleToolCall,
       onResponseDone: (outcome) => {
         if (signal.aborted) {

@@ -51,11 +51,11 @@ describe("GPT-Live browser session lifecycle", () => {
     async ({ negotiated, classified }) => {
       const fetchImpl = vi.fn<typeof fetch>(async () => createCallResponse());
       const { realtime, sockets, runAgentConsult } = createBroker({ fetchImpl });
-      const getInputDisposition = vi.fn(() => "consult" as const);
+      const handleDelegationInput = vi.fn(() => "consult" as const);
       const gatewayControl = {
         bindBridge: vi.fn(),
         bindControl: vi.fn(),
-        ...(classified ? { getInputDisposition } : {}),
+        ...(classified ? { handleDelegationInput } : {}),
       };
       const request = {
         providerConfig: {},
@@ -89,6 +89,10 @@ describe("GPT-Live browser session lifecycle", () => {
         );
         if (hostClassified) {
           expect(session.instructions).toContain("Wait for the host control result");
+          expect(session.instructions).toContain(
+            "Delegate status, cancellation, redirects, and follow-up requests to the client using the caller's request",
+          );
+          expect(session.instructions).toContain("Do not answer these requests yourself");
           expect(session.instructions).toContain("Keep my answers brief.");
         } else {
           expect(session.instructions).toBe("Keep my answers brief.");
@@ -111,7 +115,7 @@ describe("GPT-Live browser session lifecycle", () => {
           (event) => event.type === "session.context.append",
         );
         expect(receipts).toHaveLength(hostClassified ? 1 : 0);
-        expect(getInputDisposition).toHaveBeenCalledTimes(hostClassified ? 1 : 0);
+        expect(handleDelegationInput).toHaveBeenCalledTimes(hostClassified ? 1 : 0);
       } finally {
         await realtime.cleanup();
       }
@@ -401,14 +405,14 @@ describe("GPT-Live browser session lifecycle", () => {
       return await result;
     });
     const { realtime, sockets } = createBroker({ runAgentConsult });
-    const getInputDisposition = vi.fn(() => "control" as const);
+    const handleDelegationInput = vi.fn(() => "control" as const);
     try {
       const reservation = await realtime.broker.createBrowserSession(
         {
           providerConfig: {},
           model: "gpt-live-test",
           runAgentConsult,
-          gatewayControl: { bindBridge: vi.fn(), getInputDisposition, onTranscript: vi.fn() },
+          gatewayControl: { bindBridge: vi.fn(), handleDelegationInput, onTranscript: vi.fn() },
         },
         { type: "api-key", token: "platform-key" },
       );
@@ -434,7 +438,7 @@ describe("GPT-Live browser session lifecycle", () => {
       };
       emitSideband(socket, delegation);
       await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledOnce());
-      expect(getInputDisposition).not.toHaveBeenCalled();
+      expect(handleDelegationInput).not.toHaveBeenCalled();
 
       await realtime.broker.cancelBrowserSession(reservation);
       expect(socket.closed).toBe(true);

@@ -6,66 +6,33 @@ import {
   createTalkClientGatewayControlOwner,
   createTalkRealtimeRunControlOwner,
 } from "./talk-client-gateway-control.js";
+import {
+  sessionTarget,
+  deferred,
+  controlContext,
+  controlBridge,
+} from "./talk-client-gateway-control.test-support.js";
 import { cleanupTalkConnection } from "./talk-session-registry.js";
-
-const sessionTarget = {
-  agentId: "main",
-  sessionKey: "agent:main:main",
-  canonicalKey: "agent:main:main",
-  storePath: "/tmp/sessions",
-};
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
-function controlContext(
-  warn = vi.fn(),
-  onTalkEvent?: (event: { type: string; payload: unknown }) => void,
-) {
-  return {
-    logGateway: { warn },
-    chatAbortControllers: new Map(),
-    broadcastToConnIds: vi.fn((_name: string, payload: { talkEvent?: unknown }) => {
-      if (payload.talkEvent) {
-        onTalkEvent?.(payload.talkEvent as { type: string; payload: unknown });
-      }
-    }),
-  } as never;
-}
-
-function controlBridge() {
-  return {
-    connect: vi.fn(async () => undefined),
-    close: vi.fn(),
-    sendAudio: vi.fn(),
-    setMediaTimestamp: vi.fn(),
-    sendUserMessage: vi.fn(),
-    submitToolResult: vi.fn(async () => undefined),
-    acknowledgeMark: vi.fn(),
-    isConnected: vi.fn(() => true),
-  } satisfies RealtimeVoiceBridge;
-}
 
 describe("Talk client Gateway control owner", () => {
   it.each([
-    ["Status?", false, false, "control", true],
-    ["cancel", false, false, "control", true],
-    ["cancel", true, true, undefined, true],
-    ["Status?", false, true, undefined, false],
-    ["cancel", false, true, undefined, false],
-    ["Status?", false, undefined, undefined, false],
-    ["use the release branch instead", false, false, "consult", false],
-    ["use the release branch instead", true, false, "consult", true],
-    ["cancel my meeting tomorrow", true, false, "consult", false],
-    ["hello", false, false, "consult", false],
+    ["Status?", false, false, "delegation", true],
+    ["cancel", false, false, "delegation", true],
+    ["use the release branch instead", false, false, "delegation", false],
+    ["use the release branch instead", true, false, "delegation", true],
+    ["also check tests", false, false, "delegation", false],
+    ["also check tests", true, false, "delegation", true],
+    ["cancel my meeting tomorrow", true, false, "delegation", false],
+    ["hello", false, false, "delegation", false],
+    ["cancel", true, true, "transcript", true],
+    ["Status?", false, true, "transcript", false],
+    ["cancel", false, true, "transcript", false],
+    ["Status?", false, undefined, "transcript", false],
+    ["Status?", false, false, "transcript", true],
+    ["cancel", false, false, "transcript", true],
   ] as const)(
-    "classifies intrinsic control %s (active=%s, tools=%s)",
-    async (text, active, supportsToolCalls, disposition, handled) => {
+    "admits %s (active=%s, tools=%s, source=%s)",
+    async (text, active, supportsToolCalls, controlSource, handled) => {
       const execute = vi.fn(async () => ({
         ok: true,
         mode: "status" as const,
@@ -77,22 +44,32 @@ describe("Talk client Gateway control owner", () => {
         suppress: false,
       }));
       const speak = vi.fn();
+      const respond = vi.fn();
       const owner = createTalkRealtimeRunControlOwner({
+        controlSource,
         supportsToolCalls,
         hasActiveRun: () => active,
-        execute,
+        prepare: () => execute,
         speak,
         warn: vi.fn(),
       });
-      expect(owner.getInputDisposition).toEqual(
-        supportsToolCalls === false ? expect.any(Function) : undefined,
-      );
-      expect(owner.getInputDisposition?.(text)).toBe(disposition);
-      expect(execute).not.toHaveBeenCalled();
-      expect(owner.handleSpoken(text)).toBe(handled);
-      await owner.close();
-      expect(execute).toHaveBeenCalledTimes(handled ? 1 : 0);
-      expect(speak).toHaveBeenCalledTimes(handled ? 1 : 0);
+      try {
+        if (controlSource === "delegation") {
+          expect(owner.handleSpoken(text)).toBe(false);
+          expect(owner.handleDelegationInput?.(text, respond)).toBe(
+            handled ? "control" : "consult",
+          );
+        } else {
+          expect(owner.handleDelegationInput).toBeUndefined();
+          expect(owner.handleSpoken(text)).toBe(handled);
+        }
+        await owner.close();
+        expect(execute).toHaveBeenCalledTimes(handled ? 1 : 0);
+        expect(respond).toHaveBeenCalledTimes(controlSource === "delegation" && handled ? 1 : 0);
+        expect(speak).toHaveBeenCalledTimes(controlSource === "transcript" && handled ? 1 : 0);
+      } finally {
+        await owner.close();
+      }
     },
   );
 

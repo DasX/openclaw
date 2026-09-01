@@ -8,6 +8,7 @@ import type {
   ActiveEmbeddedRunOwner,
   EmbeddedAgentQueueMessageOutcome,
 } from "../agents/embedded-agent-runner/runs.js";
+import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
@@ -59,6 +60,7 @@ type RealtimeVoiceAgentControlDeps = {
       debounceMs?: number;
       isInboundUserMessage?: boolean;
       taskSuggestionDeliveryMode?: undefined;
+      toolAuthorityOverlay?: ReplyToolAuthorityOverlay;
     },
   ) => Promise<EmbeddedAgentQueueMessageOutcome>;
   getDiagnosticSessionActivitySnapshot: (params: {
@@ -83,6 +85,7 @@ export async function controlRealtimeVoiceAgentRun(
       isCurrent: (sessionId?: string) => boolean;
     } | null;
     text: string;
+    getToolAuthorityOverlay?: () => ReplyToolAuthorityOverlay;
     mode?: unknown;
     recentEvents?: readonly TalkEvent[];
   },
@@ -205,11 +208,18 @@ export async function controlRealtimeVoiceAgentRun(
 
   // Steering and follow-up both enqueue to the active run; follow-up is wrapped
   // so the runner treats it as deferred context instead of an immediate pivot.
+  const toolAuthorityOverlay = params.getToolAuthorityOverlay?.();
+  // Caller preparation can synchronously run host hooks; never retarget a successor.
+  const preparedOwner = resolveCurrentRun();
+  if (preparedOwner.sessionId !== sessionId || (target && !target.isCurrent(sessionId))) {
+    return noActiveRun();
+  }
   const steerText = mode === "followup" ? buildRealtimeVoiceAgentFollowupSteeringText(text) : text;
   const outcome = await commands.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, {
     steeringMode: "all",
     debounceMs: 0,
     isInboundUserMessage: true,
+    toolAuthorityOverlay,
     // Talk cannot present task suggestions, so spoken user input must not inherit
     // a capable TUI run's model-facing task tools.
     taskSuggestionDeliveryMode: undefined,

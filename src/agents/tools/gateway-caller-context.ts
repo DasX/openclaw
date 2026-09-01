@@ -16,6 +16,7 @@ import {
   type OperationalRunInstanceRef,
 } from "../admitted-run-context.js";
 import { copyAgentToolMetadata } from "../agent-tool-metadata.js";
+import type { EmbeddedRunToolAuthorityBinding } from "../embedded-agent-runner/run-state.js";
 import {
   attachInternalToolExecutionPreparer,
   getInternalToolExecutionPreparer,
@@ -26,6 +27,7 @@ type GatewayToolCallerIdentity = {
   agentId: string;
   sessionKey: string;
   operationalRunInstance?: OperationalRunInstanceRef;
+  embeddedRunToolAuthorityBinding?: EmbeddedRunToolAuthorityBinding;
   /** Exact run authority used to fence delegated system-agent approvals. */
   approvalAuthority?: AgentRunDelegatedAuthority;
   approvalAuthorityCheck?: () => boolean | void;
@@ -189,14 +191,14 @@ export async function withGatewayToolCallerIdentity<T>(
   const inheritedRun = inherited?.operationalRunInstance;
   // Wrappers without a run inherit the admitted owner. A distinct admitted run
   // starts a new root; retaining the outer run would let child work outlive its owner.
-  const inheritedOwner =
-    !suppliedRun ||
-    (inheritedRun?.instanceId === suppliedRun.instanceId &&
-      inheritedRun.runId === suppliedRun.runId)
-      ? inherited
-      : undefined;
+  const inheritedOwner = !suppliedRun || inheritedRun === suppliedRun ? inherited : undefined;
   const operationalRunInstance =
     inheritedOwner?.operationalRunInstance ?? identity.operationalRunInstance;
+  const embeddedRunToolAuthorityBinding =
+    identity.embeddedRunToolAuthorityBinding ??
+    (!suppliedRun || suppliedRun === inheritedRun
+      ? inherited?.embeddedRunToolAuthorityBinding
+      : undefined);
   const approvalAuthority = inheritedOwner?.approvalAuthority ?? identity.approvalAuthority;
   const approvalAuthorityCheck =
     inheritedOwner?.approvalAuthorityCheck ?? identity.approvalAuthorityCheck;
@@ -237,6 +239,7 @@ export async function withGatewayToolCallerIdentity<T>(
       agentId: inheritedOwner?.agentId ?? identity.agentId.trim(),
       sessionKey: inheritedOwner?.sessionKey ?? identity.sessionKey.trim(),
       ...(operationalRunInstance ? { operationalRunInstance } : {}),
+      ...(embeddedRunToolAuthorityBinding ? { embeddedRunToolAuthorityBinding } : {}),
       ...(approvalAuthority ? { approvalAuthority } : {}),
       ...(approvalAuthorityCheck ? { approvalAuthorityCheck } : {}),
       ...(identity.approvalOwnerPluginId?.trim()

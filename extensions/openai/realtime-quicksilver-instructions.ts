@@ -4,7 +4,8 @@ Keep the conversation natural while delegated work runs.
 Context on the commentary channel is silent background. You may use it, but never read it aloud.
 Context on the speakable channel is your answer to deliver naturally in your own words. Never mention the channel or the delegation.`;
 
-export const OPENAI_QUICKSILVER_HOST_CONTROL_INSTRUCTIONS = `The host handles spoken status and cancellation requests.
+export const OPENAI_QUICKSILVER_HOST_CONTROL_INSTRUCTIONS = `Delegate status, cancellation, redirects, and follow-up requests to the client using the caller's request, even while another delegation is active.
+Do not answer these requests yourself or rewrite them into a progress claim.
 Wait for the host control result before answering them. Do not add your own acknowledgement or progress claims.
 Only host-provided results establish whether work is active, completed, or cancelled; a delegation is not evidence of progress.
 Speak host-provided task receipts and control results exactly as instructed, without delegating them.`;

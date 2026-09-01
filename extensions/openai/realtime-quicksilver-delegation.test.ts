@@ -1,4 +1,5 @@
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
+import type { RealtimeVoiceGatewayControl } from "openclaw/plugin-sdk/realtime-voice";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAIQuicksilverDelegationController } from "./realtime-quicksilver-delegation-controller.js";
 import {
@@ -15,7 +16,8 @@ type ConsultRunner = (params: {
 
 function createDelegationHarness(params?: {
   runAgentConsult?: ConsultRunner;
-  getInputDisposition?: (text: string) => "control" | "consult";
+  handleDelegationInput?: RealtimeVoiceGatewayControl["handleDelegationInput"];
+  getSocket?: () => FakeSocket;
 }) {
   const socket = new FakeSocket("manual");
   socket.readyState = 1;
@@ -24,8 +26,8 @@ function createDelegationHarness(params?: {
   const sessionController = new AbortController();
   const runAgentConsult = params?.runAgentConsult ?? vi.fn(async () => ({ text: "Done" }));
   const controller = new OpenAIQuicksilverDelegationController({
-    getSocket: () => socket,
-    getInputDisposition: params?.getInputDisposition,
+    getSocket: params?.getSocket ?? (() => socket),
+    handleDelegationInput: params?.handleDelegationInput,
     logger,
     onFatalError,
     runAgentConsult,
@@ -48,6 +50,133 @@ afterEach(() => {
 });
 
 describe("GPT-Live sideband protocol", () => {
+  it("targets the control delegation without consuming transcript context or cancelling the task", async () => {
+    let finish!: (result: { text: string }) => void;
+    const pending = new Promise<{ text: string }>((resolve) => {
+      finish = resolve;
+    });
+    const runAgentConsult = vi.fn<ConsultRunner>(async () => await pending);
+    const { controller, socket } = createDelegationHarness({
+      runAgentConsult,
+      handleDelegationInput: (text, respond) => {
+        if (text !== "status") {
+          return "consult";
+        }
+        respond("Host status");
+        respond("duplicate status");
+        return "control";
+      },
+    });
+    try {
+      delegate(controller, "task-A", "Original task");
+      controller.handleEvent({ kind: "transcript-done", role: "user", text: "history only" });
+      const beforeControl = socket.sent.length;
+      delegate(controller, "control-C", "status");
+      expect(runAgentConsult.mock.calls[0]?.[0].signal?.aborted).toBe(false);
+      expect(runAgentConsult).toHaveBeenCalledOnce();
+      expect(parseSent(socket).slice(beforeControl)).toEqual([
+        {
+          type: "delegation.context.append",
+          delegation_item_id: "control-C",
+          channel: "speakable",
+          content: [{ type: "input_text", text: "Host status" }],
+        },
+      ]);
+      finish({ text: "Original result" });
+      await vi.waitFor(() =>
+        expect(parseSent(socket)).toContainEqual({
+          type: "delegation.context.append",
+          delegation_item_id: "task-A",
+          channel: "speakable",
+          content: [{ type: "input_text", text: "Original result" }],
+        }),
+      );
+      await nextEventLoopTurn();
+      delegate(controller, "task-B", "Another task");
+      await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledTimes(2));
+      expect(runAgentConsult.mock.calls[1]?.[0].prompt).toContain("history only");
+    } finally {
+      finish({ text: "Done" });
+      await pending;
+      controller.stop(new Error("test complete"));
+    }
+  });
+
+  it.each(["close", "detach", "socket-replaced"] as const)(
+    "fences a retained control responder after %s",
+    (ending) => {
+      const original = new FakeSocket("manual");
+      original.readyState = 1;
+      const replacement = new FakeSocket("manual");
+      replacement.readyState = 1;
+      let socket = original;
+      let reply!: (text: string) => void;
+      const { controller, runAgentConsult } = createDelegationHarness({
+        getSocket: () => socket,
+        handleDelegationInput: (_text, respond) => {
+          reply = respond;
+          return "control";
+        },
+      });
+      delegate(controller, "control-C", "status");
+      if (ending === "close") {
+        controller.stop(new Error("closed"));
+      } else if (ending === "detach") {
+        controller.detach();
+      } else {
+        socket = replacement;
+      }
+      reply("Late control");
+      expect(original.sent).toEqual([]);
+      expect(replacement.sent).toEqual([]);
+      expect(runAgentConsult).not.toHaveBeenCalled();
+      controller.stop(new Error("test complete"));
+    },
+  );
+
+  it("consumes a multi-chunk response before a send failure and never retries or starts a task", () => {
+    let reply!: (text: string) => void;
+    const handleDelegationInput = vi.fn<
+      NonNullable<RealtimeVoiceGatewayControl["handleDelegationInput"]>
+    >((_text, respond) => {
+      reply = respond;
+      return "control";
+    });
+    const { controller, socket, onFatalError, runAgentConsult } = createDelegationHarness({
+      handleDelegationInput,
+    });
+    const send = vi
+      .spyOn(socket, "send")
+      .mockImplementationOnce(() => undefined)
+      .mockImplementation(() => {
+        throw new Error("socket send failed");
+      });
+    try {
+      delegate(controller, "control-C", "status");
+      reply("x".repeat(1_100));
+      reply("second attempt");
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(onFatalError).toHaveBeenCalledExactlyOnceWith(new Error("socket send failed"));
+      expect(handleDelegationInput).toHaveBeenCalledOnce();
+      expect(runAgentConsult).not.toHaveBeenCalled();
+    } finally {
+      controller.stop(new Error("test complete"));
+    }
+  });
+
+  it("does not fall through to a task when native admission throws", () => {
+    const { controller, socket, onFatalError, runAgentConsult } = createDelegationHarness({
+      handleDelegationInput: () => {
+        throw new Error("owner closed");
+      },
+    });
+    delegate(controller, "control-C", "status");
+    expect(onFatalError).toHaveBeenCalledOnce();
+    expect(socket.sent).toEqual([]);
+    expect(runAgentConsult).not.toHaveBeenCalled();
+    controller.stop(new Error("test complete"));
+  });
+
   it("keeps standalone speech at session scope while a delegation owns its result", async () => {
     let finish!: (result: { text: string }) => void;
     const result = new Promise<{ text: string }>((resolve) => {
@@ -265,7 +394,7 @@ describe("GPT-Live sideband protocol", () => {
 
   it("does not start a late control after the active consultation settles", async () => {
     const { controller, socket, runAgentConsult } = createDelegationHarness({
-      getInputDisposition: (text) => (text === "cancel" ? "control" : "consult"),
+      handleDelegationInput: (text) => (text === "cancel" ? "control" : "consult"),
     });
     try {
       delegate(controller, "finished-task", "first task");
@@ -329,12 +458,12 @@ describe("GPT-Live sideband protocol", () => {
           );
         }),
     );
-    const getInputDisposition = vi.fn((text: string) =>
+    const handleDelegationInput = vi.fn((text: string) =>
       text === "host-control" ? ("control" as const) : ("consult" as const),
     );
     const { controller, socket } = createDelegationHarness({
       runAgentConsult,
-      getInputDisposition,
+      handleDelegationInput,
     });
 
     delegate(controller, "delegation-1", "first task");
@@ -361,11 +490,11 @@ describe("GPT-Live sideband protocol", () => {
     "keeps transcript context when it skips delegation %j",
     async (input) => {
       const runAgentConsult = vi.fn<ConsultRunner>(async () => ({ text: "Done" }));
-      const getInputDisposition = (text: string): "control" | "consult" =>
+      const handleDelegationInput = (text: string): "control" | "consult" =>
         text === "host-control" ? "control" : "consult";
       const { controller, socket } = createDelegationHarness({
         runAgentConsult,
-        getInputDisposition,
+        handleDelegationInput,
       });
       controller.handleEvent({ kind: "transcript-done", role: "user", text: "hello" });
 
@@ -389,7 +518,7 @@ describe("GPT-Live sideband protocol", () => {
     const runAgentConsult = vi.fn<ConsultRunner>(async () => await result);
     const { controller, socket } = createDelegationHarness({
       runAgentConsult,
-      getInputDisposition: () => "consult",
+      handleDelegationInput: () => "consult",
     });
     try {
       delegate(controller, "active", "first task");

@@ -181,6 +181,10 @@ export class TalkRealtimeRelayOutputOwnership {
 }
 
 export type RelaySession = {
+  getToolAuthorityOverlay?: (
+    authority?: TalkAgentConsultAuthority,
+    source?: "reply" | "attempt",
+  ) => import("../auto-reply/reply/reply-run-registry.contracts.js").ReplyToolAuthorityOverlay;
   id: string;
   connId: string;
   context: GatewayRequestContext;
@@ -221,6 +225,8 @@ export type CreateTalkRealtimeRelaySessionParams = {
   consultAuthority?: TalkAgentConsultAuthority;
   provider: RealtimeVoiceProviderPlugin;
   providerConfig: RealtimeVoiceProviderConfig;
+  controlSource: "delegation" | "transcript";
+  supportsToolCalls?: boolean;
   instructions: string;
   tools: RealtimeVoiceTool[];
   model?: string;

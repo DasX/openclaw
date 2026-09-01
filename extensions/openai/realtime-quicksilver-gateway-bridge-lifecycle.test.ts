@@ -12,7 +12,7 @@ function createBridge(params: {
   runAgentConsult: (request: { prompt: string; signal?: AbortSignal }) => Promise<{ text: string }>;
   onError?: (error: Error) => void;
   onTranscript?: (role: "user" | "assistant", text: string, done: boolean) => void;
-  getInputDisposition?: (text: string) => "control" | "consult";
+  handleDelegationInput?: (text: string) => "control" | "consult";
 }) {
   let socket: FakeSocket | undefined;
   const fetchImpl = vi.fn<typeof fetch>(async () =>
@@ -28,7 +28,7 @@ function createBridge(params: {
     onError: params.onError,
     onTranscript: params.onTranscript,
     runAgentConsult: params.runAgentConsult,
-    getInputDisposition: params.getInputDisposition,
+    handleDelegationInput: params.handleDelegationInput,
     logger: { debug: vi.fn(), warn: vi.fn() },
     resolveAuth: vi.fn(async () => ({
       type: "api-key" as const,
@@ -141,7 +141,7 @@ describe("OpenAI Quicksilver gateway bridge lifecycle", () => {
       );
       const harness = createBridge({
         runAgentConsult,
-        getInputDisposition: classified ? () => "consult" : undefined,
+        handleDelegationInput: classified ? () => "consult" : undefined,
       });
 
       try {
