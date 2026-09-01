@@ -333,6 +333,7 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
   }
 
   protected renderBoardPrimary(board: ResolvedBoardView, chat: TemplateResult) {
+    const session = this.resolveBoardConversation();
     const sessionKey = this.resolveBoardSessionKey(board.snapshot.sessionKey);
     const shouldRender =
       board.hasBoard &&
@@ -342,6 +343,7 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
     const renderSurface = (active: boolean) =>
       renderBoardSessionSurface({
         active,
+        session,
         snapshot: board.snapshot,
         activeTabId: board.activeTabId,
         dock: board.dock,
@@ -364,13 +366,12 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
             board.provider.refreshWidgetAppView(name, revision),
         } satisfies BoardViewCallbacks,
         widgetFrameUrl: (name, revision) => board.provider.widgetFrameUrl(name, revision),
-        sessionKey,
       });
     const boardSurface = !shouldRender
       ? nothing
       : boardActive
         ? renderSurface(true)
-        : guard([sessionKey], () => renderSurface(false));
+        : guard([sessionKey, session.agentId], () => renderSurface(false));
     return html`${boardActive ? nothing : chat}${boardSurface}`;
   }
 

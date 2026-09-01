@@ -16,6 +16,7 @@ import { applySharedChannelFieldHelp } from "../src/config/schema.channel-field-
 import { buildBaseHints } from "../src/config/schema.hints.js";
 import { applyConfigTierHints, applyResolvedConfigTierHints } from "../src/config/schema.tiers.js";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../src/gateway/control-ui-contract.js";
+import { CONTROL_UI_PLUGIN_ASSET_PREFIX } from "../src/gateway/control-ui-plugin-assets-contract.js";
 import { buildUpdateRestartSentinelPayload } from "../src/infra/update-restart-sentinel-payload.js";
 import type { UpdateRunResult } from "../src/infra/update-runner.js";
 import type { UpdateAvailable, UpdateScheduleState } from "../ui/src/api/types.ts";
@@ -23,9 +24,11 @@ import {
   controlUiSessionPath,
   createControlUiMockBootstrapConfig,
   createControlUiMockGatewayInitScript,
+  prepareControlUiMockGatewayScenario,
   type ControlUiMockGatewayScenario,
 } from "../ui/src/test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../ui/src/test-helpers/control-ui-session-fixtures.ts";
+import { workboardUi } from "../ui/src/test-helpers/control-ui-workboard-fixture.ts";
 import {
   resolveExternalPackageAliasesForVite,
   resolveSourcePackageAliasesForVite,
@@ -2063,19 +2066,7 @@ async function createChatPickerScenario(
           ]
         : []),
     ],
-    controlUiTabs:
-      fixture === "workboard"
-        ? [
-            {
-              group: "control",
-              icon: "kanban",
-              id: "workboard",
-              label: "Workboard",
-              placement: "route:workboard",
-              pluginId: "workboard",
-            },
-          ]
-        : [],
+    ...(fixture === "workboard" ? workboardUi : {}),
     controlUiWidgetKinds: [
       { pluginId: "session", kind: "session:progress", label: "Session progress" },
       ...(fixture === "workboard"
@@ -3073,15 +3064,16 @@ function escapeScriptContent(script: string): string {
   return script.replaceAll("</script", "<\\/script");
 }
 
-function createMockGatewayPlugin(
+async function createMockGatewayPlugin(
   scenario: ControlUiMockGatewayScenario,
   fixture?: CliOptions["fixture"],
-): Plugin {
-  const initScript = escapeScriptContent(createControlUiMockGatewayInitScript(scenario));
+): Promise<Plugin> {
+  const prepared = await prepareControlUiMockGatewayScenario(scenario);
+  const initScript = escapeScriptContent(createControlUiMockGatewayInitScript(prepared.scenario));
   const statefulInitScript = escapeScriptContent(
-    createControlUiPreviewInitScript() + skillLibraryMockInitScript(scenario.models),
+    createControlUiPreviewInitScript() + skillLibraryMockInitScript(prepared.scenario.models),
   );
-  const bootstrapBody = JSON.stringify(createControlUiMockBootstrapConfig(scenario));
+  const bootstrapBody = JSON.stringify(createControlUiMockBootstrapConfig(prepared.scenario));
   const attachmentThemeToggle =
     fixture === "attachments"
       ? `    <style data-openclaw-control-ui-mock-theme-toggle>
@@ -3121,6 +3113,19 @@ function createMockGatewayPlugin(
       : "";
   return {
     configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = req.url?.split("?", 1)[0];
+        if (!pathname?.startsWith(CONTROL_UI_PLUGIN_ASSET_PREFIX)) {
+          next();
+          return;
+        }
+        const asset = prepared.assets.get(pathname);
+        res.statusCode = asset ? 200 : 404;
+        if (asset) {
+          res.setHeader("content-type", asset.contentType);
+        }
+        res.end(asset?.body);
+      });
       server.middlewares.use(CONTROL_UI_BOOTSTRAP_CONFIG_PATH, (_req, res) => {
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
@@ -3227,7 +3232,7 @@ try {
     },
     plugins: [
       ...createStandaloneMockIsolationPlugins(),
-      createMockGatewayPlugin(scenario, options.fixture),
+      await createMockGatewayPlugin(scenario, options.fixture),
       createBoardFixturePlugin(),
       ...(options.fixture === "attachments" ? [createChatAttachmentFixturePlugin()] : []),
     ],

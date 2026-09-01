@@ -172,8 +172,8 @@ describe("board session shell", () => {
     render(
       renderBoardSessionSurface({
         active: true,
+        session: { sessionKey: "agent:main:main" },
         snapshot: provider.snapshot$.value,
-        sessionKey: provider.snapshot$.value.sessionKey,
         activeTabId: "main",
         dock,
         dockSize: { height: 300 },
@@ -203,8 +203,8 @@ describe("board session shell", () => {
     render(
       renderBoardSessionSurface({
         active: true,
+        session: { sessionKey: "agent:main:main" },
         snapshot: provider.snapshot$.value,
-        sessionKey: provider.snapshot$.value.sessionKey,
         activeTabId: "main",
         dock: "hidden",
         dockSize: { height: 300 },
@@ -232,8 +232,8 @@ describe("board session shell", () => {
     const provider = boardProviderForSession({ sessionKey: "agent:main:main" });
     const props = {
       active: true,
+      session: { sessionKey: "agent:main:main" },
       snapshot: provider.snapshot$.value,
-      sessionKey: provider.snapshot$.value.sessionKey,
       activeTabId: "main",
       dockSize: { height: 300 },
       chat: html`<div data-test-chat>chat</div>`,

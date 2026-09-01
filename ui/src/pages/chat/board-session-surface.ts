@@ -1,5 +1,5 @@
+import type { BoardGetParams } from "@openclaw/gateway-protocol";
 import { html, nothing, type TemplateResult } from "lit";
-import "../../plugins/control-ui-contributions.ts";
 import { icons } from "../../components/icons.ts";
 import { renderSettingsSegmented } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
@@ -14,6 +14,7 @@ export type BoardChatDockSize = {
 
 type BoardSessionSurfaceProps = {
   active: boolean;
+  session: BoardGetParams;
   snapshot: BoardSnapshot;
   activeTabId: string;
   dock: BoardTab["chatDock"];
@@ -24,7 +25,6 @@ type BoardSessionSurfaceProps = {
   canGrant: boolean;
   callbacks: BoardViewCallbacks;
   widgetFrameUrl: BoardWidgetFrameUrl;
-  sessionKey: string;
 };
 
 let boardViewLoad: Promise<unknown> | null = null;
@@ -136,13 +136,9 @@ export function renderBoardViewSwitch(props: {
 function renderBoardView(props: BoardSessionSurfaceProps) {
   return html`
     <div class="board-session-surface__board">
-      <openclaw-plugin-contributions
-        .kind=${"session-header"}
-        .sessionKey=${props.sessionKey}
-        .presented=${props.active}
-      ></openclaw-plugin-contributions>
       <openclaw-board-view
         .active=${props.active}
+        .session=${props.session}
         .snapshot=${props.snapshot}
         .activeTabId=${props.activeTabId}
         .widgetFrameUrl=${props.widgetFrameUrl}

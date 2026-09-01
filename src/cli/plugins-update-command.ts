@@ -207,6 +207,7 @@ async function runPluginUpdateCommandUnlocked(
   params: RunPluginUpdateCommandParams,
   lease?: PluginLifecycleLeaseContext,
 ) {
+  const assertOwned = lease?.assertOwned.bind(lease);
   if (!params.opts.dryRun) {
     assertConfigWriteAllowedInCurrentMode();
   }
@@ -219,7 +220,7 @@ async function runPluginUpdateCommandUnlocked(
         writeOptions: {
           ...writeOptions,
           assertConfigPathForWrite: () => {
-            lease?.assertOwned();
+            assertOwned?.();
             writeOptions.assertConfigPathForWrite?.();
           },
         },
@@ -460,6 +461,7 @@ async function runPluginUpdateCommandUnlocked(
                 },
               },
               deferredInstallTransactions,
+              assertOwned,
             ),
           )
         : { config: cfgWithPluginInstallRecords, changed: false, outcomes: [] };
@@ -520,6 +522,7 @@ async function runPluginUpdateCommandUnlocked(
                 },
               },
               deferredInstallTransactions,
+              assertOwned,
             ),
           )
         : { config: pluginResult.config, changed: false, outcomes: [] };
