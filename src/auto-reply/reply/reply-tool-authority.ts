@@ -206,8 +206,8 @@ function resolveReplyToolAuthorityInputFingerprint(
   const capabilityProfile = resolveConversationCapabilityProfile({
     config: execution.config,
     sessionId: execution.sessionId,
-    sessionKey: policySessionKey,
-    runSessionKey: execution.sessionKey,
+    // Capability identity follows execution, not the independent sandbox policy owner.
+    sessionKey: execution.sessionKey,
     sandboxSessionKey: policySessionKey,
     agentId: execution.agentId,
     agentDir: execution.agentDir,

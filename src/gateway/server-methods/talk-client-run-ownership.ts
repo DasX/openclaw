@@ -3,6 +3,11 @@ import {
   ACTIVE_EMBEDDED_RUNS,
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
 } from "../../agents/embedded-agent-runner/run-state.js";
+import {
+  getAttachedBackend,
+  operationsByUpstreamAbortSignal,
+  resolveActiveReplyRunOwnerForSignal,
+} from "../../auto-reply/reply/reply-run-registry.state.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import type { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import { resolveClientVoiceRunBinding } from "../../talk/client-voice-session.js";
@@ -34,10 +39,19 @@ export function resolveOwnedActiveTalkRunTarget(params: {
     const signal = entry.controller.signal;
     const handle = ACTIVE_EMBEDDED_RUNS.get(entry.sessionId);
     const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
-    // Pending calls remain classifiable, but an absent backend is not permission
-    // to adopt a publisher that appears after this control was admitted.
+    // Session RPCs can own a queued reply before its backend exists. Attached
+    // voice controls instead preserve captured backend absence across their FIFO.
+    const reply =
+      params.scope.kind === "session" && !handle
+        ? operationsByUpstreamAbortSignal.get(signal)
+        : undefined;
     const isCurrent = (resolvedSessionId?: string) => {
       params.assertCurrent?.();
+      const replyOwner =
+        reply && operationsByUpstreamAbortSignal.get(signal) === reply
+          ? resolveActiveReplyRunOwnerForSignal(signal)
+          : undefined;
+      const replyHandle = replyOwner ? ACTIVE_EMBEDDED_RUNS.get(replyOwner.sessionId) : undefined;
       if (params.scope.kind === "voice-session") {
         // Run bindings can move or retire during awaited control setup. They keep
         // the call's original key, not its canonical transcript-storage key.
@@ -57,11 +71,16 @@ export function resolveOwnedActiveTalkRunTarget(params: {
         entry.ownerConnId === connId &&
         entry.kind !== "agent" &&
         entry.registrationCleanupRequested !== true &&
+        (!reply ||
+          (replyOwner?.sessionKey === canonicalKey &&
+            (!replyHandle || getAttachedBackend(reply) === replyHandle))) &&
         (resolvedSessionId === undefined ||
           (entry.sessionId === resolvedSessionId &&
-            handle !== undefined &&
-            ACTIVE_EMBEDDED_RUNS.get(resolvedSessionId) === handle &&
-            ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration)) &&
+            (replyOwner
+              ? replyOwner.sessionId === resolvedSessionId
+              : handle !== undefined &&
+                ACTIVE_EMBEDDED_RUNS.get(resolvedSessionId) === handle &&
+                ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration))) &&
         entry.controller.signal === signal &&
         !signal.aborted &&
         entry.lifecycleGeneration === generation &&
@@ -69,7 +88,8 @@ export function resolveOwnedActiveTalkRunTarget(params: {
       );
     };
     if (isCurrent()) {
-      return { runId, signal, isCurrent, toolAuthoritySource: registration?.toolAuthority?.source };
+      const toolAuthoritySource = reply ? "reply" : registration?.toolAuthority?.source;
+      return { runId, signal, isCurrent, toolAuthoritySource };
     }
   }
   return null;

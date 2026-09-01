@@ -544,7 +544,28 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
   const resolvedSessionId = "materialized-reply-session";
   context.chatAbortControllers.get("queued-talk")!.sessionId = resolvedSessionId;
   operation.updateSessionId(resolvedSessionId);
+  const voiceSessionId = (respond.mock.calls[0]![1] as { voiceSessionId: string }).voiceSessionId;
+  registerClientVoiceConsultRun({
+    agentId: "voice",
+    sessionKey: "main",
+    voiceSessionId,
+    runId: "queued-talk",
+  });
+  const voiceTarget = resolveOwnedActiveTalkRunTarget({
+    context,
+    clientConnId: client.connId,
+    sessionTarget: prepareTalkSessionTarget(config, "main"),
+    scope: { kind: "voice-session", voiceSessionId },
+  });
   try {
+    expect(voiceTarget?.isCurrent()).toBe(true);
+    expect(
+      await controlRealtimeVoiceAgentRun({
+        sessionKey: "global",
+        runTarget: voiceTarget,
+        text: "status",
+      }),
+    ).toMatchObject({ active: false });
     expect(
       await controlRealtimeVoiceAgentRun({
         sessionKey: "global",
@@ -560,6 +581,23 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
       expect.objectContaining({ active: true, sessionId: resolvedSessionId }),
       undefined,
     );
+    const abortUnrelated = vi.fn();
+    const unrelated = {
+      runId: "queued-talk",
+      queueMessage: async () => undefined,
+      isStreaming: () => true,
+      isCompacting: () => false,
+      abort: abortUnrelated,
+    };
+    setActiveEmbeddedRun(resolvedSessionId, unrelated, "global");
+    try {
+      expect(
+        await controlRealtimeVoiceAgentRun({ sessionKey: "global", runTarget, text: "cancel" }),
+      ).toMatchObject({ active: false, aborted: false });
+      expect(abortUnrelated).not.toHaveBeenCalled();
+    } finally {
+      clearActiveEmbeddedRun(resolvedSessionId, unrelated, "global");
+    }
     expect(
       await dispatch("talk.client.steer", { sessionKey: "main", text: "cancel", mode: "cancel" }),
     ).toHaveBeenCalledWith(
@@ -569,6 +607,22 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
     );
     expect(operation.abortSignal.aborted).toBe(true);
     expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
+    expect(runTarget?.isCurrent()).toBe(false);
+    operation.complete();
+    const successor = replyRunRegistry.begin({
+      sessionKey: "global",
+      sessionId: resolvedSessionId,
+      resetTriggered: false,
+      upstreamAbortSignal: registration.controller.signal,
+    });
+    try {
+      expect(
+        await controlRealtimeVoiceAgentRun({ sessionKey: "global", runTarget, text: "cancel" }),
+      ).toMatchObject({ active: false, aborted: false });
+      expect(successor.abortSignal.aborted).toBe(false);
+    } finally {
+      successor.complete();
+    }
   } finally {
     operation.complete();
     registration.cleanup();
