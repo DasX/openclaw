@@ -697,7 +697,7 @@ export function listCoreAdvertisedGatewayMethodNames(): string[] {
 
 /** Returns all registered core method names, including hidden/internal compatibility methods. */
 export function listCoreGatewayMethodNames(): string[] {
-  return listCoreGatewayMethodMetadata().map((spec) => spec.name);
+  return CORE_GATEWAY_METHOD_SPEC_LIST.map((spec) => spec.name);
 }
 
 /** Returns the public metadata emitted for every core gateway method. */
@@ -756,9 +756,7 @@ export function createCoreGatewayMethodDescriptors(
   handlers: Record<string, GatewayMethodHandler>,
 ): GatewayMethodDescriptorInput[] {
   const descriptors: GatewayMethodDescriptorInput[] = [];
-  const specNames = new Set<string>();
   for (const spec of CORE_GATEWAY_METHOD_SPEC_LIST) {
-    specNames.add(spec.name);
     const handler = handlers[spec.name];
     if (!handler) {
       continue;
@@ -777,7 +775,7 @@ export function createCoreGatewayMethodDescriptors(
     });
   }
   for (const name of Object.keys(handlers)) {
-    if (!specNames.has(name)) {
+    if (!CORE_GATEWAY_METHOD_SPEC_BY_NAME.has(name)) {
       // Unclassified core handlers would bypass scope/startup/write metadata, so fail before the
       // dispatcher can expose a method with missing policy.
       throw new Error(`gateway method handler is missing a descriptor: ${name}`);
