@@ -104,9 +104,17 @@ it.each([true, false])(
                   toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
                   queueMessage,
                 }),
+                messageInjectionV2: {
+                  version: 2,
+                  isAvailable: () => true,
+                  queueMessage: async (_text, _options, assertCurrent) => {
+                    assertCurrent();
+                    await queueMessage();
+                  },
+                },
                 kind: "embedded" as const,
                 cancel: () => {},
-              };
+              } satisfies Parameters<typeof setActiveEmbeddedRun>[1];
               const captureTarget = () =>
                 resolveOwnedActiveTalkRunTarget({
                   context,
