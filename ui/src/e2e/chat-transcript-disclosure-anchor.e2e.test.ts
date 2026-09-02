@@ -146,6 +146,7 @@ suite.define(() => {
           recordVideo: { dir: artifactDir },
         },
         async ({ page }) => {
+          // Native smooth scrolling and resize measurement must share real frame ordering.
           const gateway = await installMockGateway(page, {
             heldMethods: ["chat.message.get"],
             historyMessages: Array.from({ length: 60 }, (_, index) => ({
