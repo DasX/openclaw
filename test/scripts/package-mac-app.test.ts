@@ -1,9 +1,10 @@
 // Package Mac App tests cover package mac app script behavior.
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import path from "node:path";
 import { minimatch } from "minimatch";
+import * as tar from "tar";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -130,6 +131,104 @@ touch "$ROOT_DIR/assembled"
 );
 
 describe("packaged worker freshness", () => {
+  it.skipIf(process.platform === "win32")(
+    "keeps private app staging out of package contents and removes it after use",
+    async () => {
+      const root = tempDirs.make("openclaw-package-stage-");
+      const dist = path.join(root, "dist");
+      const output = tempDirs.make("openclaw-package-stage-output-");
+      const previousApp = path.join(dist, "OpenClaw.app/Contents/MacOS/OpenClaw");
+      const { files, packageManager, version } = JSON.parse(
+        readFileSync("package.json", "utf8"),
+      ) as {
+        files: string[];
+        packageManager: string;
+        version: string;
+      };
+      mkdirSync(path.dirname(previousApp), { recursive: true });
+      writeFileSync(previousApp, "previous signed app\n");
+      writeFileSync(path.join(dist, "entry.js"), "export {};\n");
+      writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({ name: "openclaw", version, packageManager, files }),
+      );
+      const script = readFileSync(scriptPath, "utf8");
+      const allocationStart = script.indexOf("# pnpm build owns the Control UI");
+      const allocationEnd = script.indexOf('echo "🔨 Building $PRODUCT', allocationStart);
+      expect(allocationStart).toBeGreaterThanOrEqual(0);
+      expect(allocationEnd).toBeGreaterThan(allocationStart);
+      const allocated = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          `set -euo pipefail
+ROOT_DIR="$1"
+APP_DESTINATION="$ROOT_DIR/dist/OpenClaw.app"
+${script.slice(allocationStart, allocationEnd)}
+printf '%s' "$APP_STAGE_DIR"
+`,
+          "package-stage",
+          root,
+        ],
+        {
+          encoding: "utf8",
+          env: { HOME: root, PATH: "/usr/bin:/bin", TMPDIR: path.join(root, "unavailable") },
+        },
+      );
+      expect(allocated.status, allocated.stderr).toBe(0);
+      const stage = allocated.stdout;
+      const swiftResults = path.join(stage, "swift-builds");
+      mkdirSync(path.join(swiftResults, "arm64"), { recursive: true });
+      writeFileSync(path.join(swiftResults, "arm64/peekaboo-commit"), "private stage canary\n");
+      writeFileSync(path.join(swiftResults, "cleanup-complete"), "verified\n");
+      mkdirSync(path.join(stage, "OpenClaw.app/Contents/MacOS"), { recursive: true });
+      writeFileSync(path.join(stage, "OpenClaw.app/Contents/MacOS/OpenClaw"), "candidate app\n");
+      try {
+        expect(statSync(stage).dev).toBe(statSync(dist).dev);
+        expect(statSync(stage).mode & 0o777).toBe(0o700);
+        const packed = spawnSync(
+          "npm",
+          ["pack", "--silent", "--ignore-scripts", "--offline", "--pack-destination", output],
+          { cwd: root, encoding: "utf8", env: { HOME: root, PATH: process.env.PATH } },
+        );
+        expect(packed.status, packed.stderr).toBe(0);
+        const entries: string[] = [];
+        await tar.t({
+          file: path.join(output, `openclaw-${version}.tgz`),
+          onentry: (entry) => {
+            if (entry.type !== "Directory") {
+              entries.push(entry.path);
+            }
+          },
+        });
+        expect(entries.toSorted()).toEqual(["package/dist/entry.js", "package/package.json"]);
+      } finally {
+        const cleanup = script.slice(
+          script.indexOf("cleanup_package_build() {"),
+          script.indexOf("PNPM_CMD=()"),
+        );
+        const cleaned = spawnSync(
+          "/bin/bash",
+          [
+            "-c",
+            `set -euo pipefail
+APP_STAGE_DIR="$1"
+SWIFT_BUILD_RESULTS="$APP_STAGE_DIR/swift-builds"
+SWIFT_BUILD_PID=""
+${cleanup}
+`,
+            "package-stage-cleanup",
+            stage,
+          ],
+          { encoding: "utf8", env: { HOME: root, PATH: "/usr/bin:/bin" } },
+        );
+        expect(cleaned.status, cleaned.stderr).toBe(0);
+        expect(existsSync(stage)).toBe(false);
+        expect(readFileSync(previousApp, "utf8")).toBe("previous signed app\n");
+      }
+    },
+  );
+
   it.each([
     "dist/OpenClaw.app",
     "dist/OpenClaw-proof.app",

@@ -977,17 +977,18 @@ export async function packOpenClawPackageForDocker(
           restoreManifest,
         },
       );
-      const packArgs =
-        packTool === "pnpm"
-          ? ["pack", "--silent", "--config.ignore-scripts=true", "--pack-destination", outputPath]
-          : [
-              "pack",
-              "--silent",
-              "--ignore-scripts",
-              "--pack-destination",
-              outputPath,
-              "--json=false",
-            ];
+      // AI staging materializes the bundled tree; pack must not inherit the
+      // source workspace's isolated linker setting for that prepared bundle.
+      const packArgs = [
+        "pack",
+        "--silent",
+        ...(packTool === "pnpm"
+          ? ["--config.ignore-scripts=true", "--config.node-linker=hoisted"]
+          : ["--ignore-scripts"]),
+        "--pack-destination",
+        outputPath,
+        ...(packTool === "npm" ? ["--json=false"] : []),
+      ];
       packOutput = await runCaptureImpl(packTool, packArgs, sourcePath, {
         timeoutMs: resolveTimeoutMs(
           "OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS",
