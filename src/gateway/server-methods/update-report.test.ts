@@ -92,10 +92,26 @@ describe("update.report", () => {
       title: "Update failure",
       url: "https://github.com/openclaw/openclaw/issues/new",
     });
-    mocks.submit.mockResolvedValue({
-      savedReportPath: "/tmp/report.md",
-      status: "created",
-      url: "https://github.com/openclaw/openclaw/issues/123",
+    mocks.submit.mockImplementation(async (...args: unknown[]) => {
+      const options = args[2] as {
+        hasCurrentAuthority?: () => boolean;
+        validateCurrentAttempt?: () => boolean | Promise<boolean>;
+      };
+      if (options.hasCurrentAuthority && !options.hasCurrentAuthority()) {
+        throw new Error("client authority is stale");
+      }
+      if (options.validateCurrentAttempt && !(await options.validateCurrentAttempt())) {
+        return {
+          message: "This failed update attempt is stale or unavailable.",
+          savedReportPath: "/tmp/report.md",
+          status: "stale",
+        };
+      }
+      return {
+        savedReportPath: "/tmp/report.md",
+        status: "created",
+        url: "https://github.com/openclaw/openclaw/issues/123",
+      };
     });
   });
 
@@ -133,25 +149,19 @@ describe("update.report", () => {
     expect(mocks.submit).toHaveBeenCalledWith(
       expect.objectContaining({ attemptId: "handoff-failed" }),
       "a".repeat(64),
+      expect.objectContaining({
+        hasCurrentAuthority: expect.any(Function),
+        validateCurrentAttempt: expect.any(Function),
+      }),
     );
     expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ status: "created" }));
     expect(respond.mock.calls[0]?.[1]).not.toHaveProperty("savedReportPath");
   });
 
   it("rechecks the attempt after preparation and refuses a replacement before submission", async () => {
-    mocks.prepare.mockImplementation(async () => {
-      mocks.getLatest.mockReturnValue({
-        ...failure,
-        stats: { ...failure.stats, handoffId: "replacement-attempt" },
-      });
-      return {
-        attemptId: "handoff-failed",
-        body: "sanitized body",
-        previewDigest: "a".repeat(64),
-        savedReportPath: "/tmp/report.md",
-        title: "Update failure",
-        url: "https://github.com/openclaw/openclaw/issues/new",
-      };
+    mocks.refreshLatest.mockResolvedValueOnce(failure).mockResolvedValueOnce({
+      ...failure,
+      stats: { ...failure.stats, handoffId: "replacement-attempt" },
     });
 
     const respond = await invoke({
@@ -160,7 +170,7 @@ describe("update.report", () => {
       previewDigest: "a".repeat(64),
     });
 
-    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(mocks.submit).toHaveBeenCalledOnce();
     expect(respond).toHaveBeenCalledWith(
       false,
       undefined,
@@ -198,26 +208,29 @@ describe("update.report", () => {
     expect(respond).not.toHaveBeenCalled();
   });
 
-  it("refuses submission without a live authenticated-client guard", async () => {
-    const respond = await invoke(
-      {
-        action: "submit",
-        attemptId: "handoff-failed",
-        previewDigest: "a".repeat(64),
-      },
-      null,
-    );
+  it.each(["preview", "submit"] as const)(
+    "refuses %s without a live authenticated-client guard",
+    async (action) => {
+      const respond = await invoke(
+        {
+          action,
+          attemptId: "handoff-failed",
+          ...(action === "submit" ? { previewDigest: "a".repeat(64) } : {}),
+        },
+        null,
+      );
 
-    expect(mocks.submit).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        code: "INVALID_REQUEST",
-        message: expect.stringContaining("authenticated client"),
-      }),
-    );
-  });
+      expect(mocks.submit).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          code: "INVALID_REQUEST",
+          message: expect.stringContaining("authenticated client"),
+        }),
+      );
+    },
+  );
 
   it("rejects a stale update identity before preparing or submitting", async () => {
     const respond = await invoke({ action: "preview", attemptId: "older-handoff" });
@@ -235,7 +248,7 @@ describe("update.report", () => {
   });
 
   it("rejects successful and non-update sentinels", async () => {
-    mocks.getLatest.mockReturnValue({ ...failure, status: "ok" });
+    mocks.refreshLatest.mockResolvedValue({ ...failure, status: "ok" });
     const respond = await invoke({ action: "preview", attemptId: "handoff-failed" });
 
     expect(mocks.prepare).not.toHaveBeenCalled();
@@ -247,7 +260,7 @@ describe("update.report", () => {
   });
 
   it("rejects a classified skipped no-op but allows a skipped terminal failure", async () => {
-    mocks.getLatest.mockReturnValue({
+    mocks.refreshLatest.mockResolvedValue({
       ...failure,
       status: "skipped",
       stats: { ...failure.stats, reason: "already-current" },
@@ -260,7 +273,7 @@ describe("update.report", () => {
       expect.objectContaining({ code: "INVALID_REQUEST" }),
     );
 
-    mocks.getLatest.mockReturnValue({
+    mocks.refreshLatest.mockResolvedValue({
       ...failure,
       status: "skipped",
       stats: { ...failure.stats, reason: "not-git-install" },
@@ -273,6 +286,27 @@ describe("update.report", () => {
     expect(failureResponse).toHaveBeenCalledWith(
       true,
       expect.objectContaining({ status: "ready" }),
+    );
+  });
+
+  it("uses the canonical sentinel instead of a stale cached attempt", async () => {
+    mocks.getLatest.mockReturnValue(failure);
+    mocks.refreshLatest.mockResolvedValue({
+      ...failure,
+      stats: { ...failure.stats, handoffId: "canonical-replacement" },
+    });
+
+    const respond = await invoke({ action: "preview", attemptId: "handoff-failed" });
+
+    expect(mocks.getLatest).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "INVALID_REQUEST",
+        message: expect.stringContaining("stale"),
+      }),
     );
   });
 });

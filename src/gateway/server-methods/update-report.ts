@@ -11,10 +11,7 @@ import {
   type UpdateFailureReportSubmitResult,
 } from "../../infra/update-failure-report.js";
 import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
-import {
-  getLatestUpdateRestartSentinel,
-  refreshLatestUpdateRestartSentinel,
-} from "../server-restart-sentinel.js";
+import { refreshLatestUpdateRestartSentinel } from "../server-restart-sentinel.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -68,7 +65,9 @@ function projectReportInput(payload: RestartSentinelPayload): UpdateFailureRepor
   };
 }
 
-function projectPublicSubmitResult(result: UpdateFailureReportSubmitResult) {
+function projectPublicSubmitResult(
+  result: Exclude<UpdateFailureReportSubmitResult, { status: "stale" }>,
+) {
   if (result.status === "created") {
     return { status: result.status, url: result.url };
   }
@@ -95,9 +94,21 @@ export const updateReportHandler: GatewayRequestHandlers["update.report"] = asyn
   if (!assertValidParams(params, validateUpdateReportParams, "update.report", respond)) {
     return;
   }
+  if (!hasCurrentClientAuthority) {
+    respond(false, undefined, {
+      code: "INVALID_REQUEST",
+      message: "Update report access requires a current authenticated client.",
+    });
+    return;
+  }
+  if (!hasCurrentClientAuthority()) {
+    return;
+  }
   try {
-    const sentinel =
-      getLatestUpdateRestartSentinel() ?? (await refreshLatestUpdateRestartSentinel());
+    const sentinel = await refreshLatestUpdateRestartSentinel();
+    if (!hasCurrentClientAuthority()) {
+      return;
+    }
     const input = sentinel ? projectReportInput(sentinel) : null;
     if (!input || input.attemptId !== params.attemptId) {
       respond(false, undefined, {
@@ -107,8 +118,14 @@ export const updateReportHandler: GatewayRequestHandlers["update.report"] = asyn
       return;
     }
     const prepared = await prepareUpdateFailureReport(input);
+    if (!hasCurrentClientAuthority()) {
+      return;
+    }
     let result;
     if (params.action === "preview") {
+      if (!hasCurrentClientAuthority()) {
+        return;
+      }
       result = {
         status: "ready" as const,
         attemptId: prepared.attemptId,
@@ -117,31 +134,22 @@ export const updateReportHandler: GatewayRequestHandlers["update.report"] = asyn
         title: prepared.title,
       };
     } else {
-      // Preparation performs filesystem I/O. Recheck the in-memory authority immediately
-      // before the synchronous canonical reservation and any external side effect.
-      const currentSentinel =
-        getLatestUpdateRestartSentinel() ?? (await refreshLatestUpdateRestartSentinel());
-      const currentInput = currentSentinel ? projectReportInput(currentSentinel) : null;
-      if (!currentInput || currentInput.attemptId !== params.attemptId) {
+      const submitted = await submitUpdateFailureReport(prepared, params.previewDigest, {
+        hasCurrentAuthority: hasCurrentClientAuthority,
+        validateCurrentAttempt: async () => {
+          const currentSentinel = await refreshLatestUpdateRestartSentinel();
+          const currentInput = currentSentinel ? projectReportInput(currentSentinel) : null;
+          return currentInput?.attemptId === params.attemptId;
+        },
+      });
+      if (submitted.status === "stale") {
         respond(false, undefined, {
           code: "INVALID_REQUEST",
-          message: "This failed update attempt is stale or unavailable.",
+          message: submitted.message,
         });
         return;
       }
-      if (!hasCurrentClientAuthority) {
-        respond(false, undefined, {
-          code: "INVALID_REQUEST",
-          message: "Update report submission requires a current authenticated client.",
-        });
-        return;
-      }
-      if (!hasCurrentClientAuthority()) {
-        return;
-      }
-      result = projectPublicSubmitResult(
-        await submitUpdateFailureReport(prepared, params.previewDigest),
-      );
+      result = projectPublicSubmitResult(submitted);
     }
     if (!validateUpdateReportResult(result)) {
       respond(false, undefined, {

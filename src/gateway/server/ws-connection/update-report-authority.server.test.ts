@@ -87,6 +87,17 @@ function countReportReceipts(): number {
   }
 }
 
+async function countReportFiles(): Promise<number> {
+  try {
+    return (await fs.readdir(path.join(stateDir, "update-reports"))).length;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+}
+
 function createReportHarness(params: { getGeneration: () => string }) {
   let nextFinished = createDeferredCore();
   const handler: NonNullable<GatewayWsMessageHandlerParams["extraHandlers"][string]> = async (
@@ -174,11 +185,13 @@ describe("update report live authority boundary", () => {
     client.sharedGatewaySessionGeneration = generation;
     const { harness } = createReportHarness({ getGeneration: () => generation });
     const previewDigest = await dispatchPreview({ client, harness, id: "preview-allowed" });
+    expect(await countReportFiles()).toBe(0);
 
     await dispatchSubmit({ client, harness, id: "allowed", previewDigest });
     const response = await harness.awaitResponseFrame("allowed");
 
     expect(mocks.createGithubIssueAsync).toHaveBeenCalledOnce();
+    expect(await countReportFiles()).toBe(1);
     expect(countReportReceipts()).toBe(1);
     expect(response).toMatchObject({
       ok: true,
@@ -242,9 +255,63 @@ describe("update report live authority boundary", () => {
 
       expect(harness.close).toHaveBeenCalledWith(4001, testCase.closeReason);
       expect(mocks.createGithubIssueAsync).not.toHaveBeenCalled();
+      expect(await countReportFiles()).toBe(0);
       expect(countReportReceipts()).toBe(0);
       expect(harness.send).not.toHaveBeenCalledWith(
         expect.objectContaining({ id: `denied-${testCase.change}`, ok: true }),
+      );
+    },
+  );
+
+  it.each([
+    { change: "shared-auth", closeReason: "gateway auth changed" },
+    { change: "invalidated", closeReason: "client invalidated: device-token-revoked" },
+  ] as const)(
+    "blocks preview and leaves no report artifact after $change authority closes",
+    async (testCase) => {
+      let generation = "current";
+      const client = createOperatorWsClient({ connId: `preview-${testCase.change}` });
+      if (testCase.change === "shared-auth") {
+        client.usesSharedGatewayAuth = true;
+        client.sharedGatewaySessionGeneration = generation;
+      }
+      const { harness, waitForNextHandler } = createReportHarness({
+        getGeneration: () => generation,
+      });
+      const enteredRefresh = createDeferredCore();
+      const releaseRefresh = createDeferredCore();
+      mocks.refreshLatest.mockImplementationOnce(async () => {
+        enteredRefresh.resolve();
+        await releaseRefresh.promise;
+        return failure;
+      });
+
+      const finished = waitForNextHandler();
+      await harness.dispatcher.dispatch(
+        {
+          type: "req",
+          id: `preview-denied-${testCase.change}`,
+          method: "update.report",
+          params: { action: "preview", attemptId: "authority-proof" },
+        },
+        client,
+      );
+      await enteredRefresh.promise;
+      if (testCase.change === "shared-auth") {
+        generation = "rotated";
+      } else {
+        client.invalidated = true;
+        client.invalidatedReason = "device-token-revoked";
+      }
+      releaseRefresh.resolve();
+      await finished;
+
+      expect(harness.close).toHaveBeenCalledWith(4001, testCase.closeReason);
+      expect(mocks.createGithubIssueAsync).not.toHaveBeenCalled();
+      expect(await countReportFiles()).toBe(0);
+      expect(countReportReceipts()).toBe(0);
+      expect(harness.send).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: `preview-denied-${testCase.change}`, ok: true }),
       );
     },
   );

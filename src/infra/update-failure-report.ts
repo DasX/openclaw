@@ -44,6 +44,13 @@ export type UpdateFailureReportSubmitResult =
       savedReportPath: string;
       status: "duplicate";
       url?: string;
+    }
+  | {
+      fallbackUrl?: undefined;
+      message: string;
+      savedReportPath: string;
+      status: "stale";
+      url?: undefined;
     };
 
 export type UpdateFailureReportInput = {
@@ -180,7 +187,7 @@ function resolveReportPaths(
   };
 }
 
-/** Prepares and saves the exact sanitized body the user must review before submission. */
+/** Builds the exact sanitized body the user must review before submission. */
 export async function prepareUpdateFailureReport(
   input: UpdateFailureReportInput,
   options: { env?: NodeJS.ProcessEnv; stateDir?: string } = {},
@@ -223,10 +230,7 @@ export async function prepareUpdateFailureReport(
     " ",
   );
   const url = createPrefilledGithubIssueUrl(title, body);
-  const { reportDir, reportPath } = resolveReportPaths(input.attemptId, stateDir);
-  await fs.mkdir(reportDir, { mode: 0o700, recursive: true });
-  await fs.writeFile(reportPath, body, { encoding: "utf8", mode: 0o600 });
-  await fs.chmod(reportPath, 0o600);
+  const { reportPath } = resolveReportPaths(input.attemptId, stateDir);
   return {
     attemptId: input.attemptId,
     body,
@@ -235,6 +239,86 @@ export async function prepareUpdateFailureReport(
     title,
     url,
   };
+}
+
+type SavedUpdateFailureReport = {
+  reportCreated: boolean;
+  reportDirCreated: boolean;
+};
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function discardSavedUpdateFailureReport(
+  prepared: PreparedUpdateFailureReport,
+  saved: SavedUpdateFailureReport,
+): Promise<void> {
+  if (saved.reportCreated) {
+    await fs.rm(prepared.savedReportPath, { force: true });
+  }
+  if (saved.reportDirCreated) {
+    await fs.rmdir(path.dirname(prepared.savedReportPath)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") {
+        throw error;
+      }
+    });
+  }
+}
+
+/** Persists one reviewed body while rechecking the caller's live authority around every write. */
+async function savePreparedUpdateFailureReport(
+  prepared: PreparedUpdateFailureReport,
+  hasCurrentAuthority?: () => boolean,
+): Promise<SavedUpdateFailureReport> {
+  const ensureCurrentAuthority = () => {
+    if (hasCurrentAuthority && !hasCurrentAuthority()) {
+      throw new Error("Update report persistence requires a current authenticated client.");
+    }
+  };
+  const reportDir = path.dirname(prepared.savedReportPath);
+  ensureCurrentAuthority();
+  const reportDirExisted = await pathExists(reportDir);
+  ensureCurrentAuthority();
+  await fs.mkdir(reportDir, { mode: 0o700, recursive: true });
+  const saved: SavedUpdateFailureReport = {
+    reportCreated: false,
+    reportDirCreated: !reportDirExisted,
+  };
+  try {
+    ensureCurrentAuthority();
+    try {
+      await fs.writeFile(prepared.savedReportPath, prepared.body, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      saved.reportCreated = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      const existing = await fs.readFile(prepared.savedReportPath, "utf8");
+      if (existing !== prepared.body) {
+        throw new Error("The saved update report does not match the reviewed preview.");
+      }
+    }
+    ensureCurrentAuthority();
+    await fs.chmod(prepared.savedReportPath, 0o600);
+    ensureCurrentAuthority();
+    return saved;
+  } catch (error) {
+    await discardSavedUpdateFailureReport(prepared, saved);
+    throw error;
+  }
 }
 
 function resultFromExistingReceipt(
@@ -264,7 +348,9 @@ export async function submitUpdateFailureReport(
       issue: SanitizedGithubIssue,
     ) => GithubIssueCreateResult | Promise<GithubIssueCreateResult>;
     env?: NodeJS.ProcessEnv;
+    hasCurrentAuthority?: () => boolean;
     stateDir?: string;
+    validateCurrentAttempt?: () => boolean | Promise<boolean>;
   } = {},
 ): Promise<UpdateFailureReportSubmitResult> {
   if (previewDigest !== prepared.previewDigest) {
@@ -274,6 +360,19 @@ export async function submitUpdateFailureReport(
   const stateDir = options.stateDir ?? resolveStateDir(env);
   const context = { env, stateDir };
   const stateEnv = { ...env, OPENCLAW_STATE_DIR: stateDir };
+  const saved = await savePreparedUpdateFailureReport(prepared, options.hasCurrentAuthority);
+  if (options.validateCurrentAttempt && !(await options.validateCurrentAttempt())) {
+    await discardSavedUpdateFailureReport(prepared, saved);
+    return {
+      message: "This failed update attempt is stale or unavailable.",
+      savedReportPath: prepared.savedReportPath,
+      status: "stale",
+    };
+  }
+  if (options.hasCurrentAuthority && !options.hasCurrentAuthority()) {
+    await discardSavedUpdateFailureReport(prepared, saved);
+    throw new Error("Update report submission requires a current authenticated client.");
+  }
   const reservationId = randomUUID();
   const reservation = reserveUpdateFailureReportReceipt(
     prepared.attemptId,

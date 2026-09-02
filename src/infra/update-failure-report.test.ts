@@ -54,6 +54,15 @@ describe("update failure report", () => {
       },
       { env: { HOME: home, OPENCLAW_STATE_DIR: stateDir }, stateDir },
     );
+    await expect(fs.stat(prepared.savedReportPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await submitUpdateFailureReport(prepared, prepared.previewDigest, {
+      createIssue: vi.fn(() => ({
+        ok: true as const,
+        url: "https://github.com/openclaw/openclaw/issues/123",
+      })),
+      env: { HOME: home, OPENCLAW_STATE_DIR: stateDir },
+      stateDir,
+    });
 
     const saved = await fs.readFile(prepared.savedReportPath, "utf8");
     expect(saved).toBe(prepared.body);
@@ -179,5 +188,26 @@ describe("update failure report", () => {
       submitUpdateFailureReport(prepared, "stale-digest", { createIssue, stateDir }),
     ).rejects.toThrow("preview is stale");
     expect(createIssue).not.toHaveBeenCalled();
+    await expect(fs.stat(prepared.savedReportPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes a newly saved body when the canonical attempt changes before reservation", async () => {
+    const stateDir = tempDirs.make("openclaw-update-report-");
+    const prepared = await prepareUpdateFailureReport(
+      { attemptId: "attempt-replaced", result: failedUpdate() },
+      { stateDir },
+    );
+    const createIssue = vi.fn();
+
+    await expect(
+      submitUpdateFailureReport(prepared, prepared.previewDigest, {
+        createIssue,
+        stateDir,
+        validateCurrentAttempt: () => false,
+      }),
+    ).resolves.toMatchObject({ status: "stale" });
+
+    expect(createIssue).not.toHaveBeenCalled();
+    await expect(fs.stat(prepared.savedReportPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
