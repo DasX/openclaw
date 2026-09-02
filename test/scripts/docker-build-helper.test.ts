@@ -3969,6 +3969,8 @@ heartbeat_elapsed="\${BASH_REMATCH[1]}"
     expect(runner).toContain("run_agent_turn_bg");
     expect(runner).toContain("wait_agent_turn_batch");
     expect(runner).toContain("agent_turn_outputs_include_billing_drift");
+    expect(runner).toContain('grep -Fq "EMBEDDED FALLBACK:" "$out_json"');
+    expect(runner).toContain("agent turn used embedded fallback instead of the profile Gateway");
     expect(runner).toContain("SKIP: Anthropic billing drift during installer agent tool smoke");
     expect(runner).not.toContain('run_agent_turn_bg "read proof"');
     expect(runner).toContain('run_agent_turn_bg "image write"');
@@ -4329,6 +4331,36 @@ heartbeat_elapsed="\${BASH_REMATCH[1]}"
     expect(helper).not.toContain('require("node:readline")');
     expect(helper).not.toContain("fs.readFileSync");
     expect(helper).not.toContain('.split("\\n")');
+  });
+
+  it("accepts the image compatibility alias in installer E2E transcripts", () => {
+    const runner = readFileSync(INSTALL_E2E_RUNNER_PATH, "utf8");
+    const start = runner.indexOf("assert_session_used_tools() {");
+    const end = runner.indexOf("\nsession_jsonl_path()", start);
+    const helper = runner.slice(start, end);
+
+    expect(helper).toContain('spec.split("|").filter(Boolean)');
+    expect(helper).toContain("group.some((tool) => seen.has(tool))");
+    expect(runner).toContain(
+      'assert_session_used_tools "$profile" "$TURN4_SESSION_ID" "image|view_image" write',
+    );
+  });
+
+  it("exports SQLite-backed installer E2E sessions before scanning tools", () => {
+    const runner = readFileSync(INSTALL_E2E_RUNNER_PATH, "utf8");
+    const start = runner.indexOf("assert_session_used_tools() {");
+    const end = runner.indexOf("\nsession_jsonl_path()", start);
+    const helper = runner.slice(start, end);
+
+    expect(helper).toContain('jsonl="$(session_jsonl_path "$profile" "$session_id")"');
+    expect(helper).toContain('if [[ ! -f "$jsonl" ]]');
+    expect(helper).toContain('openclaw --profile "$profile" sessions export-trajectory');
+    expect(helper).toContain('--session-key "agent:main:explicit:${session_id}"');
+    expect(helper).toContain('--workspace "$export_workspace"');
+    expect(helper).toContain(
+      'jsonl="$export_workspace/.openclaw/trajectory-exports/scan/events.jsonl"',
+    );
+    expect(helper).toContain('rm -rf "$export_workspace"');
   });
 
   it("keeps OpenAI web search smoke on one gateway agent connection", () => {

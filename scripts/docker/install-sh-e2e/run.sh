@@ -277,13 +277,11 @@ run_agent_turn() {
   local session_id="$2"
   local prompt="$3"
   local out_json="$4"
-  # Installer E2E validates install + onboard + embedded agent tooling. It does
-  # not need a paired Gateway control-plane hop, which is flaky/non-deterministic
-  # in the isolated container and already covered by gateway-specific lanes.
+  # The profile Gateway is already running and owns this state directory. Route
+  # agent turns through it so the smoke matches the supported ownership model.
   set +e
   timeout --kill-after=15s "${AGENT_TURN_TIMEOUT_SECONDS}s" \
     openclaw --profile "$profile" agent \
-    --local \
     --session-id "$session_id" \
     --message "$prompt" \
     --thinking off \
@@ -294,6 +292,11 @@ run_agent_turn() {
     echo "ERROR: agent turn failed ($profile, status=$status, output=$out_json)" >&2
     dump_profile_debug "$profile" "$out_json" >&2 || true
     return "$status"
+  fi
+  if grep -Fq "EMBEDDED FALLBACK:" "$out_json"; then
+    echo "ERROR: agent turn used embedded fallback instead of the profile Gateway ($profile)" >&2
+    dump_profile_debug "$profile" "$out_json" >&2 || true
+    return 1
   fi
   node - <<'NODE' "$out_json"
 const fs = require("node:fs");
@@ -569,12 +572,32 @@ NODE
 }
 
 assert_session_used_tools() {
-  local jsonl="$1"
-  shift
-  node - <<'NODE' "$jsonl" "$@"
+  local profile="$1"
+  local session_id="$2"
+  shift 2
+  local jsonl
+  local export_workspace=""
+  jsonl="$(session_jsonl_path "$profile" "$session_id")"
+  if [[ ! -f "$jsonl" ]]; then
+    export_workspace="$(mktemp -d)"
+    local export_status=0
+    openclaw --profile "$profile" sessions export-trajectory \
+      --session-key "agent:main:explicit:${session_id}" \
+      --agent main \
+      --workspace "$export_workspace" \
+      --output scan \
+      --json >/dev/null || export_status="$?"
+    if [[ "$export_status" -ne 0 ]]; then
+      rm -rf "$export_workspace"
+      return "$export_status"
+    fi
+    jsonl="$export_workspace/.openclaw/trajectory-exports/scan/events.jsonl"
+  fi
+  local scan_status=0
+  node - <<'NODE' "$jsonl" "$@" || scan_status="$?"
 const fs = require("node:fs");
 const jsonl = process.argv[2];
-const required = new Set(process.argv.slice(3));
+const required = process.argv.slice(3).map((spec) => spec.split("|").filter(Boolean));
 
 const seen = new Set();
 const head = [];
@@ -608,7 +631,9 @@ const maxDepth = readPositiveIntEnv("OPENCLAW_INSTALL_E2E_SESSION_SCAN_DEPTH", 6
 const maxNodes = readPositiveIntEnv("OPENCLAW_INSTALL_E2E_SESSION_SCAN_NODES", 100000);
 
 function missingTools() {
-  return [...required].filter((t) => !seen.has(t));
+  return required
+    .filter((group) => !group.some((tool) => seen.has(tool)))
+    .map((group) => group.join("|"));
 }
 
 function walk(node, depth, state) {
@@ -752,6 +777,10 @@ scan()
     process.exit(1);
   });
 NODE
+  if [[ -n "$export_workspace" ]]; then
+    rm -rf "$export_workspace"
+  fi
+  return "$scan_status"
 }
 
 session_jsonl_path() {
@@ -1027,11 +1056,11 @@ run_profile() {
   phase_mark_start "Verify tool usage via session transcript ($profile)"
   # Give the gateway a moment to flush transcripts.
   sleep 1
-  assert_session_used_tools "$(session_jsonl_path "$profile" "$TURN2_SESSION_ID")" write
-  assert_session_used_tools "$(session_jsonl_path "$profile" "$TURN2B_SESSION_ID")" read
-  assert_session_used_tools "$(session_jsonl_path "$profile" "$TURN3_SESSION_ID")" exec
-  assert_session_used_tools "$(session_jsonl_path "$profile" "$TURN3B_SESSION_ID")" write
-  assert_session_used_tools "$(session_jsonl_path "$profile" "$TURN4_SESSION_ID")" image write
+  assert_session_used_tools "$profile" "$TURN2_SESSION_ID" write
+  assert_session_used_tools "$profile" "$TURN2B_SESSION_ID" read
+  assert_session_used_tools "$profile" "$TURN3_SESSION_ID" exec
+  assert_session_used_tools "$profile" "$TURN3B_SESSION_ID" write
+  assert_session_used_tools "$profile" "$TURN4_SESSION_ID" "image|view_image" write
   phase_mark_passed "Verify tool usage via session transcript ($profile)"
 
   cleanup_profile
