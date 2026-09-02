@@ -12,9 +12,13 @@ import {
 } from "../../agents/embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { withPreparedEmbeddedRunToolAuthority } from "../../agents/harness/tool-authority.runtime.js";
+import type { AgentSession } from "../../agents/sessions/agent-session.js";
+import { AuthStorage } from "../../agents/sessions/auth-storage.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { TalkRealtimeConfig } from "../../config/types.gateway.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
+import { createDiagnosticEmbeddedRunOwner } from "../../logging/diagnostic-run-activity.js";
 import { loadBundledPluginPublicSurface } from "../../plugin-sdk/test-helpers/public-surface-loader.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import {
@@ -362,13 +366,17 @@ type ParkedNativeTask = NativePluginFixture &
 export async function withParkedNativeTask(
   run: (task: ParkedNativeTask) => Promise<void>,
   prompt = "Keep working until I cancel.",
+  embeddedSession?: AgentSession,
 ): Promise<void> {
   const releaseBackend = createDeferredCore();
+  const runAbortController = new AbortController();
   let activeRun: RunEmbeddedAgentParams | undefined;
   let startupError: unknown;
   let backendAborted = false;
   const abortOwned = vi.fn(() => {
     backendAborted = true;
+    runAbortController.abort();
+    void embeddedSession?.abort();
     releaseBackend.resolve();
   });
   const queueMessage = vi.fn<ReturnType<typeof createEmbeddedRunHandle>["queueMessage"]>(
@@ -393,17 +401,82 @@ export async function withParkedNativeTask(
         },
         undefined,
         async (prepared) => {
-          const handle = createEmbeddedRunHandle({
-            runId: params.runId,
-            toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
-            abort: abortOwned,
-            queueMessage,
-          });
+          let stream:
+            | ReturnType<
+                typeof import("../../agents/embedded-agent-runner/run/attempt-stream-prepare.js").prepareEmbeddedAttemptStream
+              >
+            | undefined;
+          if (embeddedSession) {
+            const { prepareEmbeddedAttemptStream } =
+              await import("../../agents/embedded-agent-runner/run/attempt-stream-prepare.js");
+            const model = embeddedSession.model;
+            if (!model) {
+              throw new Error("Expected an embedded test model");
+            }
+            stream = prepareEmbeddedAttemptStream({
+              attempt: {
+                ...prepared,
+                admittedRunContext,
+                model,
+                modelRegistry: embeddedSession.modelRegistry,
+                authStorage: AuthStorage.inMemory(),
+                authProfileStore: { version: 1, profiles: {} },
+                thinkLevel: "off",
+                fastMode: undefined,
+              },
+              activeSession: embeddedSession,
+              hookRunner: null,
+              hookAgentId: AGENT_ID,
+              diagnosticTrace: createDiagnosticTraceContext(),
+              diagnosticOwner: createDiagnosticEmbeddedRunOwner({
+                sessionId: params.sessionId,
+                runId: params.runId,
+              }),
+              clientToolCallSlots: [],
+              nestedToolActivities: [],
+              isReplaySafeTool: () => false,
+              runAbortController,
+              abortRun: abortOwned,
+              markExternalAbort: () => {},
+              getRunState: () => ({
+                aborted: backendAborted,
+                promptError: undefined,
+                timedOut: false,
+                yieldDetected: false,
+              }),
+              hasDeliveredSourceReply: () => false,
+              markSourceReplyDelivered: () => {},
+              onBlockReply: undefined,
+              onBlockReplyFlush: undefined,
+              sandboxSessionKey: SESSION_KEY,
+              builtinToolNames: new Set(),
+              replaySafeToolNames: new Set(),
+            });
+          }
+          const handle =
+            stream?.queueHandle ??
+            createEmbeddedRunHandle({
+              runId: params.runId,
+              toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
+              abort: abortOwned,
+              queueMessage,
+            });
           const releaseOnAbort = () => releaseBackend.resolve();
-          setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, prepared.sessionFile);
+          if (!stream) {
+            handle.messageInjectionV2 = {
+              version: 2,
+              isAvailable: () => !backendAborted,
+              queueMessage: async (text, options, assertCurrent) => {
+                assertCurrent();
+                return await queueMessage(text, options);
+              },
+            };
+            setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, prepared.sessionFile);
+          }
           activeRun = params;
           params.abortSignal?.addEventListener("abort", releaseOnAbort, { once: true });
           try {
+            await embeddedSession?.prompt(params.prompt);
             await releaseBackend.promise;
             return {
               payloads: [{ text: "Original task completed normally." }],
@@ -414,6 +487,7 @@ export async function withParkedNativeTask(
             };
           } finally {
             params.abortSignal?.removeEventListener("abort", releaseOnAbort);
+            stream?.subscription.unsubscribe();
             clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
           }
         },

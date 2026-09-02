@@ -51,6 +51,7 @@ export function buildRealtimeVoiceAgentErrorProviderResult(
 }
 
 type RealtimeVoiceAgentControlDeps = {
+  queueGuardedEmbeddedAgentMessageWithOutcomeAsync?: typeof import("../agents/embedded-agent-runner/runs.js").queueGuardedEmbeddedAgentMessageWithOutcomeAsync;
   abortEmbeddedAgentRun: (sessionId: string) => boolean;
   queueEmbeddedAgentMessageWithOutcomeAsync: (
     sessionId: string,
@@ -215,15 +216,30 @@ export async function controlRealtimeVoiceAgentRun(
     return noActiveRun();
   }
   const steerText = mode === "followup" ? buildRealtimeVoiceAgentFollowupSteeringText(text) : text;
-  const outcome = await commands.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, {
-    steeringMode: "all",
+  const options = {
+    steeringMode: "all" as const,
     debounceMs: 0,
     isInboundUserMessage: true,
     toolAuthorityOverlay,
     // Talk cannot present task suggestions, so spoken user input must not inherit
     // a capable TUI run's model-facing task tools.
     taskSuggestionDeliveryMode: undefined,
-  });
+  };
+  const outcome: EmbeddedAgentQueueMessageOutcome = target
+    ? commands.queueGuardedEmbeddedAgentMessageWithOutcomeAsync
+      ? await commands.queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
+          sessionId,
+          steerText,
+          options,
+          () => !target.signal.aborted && target.isCurrent(sessionId),
+        )
+      : {
+          queued: false,
+          sessionId,
+          gatewayHealth: "live",
+          reason: "guarded_injection_unsupported",
+        }
+    : await commands.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, options);
   if (!outcome.queued) {
     return {
       ok: false,

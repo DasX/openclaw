@@ -60,6 +60,7 @@ import {
 import {
   clearActiveEmbeddedRun,
   type EmbeddedAgentQueueHandle,
+  type EmbeddedAgentQueueMessageOptions,
   setActiveEmbeddedRun,
 } from "../runs.js";
 import {
@@ -528,8 +529,18 @@ export function prepareEmbeddedAttemptStream(input: {
       ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId) === queueHandle
     );
   };
-  const queueMessage: AttemptStreamQueueHandle["queueMessage"] = async (text, options) => {
-    if (!canInject()) {
+  const composeInjectionGuard = (assertCurrent: () => void) => () => {
+    assertCurrent();
+    return canInject();
+  };
+  // The shipped V1 entry retains backend-only authority; V2 requires the host assertion.
+  const queueMessage = async (
+    text: string,
+    options?: EmbeddedAgentQueueMessageOptions,
+    assertCurrent: () => void = () => {},
+  ) => {
+    const canInjectMessage = composeInjectionGuard(assertCurrent);
+    if (!canInjectMessage()) {
       throw new Error("active session is finalizing");
     }
     activeQueueAdmissions++;
@@ -542,11 +553,38 @@ export function prepareEmbeddedAttemptStream(input: {
         text,
         options,
         attempt.sessionKey,
-        canInject,
+        canInjectMessage,
       );
     } finally {
       activeQueueAdmissions--;
     }
+  };
+  const claimPendingUserInputAnswer = (
+    text: string,
+    options?: EmbeddedAgentQueueMessageOptions,
+    assertCurrent: () => void = () => {},
+  ) =>
+    claimEmbeddedPendingUserInputAnswer(
+      text,
+      options,
+      attempt.sessionKey,
+      composeInjectionGuard(assertCurrent),
+    );
+  const cancelPendingUserInput = (resolvedBy: string, assertCurrent: () => void = () => {}) =>
+    cancelPendingAgentQuestionForSession({
+      sessionKey: attempt.sessionKey,
+      resolvedBy,
+      canClaim: composeInjectionGuard(assertCurrent),
+    });
+  const messageInjection = {
+    version: 2 as const,
+    isAvailable: () =>
+      acceptingSteerMessages &&
+      !input.getRunState().aborted &&
+      !input.runAbortController.signal.aborted,
+    queueMessage,
+    claimPendingUserInputAnswer,
+    cancelPendingUserInput,
   };
   const heartbeatReplyOperation =
     attempt.replyOperation?.turnKind === "heartbeat" ? attempt.replyOperation : undefined;
@@ -583,25 +621,14 @@ export function prepareEmbeddedAttemptStream(input: {
           }
         }
       : undefined,
-    claimPendingUserInputAnswer: (text, options) =>
-      claimEmbeddedPendingUserInputAnswer(text, options, attempt.sessionKey, canInject),
-    cancelPendingUserInput: (resolvedBy) =>
-      cancelPendingAgentQuestionForSession({
-        sessionKey: attempt.sessionKey,
-        resolvedBy,
-        canClaim: canInject,
-      }),
+    claimPendingUserInputAnswer,
+    cancelPendingUserInput,
     preemptByVisibleTurn: heartbeatReplyOperation
       ? () => heartbeatReplyOperation.supersede()
       : undefined,
     queueMessage,
-    messageInjection: {
-      isAvailable: () =>
-        acceptingSteerMessages &&
-        !input.getRunState().aborted &&
-        !input.runAbortController.signal.aborted,
-      queueMessage,
-    },
+    messageInjection,
+    messageInjectionV2: messageInjection,
     isStreaming: () => input.activeSession.isStreaming,
     isAborted: () => input.getRunState().aborted,
     isStopped: () =>

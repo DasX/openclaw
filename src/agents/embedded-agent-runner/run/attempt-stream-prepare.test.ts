@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createMessageInjectionAuthority } from "../../../auto-reply/reply/message-injection-authority.js";
 import {
   createReplyOperation,
   expireStaleReplyOperation,
@@ -30,7 +31,7 @@ import {
 import type { AgentSession } from "../../sessions/agent-session.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { isToolResultError } from "../../tool-result-error.js";
-import { ACTIVE_EMBEDDED_RUNS } from "../run-state.js";
+import { ACTIVE_EMBEDDED_RUNS, ACTIVE_EMBEDDED_RUN_REGISTRATIONS } from "../run-state.js";
 
 const mocks = vi.hoisted(() => ({
   clearActiveRun: vi.fn(),
@@ -181,8 +182,18 @@ describe("prepareEmbeddedAttemptStream", () => {
     ["claim", "steering"],
     ["replacement", "question"],
     ["claim", "question"],
+    ["source-close", "question"],
+    ["source-throw", "question"],
+    ["source-open", "question"],
+    ["source-close", "steering"],
+    ["source-throw", "steering"],
+    ["source-open", "steering"],
+    ["source-recovered-false", "steering"],
+    ["source-recovered-throw", "steering"],
+    ["source-recovered-false", "question"],
+    ["source-recovered-throw", "question"],
   ] as const)(
-    "rejects %s during real session %s preparation before its effect",
+    "checks %s during real session %s preparation before its effect",
     async (transition, route) => {
       const admission = prepareAgentRunAdmission({
         cfg: {},
@@ -244,10 +255,18 @@ describe("prepareEmbeddedAttemptStream", () => {
               activeSession: session,
               attempt: preparedAttempt,
             });
-            const delivery = prepared.queueHandle.queueMessage("redirect the original", {
-              isInboundUserMessage: true,
-              userTurnTranscriptRecorder: recorder,
+            let sourceCurrent = true;
+            const assertCurrent = createMessageInjectionAuthority(() => {
+              if (!sourceCurrent && transition.includes("throw")) {
+                throw new Error("source claim lost");
+              }
+              return sourceCurrent;
             });
+            const delivery = prepared.queueHandle.messageInjectionV2!.queueMessage(
+              "redirect the original",
+              { isInboundUserMessage: true, userTurnTranscriptRecorder: recorder },
+              assertCurrent,
+            );
             const outcome = delivery.then(
               () => "accepted",
               () => "rejected",
@@ -256,19 +275,40 @@ describe("prepareEmbeddedAttemptStream", () => {
               await started.promise;
               if (transition === "claim") {
                 admission.close();
-              } else {
+              } else if (transition === "replacement") {
                 mocks.setActiveRun(
                   "session-output-schema",
                   { ...prepared.queueHandle },
                   "agent:main:main",
                   preparedAttempt.sessionFile,
                 );
+              } else if (transition !== "source-open") {
+                sourceCurrent = false;
+              }
+              if (transition.startsWith("source-recovered-")) {
+                expect(assertCurrent).toThrow("Message injection authority is no longer current");
+                sourceCurrent = true;
+                // A fresh injection can proceed; recovery cannot revive this one.
+                expect(createMessageInjectionAuthority(() => sourceCurrent)).not.toThrow();
               }
               release.resolve();
-              expect(await outcome).toBe("rejected");
-              expect(queued).not.toHaveBeenCalled();
-              expect(gatewayCall).not.toHaveBeenCalled();
-              expect(session.getSteeringMessages()).toEqual([]);
+              const accepted = transition === "source-open";
+              expect(await outcome).toBe(accepted ? "accepted" : "rejected");
+              expect(queued).toHaveBeenCalledTimes(accepted && route === "steering" ? 1 : 0);
+              expect(gatewayCall).toHaveBeenCalledTimes(accepted && route === "question" ? 1 : 0);
+              expect(session.getSteeringMessages()).toEqual(
+                accepted && route === "steering" ? ["redirect the original"] : [],
+              );
+              if (transition.startsWith("source-")) {
+                const authority = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(
+                  prepared.queueHandle,
+                )?.toolAuthority;
+                expect(authority).toBeDefined();
+                authority!.assertActive();
+                expect(ACTIVE_EMBEDDED_RUNS.get("session-output-schema")).toBe(
+                  prepared.queueHandle,
+                );
+              }
             } finally {
               release.resolve();
               await outcome;

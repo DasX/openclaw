@@ -111,6 +111,8 @@ export function registerCopilotActiveRun(params: {
     claimPendingUserInputAnswer,
     cancelPendingUserInput,
     queueMessage,
+    // SDK 1.0.11 awaits after send entry with no final-dispatch assertion. Keep
+    // shipped unscoped V1 only until upstream supports a guarded final dispatch.
     messageInjection: {
       isAvailable: () => params.canAcceptSteering() && !params.isSettled() && !params.isAborted(),
       queueMessage,

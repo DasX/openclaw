@@ -113,6 +113,23 @@ export type ReplyBackendMessageInjection = {
   ): Promise<void | ReplyBackendQueueMessageResult>;
 };
 
+/** V2 sinks invoke the host-owned, per-injection assertion at their final effect. */
+export type ReplyBackendMessageInjectionV2 = {
+  readonly version: 2;
+  isAvailable(): boolean;
+  queueMessage(
+    text: string,
+    options: ReplyBackendQueueMessageOptions | undefined,
+    assertCurrent: () => void,
+  ): Promise<void | ReplyBackendQueueMessageResult>;
+  claimPendingUserInputAnswer?(
+    text: string,
+    options: ReplyBackendQueueMessageOptions | undefined,
+    assertCurrent: () => void,
+  ): Promise<boolean>;
+  cancelPendingUserInput?(resolvedBy: string, assertCurrent: () => void): Promise<boolean>;
+};
+
 export type ReplyBackendHandle = {
   readonly kind: ReplyBackendKind;
   readonly runId?: string;
@@ -129,6 +146,8 @@ export type ReplyBackendHandle = {
   cancelPendingUserInput?: (resolvedBy: string) => Promise<boolean>;
   cancel(reason?: ReplyBackendCancelReason): void;
   readonly messageInjection?: ReplyBackendMessageInjection;
+  /** V1 remains compatible with v2026.8.1; source-bound input requires V2. */
+  readonly messageInjectionV2?: ReplyBackendMessageInjectionV2;
   /** @deprecated Compatibility for shipped embedded handles. Use messageInjection. */
   isStreaming?: () => boolean;
   isStopped?: () => boolean;

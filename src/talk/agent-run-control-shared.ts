@@ -310,6 +310,9 @@ export function formatRealtimeVoiceAgentQueueRejection(
   mode: RealtimeVoiceAgentControlMode,
   reason: string,
 ): string {
+  if (reason === "guarded_injection_unsupported") {
+    return "This agent runtime cannot safely accept scoped voice steering. Check status, cancel the run, or start a new explicit request. Update the runtime when guarded injection is supported.";
+  }
   if (reason === "compacting") {
     return "OpenClaw is compacting the active run and cannot accept voice steering yet.";
   }

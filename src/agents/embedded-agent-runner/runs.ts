@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { createMessageInjectionAuthority } from "../../auto-reply/reply/message-injection-authority.js";
 import type { ReplyMessageInjectionOptions } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import {
   abortActiveReplyRuns,
@@ -83,6 +84,7 @@ type EmbeddedAgentQueueFailureReason =
   | "source_reply_delivery_mode_mismatch"
   | "task_suggestion_delivery_mode_mismatch"
   | "transcript_commit_wait_unsupported"
+  | "guarded_injection_unsupported"
   | "runtime_rejected";
 
 export type EmbeddedAgentQueueMessageOutcome =
@@ -109,6 +111,10 @@ type PreparedEmbeddedAgentQueueMessage =
   | {
       kind: "complete";
       outcome: EmbeddedAgentQueueMessageOutcome;
+      pendingInput?: Pick<
+        EmbeddedAgentQueueHandle,
+        "claimPendingUserInputAnswer" | "cancelPendingUserInput"
+      >;
     }
   | {
       kind: "embedded_run";
@@ -375,21 +381,67 @@ function logActiveRunMessageAccepted(sessionId: string): void {
   );
 }
 
-function resolveEmbeddedQueueMessage(
+function resolveEmbeddedInjection(
   sessionId: string,
   handle: EmbeddedAgentQueueHandle,
-): EmbeddedAgentQueueHandle["queueMessage"] | undefined {
+  sourceCanInject?: () => boolean,
+):
+  | Pick<
+      EmbeddedAgentQueueHandle,
+      "queueMessage" | "claimPendingUserInputAnswer" | "cancelPendingUserInput"
+    >
+  | undefined {
   try {
+    const guarded = handle.messageInjectionV2;
+    if (guarded?.version === 2) {
+      const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+      const operation = resolveActiveReplyOperationForSessionId(sessionId);
+      const ownedOperation =
+        operation && getAttachedBackend(operation) === handle ? operation : undefined;
+      const assertCurrent = createMessageInjectionAuthority(() => {
+        if (sourceCanInject && !sourceCanInject()) {
+          return false;
+        }
+        registration?.toolAuthority?.assertActive();
+        return (
+          ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle &&
+          ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration &&
+          (!ownedOperation ||
+            (resolveActiveReplyOperationForSessionId(sessionId) === ownedOperation &&
+              getAttachedBackend(ownedOperation) === handle))
+        );
+      });
+      return guarded.isAvailable()
+        ? {
+            queueMessage: (text, options) => guarded.queueMessage(text, options, assertCurrent),
+            claimPendingUserInputAnswer: guarded.claimPendingUserInputAnswer
+              ? (text, options) =>
+                  guarded.claimPendingUserInputAnswer!(text, options, assertCurrent)
+              : undefined,
+            cancelPendingUserInput: guarded.cancelPendingUserInput
+              ? (resolvedBy) => guarded.cancelPendingUserInput!(resolvedBy, assertCurrent)
+              : undefined,
+          }
+        : undefined;
+    }
+    // Shipped v2026.8.1 sinks have no source-lifetime enforcement contract.
+    if (sourceCanInject) {
+      return undefined;
+    }
     const injection = handle.messageInjection;
     if (injection) {
       return injection.isAvailable()
-        ? (text, options) => injection.queueMessage(text, options)
+        ? {
+            queueMessage: (text, options) => injection.queueMessage(text, options),
+            claimPendingUserInputAnswer: handle.claimPendingUserInputAnswer?.bind(handle),
+            cancelPendingUserInput: handle.cancelPendingUserInput?.bind(handle),
+          }
         : undefined;
     }
     // Legacy handles predate explicit injection capability. Preserve their
     // shipped eligibility probe while modern backends use messageInjection.
     const isAvailable = handle.isStopped ? !handle.isStopped() : handle.isStreaming();
-    return isAvailable ? (text, options) => handle.queueMessage(text, options) : undefined;
+    return isAvailable ? handle : undefined;
   } catch (err) {
     diag.warn(
       `queue message failed: sessionId=${sessionId} reason=injectable_check_failed err=${String(err)}`,
@@ -493,30 +545,37 @@ export async function queueEmbeddedAgentMessageWithOutcomeAsync(
   text: string,
   options?: ReplyMessageInjectionOptions,
 ): Promise<EmbeddedAgentQueueMessageOutcome> {
-  const prepared = prepareEmbeddedAgentQueueMessage(sessionId, options);
+  return queueEmbeddedAgentMessageAsync(sessionId, text, options);
+}
+
+/** Source-bound callers require an explicitly guarded backend, never a V1 fallback. */
+export async function queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
+  sessionId: string,
+  text: string,
+  options: ReplyMessageInjectionOptions | undefined,
+  canInject: () => boolean,
+): Promise<EmbeddedAgentQueueMessageOutcome> {
+  return queueEmbeddedAgentMessageAsync(sessionId, text, options, canInject);
+}
+
+async function queueEmbeddedAgentMessageAsync(
+  sessionId: string,
+  text: string,
+  options?: ReplyMessageInjectionOptions,
+  canInject?: () => boolean,
+): Promise<EmbeddedAgentQueueMessageOutcome> {
+  const prepared = prepareEmbeddedAgentQueueMessage(sessionId, options, canInject);
   if (prepared.kind === "complete") {
-    const activeToolAuthorityFingerprint = normalizeOptionalString(
-      ACTIVE_EMBEDDED_RUNS.get(sessionId)?.toolAuthorityFingerprint,
-    );
-    // An overlay must never fall back to a caller's copied route-only hash.
-    const pendingInputAuthorityProven = Boolean(
-      !options?.toolAuthorityOverlay &&
-      activeToolAuthorityFingerprint &&
-      (normalizeOptionalString(options?.toolAuthorityFingerprint) ===
-        activeToolAuthorityFingerprint ||
-        normalizeOptionalString(options?.pendingInputAuthorityFingerprint) ===
-          activeToolAuthorityFingerprint),
-    );
     if (
       !prepared.outcome.queued &&
       (prepared.outcome.reason === "tool_authority_mismatch" ||
         prepared.outcome.reason === "image_input_unsupported") &&
       options?.isInboundUserMessage === true &&
       hasPromptImageInput(options) &&
-      pendingInputAuthorityProven
+      prepared.pendingInput
     ) {
       try {
-        await ACTIVE_EMBEDDED_RUNS.get(sessionId)?.cancelPendingUserInput?.("image-reply");
+        await prepared.pendingInput.cancelPendingUserInput?.("image-reply");
       } catch (err) {
         diag.warn(
           `failed to cancel pending user input before queued image fallback: sessionId=${sessionId} err=${formatErrorMessage(err)}`,
@@ -528,10 +587,9 @@ export async function queueEmbeddedAgentMessageWithOutcomeAsync(
       prepared.outcome.reason === "tool_authority_mismatch" &&
       options?.isInboundUserMessage === true &&
       !hasPromptImageInput(options) &&
-      pendingInputAuthorityProven
+      prepared.pendingInput
     ) {
-      const claimPendingUserInputAnswer =
-        ACTIVE_EMBEDDED_RUNS.get(sessionId)?.claimPendingUserInputAnswer;
+      const claimPendingUserInputAnswer = prepared.pendingInput.claimPendingUserInputAnswer;
       if (claimPendingUserInputAnswer) {
         try {
           if (await claimPendingUserInputAnswer(text, options)) {
@@ -590,6 +648,7 @@ export async function queueEmbeddedAgentMessageWithOutcomeAsync(
 function prepareEmbeddedAgentQueueMessage(
   sessionId: string,
   options?: ReplyMessageInjectionOptions,
+  sourceCanInject?: () => boolean,
 ): PreparedEmbeddedAgentQueueMessage {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
@@ -612,8 +671,14 @@ function prepareEmbeddedAgentQueueMessage(
     return { kind: "complete", outcome: createQueueFailureOutcome(sessionId, "no_active_run") };
   }
   const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
-  const queueMessage = resolveEmbeddedQueueMessage(sessionId, handle);
-  if (!queueMessage) {
+  if (sourceCanInject && handle.messageInjectionV2?.version !== 2) {
+    return {
+      kind: "complete",
+      outcome: createQueueFailureOutcome(sessionId, "guarded_injection_unsupported"),
+    };
+  }
+  const injection = resolveEmbeddedInjection(sessionId, handle, sourceCanInject);
+  if (!injection) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
     return { kind: "complete", outcome: createQueueFailureOutcome(sessionId, "not_streaming") };
   }
@@ -669,10 +734,18 @@ function prepareEmbeddedAgentQueueMessage(
     ownedOperation,
   );
   if (deliveryModeMismatch) {
+    const activeFingerprint = normalizeOptionalString(handle.toolAuthorityFingerprint);
+    // Only the captured backend may claim a route-mismatched question answer.
+    const pendingInputAuthorityProven =
+      !toolAuthorityOverlay &&
+      activeFingerprint &&
+      (normalizeOptionalString(options?.toolAuthorityFingerprint) === activeFingerprint ||
+        normalizeOptionalString(options?.pendingInputAuthorityFingerprint) === activeFingerprint);
     diag.debug(`queue message failed: sessionId=${sessionId} reason=${deliveryModeMismatch}`);
     return {
       kind: "complete",
       outcome: createQueueFailureOutcome(sessionId, deliveryModeMismatch),
+      ...(pendingInputAuthorityProven ? { pendingInput: injection } : {}),
     };
   }
   try {
@@ -692,7 +765,7 @@ function prepareEmbeddedAgentQueueMessage(
   ) {
     return { kind: "complete", outcome: createQueueFailureOutcome(sessionId, "no_active_run") };
   }
-  return { kind: "embedded_run", queueMessage, options: backendOptions };
+  return { kind: "embedded_run", queueMessage: injection.queueMessage, options: backendOptions };
 }
 
 /**

@@ -356,6 +356,48 @@ The Codex plugin enforces the minimum app-server version documented in
 blocks older, malformed, or unversioned servers. Admission permits startup to
 continue; it does not prove later runtime or capability operations will succeed.
 
+### Guarded active-run injection
+
+Backends that accept source-bound controls advertise `messageInjectionV2` on
+their active-run handle. The capability is contextually typed by
+`setActiveEmbeddedRun` from `openclaw/plugin-sdk/agent-harness-runtime`; its type
+can also be derived from that function's handle parameter. It requires
+`version: 2`, `isAvailable()`, and `queueMessage(text, options, assertCurrent)`.
+The required third argument is a host-owned assertion for that individual
+injection, not a run ID, fingerprint, or diagnostic identity.
+
+Invoke `assertCurrent()` alongside the backend's own live-run check after
+awaited preparation and immediately before queue mutation or provider dispatch.
+The host normalizes false or throwing source authority into rejection and keeps
+that injection revoked even if the source later appears current again. Plugins
+invoke the supplied assertion; they do not reconstruct its authority. Batched
+backends retain and revalidate each item's assertion, including before retries;
+omit revoked items without cancelling independently accepted work or poisoning
+later authorized controls.
+
+Optional V2 `claimPendingUserInputAnswer(text, options, assertCurrent)` and
+`cancelPendingUserInput(resolvedBy, assertCurrent)` methods require the same
+assertion. Carry it through question registration and persistence to the final
+claim or cancellation boundary. Do not implement V2 by checking only before
+calling an SDK method that itself awaits before dispatch. If the sink cannot
+enforce the assertion, leave V2 unsupported.
+
+The V1 `messageInjection`, queue options, `queueAgentHarnessMessage`, and
+`setActiveEmbeddedRun` signatures shipped in v2026.8.1 remain source-compatible.
+Unscoped V1 injection retains its existing behavior. Source-bound controls
+require V2 and reject visibly before queue or I/O when only V1 is available;
+they never fall back to an unchecked V1 callback. Existing deprecation windows
+are unchanged.
+
+Copilot remains V1-only: `@github/copilot-sdk` 1.0.11 awaits trace-context and
+JSON-RPC writer preparation after `send` entry without a final-dispatch guard.
+Scoped steering therefore fails before its queue, question claim, or provider
+I/O; ordinary unscoped injection is unchanged. Check status, cancel the run, or
+start a new explicit request instead. Update the runtime when guarded injection
+is supported. Once upstream supplies a final-dispatch assertion, migrate
+Copilot to V2 and remove this internal V1 reliance; do not add an unchecked
+fallback or shorten the shipped API's deprecation window.
+
 ### Tool-result middleware
 
 Bundled plugins and explicitly enabled installed plugins with matching

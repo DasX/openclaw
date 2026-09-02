@@ -13,6 +13,7 @@ import {
   preemptAndDrainEmbeddedHeartbeatRun,
   queueEmbeddedAgentMessageWithOutcome,
   queueEmbeddedAgentMessageWithOutcomeAsync,
+  queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
   setActiveEmbeddedRun,
   type EmbeddedAgentQueueHandle,
 } from "./runs.js";
@@ -26,6 +27,35 @@ describe("embedded-agent active-run steering", () => {
     setDiagnosticsEnabledForProcess(false);
     vi.restoreAllMocks();
   });
+
+  it.each([false, true])(
+    "keeps V1 unscoped compatibility but refuses guarded injection: capability=%s",
+    async (capability) => {
+      const queueMessage = vi.fn(async () => {});
+      const claimPendingUserInputAnswer = vi.fn(async () => true);
+      const handle = createEmbeddedRunHandle({ queueMessage });
+      handle.claimPendingUserInputAnswer = claimPendingUserInputAnswer;
+      if (capability) {
+        handle.messageInjection = { isAvailable: () => true, queueMessage };
+      }
+      setActiveEmbeddedRun("legacy-sink", handle);
+
+      await expect(
+        queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
+          "legacy-sink",
+          "source-bound",
+          undefined,
+          () => true,
+        ),
+      ).resolves.toMatchObject({ queued: false, reason: "guarded_injection_unsupported" });
+      expect(queueMessage).not.toHaveBeenCalled();
+      expect(claimPendingUserInputAnswer).not.toHaveBeenCalled();
+      await expect(
+        queueEmbeddedAgentMessageWithOutcomeAsync("legacy-sink", "unscoped"),
+      ).resolves.toMatchObject({ queued: true });
+      expect(queueMessage).toHaveBeenCalledOnce();
+    },
+  );
 
   it("aborts and drains the exact heartbeat handle through session replacement", async () => {
     const heartbeatPreempt = vi.fn(() => true);

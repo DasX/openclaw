@@ -39,6 +39,8 @@ export function resolveOwnedActiveTalkRunTarget(params: {
     const signal = entry.controller.signal;
     const handle = ACTIVE_EMBEDDED_RUNS.get(entry.sessionId);
     const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+    const voiceBinding =
+      params.scope.kind === "voice-session" ? resolveClientVoiceRunBinding(runId) : undefined;
     // Session RPCs can own a queued reply before its backend exists. Attached
     // voice controls instead preserve captured backend absence across their FIFO.
     const reply =
@@ -53,13 +55,14 @@ export function resolveOwnedActiveTalkRunTarget(params: {
           : undefined;
       const replyHandle = replyOwner ? ACTIVE_EMBEDDED_RUNS.get(replyOwner.sessionId) : undefined;
       if (params.scope.kind === "voice-session") {
-        // Run bindings can move or retire during awaited control setup. They keep
-        // the call's original key, not its canonical transcript-storage key.
-        const binding = resolveClientVoiceRunBinding(runId);
+        // Retain the claim instance: A-to-B-to-A is reassignment, not revival.
+        // Identical registrations preserve this snapshot at the producer.
         if (
-          binding?.voiceSessionId !== params.scope.voiceSessionId ||
-          binding.agentId !== agentId ||
-          binding.sessionKey !== sessionKey
+          !voiceBinding ||
+          resolveClientVoiceRunBinding(runId) !== voiceBinding ||
+          voiceBinding.voiceSessionId !== params.scope.voiceSessionId ||
+          voiceBinding.agentId !== agentId ||
+          voiceBinding.sessionKey !== sessionKey
         ) {
           return false;
         }

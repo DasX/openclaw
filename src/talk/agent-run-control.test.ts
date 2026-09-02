@@ -244,6 +244,38 @@ describe("controlRealtimeVoiceAgentRun", () => {
     );
   });
 
+  it("refuses a source-bound control with only the shipped narrow V1 callback", async () => {
+    const deps = createDeps({ activeSessionId: "owned-session" });
+    const result = await controlRealtimeVoiceAgentRun(
+      {
+        sessionKey: "global",
+        runTarget: {
+          runId: "owned-run",
+          signal: new AbortController().signal,
+          isCurrent: () => true,
+        },
+        mode: "steer",
+        text: "source-bound",
+      },
+      {
+        ...deps,
+        resolveActiveEmbeddedRunOwnerByRunId: () => ({
+          runId: "owned-run",
+          sessionId: "owned-session",
+          sessionKey: "global",
+          abort: () => true,
+        }),
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      queued: false,
+      reason: "guarded_injection_unsupported",
+    });
+    expect(result.message).toContain("cannot safely accept scoped voice steering");
+    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
+  });
+
   it("wraps follow-up steering so the active run treats it as deferred context", async () => {
     const deps = createDeps({ activeSessionId: "session-active" });
 

@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { hasPromptImageInput } from "../../media/prompt-image-input.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createMessageInjectionAuthority } from "./message-injection-authority.js";
 import {
   replyMessageInjectionTargetOperation,
   type ReplyBackendHandle,
@@ -76,14 +77,40 @@ export function resolveReplyBackendQueueMessageMismatch(
 
 function resolveReplyBackendMessageInjection(
   backend: ReplyBackendHandle,
-): ReplyBackendMessageInjection | undefined {
+  canInject: () => boolean,
+):
+  | (ReplyBackendMessageInjection &
+      Pick<ReplyBackendHandle, "claimPendingUserInputAnswer" | "cancelPendingUserInput">)
+  | undefined {
+  const guarded = backend.messageInjectionV2;
+  if (guarded?.version === 2) {
+    const assertCurrent = createMessageInjectionAuthority(canInject);
+    return {
+      isAvailable: () => guarded.isAvailable(),
+      queueMessage: (text, options) => guarded.queueMessage(text, options, assertCurrent),
+      claimPendingUserInputAnswer: guarded.claimPendingUserInputAnswer
+        ? (text, options) => guarded.claimPendingUserInputAnswer!(text, options, assertCurrent)
+        : undefined,
+      cancelPendingUserInput: guarded.cancelPendingUserInput
+        ? (resolvedBy) => guarded.cancelPendingUserInput!(resolvedBy, assertCurrent)
+        : undefined,
+    };
+  }
   if (backend.messageInjection) {
-    return backend.messageInjection;
+    const injection = backend.messageInjection;
+    return {
+      isAvailable: () => injection.isAvailable(),
+      queueMessage: (text, options) => injection.queueMessage(text, options),
+      claimPendingUserInputAnswer: backend.claimPendingUserInputAnswer?.bind(backend),
+      cancelPendingUserInput: backend.cancelPendingUserInput?.bind(backend),
+    };
   }
   if (!backend.queueMessage) {
     return undefined;
   }
   return {
+    claimPendingUserInputAnswer: backend.claimPendingUserInputAnswer?.bind(backend),
+    cancelPendingUserInput: backend.cancelPendingUserInput?.bind(backend),
     isAvailable: () => {
       if (backend.isStopped) {
         return !backend.isStopped();
@@ -106,6 +133,7 @@ export function resolveReplyMessageInjectionRejection(params: {
       reason: ReplyMessageInjectionRejectionReason;
       errorMessage?: string;
       backend?: ReplyBackendHandle;
+      cancelPendingUserInput?: ReplyBackendHandle["cancelPendingUserInput"];
     }
   | { backend: ReplyBackendHandle; injection: ReplyBackendMessageInjection } {
   const { operation } = params;
@@ -119,7 +147,12 @@ export function resolveReplyMessageInjectionRejection(params: {
     return { reason: "stale_run" };
   }
   const backend = getAttachedBackend(operation);
-  const injection = backend ? resolveReplyBackendMessageInjection(backend) : undefined;
+  const canInject = () =>
+    replyRunState.activeRunsByKey.get(operation.key) === operation &&
+    !operation.result &&
+    operation.phase === "running" &&
+    getAttachedBackend(operation) === backend;
+  const injection = backend ? resolveReplyBackendMessageInjection(backend, canInject) : undefined;
   if (!backend || !injection) {
     return { reason: "injection_unavailable" };
   }
@@ -141,21 +174,23 @@ export function resolveReplyMessageInjectionRejection(params: {
     mismatch === "tool_authority_mismatch" &&
     pendingInputAuthorityProven &&
     !hasPromptImageInput(params.options) &&
-    backend.claimPendingUserInputAnswer
+    injection.claimPendingUserInputAnswer
   ) {
     return {
       backend,
       injection: {
         isAvailable: () => true,
         queueMessage: async (text, options) => {
-          if (!(await backend.claimPendingUserInputAnswer?.(text, options))) {
+          if (!(await injection.claimPendingUserInputAnswer?.(text, options))) {
             throw new Error("pending user input was not accepted");
           }
         },
       },
     };
   }
-  return mismatch ? { reason: mismatch, backend } : { backend, injection };
+  return mismatch
+    ? { reason: mismatch, backend, cancelPendingUserInput: injection.cancelPendingUserInput }
+    : { backend, injection };
 }
 
 export function beginReplyMessageInjectionTarget(
@@ -191,7 +226,7 @@ export function beginReplyMessageInjectionTarget(
       hasPromptImageInput(options) &&
       (resolved.reason === "tool_authority_mismatch" ||
         resolved.reason === "image_input_unsupported")
-        ? resolved.backend?.cancelPendingUserInput
+        ? resolved.cancelPendingUserInput
         : undefined;
     return {
       targetRunId: target.runId,

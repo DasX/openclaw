@@ -317,6 +317,9 @@ export async function steerActiveSessionWithOptionalDeliveryWait(
         canClaim: canInject,
       });
     } catch (error) {
+      if (canInject && !canInject()) {
+        throw error;
+      }
       log.warn(`failed to cancel ask_user before image steering: ${String(error)}`);
     }
   }

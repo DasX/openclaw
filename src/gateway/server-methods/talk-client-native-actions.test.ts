@@ -1,11 +1,31 @@
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
+import {
+  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
+  ACTIVE_EMBEDDED_RUNS,
+  ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
+} from "../../agents/embedded-agent-runner/run-state.js";
+import {
+  createAssistant,
+  createAssistantResultStream,
+  createTestSession,
+  registerAgentSessionLoopTestLifecycle,
+  streamMocks,
+  testModel,
+} from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
 import { readSessionTranscriptMessageEvents } from "../../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { flushClientVoiceSessionWrites } from "../../talk/client-voice-session.js";
+import {
+  flushClientVoiceSessionWrites,
+  registerClientVoiceConsultRun,
+  resolveClientVoiceRunBinding,
+} from "../../talk/client-voice-session.js";
+import { closeTalkClientGatewayControlSession } from "../talk-client-gateway-control.js";
 import {
   AGENT_ID,
+  CONNECTION_ID,
   SESSION_ID,
   SESSION_KEY,
   connectNativeSession,
@@ -68,6 +88,126 @@ const activeControls = [
 
 describe("native Talk action ownership through public plugin registration", () => {
   installNativePluginTestHooks();
+  registerAgentSessionLoopTestLifecycle();
+
+  it.each([
+    ["open", "open"],
+    ["closed", "closed"],
+    ["reassigned", "reassigned"],
+    ["returned A-to-B-to-A", "reassigned"],
+    ["identical registration replay", "open"],
+  ] as const)(
+    "checks the controlling call at real final insertion while the backend stays live (%s)",
+    async (scenario, transition) => {
+      const { session } = await createTestSession();
+      const providerStream = createAssistantMessageEventStream();
+      const answer = createAssistant(testModel, [{ type: "text", text: "Task finished." }]);
+      streamMocks.streamSimple
+        .mockImplementationOnce(() => providerStream)
+        .mockImplementation(() => createAssistantResultStream(answer));
+      await withParkedNativeTask(
+        async ({ create, result, socket, activeRun, chatAbortControllers, abortOwned }) => {
+          let closing: Promise<boolean> | undefined;
+          try {
+            await vi.waitFor(() => expect(streamMocks.streamSimple).toHaveBeenCalledOnce());
+            const voiceSessionId = requireString(result, "voiceSessionId");
+            const replacementVoiceSessionId =
+              transition === "reassigned"
+                ? requireString(await create(true), "voiceSessionId")
+                : undefined;
+            const handle = ACTIVE_EMBEDDED_RUNS.get(activeRun.sessionId);
+            const registration = handle && ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+            const chatRegistration = chatAbortControllers.get(activeRun.runId);
+            if (!handle || !registration?.toolAuthority || !chatRegistration) {
+              throw new Error("Expected the real admitted backend and control registration");
+            }
+            expect(resolveClientVoiceRunBinding(activeRun.runId)?.voiceSessionId).toBe(
+              voiceSessionId,
+            );
+            expect(session.isStreaming).toBe(true);
+            const inserted = vi.spyOn(session.agent, "steer");
+            const realSteer = session.steer.bind(session);
+            const delivered = createDeferredCore();
+            let insertionsBeforeTransition: number | undefined;
+            const steering = vi.spyOn(session, "steer").mockImplementation((...args) => {
+              // Enter the real transcript-preparation await before closing only the call.
+              // Awaiting close here would deadlock on this control's own FIFO drain.
+              const pending = realSteer(...args);
+              insertionsBeforeTransition = inserted.mock.calls.length;
+              if (transition === "closed") {
+                closing = closeTalkClientGatewayControlSession({
+                  voiceSessionId,
+                  sessionKey: SESSION_KEY,
+                  connId: CONNECTION_ID,
+                });
+              } else if (replacementVoiceSessionId) {
+                registerClientVoiceConsultRun({
+                  agentId: AGENT_ID,
+                  sessionKey: SESSION_KEY,
+                  voiceSessionId: replacementVoiceSessionId,
+                  runId: activeRun.runId,
+                });
+              }
+              if (
+                scenario === "returned A-to-B-to-A" ||
+                scenario === "identical registration replay"
+              ) {
+                registerClientVoiceConsultRun({
+                  agentId: AGENT_ID,
+                  sessionKey: SESSION_KEY,
+                  voiceSessionId,
+                  runId: activeRun.runId,
+                });
+              }
+              void pending.then(
+                () => delivered.resolve(),
+                () => delivered.resolve(),
+              );
+              return pending;
+            });
+            const text = "use the release branch instead";
+            socket.serverEvent(nativeDelegation("final-insertion-control", text));
+            await delivered.promise;
+            if (transition === "closed") {
+              expect(await closing).toBe(true);
+              expect(socket.readyState).toBe(upstream.NativeSocket.CLOSED);
+            } else if (replacementVoiceSessionId) {
+              expect(resolveClientVoiceRunBinding(activeRun.runId)?.voiceSessionId).toBe(
+                scenario === "returned A-to-B-to-A" ? voiceSessionId : replacementVoiceSessionId,
+              );
+            } else {
+              await vi.waitFor(() =>
+                expect(spokenMessages(socket.sent)).toContainEqual(
+                  expect.stringContaining("Got it. I steered the active run."),
+                ),
+              );
+            }
+            expect(steering).toHaveBeenCalledOnce();
+            expect(insertionsBeforeTransition).toBe(0);
+            expect(ACTIVE_EMBEDDED_RUNS.get(activeRun.sessionId)).toBe(handle);
+            expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(activeRun.runId)).toBe(handle);
+            expect(ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)).toBe(registration);
+            expect(chatAbortControllers.get(activeRun.runId)).toBe(chatRegistration);
+            expect(() => registration.toolAuthority?.assertActive()).not.toThrow();
+            expect(activeRun.abortSignal.aborted).toBe(false);
+            expect(session.agent.signal?.aborted).toBe(false);
+            expect(session.isStreaming).toBe(true);
+            expect(abortOwned).not.toHaveBeenCalled();
+            expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
+            expect.soft(inserted).toHaveBeenCalledTimes(transition === "open" ? 1 : 0);
+            expect.soft(session.getSteeringMessages()).toEqual(transition === "open" ? [text] : []);
+            expect(session.agent.hasQueuedMessages()).toBe(transition === "open");
+          } finally {
+            providerStream.push({ type: "done", reason: "stop", message: answer });
+            providerStream.end();
+            await closing;
+          }
+        },
+        "Keep working until I cancel.",
+        session,
+      );
+    },
+  );
 
   it.each([
     ["replacement", "cancel"],

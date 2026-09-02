@@ -338,6 +338,7 @@ describe("runCodexAppServerAttempt steering", () => {
     expect(activeRunRegistrationMocks.cancelPendingAgentQuestionForSession).toHaveBeenCalledWith({
       sessionKey: params.sessionKey,
       resolvedBy: "image-reply",
+      canClaim: expect.any(Function),
     });
 
     await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });

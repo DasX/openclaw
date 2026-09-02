@@ -11,6 +11,8 @@ import {
   deliverAgentHarnessUserInputPrompt,
   formatAgentHarnessUserInputPrompt,
   getModelProviderRequestTransport,
+  queueAgentHarnessMessage,
+  setActiveEmbeddedRun,
   type AgentHarness,
   type AgentHarnessAttemptParams,
   type AgentHarnessAttemptParamsV2,
@@ -209,6 +211,27 @@ describe("agent harness runtime SDK facade", () => {
         ? true
         : false
     >().toEqualTypeOf<false>();
+
+    // v2026.8.1 queue/register callers need neither a source predicate nor V2.
+    type QueueOptions = Parameters<typeof queueAgentHarnessMessage>[2];
+    const legacyInjection = {
+      isAvailable: () => true,
+      queueMessage: async (_text: string, _options?: QueueOptions) => {},
+    };
+    const legacyHandle = {
+      queueMessage: legacyInjection.queueMessage,
+      messageInjection: legacyInjection,
+      isStreaming: () => true,
+      isCompacting: () => false,
+      abort: () => {},
+    } satisfies Parameters<typeof setActiveEmbeddedRun>[1];
+    expectTypeOf(legacyHandle).toMatchTypeOf<Parameters<typeof setActiveEmbeddedRun>[1]>();
+    expectTypeOf(queueAgentHarnessMessage).returns.toEqualTypeOf<boolean>();
+    type GuardedInjection = NonNullable<
+      Parameters<typeof setActiveEmbeddedRun>[1]["messageInjectionV2"]
+    >;
+    expectTypeOf<Parameters<GuardedInjection["queueMessage"]>[2]>().toEqualTypeOf<() => void>();
+    expectTypeOf<Parameters<GuardedInjection["queueMessage"]>["length"]>().toEqualTypeOf<3>();
   });
 
   it("exposes attached model request transport metadata helpers", () => {
