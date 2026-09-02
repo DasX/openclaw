@@ -14,7 +14,7 @@ type NavigationItem = {
 // The sidebar shows a small user-customizable ordered zone; every other nav route
 // lives in the collapsed "More" section. Chat is reachable through the session
 // list and Settings/Docs live in the sidebar footer, so neither is listed here.
-// Skills and Skill Workshop are tabs inside the Plugins hub, not sidebar items.
+// Skills and Skill Workshop are reached from the Plugins workspace, not sidebar items.
 // Worktrees is a tab of the Sessions hub, so it is not listed either.
 // Workboard is plugin-owned and enters the zone through its Control UI descriptor.
 export const SIDEBAR_NAV_ROUTES = [
@@ -33,7 +33,7 @@ export const SIDEBAR_NAV_ROUTES = [
 // became plugin-owned. Keep it as a placement slot, but not a customizable core route.
 const PERSISTED_SIDEBAR_ROUTES = ["workboard", ...SIDEBAR_NAV_ROUTES] as const;
 
-// Routes presented as tabs of the Plugins hub. The sidebar highlights the
+// Workspace routes reached from the Plugins shell. The sidebar highlights the
 // Plugins entry for all of them, mirroring how config covers settings routes.
 const PLUGINS_HUB_ROUTES: ReadonlySet<NavigationRouteId> = new Set([
   "plugins",
@@ -193,7 +193,7 @@ const SETTINGS_NAVIGATION_GROUPS = [
   },
   {
     labelKey: "nav.settingsGroupAgents",
-    routes: ["agents", "labs", "model-providers", "mcp", "memory", "automation"],
+    routes: ["agents", "labs", "model-providers", "plugin-settings", "mcp", "memory", "automation"],
   },
   {
     labelKey: "nav.settingsGroupSecurity",
@@ -213,7 +213,7 @@ const NON_ADMIN_SETTINGS_NAVIGATION_GROUPS = [
   },
   {
     labelKey: "nav.settingsGroupAgents",
-    routes: ["agents", "model-providers", "memory"],
+    routes: ["agents", "model-providers", "plugin-settings", "memory"],
   },
   { labelKey: "nav.settingsGroupSecurity", routes: ["approvals"] },
   {
@@ -277,6 +277,7 @@ const NAVIGATION_ICONS: NavigationItem = {
   tasks: "listChecks",
   skills: "zap",
   plugins: "puzzle",
+  "plugin-settings": "puzzle",
   "skill-workshop": "wrench",
   devices: "monitorSmartphone",
   "cloud-workers": "server",
@@ -387,6 +388,7 @@ const NAVIGATION_COPY: Record<NavigationRouteId, { titleKey: string; subtitleKey
   tasks: { titleKey: "tabs.tasks", subtitleKey: "subtitles.tasks" },
   skills: { titleKey: "tabs.skills", subtitleKey: "subtitles.skills" },
   plugins: { titleKey: "tabs.plugins", subtitleKey: "subtitles.plugins" },
+  "plugin-settings": { titleKey: "tabs.plugins", subtitleKey: "subtitles.plugins" },
   "skill-workshop": {
     titleKey: "tabs.skillWorkshop",
     subtitleKey: "subtitles.skillWorkshop",
