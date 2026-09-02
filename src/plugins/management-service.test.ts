@@ -448,6 +448,7 @@ describe("plugin management service", () => {
         writeOptions: {
           ...prepared.writeOptions,
           auditOrigin: "plugin-install",
+          assertConfigPathForWrite: expect.any(Function),
           ownedConfigPathForWrite: undefined,
           envSnapshotForRestore: undefined,
           explicitSetPaths: [["plugins", "entries", "workboard"]],
@@ -866,7 +867,7 @@ describe("plugin management service", () => {
       ).toBeUndefined();
       expect(mocks.applyUninstall).toHaveBeenCalledWith(
         { target: "/tmp/extensions/diffs" },
-        beforePersistentApply,
+        expect.any(Function),
       );
       expect(mocks.refreshRegistry).toHaveBeenCalledWith(
         expect.objectContaining({
