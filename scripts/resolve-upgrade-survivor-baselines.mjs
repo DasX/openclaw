@@ -34,6 +34,36 @@ function dedupeSpecs(specs) {
   return [...new Set(specs.map(normalizeUpgradeSurvivorBaselineSpec).filter(Boolean))];
 }
 
+function capSpecsAtMaximum(specs, maximumVersion) {
+  if (!maximumVersion) {
+    return specs;
+  }
+  if (!parseReleaseVersion(maximumVersion)) {
+    throw new Error(`invalid maximum baseline version: ${maximumVersion}`);
+  }
+  const mutablePrereleaseSpec = specs.find(
+    (spec) => spec === "openclaw@alpha" || spec === "openclaw@beta",
+  );
+  if (mutablePrereleaseSpec) {
+    throw new Error(
+      `mutable prerelease baseline is not allowed with --maximum-version: ${mutablePrereleaseSpec}`,
+    );
+  }
+  return specs
+    .map((spec) => (spec === "openclaw@latest" ? `openclaw@${maximumVersion}` : spec))
+    .filter((spec) => {
+      const version = spec.replace(/^openclaw@/u, "");
+      if (!parseStableVersion(version)) {
+        return true;
+      }
+      const comparison = compareReleaseVersions(version, maximumVersion);
+      if (comparison === null) {
+        throw new Error(`cannot compare release versions: ${version} ${maximumVersion}`);
+      }
+      return comparison <= 0;
+    });
+}
+
 function parsePositiveInteger(value, label) {
   const text = String(value ?? "").trim();
   if (!/^[1-9]\d*$/u.test(text)) {
@@ -174,7 +204,7 @@ export function resolveBaselines(args) {
   const fallback = args.get("fallback") ?? "openclaw@latest";
   const requestedTokens = splitSpecs(requested);
   if (requestedTokens.length === 0) {
-    return dedupeSpecs([fallback]);
+    return capSpecsAtMaximum(dedupeSpecs([fallback]), args.get("maximum-version"));
   }
   const resolved = [];
   for (const token of requestedTokens) {
@@ -196,7 +226,7 @@ export function resolveBaselines(args) {
       resolved.push(token);
     }
   }
-  return dedupeSpecs(resolved);
+  return capSpecsAtMaximum(dedupeSpecs(resolved), args.get("maximum-version"));
 }
 
 const isMain = process.argv[1] ? fileURLToPath(import.meta.url) === process.argv[1] : false;

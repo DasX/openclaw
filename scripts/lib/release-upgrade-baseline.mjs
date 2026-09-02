@@ -35,7 +35,7 @@ export function compareOpenClawVersions(leftVersion, rightVersion) {
 
 function normalizePublishedVersions(publishedVersions) {
   return [...new Set(publishedVersions.map((version) => String(version).trim()).filter(Boolean))]
-    .filter((version) => parseVersion(version))
+    .filter((version) => parseVersion(version)?.channel === "stable")
     .toSorted((left, right) => compareOpenClawVersions(right, left));
 }
 
@@ -58,7 +58,7 @@ export function resolveDefaultReleaseUpgradeBaseline(candidateVersion, published
     return `openclaw@${same}`;
   }
 
-  throw new Error(`no published OpenClaw baseline is <= candidate ${candidate.version}`);
+  throw new Error(`no published stable OpenClaw baseline is <= candidate ${candidate.version}`);
 }
 
 export function parseArgs(argv) {
@@ -88,10 +88,14 @@ function readPublishedVersions(args) {
     }
     return parsed;
   }
-  const raw = execFileSync("npm", ["view", "openclaw", "versions", "--json", "--silent"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  const raw = execFileSync(
+    "npm",
+    ["view", "openclaw", "versions", "--json", "--silent", "--prefer-online"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+    },
+  );
   const parsed = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
     throw new Error("npm returned a non-array openclaw versions payload");

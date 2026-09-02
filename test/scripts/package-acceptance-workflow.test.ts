@@ -569,10 +569,14 @@ describe("package acceptance workflow", () => {
       "harness_ref: ${{ needs.resolve_package.outputs.package_source_sha || inputs.workflow_ref }}",
     );
     expect(workflow).toContain(
-      "published_upgrade_survivor_baseline: ${{ inputs.published_upgrade_survivor_baseline }}",
+      "published_upgrade_survivor_baseline: ${{ needs.resolve_package.outputs.published_upgrade_survivor_baseline }}",
     );
     expect(workflow).toContain(
       "published_upgrade_survivor_baselines: ${{ needs.resolve_package.outputs.published_upgrade_survivor_baselines }}",
+    );
+    expect(workflow).toContain('--maximum-version "$CANDIDATE_VERSION"');
+    expect(workflow).toContain(
+      'node scripts/lib/release-upgrade-baseline.mjs --candidate-version "$CANDIDATE_VERSION"',
     );
     expect(workflow).toContain(
       "published_upgrade_survivor_scenarios: ${{ needs.resolve_package.outputs.published_upgrade_survivor_scenarios }}",
@@ -710,6 +714,9 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain("OPENCLAW_DOCKER_E2E_SELECTED_SHA:");
     expect(workflow).toContain(
       "OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC: ${{ inputs.published_upgrade_survivor_baseline }}",
+    );
+    expect(workflow).toContain(
+      "OPENCLAW_UPDATE_CORRUPT_PLUGIN_BASELINE: ${{ inputs.published_upgrade_survivor_baseline }}",
     );
     expect(workflow).toContain(
       "OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS: ${{ matrix.group.published_upgrade_survivor_baselines || inputs.published_upgrade_survivor_baselines }}",
@@ -1525,6 +1532,7 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain(
       "docker_e2e_release_checks:\n    name: Run Docker release-path validation\n    needs: [resolve_target, prepare_release_package]",
     );
+    expect(workflow).toContain("published_upgrade_survivor_baseline: 2026.7.1-2");
     expect(workflow).toContain("include_release_path_suites: false");
     expect(workflow).toContain("include_release_path_suites: true");
     expect(workflow).toContain("uses: ./.github/workflows/package-acceptance.yml");

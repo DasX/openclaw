@@ -146,6 +146,39 @@ function assertConfiguredPluginState(params: { installPath?: string } = {}): voi
 }
 
 describe("upgrade survivor assertions", () => {
+  it("accepts agents migrated from list to entries", () => {
+    const root = mkdtempSync(join(tmpdir(), "openclaw-upgrade-survivor-agents-"));
+    try {
+      const configPath = join(root, "openclaw.json");
+      const coveragePath = join(root, "coverage.json");
+      writeJson(configPath, {
+        agents: {
+          defaults: { contextTokens: 64000 },
+          entries: {
+            main: {},
+            ops: { fastModeDefault: true },
+          },
+        },
+      });
+      writeJson(coveragePath, {
+        acceptedIntents: ["agents"],
+        skippedIntents: [],
+      });
+
+      execFileSync(process.execPath, [ASSERTIONS_PATH, "assert-config"], {
+        env: {
+          ...process.env,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_UPGRADE_SURVIVOR_CONFIG_COVERAGE_JSON: coveragePath,
+          OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "base",
+        },
+        stdio: "pipe",
+      });
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it("accepts the ACPX OpenClaw tools bridge scenario during seed", () => {
     const root = mkdtempSync(join(tmpdir(), "openclaw-upgrade-survivor-acpx-"));
     try {

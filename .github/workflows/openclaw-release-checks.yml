@@ -601,6 +601,7 @@ jobs:
     with:
       ref: ${{ needs.resolve_target.outputs.revision }}
       run_bun_global_install_smoke: true
+      update_baseline_version: 2026.7.1-2
 
   cross_os_release_checks:
     needs: [resolve_target, prepare_release_package]
@@ -719,6 +720,7 @@ jobs:
       include_live_suites: false
       release_test_profile: ${{ needs.resolve_target.outputs.release_profile }}
       package_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
+      published_upgrade_survivor_baseline: 2026.7.1-2
       codex_plugin_spec: ${{ needs.resolve_target.outputs.codex_plugin_spec }}
     secrets: *live_e2e_release_secrets
 

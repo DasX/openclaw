@@ -37,6 +37,62 @@ describe("scripts/resolve-upgrade-survivor-baselines", () => {
     expect(resolveBaselines(new Map([["fallback", "2026.4.23"]]))).toEqual(["openclaw@2026.4.23"]);
   });
 
+  it("caps moving baselines and history at the candidate version", () => {
+    const releases = [
+      { isPrerelease: false, publishedAt: "2026-08-30T00:00:00Z", tagName: "v2026.8.1" },
+      { isPrerelease: false, publishedAt: "2026-08-20T00:00:00Z", tagName: "v2026.7.1-2" },
+      { isPrerelease: false, publishedAt: "2026-06-30T00:00:00Z", tagName: "v2026.6.34" },
+    ];
+    withReleaseFixture(releases, (file) => {
+      expect(
+        resolveBaselines(
+          new Map([
+            ["requested", "last-stable-3"],
+            ["fallback", "openclaw@latest"],
+            ["maximum-version", "2026.7.33"],
+            ["releases-json", file],
+          ]),
+        ),
+      ).toEqual(["openclaw@2026.7.1-2", "openclaw@2026.6.34"]);
+    });
+    expect(
+      resolveBaselines(
+        new Map([
+          ["fallback", "openclaw@latest"],
+          ["maximum-version", "2026.7.33"],
+        ]),
+      ),
+    ).toEqual(["openclaw@2026.7.33"]);
+  });
+
+  it("caps stable baselines at a prerelease candidate", () => {
+    expect(
+      resolveBaselines(
+        new Map([
+          ["requested", "2026.8.1 2026.7.33"],
+          ["fallback", "openclaw@latest"],
+          ["maximum-version", "2026.8.1-beta.2"],
+        ]),
+      ),
+    ).toEqual(["openclaw@2026.7.33"]);
+  });
+
+  it.each(["alpha", "beta"])(
+    "rejects the mutable %s baseline when a maximum version freezes the candidate",
+    (tag) => {
+      expect(() =>
+        resolveBaselines(
+          new Map([
+            ["fallback", `openclaw@${tag}`],
+            ["maximum-version", "2026.7.33"],
+          ]),
+        ),
+      ).toThrow(
+        `mutable prerelease baseline is not allowed with --maximum-version: openclaw@${tag}`,
+      );
+    },
+  );
+
   it("resolves release-history to last six stable releases plus explicit legacy anchors", () => {
     const releases = (
       [

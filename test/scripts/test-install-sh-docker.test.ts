@@ -1549,6 +1549,7 @@ chmod +x "$BUN_INSTALL/bin/openclaw"
     expect(releaseChecks).toContain("install_smoke_release_checks:");
     expect(releaseChecks).toContain("uses: ./.github/workflows/install-smoke.yml");
     expect(releaseChecks).toContain("run_bun_global_install_smoke: true");
+    expect(releaseChecks).toContain("update_baseline_version: 2026.7.1-2");
   });
 
   it("runs installer packaging from the trusted workflow revision against a nested candidate", () => {

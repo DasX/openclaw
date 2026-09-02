@@ -319,6 +319,7 @@ jobs:
       package_source_sha: ${{ steps.resolve.outputs.package_source_sha }}
       package_sha256: ${{ steps.resolve.outputs.sha256 }}
       package_version: ${{ steps.resolve.outputs.package_version }}
+      published_upgrade_survivor_baseline: ${{ steps.upgrade_survivor_baseline.outputs.baseline }}
       published_upgrade_survivor_baselines: ${{ steps.upgrade_survivor_baselines.outputs.baselines }}
       published_upgrade_survivor_scenarios: ${{ inputs.published_upgrade_survivor_scenarios }}
       telegram_enabled: ${{ steps.profile.outputs.telegram_enabled }}
@@ -453,10 +454,25 @@ jobs:
             echo "package_artifact_name=${PACKAGE_ARTIFACT_NAME}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve published upgrade survivor baseline
+        id: upgrade_survivor_baseline
+        env:
+          CANDIDATE_VERSION: ${{ steps.resolve.outputs.package_version }}
+          REQUESTED_BASELINE: ${{ inputs.published_upgrade_survivor_baseline }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline="$REQUESTED_BASELINE"
+          if [[ -z "$baseline" || "$baseline" == "openclaw@latest" ]]; then
+            baseline="$(node scripts/lib/release-upgrade-baseline.mjs --candidate-version "$CANDIDATE_VERSION")"
+          fi
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+
       - name: Resolve published upgrade survivor baselines
         id: upgrade_survivor_baselines
         env:
-          FALLBACK_BASELINE: ${{ inputs.published_upgrade_survivor_baseline }}
+          CANDIDATE_VERSION: ${{ steps.resolve.outputs.package_version }}
+          FALLBACK_BASELINE: ${{ steps.upgrade_survivor_baseline.outputs.baseline }}
           REQUESTED_BASELINES: ${{ inputs.published_upgrade_survivor_baselines }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -478,6 +494,7 @@ jobs:
           args=(
             --requested "$REQUESTED_BASELINES"
             --fallback "$FALLBACK_BASELINE"
+            --maximum-version "$CANDIDATE_VERSION"
             --github-output "$GITHUB_OUTPUT"
           )
           if [[ -n "$releases_json" ]]; then
@@ -510,7 +527,7 @@ jobs:
           SOURCE: ${{ inputs.source }}
           SUITE_PROFILE: ${{ inputs.suite_profile }}
           WORKFLOW_REF: ${{ inputs.workflow_ref }}
-          PUBLISHED_UPGRADE_SURVIVOR_BASELINE: ${{ inputs.published_upgrade_survivor_baseline }}
+          PUBLISHED_UPGRADE_SURVIVOR_BASELINE: ${{ steps.upgrade_survivor_baseline.outputs.baseline }}
           PUBLISHED_UPGRADE_SURVIVOR_BASELINES: ${{ steps.upgrade_survivor_baselines.outputs.baselines }}
           PUBLISHED_UPGRADE_SURVIVOR_SCENARIOS: ${{ inputs.published_upgrade_survivor_scenarios }}
         shell: bash
@@ -576,7 +593,7 @@ jobs:
       include_release_path_suites: ${{ needs.resolve_package.outputs.include_release_path_suites == 'true' }}
       include_openwebui: ${{ needs.resolve_package.outputs.include_openwebui == 'true' }}
       docker_lanes: ${{ needs.resolve_package.outputs.docker_lanes }}
-      published_upgrade_survivor_baseline: ${{ inputs.published_upgrade_survivor_baseline }}
+      published_upgrade_survivor_baseline: ${{ needs.resolve_package.outputs.published_upgrade_survivor_baseline }}
       published_upgrade_survivor_baselines: ${{ needs.resolve_package.outputs.published_upgrade_survivor_baselines }}
       published_upgrade_survivor_scenarios: ${{ needs.resolve_package.outputs.published_upgrade_survivor_scenarios }}
       package_artifact_name: ${{ needs.resolve_package.outputs.package_artifact_name }}
