@@ -640,4 +640,3 @@ export function classifyAgentHarnessTerminalOutcome(
 function hasVisibleAssistantText(assistantTexts: readonly string[]): boolean {
   return assistantTexts.some((text) => text.trim().length > 0);
 }
-export { resolveWorkContextMessage } from "../sessions/work-context.js";

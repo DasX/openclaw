@@ -4,9 +4,9 @@
  */
 import {
   embeddedAgentLog,
-  resolveWorkContextMessage,
   type queueAgentHarnessMessage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { resolveWorkContextMessage } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
 import {
   isCodexAppServerIndeterminateRequestCancellationError,
   isCodexAppServerIndeterminateTransportError,
@@ -287,6 +287,14 @@ export function createCodexSteeringQueue(params: {
   }
 
   return {
+    hasWorkContextChange(options?: CodexSteeringQueueOptions) {
+      return (
+        resolveWorkContextMessage(
+          workContextMessage ? [workContextMessage] : [],
+          options?.userTurnTranscriptRecorder?.message,
+        ) !== workContextMessage
+      );
+    },
     async queue(text: string, options?: CodexSteeringQueueOptions) {
       try {
         assertActive();
