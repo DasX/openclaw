@@ -224,7 +224,9 @@ OpenClaw stops before starting the next persistent effect. Earlier completed
 effects remain, including an agent whose creation already finished; setup may
 still be incomplete. Check `openclaw agents list` and `status`, then request
 setup again from an active run and approve the new request, or finish directly
-with `openclaw setup` on the Gateway host.
+with `openclaw setup` on the Gateway host. If cancellation deferred legacy
+history migration for a newly named agent, the next Gateway startup retries it;
+use `openclaw doctor --fix` on the same state/config to finish it sooner.
 
 If inference is missing or its live check fails, leave OpenClaw and run `openclaw onboard`. Guided onboarding tries the configured model first, then authenticated subscription CLIs, API keys, and remaining supported CLIs; it asks each candidate for a real reply and persists only a passing route. OpenClaw starts immediately after that boundary and can then configure the workspace, Gateway, channels, agents, plugins, and other optional features.
 

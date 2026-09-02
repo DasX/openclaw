@@ -324,6 +324,8 @@ async function deleteSqliteSessionEntryLifecycleLocked(
   expectedPluginOwnerId?: string,
 ): Promise<DeleteSessionEntryLifecycleResult> {
   const prepared = await runExclusiveSqliteSessionWrite(resolved, async () => {
+    // Opening a store can register durable ownership, even before the deletion transaction.
+    params.commitGuard?.();
     const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
     const targetSnapshot = readLifecycleTargetSnapshot(database, params.target);
     const current = targetSnapshot[0];
@@ -416,6 +418,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
       const historicalArchivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
       for (const sessionId of prepared.historicalGenerationIds) {
         const plan = await runExclusiveSqliteSessionWrite(resolved, async () => {
+          params.commitGuard?.();
           const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
           const targetSnapshot = readLifecycleTargetSnapshot(database, params.target);
           if (
@@ -456,8 +459,9 @@ async function deleteSqliteSessionEntryLifecycleLocked(
           continue;
         }
         const materializedGeneration = await materializeSessionStateDeletePlans([plan]);
-        const archivedGeneration = await runExclusiveSqliteSessionWrite(resolved, async () =>
-          runOpenClawAgentWriteTransaction((transactionDb) => {
+        const archivedGeneration = await runExclusiveSqliteSessionWrite(resolved, async () => {
+          params.commitGuard?.();
+          return runOpenClawAgentWriteTransaction((transactionDb) => {
             assertCurrent();
             const targetSnapshot = readLifecycleTargetSnapshot(transactionDb, params.target);
             if (
@@ -480,8 +484,8 @@ async function deleteSqliteSessionEntryLifecycleLocked(
               );
             }
             return deleteMaterializedSessionStatePlans(transactionDb, materializedGeneration);
-          }, toDatabaseOptions(resolved)),
-        );
+          }, toDatabaseOptions(resolved));
+        });
         if (archivedGeneration === DELETE_EXPECTED_ENTRY_MISMATCH) {
           return expectedEntryMismatchResult(historicalArchivedTranscripts);
         }
@@ -496,49 +500,53 @@ async function deleteSqliteSessionEntryLifecycleLocked(
       // Archive materialization is the expensive phase. It must run between short
       // writer-lane sections so unrelated writes to this store can keep progressing.
       const materializedPlans = await materializeSessionStateDeletePlans(prepared.entryPlans);
-      const result = await runExclusiveSqliteSessionWrite(resolved, async () =>
-        runOpenClawAgentWriteTransaction<DeleteSessionEntryLifecycleResult>((transactionDb) => {
-          assertCurrent();
-          const transactionSnapshot = readLifecycleTargetSnapshot(transactionDb, params.target);
-          const transactionEntry = transactionSnapshot[0]?.entry;
-          if (
-            !sqliteLifecycleTargetSnapshotsEqual(prepared.targetSnapshot, transactionSnapshot) ||
-            !shouldDeleteSqliteSessionEntryLifecycle(transactionDb, transactionEntry, params)
-          ) {
-            return expectedEntryMismatchResult([]);
-          }
-          const archivedTranscripts = deleteMaterializedSessionStatePlans(
-            transactionDb,
-            materializedPlans,
-            undefined,
-            new Set([
+      const result = await runExclusiveSqliteSessionWrite(resolved, async () => {
+        params.commitGuard?.();
+        return runOpenClawAgentWriteTransaction<DeleteSessionEntryLifecycleResult>(
+          (transactionDb) => {
+            assertCurrent();
+            const transactionSnapshot = readLifecycleTargetSnapshot(transactionDb, params.target);
+            const transactionEntry = transactionSnapshot[0]?.entry;
+            if (
+              !sqliteLifecycleTargetSnapshotsEqual(prepared.targetSnapshot, transactionSnapshot) ||
+              !shouldDeleteSqliteSessionEntryLifecycle(transactionDb, transactionEntry, params)
+            ) {
+              return expectedEntryMismatchResult([]);
+            }
+            const archivedTranscripts = deleteMaterializedSessionStatePlans(
+              transactionDb,
+              materializedPlans,
+              undefined,
+              new Set([
+                params.target.canonicalKey,
+                ...params.target.storeKeys,
+                ...transactionSnapshot.map((row) => row.sessionKey),
+              ]),
+            );
+            deleteLifecycleTargetRows(transactionDb, params.target);
+            if (params.deleteDeliveryArtifacts === true) {
+              deleteSessionDeliveryArtifacts(transactionDb, params.target.canonicalKey, [
+                ...params.target.storeKeys,
+                ...transactionSnapshot.map((row) => row.sessionKey),
+              ]);
+            }
+            deleteSessionBoardRows(transactionDb, [
               params.target.canonicalKey,
               ...params.target.storeKeys,
               ...transactionSnapshot.map((row) => row.sessionKey),
-            ]),
-          );
-          deleteLifecycleTargetRows(transactionDb, params.target);
-          if (params.deleteDeliveryArtifacts === true) {
-            deleteSessionDeliveryArtifacts(transactionDb, params.target.canonicalKey, [
-              ...params.target.storeKeys,
-              ...transactionSnapshot.map((row) => row.sessionKey),
             ]);
-          }
-          deleteSessionBoardRows(transactionDb, [
-            params.target.canonicalKey,
-            ...params.target.storeKeys,
-            ...transactionSnapshot.map((row) => row.sessionKey),
-          ]);
-          return {
-            archivedTranscripts,
-            deleted: true,
-            deletedEntry: cloneSessionEntry(prepared.current.entry),
-            ...(prepared.current.entry.sessionId
-              ? { deletedSessionId: prepared.current.entry.sessionId }
-              : {}),
-          };
-        }, toDatabaseOptions(resolved)),
-      );
+            return {
+              archivedTranscripts,
+              deleted: true,
+              deletedEntry: cloneSessionEntry(prepared.current.entry),
+              ...(prepared.current.entry.sessionId
+                ? { deletedSessionId: prepared.current.entry.sessionId }
+                : {}),
+            };
+          },
+          toDatabaseOptions(resolved),
+        );
+      });
       if (result.deleted) {
         deletePersonalGitHubSessionReceipts({
           agentId: resolved.agentId,

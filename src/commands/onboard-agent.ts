@@ -153,6 +153,8 @@ export async function ensureOnboardingAgent(params: {
   const sessionMigration = await migrateLegacyMainSessionKeys({
     cfg: after.config,
     mode: "automatic",
+    // Unlike creation bookkeeping, convergence can wait for the next startup.
+    beforePersistentApply: params.beforePersistentApply,
   });
   const sessionMigrationWarnings =
     sessionMigration.armed && !sessionMigration.complete
