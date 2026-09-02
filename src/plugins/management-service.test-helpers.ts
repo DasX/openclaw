@@ -24,6 +24,7 @@ export function metadataSnapshot(params: {
   origin?: "bundled" | "global";
   installRecord?: Record<string, unknown>;
   icon?: string;
+  configSchema?: PluginManifestRecord["configSchema"];
 }) {
   const id = params.id ?? "workboard";
   const origin = params.origin ?? "bundled";
@@ -45,6 +46,7 @@ export function metadataSnapshot(params: {
     rootDir: `/tmp/${id}`,
     source: `/tmp/${id}/index.ts`,
     manifestPath: `/tmp/${id}/openclaw.plugin.json`,
+    ...(params.configSchema ? { configSchema: params.configSchema } : {}),
   };
   return {
     index: {
