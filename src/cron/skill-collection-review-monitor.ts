@@ -57,6 +57,7 @@ export function resolveSkillCollectionReviewMonitorSpecs(
           toolsAllow: ["read", "write", "edit", "apply_patch", "exec", "process"],
         },
         sessionTarget: "isolated",
+        delivery: { mode: "none" },
         wakeMode: "next-heartbeat",
       },
     },

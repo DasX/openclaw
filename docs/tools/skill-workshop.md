@@ -110,6 +110,7 @@ cadence; the job is enabled only when `skills.workshop.autonomous.mode` is
 as its working directory, file-tool root, and session root. It keeps distinct
 useful skills, rewrites weak ones, consolidates overlap, and drops junk or stale
 fragments.
+The review announces nothing; results are in the review history and the cron run record.
 The file tools are rooted at the Workshop directory. The review keeps the
 normal `exec` tool, but shell access follows the operator's cron exec-approval
 policy. With the default policy and no connected approval client, `exec` is
