@@ -17,7 +17,6 @@ import { migrateLegacyMainSessionKeys } from "../config/sessions/legacy-main-ses
 import { isPerAgentSessionStoreConfig } from "../config/sessions/session-store-config.js";
 import { resolveConfiguredAgentDatabaseTargets } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   collectRelevantDoctorPluginIds,
   listPluginDoctorSessionStoreAgentIds,
@@ -90,7 +89,11 @@ import {
   detectLegacyMeetingTranscripts,
   migrateLegacyMeetingTranscripts,
 } from "./state-migrations.meeting-transcripts.js";
-import { mergeNotices } from "./state-migrations.messages.js";
+import {
+  formatStartupMigrationFailure,
+  logStateMigrationResult,
+  mergeNotices,
+} from "./state-migrations.messages.js";
 import {
   detectLegacyNodeHostConfig,
   migrateLegacyNodeHostConfig,
@@ -1196,6 +1199,10 @@ export async function autoMigrateLegacyState(params: {
       ? repairOpenClawStateDatabaseSchema(stateSchemaOptions)
       : repairOpenClawStateDatabaseSchemaIfNeeded(stateSchemaOptions);
   if (stateSchema.warnings.length > 0) {
+    // A failed canonical schema repair is an error: runtime cannot safely open this store.
+    if (params.doctorOnlyStateMigrations !== true) {
+      throw new Error(formatStartupMigrationFailure(stateSchema.warnings));
+    }
     return {
       migrated: stateDirResult.migrated || stateSchema.changes.length > 0,
       skipped: false,
@@ -1204,6 +1211,12 @@ export async function autoMigrateLegacyState(params: {
       ...(stateDirResult.notices?.length ? { notices: stateDirResult.notices } : {}),
     };
   }
+  // Preserve retired locators before advisory early returns can permit config repair.
+  const pluginDoctorConfig = params.pluginDoctorConfig ?? params.cfg;
+  const configMachineState = migrateLegacyConfigMachineState({
+    config: pluginDoctorConfig,
+    env: { ...env, OPENCLAW_STATE_DIR: stateDir },
+  });
   const agentMigrationOptions = {
     configuredAgentDatabaseTargets: resolveConfiguredAgentDatabaseTargets(params.cfg, { env }),
     env: { ...env, OPENCLAW_STATE_DIR: stateDir },
@@ -1222,12 +1235,14 @@ export async function autoMigrateLegacyState(params: {
       migrated:
         stateDirResult.migrated ||
         stateSchema.changes.length > 0 ||
+        configMachineState.changes.length > 0 ||
         transcriptDirectives.changes.length > 0 ||
         mediaPersistence.changes.length > 0,
       skipped: false,
       changes: [
         ...stateDirResult.changes,
         ...stateSchema.changes,
+        ...configMachineState.changes,
         ...transcriptDirectives.changes,
         ...mediaPersistence.changes,
       ],
@@ -1244,11 +1259,6 @@ export async function autoMigrateLegacyState(params: {
     params.doctorOnlyStateMigrations === true
       ? migrateLegacyProfileWorkspace({ env, homedir })
       : { changes: [], warnings: [] };
-  const pluginDoctorConfig = params.pluginDoctorConfig ?? params.cfg;
-  const configMachineState = migrateLegacyConfigMachineState({
-    config: pluginDoctorConfig,
-    env: { ...env, OPENCLAW_STATE_DIR: stateDir },
-  });
   const pluginSessionStoreAgentIds = listPluginDoctorSessionStoreAgentIds({
     config: pluginDoctorConfig,
     env,
@@ -1286,25 +1296,6 @@ export async function autoMigrateLegacyState(params: {
           legacySessionSurfaces,
         })
       : { changes: [], warnings: [] };
-
-  const logMigrationResults = (changes: string[], warnings: string[], notices: string[]) => {
-    const logger = params.log ?? createSubsystemLogger("state-migrations");
-    if (changes.length > 0) {
-      logger.info(
-        `Auto-migrated legacy state:\n${changes.map((entry) => `- ${entry}`).join("\n")}`,
-      );
-    }
-    if (warnings.length > 0) {
-      logger.warn(
-        `Legacy state migration warnings:\n${warnings.map((entry) => `- ${entry}`).join("\n")}`,
-      );
-    }
-    if (notices.length > 0) {
-      logger.info(
-        `Legacy state migration notes:\n${notices.map((entry) => `- ${entry}`).join("\n")}`,
-      );
-    }
-  };
 
   const detected = await detectLegacyStateMigrations({
     cfg: params.cfg,
@@ -1419,7 +1410,7 @@ export async function autoMigrateLegacyState(params: {
       deviceAuth,
       deviceIdentity,
     ]);
-    logMigrationResults(changes, warnings, notices);
+    logStateMigrationResult({ changes, warnings, notices }, params.log);
     return {
       migrated: stateDirResult.migrated || changes.length > 0,
       skipped: false,
@@ -1458,7 +1449,7 @@ export async function autoMigrateLegacyState(params: {
     meetingTranscripts,
     ...migrations.finalNoticeSources,
   ]);
-  logMigrationResults(changes, warnings, notices);
+  logStateMigrationResult({ changes, warnings, notices }, params.log);
   return {
     // Custom agent roots omit transcript changes from their shared-state report.
     // Preserve the completed migration status without claiming agent ownership.

@@ -238,12 +238,18 @@ Node or Bun compiler child and joins it before returning the verified manifest t
 borrowers. The compiler module graph lives in that child, not the long-lived runner
 or Vitest worker. No shard can select a different build graph or adopt another invocation's output. The outer
 runner retains the generation until child close and process-group cleanup
-finish, then verifies it before reporting success. Standalone Vitest and watch runs retain
-source execution: its public close hooks run concurrently with pool shutdown,
-so compilation and artifact deletion require the repository runner's ownership.
+finish, then verifies it before reporting success. Verification reads every recorded
+input and output with bounded asynchronous I/O, keeping the runner responsive during
+large shutdown scans. The invocation owner verifies each borrower's preparation
+before replying and verifies again after all borrowers close; Vitest does not repeat
+these scans inside each shard or during its concurrent pool shutdown. Standalone
+Vitest and watch runs retain source execution: compilation, verification, and artifact
+deletion require the repository runner's ownership.
 A lost owner or failed build fails the run.
-Disposal cancels pending compilation and joins it and every borrower before
-removing the directory. An uncertain compiler or borrower join retains the
+Disposal cancels pending compilation and joins it, every borrower, and outstanding
+preparation requests before asynchronously removing the directory. Signal handlers
+remain active through removal, even when large generations take time to delete.
+Borrower completion does not wait for compilation, so an early child exit can reach that cancellation path. An uncertain compiler or borrower join retains the
 generation and fails the run. Abnormal termination can also leave an unused
 directory; later runs never adopt it.
 
@@ -378,17 +384,25 @@ The launcher does not split runs or change watch, filter, or report semantics.
 The namespace contains isolated homes, their JIT caches, SDK/shared-home allocation
 roots, and fallback SQLite state; its lifetime spans shared-worker files and module
 resets. On POSIX detached launches, the parent removes
-only that namespace after its child process group has stopped and output pipes
-have closed, including passing and failing runs, child crashes, caught `SIGINT`/`SIGTERM`
+only that namespace after its child process group has stopped, output pipes
+have closed, and nested resource owners have released their pending claims,
+including passing and failing runs, child crashes, caught `SIGINT`/`SIGTERM`
 signals, and watchdog termination where supported. Explicit state, profile output,
 and mirror artifacts outside the namespace remain untouched. Failed or unverified
-group joins retain the namespace and report the exact path for manual recovery.
+group joins or unresolved nested claims retain the namespace and report the exact
+path for manual recovery. Nested namespaces, fixture lifetimes, and managed commands
+register ephemeral filesystem ownership before admitting work. Release requires
+positive completion evidence; caught cleanup failures, module resets, worker exit,
+or an intermediate runner crash cannot release a pending claim or its ancestors.
+Managed commands keep their existing close-based completion contract unless strict
+tree verification is requested; failed finalization never releases ownership.
+Stop all remaining writers before manually removing the reported exact directory.
 Windows and non-detached launches allocate the same isolated native home, but retain
-their namespace with a diagnostic after child exit and pipe closure because
-descendant completion cannot be verified. Raw external invocations do not gain
-this boundary. Forced parent
-or supervisor death (such as `SIGKILL`) can prevent cleanup; descendants that
-intentionally escape the owned group can recreate removed paths. The wrappers do
+their namespace and enclosing claims with a diagnostic after child exit and pipe
+closure because descendant completion cannot be verified. Raw external invocations do not gain
+this boundary. Forced parent or supervisor death (such as `SIGKILL`) can prevent
+cleanup; unregistered descendants that intentionally escape the owned group remain
+outside this contract. The wrappers do
 not sweep old directories or infer ownership from names, ages, or PIDs.
 This is home isolation, not a filesystem sandbox: explicit absolute paths,
 `os.userInfo()` account lookup, children with stripped or replaced home variables,
