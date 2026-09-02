@@ -878,7 +878,7 @@ describe("plugin management service", () => {
       );
       expect(result).toMatchObject({
         pluginId: "diffs",
-        removed: ["config entry", "install record", "directory"],
+        removed: ["plugin settings", "install record", "directory"],
         application: { operationId: "uninstall", generation: 2, pluginIds: ["diffs"] },
         warnings: ['Warning: plugin "diffs" is referenced by Claw: @acme/review.'],
       });

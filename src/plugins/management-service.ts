@@ -156,7 +156,7 @@ import {
 import { setPluginEnabledInConfig } from "./toggle-config.js";
 import { collectClawPluginUninstallWarnings } from "./uninstall-claw-references.js";
 import {
-  prepareConfigForPendingPluginDirectoryRemovalSet,
+  prepareConfigForDisabledPluginSet,
   recordPluginPackageUninstallPlan,
 } from "./uninstall-package-plan.js";
 import { resolvePluginUninstallId } from "./uninstall-selection.js";
@@ -2160,10 +2160,7 @@ export async function uninstallManagedPlugin(
       const { installRecords } = prepared;
       let directoryResult = { directoryRemoved: false, warnings: [] as string[] };
       if (plan.directoryRemoval) {
-        const disabledConfig = prepareConfigForPendingPluginDirectoryRemovalSet(
-          snapshot.config,
-          policyPluginIds,
-        );
+        const disabledConfig = prepareConfigForDisabledPluginSet(snapshot.config, policyPluginIds);
         const write = await replaceConfigFile({
           nextConfig: disabledConfig,
           baseHash: snapshot.baseHash,

@@ -7,9 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { hashConfigIncludeRaw } from "../config/includes.js";
 import type { ClawHubPackageChannel } from "../infra/clawhub-packages.js";
-import { findBundledPluginSourceInMap } from "../plugins/bundled-sources.js";
 import { loadInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
-import { clearManagedPluginOfficialCatalogCache } from "../plugins/management-service.js";
 import { recordPluginManifestInstallOwner } from "../plugins/manifest-install-owner.js";
 import * as officialCatalog from "../plugins/official-external-plugin-catalog.js";
 import * as slotSelection from "../plugins/slot-selection.js";
@@ -47,6 +45,10 @@ import {
   writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock,
 } from "./plugins-cli-test-helpers.js";
 import { runPluginInstallCommand } from "./plugins-install-command.js";
+
+// Register the shared mocks before loading lifecycle owners.
+const { findBundledPluginSourceInMap } = await import("../plugins/bundled-sources.js");
+const { clearManagedPluginOfficialCatalogCache } = await import("../plugins/management-service.js");
 
 // Default-selector assertions describe a stable build; beta cases set their own identity.
 const coreVersion = vi.hoisted(() => ({ value: "2026.8.1" }));

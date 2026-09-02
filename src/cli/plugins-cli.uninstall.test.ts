@@ -213,7 +213,7 @@ describe("plugins cli uninstall", () => {
     } as OpenClawConfig;
     const nextConfig = {
       plugins: {
-        entries: {},
+        entries: { alpha: { enabled: false } },
         installs: {},
       },
     } as OpenClawConfig;
@@ -226,17 +226,22 @@ describe("plugins cli uninstall", () => {
 
     expect(promptYesNoMock).not.toHaveBeenCalled();
     expectLatestUninstallPlanParams({ pluginId: "alpha", deleteFiles: false });
-    expectInstallRecordsWrittenWithLease({}, { plugins: { entries: {} } });
+    expectInstallRecordsWrittenWithLease(
+      {},
+      {
+        plugins: { entries: { alpha: { enabled: false } } },
+      },
+    );
     expect(configWriteMock).toHaveBeenCalledWith({
       plugins: {
-        entries: {},
+        entries: { alpha: { enabled: false } },
       },
     });
     expect(replaceConfigFileMock).toHaveBeenCalledWith({
       baseHash: "mock",
       nextConfig: {
         plugins: {
-          entries: {},
+          entries: { alpha: { enabled: false } },
         },
       },
       writeOptions: expect.objectContaining({
@@ -250,7 +255,7 @@ describe("plugins cli uninstall", () => {
       {
         config: {
           plugins: {
-            entries: {},
+            entries: { alpha: { enabled: false } },
           },
         },
         installRecords: {},
@@ -742,6 +747,9 @@ describe("plugins cli uninstall", () => {
           ...(claimed ? { [pluginId]: { enabled: true } } : {}),
           discord: { enabled: true },
         },
+        plugins: {
+          entries: { [pluginId]: { enabled: false } },
+        },
       };
       expectInstallRecordsWrittenWithLease(retainedInstallRecords, nextConfig);
       expect(configWriteMock).toHaveBeenCalledWith(nextConfig);
@@ -770,7 +778,13 @@ describe("plugins cli uninstall", () => {
         ),
       );
       await runPluginsCommand(["plugins", "uninstall", requestedId, "--force", "--keep-files"]);
-      expectInstallRecordsWrittenWithLease({}, { channels: { "pack/one": { enabled: true } } });
+      expectInstallRecordsWrittenWithLease(
+        {},
+        {
+          channels: { "pack/one": { enabled: true } },
+          plugins: { entries: { "pack/one": { enabled: false } } },
+        },
+      );
     },
   );
 
