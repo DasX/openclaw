@@ -68,9 +68,11 @@ describe("CLI executable implementation identity", () => {
   it.runIf(process.platform === "win32")(
     "rejects mixed-case relative PATH entries and accepts mixed-case absolute entries",
     async () => {
-      // Keep the relative PATH fixture on the same Windows drive as cwd.
+      // Stay on cwd's drive without exposing transient fixtures to compiler snapshots.
+      const scratchRoot = path.join(process.cwd(), ".local");
+      fs.mkdirSync(scratchRoot, { recursive: true });
       const root = fs.realpathSync.native(
-        fs.mkdtempSync(path.join(process.cwd(), "openclaw-cli-path-case-")),
+        fs.mkdtempSync(path.join(scratchRoot, "openclaw-cli-path-case-")),
       );
       tempDirs.push(root);
       const binDir = path.join(root, "bin");
