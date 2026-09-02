@@ -9,7 +9,6 @@ import { hashConfigIncludeRaw } from "../config/includes.js";
 import type { ClawHubPackageChannel } from "../infra/clawhub-packages.js";
 import { loadInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
 import { recordPluginManifestInstallOwner } from "../plugins/manifest-install-owner.js";
-import * as officialCatalog from "../plugins/official-external-plugin-catalog.js";
 import * as slotSelection from "../plugins/slot-selection.js";
 import { createColdPluginFixture } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
@@ -48,6 +47,7 @@ import { runPluginInstallCommand } from "./plugins-install-command.js";
 
 // Register the shared mocks before loading lifecycle owners.
 const { findBundledPluginSourceInMap } = await import("../plugins/bundled-sources.js");
+const officialCatalog = await import("../plugins/official-external-plugin-catalog.js");
 const { clearManagedPluginOfficialCatalogCache } = await import("../plugins/management-service.js");
 
 // Default-selector assertions describe a stable build; beta cases set their own identity.
