@@ -672,9 +672,6 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       if (browserDisconnected || (await rejectOversizedOffer(req, res, error))) {
         return true;
       }
-      if (await rejectOversizedOffer(req, res, error)) {
-        return true;
-      }
       respondRealtimeOffer(res, 502, sessionError.message);
       return true;
     } finally {
