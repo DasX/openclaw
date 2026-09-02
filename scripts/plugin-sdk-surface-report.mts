@@ -340,7 +340,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: shipped conversation-binding inspection function and result type.
       // +4: canonical node CLI option, envelope, presentation, and error owners.
       // +1: Gateway caller ownership for standalone browser routing.
-      4374,
+      // -1: keep the provider API-key auth factory on provider-auth instead of duplicating it
+      // through provider-entry.
+      4373,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -454,7 +456,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shipped read-only conversation-binding inspection function.
       // +4: canonical node CLI option, envelope, presentation, and error owners.
       // +1: Gateway caller ownership for standalone browser routing.
-      2605,
+      // -1: keep the provider API-key auth factory on provider-auth instead of duplicating it
+      // through provider-entry.
+      2604,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
