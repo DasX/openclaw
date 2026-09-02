@@ -9984,6 +9984,9 @@ describe("update-cli", () => {
       async (params: { config?: OpenClawConfig }) =>
         pluginSyncResult(params.config ?? baseConfig, true),
     );
+    updateNpmInstalledPlugins.mockImplementation(async ({ config }) =>
+      npmPluginUpdateResult(config),
+    );
 
     await updateFinalizeCommand({ json: true, timeout: "9", restart: false });
 
