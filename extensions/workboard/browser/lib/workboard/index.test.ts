@@ -10,7 +10,6 @@ import { waitForFast } from "../../test/wait-for.ts";
 import {
   addWorkboardCardComment,
   archiveWorkboardCard,
-  captureSessionToWorkboard,
   deleteWorkboardCard,
   dispatchWorkboard,
   filterWorkboardCardsForPreset,
@@ -30,6 +29,7 @@ import {
   type WorkboardTaskSummary,
 } from "./index.ts";
 import { normalizeExecution, normalizeMetadata } from "./metadata-normalization.ts";
+import { captureSessionToWorkboard } from "./session-capture.ts";
 import {
   createGatewaySession,
   createLifecycleHarness,
