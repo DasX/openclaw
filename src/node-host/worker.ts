@@ -30,6 +30,7 @@ export async function runNodeHostWorker(): Promise<void> {
     enableDuplexPluginCommands: true,
     enableWorkerRuns: true,
     installedAppsSharingEnabled: nodeConfig?.installedAppsSharing === true,
+    commands: nodeConfig?.commands,
   });
   const client = new NodeHostWorkerBridgeClient(writeMessage);
   let stopping = false;
