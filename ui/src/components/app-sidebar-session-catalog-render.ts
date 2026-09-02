@@ -283,7 +283,6 @@ export function renderSessionCatalogGroups(params: SessionCatalogGroupsParams) {
                 >
               </span>
               <span class="sidebar-recent-sessions__label-text">${catalog.label}</span>
-              ${renderCatalogHeaderStatus(hasActiveRun, hasUnread)}
               ${hasError || (collapsed && rows.length > 0)
                 ? html`<span
                     class="sidebar-session-group-count ${hasError
@@ -294,6 +293,7 @@ export function renderSessionCatalogGroups(params: SessionCatalogGroupsParams) {
                     >${hasError ? icons.alertTriangle : rows.length}</span
                   >`
                 : nothing}
+              ${renderCatalogHeaderStatus(hasActiveRun, hasUnread)}
             </button>
             <button
               type="button"
