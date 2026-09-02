@@ -439,7 +439,7 @@ async function runSkillExperienceReviewInner(
       cwd: workspaceDir,
     });
     const { listWritableWorkshopSkillSummaries } = await import("./workspace-skill-read.js");
-    const existingSkills = listWritableWorkshopSkillSummaries();
+    const existingSkills = listWritableWorkshopSkillSummaries({ config });
     const { runEmbeddedAgent } = await import("../../agents/embedded-agent.js");
     const preparedRunAdmission = prepareSystemAgentRunAdmission(
       config,
