@@ -127,8 +127,8 @@ On the first identified connection, the Control UI uploads existing browser-loca
 When a remote project session starts before its repository finishes cloning, chat shows workspace preparation progress. If preparation fails, opening or reloading chat restores the session's failure summary. Correct the reported problem, then send a new message in the same session to retry preparation.
 
 Accepted browser messages, including initial prompts waiting for workspace
-preparation and follow-ups during a run, remain visible with a waiting notice
-until their own turn starts. Inputs accepted through `sessions_send` or the
+preparation and follow-ups during a run, remain visible as normal message bubbles
+until their own turn starts, without an additional receipt notice. Inputs accepted through `sessions_send` or the
 Gateway `agent` method use the same display. They are stored separately from the active model transcript. If
 cancellation or a Gateway restart interrupts that wait,
 the message stays readable with its recorded disposition and is never resent
@@ -373,7 +373,7 @@ select it to open the owning Approvals page.
     - Chat with the model via Gateway WS (`chat.history`, `chat.send`, `chat.abort`, `chat.inject`). Archived sessions keep the composer disabled and show a banner with an **Unarchive** action before the conversation can continue.
     - Chat history opens with up to 800 recent messages. Session prefetches and history refreshes use the same window. Scrolling back requests up to 1,000 older messages per page and prefetches the next page to reduce loading pauses. Per-message text caps and the Gateway response-size limit still apply, so pages can contain fewer messages.
     - A previous run's error banner clears when Chat adopts a new run or history confirms a newer successful run. Retiring the banner does not erase recorded diagnostics. A late error from the same run can remain visible beside its delivered answer; reconnecting or refreshing metadata alone does not establish recovery.
-    - A saved assistant answer replaces its live stream without waiting for the run to finish. Remote workspace reconciliation can keep the working indicator and Stop control active after the answer appears; a later reconciliation failure remains visible beside the answer.
+    - A saved assistant answer replaces its live stream without waiting for the run to finish. Refreshing history or reconnecting while that reply finishes does not add another copy of the saved answer. Later streamed continuations remain visible. Remote workspace reconciliation can keep the working indicator and Stop control active after the answer appears; a later reconciliation failure remains visible beside the answer.
     - Scroll up to read earlier messages without following incoming output. Use the down-arrow button to return to the latest message. Scrolling manually interrupts that movement or a restored scroll position; messages continue to reserve their space as full text, images, and tool output load.
     - Links to `github.com` in chat messages — yours and the agent's — carry a small GitHub mark before their text, whether the message wrote a bare URL, a `[#3434](…)` shorthand, or any other label. The mark is drawn from the bundled icon set, never fetched from the network, and is decorative only: it is skipped for image-only links such as badges, never appears inside code spans or code blocks, is not read by screen readers, and is not part of copied text.
     - Hovering or keyboard-focusing a public GitHub issue or pull request link shows its state, title, author, recent activity, comments, and change statistics. The connected Gateway fetches and caches public metadata without changing the link target, including when the UI uses a remote Gateway. It uses the explicit Control UI GitHub credential, then the shared Gateway process-environment fallback, after confirming the repository is public; without either, it uses GitHub's anonymous API with a longer cache. It never uses an agent GitHub identity.
@@ -1013,8 +1013,28 @@ For a standalone preview with synthetic data, use:
 pnpm dev:ui:mock -- --port 19321
 ```
 
+Open the printed URL in a fresh Chromium profile or isolated browser context,
+without existing service workers or operator credentials. Chat, presence, and
+profile data are synthetic. Add `--fixture attachments` for media examples; the
+printed board fixture URL is also available.
+
 The mock preview selects its own origin for Gateway resources, including
-avatars, so those requests stay on the preview server.
+avatars, before application startup. It supplies synthetic WebSocket responses
+and confines native resource requests to the serving origin and local data/blob
+fixtures, including frames, while preserving same-origin Vite HMR and terminal
+WebAssembly. Unimplemented HTTP API routes return a local JSON 404; external
+fetches are rejected with a standalone-mock diagnostic. New workers, Talk WebRTC,
+popups, and external link/navigation actions are disabled in the mock app.
+External iframe URL assignments are rejected before Chromium can speculatively
+connect. Add a local fixture when a demo needs another response. Each invocation
+owns a separate Vite cache and removes it on graceful shutdown, so concurrent
+previews and attachment fixtures do not invalidate one another.
+
+This is a trusted-fixture development boundary, not a sandbox for hostile HTML,
+browser extensions, or an already-controlling service worker. Browser-level
+navigation outside the app is outside its control. Production connection settings
+and `pnpm ui:dev` behavior are unchanged; use that command when you intentionally
+need a real Gateway or external integration.
 
 ## Blank Control UI page
 
