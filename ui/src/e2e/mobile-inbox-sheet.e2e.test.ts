@@ -83,7 +83,7 @@ suite.define(() => {
           // getAnimations() drops finished animations. Replay it so the geometry is
           // measured from the real keyframes instead of depending on scheduling luck.
           element.style.animation = "none";
-          void element.offsetHeight;
+          void element.getBoundingClientRect();
           element.style.removeProperty("animation");
           animation = findEntrance();
         }
