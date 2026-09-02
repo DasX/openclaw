@@ -261,8 +261,8 @@ final class WatchRealtimeCallController {
         // The requested ID lets us subscribe before creation; reject any different owner
         // rather than admitting events or closing a session under another identifier.
         guard session.voiceSessionId == voiceID, session.clientControl?.owner == "gateway", session.isWebRTC,
-              !session.clientSecret.isEmpty, let offerURL = session.offerUrl,
-              let url = await attempt.gateway.resolveGatewayHTTPURL(offerURL),
+              !session.clientSecret.isEmpty, let offerURL = session.offerUrl, let route = attempt.route,
+              let url = await attempt.gateway.resolveGatewayHTTPURL(offerURL, relativeToGatewayContextOf: route),
               url.scheme == "https", url.user == nil, url.password == nil
         else { throw Self.unavailable("This Gateway did not provide a usable Gateway-controlled WebRTC session.") }
         attempt.created = true

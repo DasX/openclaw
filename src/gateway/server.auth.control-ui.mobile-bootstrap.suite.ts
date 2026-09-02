@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, test } from "vitest";
 import type { ConnectParams } from "../../packages/gateway-protocol/src/index.js";
 import {
@@ -132,13 +133,7 @@ export function registerControlUiMobileBootstrapSuite(): void {
       const sockets: Awaited<ReturnType<typeof openWs>>[] = [];
 
       try {
-        type Handoff = {
-          role?: string;
-          scopes?: string[];
-          deviceToken?: string;
-          deviceTokens?: Array<{ role?: string; scopes?: string[]; deviceToken?: string }>;
-        };
-        let auth: Handoff | undefined;
+        let auth: unknown;
         if (watchHttp) {
           const { decodePairingSetupCode } = await import("../pairing/setup-code.js");
           const wsOwner = await openWs(port);
@@ -164,7 +159,7 @@ export function registerControlUiMobileBootstrapSuite(): void {
             bootstrapToken: bootstrap.bootstrapToken,
           });
           expect(response.status).toBe(200);
-          auth = (await readJson(response)) as Handoff;
+          auth = await readJson(response);
           wsOwner.close();
         } else {
           const issued = await issueDeviceBootstrapToken({
@@ -183,24 +178,36 @@ export function registerControlUiMobileBootstrapSuite(): void {
           if (!initial.ok) {
             throw new Error(`voice-node bootstrap failed: ${JSON.stringify(initial.error)}`);
           }
-          auth = (initial.payload as { auth?: Handoff } | undefined)?.auth;
-          expect(auth?.role).toBe("node");
-          expect(auth?.scopes).toEqual([]);
+          if (!isRecord(initial.payload)) {
+            throw new Error("expected voice-node hello payload");
+          }
+          auth = initial.payload.auth;
+          expect(auth).toMatchObject({ role: "node", scopes: [] });
           wsBootstrap.close();
         }
-        const nodeToken = auth?.deviceToken;
-        if (!nodeToken) {
+        if (!isRecord(auth) || typeof auth.deviceToken !== "string" || !auth.deviceToken) {
           throw new Error("expected issued voice-node device token");
         }
-        const operatorHandoff = auth?.deviceTokens?.find((entry) => entry.role === "operator");
+        const nodeToken = auth.deviceToken;
+        if (!Array.isArray(auth.deviceTokens)) {
+          throw new Error("expected voice-node role grants");
+        }
+        const deviceTokens: unknown[] = auth.deviceTokens;
+        const operatorHandoff = deviceTokens.find(
+          (entry) => isRecord(entry) && entry.role === "operator",
+        );
         expect(operatorHandoff).toMatchObject({
           scopes: ["operator.read", "operator.talk"],
           deviceToken: expect.any(String),
         });
-        const operatorToken = operatorHandoff?.deviceToken;
-        if (!operatorToken) {
+        if (
+          !isRecord(operatorHandoff) ||
+          typeof operatorHandoff.deviceToken !== "string" ||
+          !operatorHandoff.deviceToken
+        ) {
           throw new Error("expected handed-off voice-node operator token");
         }
+        const operatorToken = operatorHandoff.deviceToken;
         expect((await listDevicePairing()).pending).toEqual([]);
         const paired = await getPairedDevice(identity.deviceId);
         expect(paired?.roles).toEqual(["node", "operator"]);
