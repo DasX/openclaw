@@ -3413,14 +3413,14 @@ jobs:
                   hosted_extension_stripe="6/6"
                   lint_args=(--only=scripts --threads=1)
                 fi
-                export GOMAXPROCS=2
-                # Match local Go GC policy; thread limits alone leave the
-                # extension semantic graph too large for a 16GB runner.
-                export GOGC=30 GOMEMLIMIT=3GiB
               elif [ "$(nproc)" -lt 8 ]; then
-                # Fork PRs build each semantic Program once. Bound both oxlint
-                # and its Go helper within the 4-core/16GB hosted runner.
+                # Fork PRs build each semantic Program once on small runners.
                 lint_args=(--threads=1)
+              fi
+              if [ "$FROZEN_TARGET" = "true" ] &&
+                { [ "$HOSTED_RUNNER_STRIPES" = "true" ] || [ "$(nproc)" -lt 8 ]; }; then
+                # Frozen wrappers can predate native resource policy. Current
+                # wrappers limit lint without throttling declaration preparation.
                 export GOMAXPROCS=2
                 export GOGC=30 GOMEMLIMIT=3GiB
               fi
@@ -3612,12 +3612,16 @@ jobs:
 
       - name: Run hosted core lint stripe
         env:
-          GOMAXPROCS: "2"
+          FROZEN_TARGET: ${{ needs.preflight.outputs.frozen_target }}
           OPENCLAW_LOCAL_CHECK: "0"
           RELEASE_GATE: ${{ inputs.release_gate && 'true' || 'false' }}
           RUNNER_PROFILE: ${{ needs.preflight.outputs.runner_profile }}
         run: |
           set -euo pipefail
+          if [ "$FROZEN_TARGET" = "true" ]; then
+            # Older wrappers lack the current constrained-host Go policy.
+            export GOMAXPROCS=2
+          fi
           # Older candidates run their complete lint set in check-lint; their
           # runner predates core-stripe, so these five new-only jobs are redundant.
           if [[ ! -f scripts/run-oxlint-shards.mts ]]; then

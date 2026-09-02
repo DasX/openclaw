@@ -674,8 +674,11 @@ ratchet-down when cleanup lowers the real count.
 
 ## Local equivalents
 
-Hosted extension lint also uses the local Go garbage-collection policy;
-limiting worker threads alone does not bound the helper's heap.
+The lint wrapper owns Go resource limits for current CI. It applies them on
+hosts with fewer than eight available CPUs or less than 24 GiB of memory,
+without applying lint defaults to declaration preparation. Explicit Go settings
+remain inherited. Frozen revisions retain the workflow limits because their
+wrappers can predate this policy.
 
 Oxlint keeps `eslint/no-redeclare` enabled for JavaScript. For `.ts`, `.tsx`,
 `.mts`, and `.cts`, `tsgo` owns declaration validity, including intentional

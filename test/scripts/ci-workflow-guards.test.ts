@@ -9028,7 +9028,6 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(checkShardRun).toContain('elif [ "$(nproc)" -lt 8 ]; then');
     expect(checkShardRun).toContain("lint_args=(--threads=1)");
     expect(checkShardRun).not.toContain("lint_args=(--split-core --threads=1)");
-    expect(checkShardRun.match(/export GOMAXPROCS=2/gu)).toHaveLength(2);
     expect(checkShardRun).toContain('pnpm lint "${lint_args[@]}"');
     expect(checkShardRun).toContain(
       'node --import tsx scripts/run-oxlint-shards.mts "${lint_args[@]}"',
@@ -9080,22 +9079,30 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "max-parallel": 5,
       matrix: { stripe: [1, 2, 3, 4, 5] },
     });
-    expect(
-      hostedCoreLint.steps.find((step: WorkflowStep) => step.name === "Run hosted core lint stripe")
-        .env.GOMAXPROCS,
-    ).toBe("2");
-    expect(
-      hostedCoreLint.steps.find((step: WorkflowStep) => step.name === "Run hosted core lint stripe")
-        .run,
-    ).toContain("--only=core --split-core --core-stripe=${{ matrix.stripe }}/5 --threads=1");
+    const coreLintStep = hostedCoreLint.steps.find(
+      (step: WorkflowStep) => step.name === "Run hosted core lint stripe",
+    );
+    expect(coreLintStep.run).toContain(
+      "--only=core --split-core --core-stripe=${{ matrix.stripe }}/5 --threads=1",
+    );
 
+    type GoEnv = Pick<NodeJS.ProcessEnv, "GOMAXPROCS" | "GOGC" | "GOMEMLIMIT">;
+    const goEnvKeys = ["GOMAXPROCS", "GOGC", "GOMEMLIMIT"] as const;
     const runLintOwner = ({
       capability,
+      cpuCount = 32,
+      frozenTarget = !capability,
+      goEnv = {},
+      expectedGoEnv = goEnv,
       lane,
       profile,
       releaseGate = false,
     }: {
       capability: boolean;
+      cpuCount?: number;
+      frozenTarget?: boolean;
+      goEnv?: GoEnv;
+      expectedGoEnv?: GoEnv;
       lane: "check" | "core";
       profile: "blacksmith" | "github" | "hybrid";
       releaseGate?: boolean;
@@ -9103,6 +9110,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       const root = tempDirs.make("openclaw-hosted-lint-owner-");
       const binDir = path.join(root, "bin");
       const callsPath = path.join(root, "calls.txt");
+      const goEnvPath = path.join(root, "go-env.txt");
       mkdirSync(path.join(root, "scripts"), { recursive: true });
       mkdirSync(binDir);
       writeFileSync(
@@ -9114,22 +9122,33 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           "#!/usr/bin/env bash",
           "set -euo pipefail",
           `printf '${command} %s\\n' "$*" >> "$LINT_CALLS"`,
+          'printf \'%s\\t%s\\t%s\\n\' "${GOMAXPROCS-}" "${GOGC-}" "${GOMEMLIMIT-}" >> "$LINT_GO_ENV"',
         ]);
       }
-      writeExecutable(path.join(binDir, "nproc"), ["#!/usr/bin/env bash", "printf '32\\n'"]);
-      const coreRun = hostedCoreLint.steps
-        .find((step: WorkflowStep) => step.name === "Run hosted core lint stripe")
-        .run.replaceAll("${{ matrix.stripe }}", "1");
+      writeExecutable(path.join(binDir, "nproc"), [
+        "#!/usr/bin/env bash",
+        `printf '${cpuCount}\\n'`,
+      ]);
+      const coreRun = coreLintStep.run.replaceAll("${{ matrix.stripe }}", "1");
+      const stepEnv = lane === "check" ? checkShardStep.env : coreLintStep.env;
       const result = spawnSync("bash", ["-c", lane === "check" ? checkShardRun : coreRun], {
         cwd: root,
         encoding: "utf8",
         env: {
           ...process.env,
+          GOMAXPROCS: undefined,
+          GOGC: undefined,
+          GOMEMLIMIT: undefined,
+          ...goEnv,
+          ...Object.fromEntries(
+            goEnvKeys.flatMap((key) => (stepEnv[key] === undefined ? [] : [[key, stepEnv[key]]])),
+          ),
           FORMAT_CHECK: "false",
-          FROZEN_TARGET: capability ? "false" : "true",
+          FROZEN_TARGET: frozenTarget ? "true" : "false",
           HISTORICAL_TARGET: capability ? "false" : "true",
           HOSTED_RUNNER_STRIPES: profile === "blacksmith" ? "false" : "true",
           LINT_CALLS: callsPath,
+          LINT_GO_ENV: goEnvPath,
           OPENCLAW_LOCAL_CHECK: "0",
           PATH: `${binDir}:${process.env.PATH ?? ""}`,
           PR_BASE_SHA: "",
@@ -9141,9 +9160,14 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         },
       });
       expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
-      return existsSync(callsPath)
+      const calls = existsSync(callsPath)
         ? readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean)
         : [];
+      expect(calls.length).toBeGreaterThan(0);
+      expect(readFileSync(goEnvPath, "utf8").split("\n").filter(Boolean)).toEqual(
+        calls.map(() => goEnvKeys.map((key) => expectedGoEnv[key] ?? "").join("\t")),
+      );
+      return calls;
     };
 
     expect(runLintOwner({ capability: true, lane: "check", profile: "github" })).toEqual([
@@ -9155,7 +9179,12 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "node --import tsx scripts/run-oxlint-shards.mts --only=extensions --extension-stripe=1/6 --threads=1",
     ]);
     for (const scenario of [
-      { capability: false, lane: "check" as const, profile: "github" as const },
+      {
+        capability: false,
+        lane: "check" as const,
+        profile: "github" as const,
+        expectedGoEnv: { GOMAXPROCS: "2", GOGC: "30", GOMEMLIMIT: "3GiB" },
+      },
       { capability: true, lane: "check" as const, profile: "hybrid" as const },
     ]) {
       expect(runLintOwner(scenario)).toEqual([
@@ -9169,7 +9198,12 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       runLintOwner({ capability: true, lane: "check", profile: "github", releaseGate: true }),
     ).toEqual(["node --import tsx scripts/run-oxlint-shards.mts --only=scripts --threads=1"]);
     for (const scenario of [
-      { capability: false, lane: "core" as const, profile: "github" as const },
+      {
+        capability: false,
+        lane: "core" as const,
+        profile: "github" as const,
+        expectedGoEnv: { GOMAXPROCS: "2" },
+      },
       { capability: true, lane: "core" as const, profile: "hybrid" as const },
       {
         capability: true,
@@ -9182,6 +9216,37 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         "node --import tsx scripts/run-oxlint-shards.mts --only=core --split-core --core-stripe=1/5 --threads=1",
       ]);
     }
+
+    for (const lane of ["check", "core"] as const) {
+      runLintOwner({ capability: true, cpuCount: 4, lane, profile: "hybrid" });
+      runLintOwner({
+        capability: true,
+        lane,
+        profile: "github",
+        goEnv: { GOMAXPROCS: "3", GOGC: "80", GOMEMLIMIT: "5GiB" },
+      });
+    }
+    runLintOwner({ capability: true, cpuCount: 4, lane: "check", profile: "blacksmith" });
+    for (const [profile, cpuCount] of [
+      ["hybrid", 32],
+      ["blacksmith", 4],
+    ] as const) {
+      runLintOwner({
+        capability: true,
+        cpuCount,
+        frozenTarget: true,
+        lane: "check",
+        profile,
+        expectedGoEnv: { GOMAXPROCS: "2", GOGC: "30", GOMEMLIMIT: "3GiB" },
+      });
+    }
+    runLintOwner({
+      capability: true,
+      frozenTarget: true,
+      lane: "check",
+      profile: "blacksmith",
+    });
+    expect(coreLintStep.env.FROZEN_TARGET).toBe("${{ needs.preflight.outputs.frozen_target }}");
   });
 
   it("runs all baseline ratchets against the exact tested tree", () => {
