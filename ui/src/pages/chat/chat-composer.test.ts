@@ -189,7 +189,7 @@ describe("renderChatComposer controls", () => {
     textarea.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
 
     expect(textarea.value).toBe("");
-    expect(onDraftChange).toHaveBeenLastCalledWith("");
+    expect(onDraftChange).toHaveBeenLastCalledWith("", undefined);
     expect(textarea.matches(":placeholder-shown")).toBe(true);
   });
 
@@ -213,7 +213,7 @@ describe("renderChatComposer controls", () => {
 
     expect(currentDraft).toBe("");
     expect(textarea.value).toBe("");
-    expect(onDraftChange).toHaveBeenLastCalledWith("");
+    expect(onDraftChange).toHaveBeenLastCalledWith("", undefined);
     expect(textarea.matches(":placeholder-shown")).toBe(true);
   });
 

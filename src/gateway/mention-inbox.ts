@@ -16,6 +16,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-profile-events.js";
 import { createHumanMentionPolicy, humanMentionDisplayLabel } from "./human-mention-policy.js";
+import type { MentionCommittedInput, MentionInbox } from "./mention-inbox.types.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { resolveSessionSharingTarget } from "./session-sharing.js";
@@ -25,17 +26,6 @@ const RETENTION_MS = 7 * 24 * 60 * 60_000;
 const MAX_GLOBAL_ITEMS = 10_000;
 const MAX_PROCESSED_SOURCES = 10_000;
 const log = createSubsystemLogger("gateway/mentions");
-
-export type MentionCommittedInput = {
-  sourceId: string;
-  sessionKey: string;
-  agentId?: string;
-  sessionId: string;
-  messageId: string;
-  senderProfileId: string;
-  recipientProfileIds: readonly string[];
-  excerpt?: string;
-};
 
 type StoredMention = {
   id: string;
@@ -74,7 +64,7 @@ export function createMentionInbox(params: {
   getClients: () => Iterable<GatewayClient>;
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   onMentionCreated?: (notification: MentionNotification) => void;
-}) {
+}): MentionInbox {
   const policy = createHumanMentionPolicy(params);
   const items = new Map<string, StoredMention>();
   const itemsByProfile = new Map<string, Set<string>>();
@@ -552,5 +542,3 @@ export function createMentionInbox(params: {
     },
   };
 }
-
-export type MentionInbox = ReturnType<typeof createMentionInbox>;

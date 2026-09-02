@@ -38,7 +38,7 @@ import {
   setPreRestartDeferralCheck,
 } from "../infra/restart.js";
 import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
-import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
+import { peekSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import { resetLogger, setLoggerOverride } from "../logging.js";
 import type { ChannelRouteRef } from "../plugin-sdk/channel-route.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
@@ -479,9 +479,7 @@ async function resetGatewayTestState(options: { uniqueConfigRoot: boolean }) {
   invalidateSessionSharingSnapshot();
   resetTestPluginRegistry();
   resetGatewayMutableTestFixtures();
-  for (const sessionKey of resolveGatewayTestMainSessionKeys()) {
-    drainSystemEvents(sessionKey);
-  }
+  resetSystemEventsForTest();
   resetAgentEventsForTest();
   const mod = await getServerModule();
   await mod.resetPreparedModelCatalogForTest();
@@ -526,9 +524,7 @@ async function resetGatewayTestRuntimeOnly() {
   resetGatewayMutableTestFixtures();
   clearSessionStoreCacheForTest();
   await persistTestSessionConfig();
-  for (const sessionKey of resolveGatewayTestMainSessionKeys()) {
-    drainSystemEvents(sessionKey);
-  }
+  resetSystemEventsForTest();
   resetAgentEventsForTest({ preserveListeners: true });
   gatewayReplyRuntimePrepared = false;
 }

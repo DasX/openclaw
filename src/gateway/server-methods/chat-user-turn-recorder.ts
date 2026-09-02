@@ -10,7 +10,7 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import type { UserTurnOriginalInputCommit } from "../../sessions/user-turn-transcript.types.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
-import type { MentionInbox } from "../mention-inbox.js";
+import type { MentionInbox } from "../mention-inbox.types.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 import { hasGatewayAdminScope } from "./chat-origin-routing.js";

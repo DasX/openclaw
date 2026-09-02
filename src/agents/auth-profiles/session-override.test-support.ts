@@ -37,13 +37,7 @@ const authStoreMocks = vi.hoisted(() => {
     ),
     resolveProviderIdForAuth: vi.fn((provider: string) => {
       const normalized = provider.trim().toLowerCase();
-      return (
-        {
-          "claude-cli": "anthropic",
-          "codex-cli": "openai",
-          "z.ai": "zai",
-        }[normalized] ?? normalized
-      );
+      return normalized === "claude-cli" ? "anthropic" : normalized;
     }),
     reset() {
       state.hasSource = false;

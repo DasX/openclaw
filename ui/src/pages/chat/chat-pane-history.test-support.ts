@@ -1,4 +1,3 @@
-import { html } from "lit";
 import { vi } from "vitest";
 /* Shared fixtures for chat pane history pagination suites. */
 import type { SessionCatalogTranscriptItem } from "../../../../packages/gateway-protocol/src/index.js";
@@ -6,34 +5,12 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import "./chat-pane.ts";
-import { ChatPane } from "./chat-pane-render.ts";
 import {
   createInitializationContext,
+  createRenderTestChatPane,
   createSessionCapabilityFixture,
 } from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
-import { createPageState } from "./chat-state-page.ts";
-import type { ChatProps } from "./chat-view.ts";
-
-class RefreshChatPane extends ChatPane {
-  chatProps: ChatProps | undefined;
-
-  initialize(context: ApplicationContext) {
-    this.context = context;
-    this.state = createPageState(
-      context,
-      { afterCommit: () => () => {}, invalidate: () => {} },
-      this,
-    );
-    return this.state;
-  }
-
-  protected override renderChatPaneLayout(params: { chatProps: ChatProps }) {
-    this.chatProps = params.chatProps;
-    return html``;
-  }
-}
-customElements.define("openclaw-chat-refresh-regression", RefreshChatPane);
 
 export function createRefreshChatPane(client?: GatewayBrowserClient) {
   const context: ApplicationContext = {
@@ -48,7 +25,7 @@ export function createRefreshChatPane(client?: GatewayBrowserClient) {
     context.gateway.snapshot.client = client;
     context.gateway.snapshot.phase = "connected";
   }
-  const pane = document.createElement("openclaw-chat-refresh-regression") as RefreshChatPane;
+  const pane = createRenderTestChatPane();
   const state = pane.initialize(context);
   if (client) {
     state.client = client;

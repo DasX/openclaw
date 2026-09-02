@@ -14,11 +14,8 @@ import {
   setUserProfileRole,
 } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import {
-  createMentionInbox,
-  type MentionCommittedInput,
-  type MentionInbox,
-} from "./mention-inbox.js";
+import { createMentionInbox } from "./mention-inbox.js";
+import type { MentionCommittedInput, MentionInbox } from "./mention-inbox.types.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import { mentionHandlers } from "./server-methods/mentions.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";

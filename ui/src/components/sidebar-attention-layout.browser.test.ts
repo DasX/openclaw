@@ -304,6 +304,8 @@ describe.runIf("__vitest_browser__" in globalThis)("Inbox panel layout", () => {
       expect(badgeTab).not.toBeNull();
       await group?.updateComplete;
       await Promise.all(tabs.map((tab) => tab.updateComplete));
+      // Web Awesome selects and scrolls its first visible tab after Lit finishes rendering.
+      await expect.poll(() => group!.getAttribute("active")).toBe("tab-0");
 
       const badge = badgeTab!.querySelector<HTMLElement>(".hub-tab__badge");
       const list = fixture.querySelector<HTMLElement>(".sidebar-issues-panel__list");
