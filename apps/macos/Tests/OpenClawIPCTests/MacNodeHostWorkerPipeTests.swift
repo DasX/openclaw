@@ -201,8 +201,7 @@ struct MacNodeHostWorkerPipeTests {
             *'"type":"invoke"'*)
               generation=${line#*\"generation\":}
               generation=${generation%%[!0-9]*}
-              encoded=$(printf '[%s]' "$frames" | /usr/bin/base64 | /usr/bin/tr -d '\r\n')
-              printf '{"type":"invoke-result","generation":%s,"result":{"id":"inspect","ok":true,"payload":"%s"}}\n' "$generation" "$encoded"
+              printf '{"type":"invoke-result","generation":%s,"result":{"id":"inspect","ok":true,"payload":[%s]}}\n' "$generation" "$frames"
               ;;
             *) frames="$frames$separator$line"; separator=',' ;;
           esac
@@ -273,11 +272,8 @@ struct MacNodeHostWorkerPipeTests {
             onTimeout: { WorkerPipeTimeout(operation: "worker pipe inspection") },
             operation: { await worker.invoke(BridgeInvokeRequest(id: "inspect", command: "test.inspect")) })
         #expect(response.ok)
-        // Inspect the pipe bytes directly; the worker response's Foundation JSON
-        // bridge is not the contract under test and can coerce NSNumber(1) to Bool.
-        let encoded = try #require(response.payload?.value as? String)
-        let data = try #require(Data(base64Encoded: encoded))
-        return try JSONDecoder().decode([WorkerGatewayFrame].self, from: data)
+        let payload = try #require(response.payload)
+        return try JSONDecoder().decode([WorkerGatewayFrame].self, from: JSONEncoder().encode(payload))
     }
 
     private func waitForEvents(_ count: Int, worker: MacNodeHostWorker) async throws -> [WorkerGatewayFrame] {

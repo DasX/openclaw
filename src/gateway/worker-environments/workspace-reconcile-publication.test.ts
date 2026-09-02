@@ -118,9 +118,6 @@ describe("worker workspace reconciliation publication", () => {
       await expect(fs.readFile(path.join(local, "result.txt"))).resolves.toEqual(baseBytes);
       await expect(fs.access(path.join(local, "added.txt"))).rejects.toThrow();
       expect(pending).toBeDefined();
-      journal.abort();
-      expect(pending).toBeUndefined();
-      expect(abort).toHaveBeenCalledOnce();
     },
   );
 

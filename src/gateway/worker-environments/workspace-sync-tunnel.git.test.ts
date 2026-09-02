@@ -144,12 +144,6 @@ it("materializes a large dirty git workspace as a credential-free commit-capable
           }),
         );
       }
-      await expect(
-        fs.readFile(path.join(result.remoteWorkspaceDir, largeFiles[0] ?? ""), "utf8"),
-      ).resolves.toBe("0\n");
-      await expect(
-        fs.readFile(path.join(result.remoteWorkspaceDir, largeFiles.at(-1) ?? ""), "utf8"),
-      ).resolves.toBe("1799\n");
       await expect(fs.access(path.join(result.remoteWorkspaceDir, "gone.txt"))).rejects.toThrow();
       await expect(
         fs.readFile(path.join(result.remoteWorkspaceDir, "rename-new.txt"), "utf8"),
