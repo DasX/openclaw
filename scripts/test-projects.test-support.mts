@@ -60,6 +60,7 @@ import {
 import { isVoiceCallExtensionRoot } from "../test/vitest/vitest.extension-voice-call-paths.mjs";
 import { isWhatsAppExtensionRoot } from "../test/vitest/vitest.extension-whatsapp-paths.mjs";
 import { isZaloExtensionRoot } from "../test/vitest/vitest.extension-zalo-paths.mjs";
+import { narrowIncludePatternsForCli } from "../test/vitest/vitest.pattern-file.ts";
 import { resolveVitestFsModuleCacheRoot } from "../test/vitest/vitest.performance-config.ts";
 import {
   isPluginSdkLightTarget,
@@ -87,6 +88,8 @@ import {
 import {
   isBoundaryTestFile,
   isBundledPluginDependentUnitTestFile,
+  isUnitConfigTestFile,
+  unitTestIncludePatterns,
 } from "../test/vitest/vitest.unit-paths.mjs";
 import {
   detectChangedLanes,
@@ -702,6 +705,14 @@ const MERMAID_RENDERER_TEST_TARGETS = [
 ];
 const SOURCE_TEST_TARGETS = new Map([
   ...PRECISE_SOURCE_TEST_TARGETS,
+  [
+    "scripts/prepare-apple-mermaid.mjs",
+    [
+      "test/scripts/build-and-run-mac.test.ts",
+      "test/scripts/package-mac-app.test.ts",
+      "test/scripts/ci-workflow-guards.test.ts",
+    ],
+  ],
   ["packages/mermaid-renderer/package.json", MERMAID_RENDERER_TEST_TARGETS],
   ["packages/mermaid-renderer/vite.config.ts", MERMAID_RENDERER_TEST_TARGETS],
   ["packages/mermaid-renderer/native/index.html", MERMAID_RENDERER_TEST_TARGETS],
@@ -1645,10 +1656,12 @@ function readImportGraphEdges(
 function listImportGraphGrepMatches(
   cwd: string,
   terms: string[],
-  options: ImportGraphOptions = {},
+  options: ImportGraphOptions & { testFilesOnly?: boolean } = {},
 ) {
   const tooling = options.tooling === true;
-  const cacheKey = (term: string) => `${cwd}\0${tooling}\0${term}`;
+  const testFilesOnly = options.testFilesOnly === true;
+  // Narrow reference matches must not satisfy a later full import-frontier query.
+  const cacheKey = (term: string) => `${cwd}\0${tooling}\0${testFilesOnly}\0${term}`;
   const matches = new Map(
     terms.map((term) => [term, cachedImportGraphGrepMatches.get(cacheKey(term)) ?? null]),
   );
@@ -1660,6 +1673,13 @@ function listImportGraphGrepMatches(
   }
   const roots = tooling ? TOOLING_IMPORT_GRAPH_ROOTS : SOURCE_ROOTS_FOR_IMPORT_GRAPH;
   const extensions = tooling ? TOOLING_IMPORTABLE_FILE_EXTENSIONS : IMPORTABLE_FILE_EXTENSIONS;
+  // Literal-reference routing only consumes tests; keep import frontiers on the full scope.
+  const suffixes = testFilesOnly
+    ? extensions.flatMap((ext) => [`.test${ext}`, `.spec${ext}`])
+    : extensions;
+  const grepPaths = roots.flatMap((root) =>
+    suffixes.map((suffix) => `:(glob)${root}/**/*${suffix}`),
+  );
   const spawnOptions: SpawnSyncOptionsWithStringEncoding = {
     cwd,
     encoding: "utf8",
@@ -1675,7 +1695,7 @@ function listImportGraphGrepMatches(
       "--fixed-strings",
       "--hidden",
       "--no-ignore",
-      ...extensions.flatMap((ext) => ["--glob", `*${ext}`]),
+      ...suffixes.flatMap((suffix) => ["--glob", `*${suffix}`]),
       "--glob",
       "!**/node_modules/**",
       "--glob",
@@ -1692,15 +1712,7 @@ function listImportGraphGrepMatches(
   if (result.error || (result.status !== 0 && result.status !== 1)) {
     result = spawnSync(
       "git",
-      [
-        "grep",
-        "-l",
-        "--fixed-strings",
-        "-f",
-        "-",
-        "--",
-        ...(tooling ? TOOLING_IMPORT_GRAPH_GREP_PATHS : IMPORT_GRAPH_GREP_PATHS),
-      ],
+      ["grep", "-l", "--fixed-strings", "-f", "-", "--", ...grepPaths],
       spawnOptions,
     );
   }
@@ -2220,9 +2232,12 @@ const EXACT_TOOLING_TARGETS = new Map<string, string[]>([
       "android-version",
       "android-pin-version",
       "docker-release-policy",
+      "docker-release-artifacts",
+      "full-release-validation-at-sha",
       "ios-version",
       "openclaw-npm-extended-stable-release",
       "openclaw-npm-publish",
+      "npm-prepared-bundle",
       "release-preflight",
       "release-prepare",
       "release-upgrade-baseline",
@@ -2230,6 +2245,10 @@ const EXACT_TOOLING_TARGETS = new Map<string, string[]>([
       "upgrade-survivor-baselines",
       "upgrade-survivor-config-recipe",
     ],
+  ],
+  [
+    "scripts/lib/release-context.mjs",
+    ["full-release-validation-at-sha", "release-candidate-checklist", packageAcceptance],
   ],
   [
     "scripts/lib/clawhub-bootstrap-artifact.mjs",
@@ -2418,8 +2437,13 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
     [packageAcceptance, crossOsReleaseChecks, pluginPrerelease, installDocker],
   ],
   [
-    /^\.github\/workflows\/docker-release\.yml$/u,
-    ["src/dockerfile.test.ts", "docker-channel-promote", "vercel-container-registry-publish"],
+    /^\.github\/workflows\/docker-release(?:-prepare)?\.yml$/u,
+    [
+      "src/dockerfile.test.ts",
+      "docker-channel-promote",
+      "docker-release-artifacts",
+      "vercel-container-registry-publish",
+    ],
   ],
   [/^\.github\/workflows\/install-smoke\.yml$/u, ["install-smoke-no-push-workflow", installDocker]],
   [
@@ -2443,7 +2467,7 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
   ],
   [
     /^\.github\/workflows\/openclaw-release-publish\.yml$/u,
-    [packageAcceptance, "vercel-container-registry-publish"],
+    [packageAcceptance, "docker-release-artifacts", "vercel-container-registry-publish"],
   ],
   [/^\.github\/workflows\/package-acceptance\.yml$/u, [packageAcceptance]],
   [
@@ -2892,11 +2916,9 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
       "src/agents/agent-bundle-mcp-tools.materialize.test.ts",
     ],
   ],
-  [/^scripts\/e2e\/system-agent-(?:first-run|rescue)-docker\.sh$/u, ["docker-e2e-system-agent"]],
   [
     /^test\/e2e\/qa-lab\/runtime\/system-agent-first-run-docker-client\.ts$/u,
     [
-      "docker-e2e-system-agent",
       "src/cli/program/register.onboard.test.ts",
       "src/cli/run-main.test.ts",
       "src/cli/run-main.exit.test.ts",
@@ -2912,16 +2934,11 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
   ],
   [
     /^scripts\/e2e\/system-agent-first-run-spec\.json$/u,
-    [
-      "docker-e2e-system-agent",
-      "src/system-agent/operations.test.ts",
-      "src/system-agent/audit.test.ts",
-    ],
+    ["src/system-agent/operations.test.ts", "src/system-agent/audit.test.ts"],
   ],
   [
     /^scripts\/e2e\/system-agent-rescue-docker-client\.ts$/u,
     [
-      "docker-e2e-system-agent",
       "src/system-agent/rescue-policy.test.ts",
       "src/system-agent/rescue-message.test.ts",
       "src/system-agent/operations.test.ts",
@@ -3087,7 +3104,11 @@ function resolveGithubYamlGuardTargets(changedPath: string) {
 
 function resolveDirectToolingReferenceTests(changedPath: string, cwd: string) {
   const normalized = normalizePathPattern(changedPath);
-  return (listImportGraphGrepMatches(cwd, [normalized], { tooling: true }).get(normalized) ?? [])
+  return (
+    listImportGraphGrepMatches(cwd, [normalized], { tooling: true, testFilesOnly: true }).get(
+      normalized,
+    ) ?? []
+  )
     .filter(
       ({ file, references }) =>
         file !== "test/scripts/test-projects.test.ts" &&
@@ -3747,7 +3768,8 @@ function shouldUseWholeConfigTarget(kind: string, targetArg: string, cwd: string
     return false;
   }
   const relative = toRepoRelativeTarget(targetArg, cwd);
-  if (isTestFileTarget(relative)) {
+  // Source files need whole-project coverage; existing directories already define a test scope.
+  if (isTestFileTarget(relative) || isExistingDirectoryTarget(targetArg, cwd)) {
     return false;
   }
   return relative.startsWith("ui/src/");
@@ -4016,8 +4038,34 @@ export function buildVitestRunPlans(
     const useWholeConfigTarget = grouped.some((targetArg) =>
       shouldUseWholeConfigTarget(kind, targetArg, cwd),
     );
+    const scopedTargetArgs = useCliTargetArgs ? uniqueOrdered(grouped) : [];
+    const forwardedPlanArgs = [...nonTargetArgs, ...scopedTargetArgs];
+    const unitCliIncludes =
+      kind === "default" &&
+      useCliTargetArgs &&
+      !watchMode &&
+      !options.env?.[INCLUDE_FILE_ENV_KEY]?.trim()
+        ? narrowIncludePatternsForCli(unitTestIncludePatterns, [
+            "node",
+            "vitest",
+            ...forwardedPlanArgs,
+          ])
+        : null;
+    // CI needs explicit selection metadata. Keep the CLI filters too: the unit
+    // config and runner use them for exclude and empty-selection policy.
+    const scopedUnitIncludes =
+      unitCliIncludes?.length &&
+      grouped.every((targetArg) =>
+        unitCliIncludes.includes(toRepoRelativeTarget(targetArg, cwd)),
+      ) &&
+      unitCliIncludes.every(
+        (file) =>
+          !isGlobTarget(file) && isUnitConfigTestFile(file) && isExistingFileTarget(file, cwd),
+      )
+        ? unitCliIncludes
+        : null;
     const includePatterns = useCliTargetArgs
-      ? null
+      ? scopedUnitIncludes
       : useWholeConfigTarget
         ? null
         : uniqueOrdered(
@@ -4026,8 +4074,6 @@ export function buildVitestRunPlans(
               return lightLanePatterns ?? [toScopedIncludePattern(targetArg, cwd)];
             }),
           );
-    const scopedTargetArgs = useCliTargetArgs ? uniqueOrdered(grouped) : [];
-    const forwardedPlanArgs = [...nonTargetArgs, ...scopedTargetArgs];
     const broadToolingScriptPlans = createBroadToolingScriptPlans({
       config,
       cwd,
