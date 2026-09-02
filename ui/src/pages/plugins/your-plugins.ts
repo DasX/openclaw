@@ -20,7 +20,7 @@ import {
   renderPluginConsentDialog,
   type PluginConsentState,
 } from "./consent-dialog.ts";
-import type { PluginRowMessage } from "./view.ts";
+import type { PluginRowMessage } from "./plugin-row-message.ts";
 
 const YOUR_PLUGINS_INITIAL_LIMIT = 12;
 
