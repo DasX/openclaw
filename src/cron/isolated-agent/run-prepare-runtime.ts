@@ -53,6 +53,13 @@ export type WithRunSession = (
 export const CRON_EXECUTION_ROOT_RUNTIME_ERROR =
   "collection review requires the embedded agent runtime; the configured CLI runtime cannot be rooted at the Workshop directory";
 
+export class CronExecutionRootRuntimeError extends Error {
+  constructor() {
+    super(CRON_EXECUTION_ROOT_RUNTIME_ERROR);
+    this.name = "CronExecutionRootRuntimeError";
+  }
+}
+
 export function isCronRuntimeAllowedForExecutionRoot(params: {
   executionRoot?: RunCronAgentTurnParams["executionRoot"];
   effectiveAgentRuntime: string;
