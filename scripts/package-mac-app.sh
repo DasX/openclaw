@@ -564,7 +564,7 @@ fi
 "$ROOT_DIR/scripts/codesign-mac-app.sh" "$APP_ROOT"
 codesign --verify --deep --strict "$APP_ROOT"
 for arch in "${BUILD_ARCHS[@]}"; do
-  env -i HOME="$APP_STAGE_DIR" PATH="/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="$APP_STAGE_DIR" \
+  env -i HOME="$APP_STAGE_DIR" PATH="/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="${TMPDIR:-/tmp}" \
     "$APP_ROOT/Contents/Resources/node-worker/$arch/bin/node" \
     "$ROOT_DIR/scripts/verify-mac-node-worker.mjs" \
     "$APP_ROOT/Contents/Resources/node-worker/$arch" "$ROOT_DIR/dist/build-info.json"
