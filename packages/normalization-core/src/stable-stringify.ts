@@ -3,7 +3,8 @@
  * Serializes arbitrary values with deterministic key ordering and explicit
  * handling for errors, binary data, bigint, non-finite numbers, and cycles.
  */
-import { isErrorObject } from "./error-coercion.js";
+// Keep this leaf importable by plain Node during CI bootstrap.
+import { isErrorObject } from "./error-coercion.ts";
 
 type StableStringNormalizer = (value: string) => string;
 
