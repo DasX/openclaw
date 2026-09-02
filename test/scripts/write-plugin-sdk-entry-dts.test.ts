@@ -189,8 +189,11 @@ describe("write-plugin-sdk-entry-dts", () => {
       writeRelocated(relative, content);
     }
     // SDK publication owns flat entries; historical shared chunks belong to other groups.
-    for (const file of Object.keys(before).filter((entry) => !entry.startsWith("plugin-sdk/"))) {
+    const sharedBefore = Object.keys(before).filter((entry) => !entry.startsWith("plugin-sdk/"));
+    for (const file of sharedBefore) {
       expect(first[file]).toBe(before[file]);
+    }
+    for (const file of Object.keys(first).filter((entry) => !entry.startsWith("plugin-sdk/"))) {
       writeRelocated(`dist/${file}`, fs.readFileSync(path.join(root, "dist", file), "utf8"));
     }
     writeRelocated("dist/plugin-sdk/obsolete.d.ts", "obsolete restored declaration");
