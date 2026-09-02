@@ -111,7 +111,7 @@ function createSelectedPluginPackageFixture() {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, contents);
   }
-  return { sourceDir, outputDir, files, pluginPackage };
+  return { sourceDir, outputDir, files, pluginPackage, packageJson };
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -1539,33 +1539,84 @@ describe("package-openclaw-for-docker", () => {
     }
   });
 
-  it("uses pnpm pack when requested", async () => {
-    const sourceDir = createPackageSourceFixture("openclaw-package-source-");
-    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-pnpm-pack-"));
-    const calls: string[] = [];
-    const packedPath = path.join(outputDir, "openclaw-2026.5.28.tgz");
-
+  it("packs the staged AI runtime with pnpm from an isolated workspace", async () => {
+    const { sourceDir, outputDir, packageJson } = createSelectedPluginPackageFixture();
+    const { packageManager } = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      packageManager: string;
+    };
+    const sourceFiles = {
+      "package.json": JSON.stringify({
+        ...packageJson,
+        packageManager,
+        dependencies: { ...packageJson.dependencies, "@openclaw/ai": "workspace:*" },
+        devDependencies: { "@openclaw/source-only": "workspace:*" },
+        scripts: {
+          prepack: "node -e \"throw new Error('root prepack must not run')\"",
+          postpack: "node -e \"throw new Error('root postpack must not run')\"",
+        },
+      }),
+      "pnpm-workspace.yaml": "packages: [packages/*]\nnodeLinker: isolated\n",
+      "packages/ai/package.json": JSON.stringify({
+        name: "@openclaw/ai",
+        version: packageJson.version,
+        files: ["dist"],
+        dependencies: { shared: "1.0.0" },
+        devDependencies: { "@openclaw/source-only": "workspace:*" },
+      }),
+      "packages/ai/dist/index.js": "export const runtime = true;\n",
+    };
+    for (const [relativePath, contents] of Object.entries(sourceFiles)) {
+      const target = path.join(sourceDir, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, contents);
+    }
+    const aiLink = path.join(sourceDir, "node_modules/@openclaw/ai");
+    fs.mkdirSync(path.dirname(aiLink));
+    fs.symlinkSync(path.join(sourceDir, "packages/ai"), aiLink, "junction");
+    const originalAiTarget = fs.readlinkSync(aiLink);
+    // Temp workspaces must select the repository's pnpm, not an unpinned host installation.
+    expect((await runCaptureForTest("pnpm", ["--version"], sourceDir)).trim()).toBe(
+      packageManager.slice("pnpm@".length).split("+")[0],
+    );
     try {
       const tarball = await packOpenClawPackageForDocker(sourceDir, outputDir, {
         ...skipDocsMapLifecycle,
-        ...skipTarballModeNormalization,
         pnpmPack: true,
-        prepareBundledAiRuntime: skipBundledAiRuntime,
+        bundlePlugins: ["demo"],
+        prepareManifest: preparePackageManifest,
+        restoreManifest: restorePackageManifest,
         prepareChangelog: async () => {},
         restoreChangelog: async () => {},
-        runCaptureImpl: async (command: string, args: string[], cwd: string) => {
-          calls.push(`${command}:${args.join(" ")}:${cwd}`);
-          fs.writeFileSync(packedPath, "package");
-          return `${packedPath}\n`;
-        },
       });
-
-      expect(tarball).toBe(packedPath);
-      expect(calls).toEqual([
-        `pnpm:pack --silent --config.ignore-scripts=true --pack-destination ${outputDir}:${sourceDir}`,
-      ]);
+      const extracted = tempDirs.make("openclaw-pnpm-pack-extract-");
+      await tar.x({ file: tarball, cwd: extracted });
+      const packedRoot = path.join(extracted, "package");
+      const bundledAi = path.join(packedRoot, "node_modules/@openclaw/ai");
+      expect(fs.readFileSync(path.join(bundledAi, "dist/index.js"), "utf8")).toBe(
+        sourceFiles["packages/ai/dist/index.js"],
+      );
+      expect(JSON.parse(fs.readFileSync(path.join(bundledAi, "package.json"), "utf8"))).toEqual({
+        name: "@openclaw/ai",
+        version: packageJson.version,
+        files: ["dist"],
+      });
+      expect(
+        JSON.parse(fs.readFileSync(path.join(packedRoot, "package.json"), "utf8")),
+      ).toMatchObject({
+        bundleDependencies: ["@openclaw/ai"],
+        dependencies: { "@openclaw/ai": packageJson.version, shared: "1.0.0", native: "2.0.0" },
+      });
+      expect(fs.readdirSync(path.join(packedRoot, "node_modules"))).toEqual(["@openclaw"]);
+      expect(fs.existsSync(path.join(packedRoot, "dist/extensions/demo/index.js"))).toBe(true);
+      expect(fs.existsSync(path.join(packedRoot, "dist/extensions/other"))).toBe(false);
+      expect(fs.readdirSync(outputDir)).toEqual([path.basename(tarball)]);
     } finally {
-      fs.rmSync(outputDir, { force: true, recursive: true });
+      for (const [relativePath, contents] of Object.entries(sourceFiles)) {
+        expect(fs.readFileSync(path.join(sourceDir, relativePath), "utf8")).toBe(contents);
+      }
+      expect(fs.readlinkSync(aiLink)).toBe(originalAiTarget);
+      expect(fs.readdirSync(path.dirname(aiLink))).toEqual(["ai"]);
+      expect(fs.existsSync(path.join(sourceDir, ".openclaw-lifecycle-pending"))).toBe(false);
     }
   });
 
