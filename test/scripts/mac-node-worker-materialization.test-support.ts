@@ -139,7 +139,7 @@ async function stagingFixture(mac: MacScriptFixture) {
   await write(path.join(root, "dist/build-info.json"), '{"buildId":"unchanged-build"}');
   await write(
     path.join(scripts, "package-openclaw-for-docker.mjs"),
-    `import assert from 'node:assert/strict';\nassert(process.argv.includes('--pnpm-pack'), 'worker package must use the repository-pinned packer');\nconsole.log(${JSON.stringify(path.join(root, "canonical.tgz"))});\n`,
+    `console.log(${JSON.stringify(path.join(root, "canonical.tgz"))});\n`,
   );
   await write(
     path.join(scripts, "verify-mac-node-worker.mjs"),

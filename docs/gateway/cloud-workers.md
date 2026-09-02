@@ -223,7 +223,6 @@ Automatic cloud bootstrap does not require a manually published package. For a s
 source_sha="$(git rev-parse HEAD)"
 node scripts/package-openclaw-for-docker.mjs \
   --bundle-plugin codex \
-  --pnpm-pack \
   --allow-unreleased-changelog \
   --output-dir .artifacts/cloud-node \
   --output-name "openclaw-cloud-${source_sha}.tgz"
@@ -231,6 +230,8 @@ shasum -a 256 ".artifacts/cloud-node/openclaw-cloud-${source_sha}.tgz"
 ```
 
 Run this in a clean, trusted checkout with dependencies installed. The builder compiles the runtime, includes the selected plugin's built entrypoints and import closure, and regenerates the installation inventory. It temporarily adds the plugin's exact runtime dependency pins to the distribution manifest, rejecting conflicting or unpinned dependencies, then restores the source manifest and inventory. Repeat `--bundle-plugin <id>` for additional source plugins. Without that option, the ordinary core package and external plugin publication contracts are unchanged.
+
+The builder uses npm to assemble bundled workspace dependencies, including with pnpm's isolated dependency layout. Older commands with `--pnpm-pack` use the same path and print a deprecation warning. Remove that flag from scripts; it will be removed after one stable release carrying the warning.
 
 Deliver the resulting archive through your existing immutable artifact path and verify its SHA-256 before installing it with normal npm lifecycle scripts enabled. Record both source SHA and archive digest: different unreleased builds can share a version. Do not copy a plugin into an installed release or substitute a standalone `npm-pack:` plugin archive for this distribution. Cloud profiles do not consume this URL; their enrollment artifact comes from the running Gateway.
 

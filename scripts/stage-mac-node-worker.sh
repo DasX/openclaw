@@ -21,10 +21,9 @@ mkdir -p "$STAGE/home" "$STAGE/package"
 
 # Lifecycle hooks must never see operator config, credentials, or state;
 # installer main discovers launchd by UID even with a new HOME.
-# Use the build's pinned pnpm packer, not the host npm's expanding file globs.
 TARBALL="$(env -i HOME="$STAGE/home" PATH="$PATH" TMPDIR="$STAGE" \
   node "$ROOT_DIR/scripts/package-openclaw-for-docker.mjs" \
-  --skip-build --pnpm-pack --allow-unreleased-changelog --output-dir "$STAGE/package" \
+  --skip-build --allow-unreleased-changelog --output-dir "$STAGE/package" \
   --output-name openclaw.tgz)"
 [[ -f "$TARBALL" ]] || { echo "ERROR: Canonical worker package missing" >&2; exit 1; }
 

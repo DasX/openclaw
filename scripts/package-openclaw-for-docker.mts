@@ -81,7 +81,6 @@ type PackageOptions = RunOptions & {
   normalizeTarballModes?: (tarballPath: string) => Promise<unknown>;
   outputName?: string;
   packJsonPath?: string;
-  pnpmPack?: boolean;
   prepareBundledAiRuntime?: typeof prepareBundledAiRuntimePackage;
   prepareChangelog?: (cwd: string) => Promise<unknown>;
   prepareDocsMap?: (cwd: string) => Promise<unknown>;
@@ -220,7 +219,7 @@ function resolvePackedOpenClawFileName(value: string) {
 }
 
 export function parseArgs(argv: string[]) {
-  const options = parseFlagArgs(
+  const { pnpmPack, ...options } = parseFlagArgs(
     argv,
     {
       bundlePlugins: [] as string[],
@@ -252,8 +251,10 @@ export function parseArgs(argv: string[]) {
   if (options.outputName) {
     validateOutputName(options.outputName);
   }
-  if (options.packJson && options.pnpmPack) {
-    throw new Error("--pack-json cannot be combined with --pnpm-pack");
+  if (pnpmPack) {
+    // v2026.8.2 documented this flag. Accept it for one stable release carrying
+    // this deprecation, then remove it; pnpm cannot pack our isolated bundled deps.
+    console.error("--pnpm-pack is deprecated; omit it to use the canonical npm package builder.");
   }
   return options;
 }
@@ -917,10 +918,6 @@ export async function packOpenClawPackageForDocker(
     (async () => false);
   const prepareBundledAiRuntime =
     packageOptions.prepareBundledAiRuntime ?? prepareBundledAiRuntimePackage;
-  const packTool = packageOptions.pnpmPack ? "pnpm" : "npm";
-  if (packageOptions.packJsonPath && packageOptions.pnpmPack) {
-    throw new Error("packJsonPath cannot be combined with pnpmPack");
-  }
   console.error("==> Packing OpenClaw package");
   // This receipt is the package lifecycle lock; acquire it before touching CHANGELOG.md.
   await prepareDocsMap(sourcePath);
@@ -977,18 +974,15 @@ export async function packOpenClawPackageForDocker(
           restoreManifest,
         },
       );
-      const packArgs =
-        packTool === "pnpm"
-          ? ["pack", "--silent", "--config.ignore-scripts=true", "--pack-destination", outputPath]
-          : [
-              "pack",
-              "--silent",
-              "--ignore-scripts",
-              "--pack-destination",
-              outputPath,
-              "--json=false",
-            ];
-      packOutput = await runCaptureImpl(packTool, packArgs, sourcePath, {
+      const packArgs = [
+        "pack",
+        "--silent",
+        "--ignore-scripts",
+        "--pack-destination",
+        outputPath,
+        "--json=false",
+      ];
+      packOutput = await runCaptureImpl("npm", packArgs, sourcePath, {
         timeoutMs: resolveTimeoutMs(
           "OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS",
           DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
@@ -1010,11 +1004,7 @@ export async function packOpenClawPackageForDocker(
         }
       }
     }
-    // Scan the emptied pnpm destination instead of trusting its absolute-path output.
-    let tarball = await newestOpenClawTarball(
-      outputPath,
-      packageOptions.pnpmPack ? "" : packOutput,
-    );
+    let tarball = await newestOpenClawTarball(outputPath, packOutput);
     if (packageOptions.outputName) {
       const target = path.join(outputPath, packageOptions.outputName);
       if (target !== tarball) {
@@ -1109,7 +1099,6 @@ async function main() {
     allowUnreleasedChangelog: options.allowUnreleasedChangelog,
     outputName: options.outputName,
     packJsonPath: options.packJson,
-    pnpmPack: options.pnpmPack,
   });
 
   console.error("==> Checking OpenClaw package tarball");

@@ -184,7 +184,6 @@ export async function packOpenClaw(input: {
         input.destination,
         "--output-name",
         path.basename(tgzPath),
-        "--pnpm-pack",
       ],
       { quiet: true },
     ).stdout.trim();

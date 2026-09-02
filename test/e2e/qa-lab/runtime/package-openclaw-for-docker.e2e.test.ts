@@ -239,51 +239,64 @@ async function waitForExit(
 }
 
 describe("package-openclaw-for-docker", () => {
-  it("packs explicitly selected plugin runtime and dependencies without changing the ordinary package", async () => {
-    const { sourceDir, outputDir, files } = createSelectedPluginPackageFixture();
-    const inventoryPath = path.join(sourceDir, "dist/postinstall-inventory.json");
-    const options = {
-      ...skipDocsMapLifecycle,
-      prepareChangelog: async () => {},
-      restoreChangelog: async () => {},
-    };
-    const selected = await packOpenClawPackageForDocker(sourceDir, outputDir, {
-      ...options,
-      bundlePlugins: ["demo"],
-    });
-    const extractDir = tempDirs.make("openclaw-selected-plugin-extract-");
-    await tar.x({ file: selected, cwd: extractDir });
-    const packedRoot = path.join(extractDir, "package");
-    expect(fs.readFileSync(path.join(packedRoot, ".openclaw-lifecycle-pending"), "utf8")).toBe(
-      "pending\n",
-    );
-    expect(fs.existsSync(path.join(packedRoot, "dist/extensions/demo/index.js"))).toBe(true);
-    expect(fs.existsSync(path.join(packedRoot, "dist/shared-runtime.js"))).toBe(true);
-    expect(fs.existsSync(path.join(packedRoot, "dist/extensions/other/index.js"))).toBe(false);
-    expect(fs.existsSync(path.join(packedRoot, "dist/extensions/demo/node_modules"))).toBe(false);
-    expect(
-      JSON.parse(fs.readFileSync(path.join(packedRoot, "package.json"), "utf8")),
-    ).toMatchObject({
-      dependencies: { shared: "1.0.0", native: "2.0.0" },
-      optionalDependencies: { optional: "3.0.0" },
-    });
-    expect(
-      JSON.parse(fs.readFileSync(path.join(packedRoot, "dist/postinstall-inventory.json"), "utf8")),
-    ).toContain("dist/extensions/demo/index.js");
-    expect(fs.readFileSync(path.join(sourceDir, "package.json"), "utf8")).toBe(
-      files["package.json"],
-    );
-    expect(JSON.parse(fs.readFileSync(inventoryPath, "utf8"))).toEqual(["dist/shared-runtime.js"]);
-    expect(fs.existsSync(path.join(sourceDir, ".openclaw-lifecycle-pending"))).toBe(false);
+  it.each([false, true])(
+    "packs explicitly selected plugin runtime and dependencies without changing the ordinary package (linked dependencies=%s)",
+    async (linkedDependencies) => {
+      const { sourceDir, outputDir, files } = createSelectedPluginPackageFixture();
+      if (linkedDependencies) {
+        const builtDependencies = path.join(sourceDir, "dist/extensions/demo/node_modules");
+        const sourceDependencies = path.join(sourceDir, "extensions/demo/node_modules");
+        fs.renameSync(builtDependencies, sourceDependencies);
+        fs.symlinkSync(sourceDependencies, builtDependencies, "junction");
+      }
+      const inventoryPath = path.join(sourceDir, "dist/postinstall-inventory.json");
+      const options = {
+        ...skipDocsMapLifecycle,
+        prepareChangelog: async () => {},
+        restoreChangelog: async () => {},
+      };
+      const selected = await packOpenClawPackageForDocker(sourceDir, outputDir, {
+        ...options,
+        bundlePlugins: ["demo"],
+      });
+      const extractDir = tempDirs.make("openclaw-selected-plugin-extract-");
+      await tar.x({ file: selected, cwd: extractDir });
+      const packedRoot = path.join(extractDir, "package");
+      expect(fs.readFileSync(path.join(packedRoot, ".openclaw-lifecycle-pending"), "utf8")).toBe(
+        "pending\n",
+      );
+      expect(fs.existsSync(path.join(packedRoot, "dist/extensions/demo/index.js"))).toBe(true);
+      expect(fs.existsSync(path.join(packedRoot, "dist/shared-runtime.js"))).toBe(true);
+      expect(fs.existsSync(path.join(packedRoot, "dist/extensions/other/index.js"))).toBe(false);
+      expect(fs.existsSync(path.join(packedRoot, "dist/extensions/demo/node_modules"))).toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(path.join(packedRoot, "package.json"), "utf8")),
+      ).toMatchObject({
+        dependencies: { shared: "1.0.0", native: "2.0.0" },
+        optionalDependencies: { optional: "3.0.0" },
+      });
+      expect(
+        JSON.parse(
+          fs.readFileSync(path.join(packedRoot, "dist/postinstall-inventory.json"), "utf8"),
+        ),
+      ).toContain("dist/extensions/demo/index.js");
+      expect(fs.readFileSync(path.join(sourceDir, "package.json"), "utf8")).toBe(
+        files["package.json"],
+      );
+      expect(JSON.parse(fs.readFileSync(inventoryPath, "utf8"))).toEqual([
+        "dist/shared-runtime.js",
+      ]);
+      expect(fs.existsSync(path.join(sourceDir, ".openclaw-lifecycle-pending"))).toBe(false);
 
-    const ordinary = await packOpenClawPackageForDocker(sourceDir, outputDir, options);
-    const ordinaryEntries: string[] = [];
-    await tar.t({ file: ordinary, onentry: (entry) => ordinaryEntries.push(entry.path) });
-    expect(ordinaryEntries).toContain("package/.openclaw-lifecycle-pending");
-    expect(ordinaryEntries.some((entry) => entry.startsWith("package/dist/extensions/demo/"))).toBe(
-      false,
-    );
-  });
+      const ordinary = await packOpenClawPackageForDocker(sourceDir, outputDir, options);
+      const ordinaryEntries: string[] = [];
+      await tar.t({ file: ordinary, onentry: (entry) => ordinaryEntries.push(entry.path) });
+      expect(ordinaryEntries).toContain("package/.openclaw-lifecycle-pending");
+      expect(
+        ordinaryEntries.some((entry) => entry.startsWith("package/dist/extensions/demo/")),
+      ).toBe(false);
+    },
+  );
   it.runIf(process.platform === "win32")(
     "runs npm through the toolchain-local runner on Windows",
     async () => {
@@ -434,7 +447,6 @@ describe("package-openclaw-for-docker", () => {
       outputDir: ".artifacts/docker",
       outputName: "openclaw-current.tgz",
       packJson: ".artifacts/docker/pack.json",
-      pnpmPack: false,
       skipBuild: true,
       sourceDir: "/repo",
     });
@@ -747,11 +759,14 @@ describe("package-openclaw-for-docker", () => {
     );
   });
 
-  it("rejects pnpm pack with npm metadata output", () => {
-    expect(parseArgs(["--pnpm-pack"]).pnpmPack).toBe(true);
-    expect(() => parseArgs(["--pnpm-pack", "--pack-json", "pack.json"])).toThrow(
-      "--pack-json cannot be combined with --pnpm-pack",
-    );
+  it("accepts legacy --pnpm-pack with metadata and a deprecation warning", () => {
+    const warning = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(parseArgs(["--pnpm-pack", "--pack-json", "pack.json"]).packJson).toBe("pack.json");
+      expect(warning).toHaveBeenCalledWith(expect.stringMatching(/--pnpm-pack.*deprecated.*npm/u));
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it("rejects package artifact output names that escape the output directory", () => {
@@ -1539,34 +1554,72 @@ describe("package-openclaw-for-docker", () => {
     }
   });
 
-  it("uses pnpm pack when requested", async () => {
+  it("packs bundled workspace dependencies from legacy --pnpm-pack commands in isolated layouts", async () => {
     const sourceDir = createPackageSourceFixture("openclaw-package-source-");
-    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-pnpm-pack-"));
-    const calls: string[] = [];
-    const packedPath = path.join(outputDir, "openclaw-2026.5.28.tgz");
+    const outputDir = tempDirs.make("openclaw-legacy-pack-");
+    const packageJsonPath = path.join(sourceDir, "package.json");
+    const originalPackageJson = `${JSON.stringify({
+      name: "openclaw",
+      version: "2026.8.1",
+      files: ["dist"],
+      dependencies: { "@openclaw/ai": "workspace:*" },
+      packageManager: JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"))
+        .packageManager,
+    })}\n`;
+    const aiSource = path.join(sourceDir, "packages/ai");
+    const aiInstalled = path.join(sourceDir, "node_modules/@openclaw/ai");
+    const runtimeBytes = "export const runtime = 'bundled workspace runtime';\n";
+    const files = {
+      "package.json": originalPackageJson,
+      "pnpm-workspace.yaml": "packages:\n  - packages/*\nnodeLinker: isolated\n",
+      "dist/index.js": "export {};\n",
+      "packages/ai/package.json": `${JSON.stringify({
+        name: "@openclaw/ai",
+        version: "2026.8.1",
+        private: true,
+        files: ["dist"],
+      })}\n`,
+      "packages/ai/dist/runtime.js": runtimeBytes,
+    };
+    for (const [relativePath, contents] of Object.entries(files)) {
+      const target = path.join(sourceDir, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, contents);
+    }
+    fs.mkdirSync(path.dirname(aiInstalled), { recursive: true });
+    fs.symlinkSync(aiSource, aiInstalled, "junction");
+    const options = parseArgs([
+      "--pnpm-pack",
+      "--source-dir",
+      sourceDir,
+      "--output-dir",
+      outputDir,
+    ]);
 
+    let tarball: string;
     try {
-      const tarball = await packOpenClawPackageForDocker(sourceDir, outputDir, {
+      tarball = await packOpenClawPackageForDocker(options.sourceDir, options.outputDir, {
+        ...options,
         ...skipDocsMapLifecycle,
-        ...skipTarballModeNormalization,
-        pnpmPack: true,
-        prepareBundledAiRuntime: skipBundledAiRuntime,
         prepareChangelog: async () => {},
         restoreChangelog: async () => {},
-        runCaptureImpl: async (command: string, args: string[], cwd: string) => {
-          calls.push(`${command}:${args.join(" ")}:${cwd}`);
-          fs.writeFileSync(packedPath, "package");
-          return `${packedPath}\n`;
-        },
       });
-
-      expect(tarball).toBe(packedPath);
-      expect(calls).toEqual([
-        `pnpm:pack --silent --config.ignore-scripts=true --pack-destination ${outputDir}:${sourceDir}`,
-      ]);
     } finally {
-      fs.rmSync(outputDir, { force: true, recursive: true });
+      expect(fs.readFileSync(packageJsonPath, "utf8")).toBe(originalPackageJson);
+      expect(fs.lstatSync(aiInstalled).isSymbolicLink()).toBe(true);
+      expect(fs.realpathSync(aiInstalled)).toBe(fs.realpathSync(aiSource));
     }
+    const extracted = tempDirs.make("openclaw-legacy-pack-extract-");
+    await tar.x({ file: tarball, cwd: extracted });
+    expect(
+      fs.readFileSync(
+        path.join(extracted, "package/node_modules/@openclaw/ai/dist/runtime.js"),
+        "utf8",
+      ),
+    ).toBe(runtimeBytes);
+    expect(fs.readFileSync(path.join(aiSource, "package.json"), "utf8")).toBe(
+      files["packages/ai/package.json"],
+    );
   });
 
   it("normalizes npm 12 pack metadata for renamed package artifacts", async () => {
