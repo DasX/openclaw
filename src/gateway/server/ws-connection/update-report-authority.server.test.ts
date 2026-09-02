@@ -50,7 +50,9 @@ const failure: RestartSentinelPayload = {
     reason: "doctor-failed",
     before: { version: "2026.8.1" },
     after: { version: "2026.8.2" },
-    steps: [{ name: "doctor", durationMs: 10, log: { exitCode: 1 } }],
+    steps: [
+      { name: "doctor", command: "openclaw doctor --fix", durationMs: 10, log: { exitCode: 1 } },
+    ],
     durationMs: 20,
     recovery: { serviceRestartSafe: true, version: "2026.8.1" },
   },
