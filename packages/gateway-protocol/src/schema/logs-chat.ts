@@ -126,6 +126,14 @@ export const ChatHistoryCursorResultSchema = Type.Union([
 /** Lightweight metadata; session scope preserves the persisted auth-profile selection. */
 export const ChatMetadataParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
+  authProfileId: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 256,
+      description:
+        "Preview your own saved model account for a new chat without changing defaults. Cannot be combined with sessionKey.",
+    }),
+  ),
   sessionKey: Type.Optional(
     Type.String({
       minLength: 1,

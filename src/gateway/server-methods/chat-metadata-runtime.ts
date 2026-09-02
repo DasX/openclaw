@@ -23,6 +23,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { getActivePluginRegistryVersion } from "../../plugins/runtime.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { getSkillsSnapshotVersion } from "../../skills/runtime/refresh-state.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { resolveChatAccountSelection } from "./chat-account-selection.js";
@@ -105,22 +106,18 @@ type ChatMetadataRuntimeDeps = {
     requesterProfileId?: string;
     preferredProfileId?: string;
     lockedProfileId?: string;
+    assertCurrent?: () => void;
   }) => Promise<PreparedAgentProjection<{ models?: unknown[] }>>;
 };
 
 const CHAT_METADATA_CACHE_MAX_ENTRIES = 64;
 
 function createMetadataReplacement(): MetadataReplacement {
-  let resolve!: () => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
+  const replacement = createDeferredCore();
   // Reads and lifecycle refreshes observe the original promise. This handler only prevents an
   // unobserved rejection when shutdown or reload failure occurs without a concurrent reader.
-  void promise.catch(() => {});
-  return { promise, reject, resolve };
+  void replacement.promise.catch(() => {});
+  return replacement;
 }
 
 export class ChatMetadataSnapshotUnavailableError extends Error {
@@ -240,9 +237,12 @@ async function defaultBuildProjection(params: {
   requesterProfileId?: string;
   preferredProfileId?: string;
   lockedProfileId?: string;
+  assertCurrent?: () => void;
 }): Promise<PreparedAgentProjection<{ models?: unknown[] }>> {
   const { prepareModelsListResult, createGatewayAgentModelCatalogProjector } =
     await import("./models-list-result.js");
+  // A draft has no persisted session grant: recheck its live human before hydrating private auth.
+  params.assertCurrent?.();
   // Chat metadata must stay on process-published facts. Live discovery belongs to explicit
   // models.list control-plane reads so a slow provider cannot delay chat startup.
   const snapshot = params.facts.modelCatalog;
@@ -333,7 +333,9 @@ export function createGatewayChatMetadataRuntime(params: {
     agent: PreparedAgentMetadata,
     sessionEntry?: ChatMetadataSessionEntry,
     requesterProfileId?: string,
+    assertCurrent?: () => void,
   ): Promise<PreparedAgentProjection> => {
+    assertCurrent?.();
     const profiles = resolveSessionProfiles(sessionEntry);
     const neutral =
       profiles.preferredProfileId === undefined && profiles.lockedProfileId === undefined;
@@ -357,28 +359,34 @@ export function createGatewayChatMetadataRuntime(params: {
       if (projections.get(key) === existing) {
         projections.delete(key);
       }
-      return projectAgent(generation, agent, sessionEntry, requesterProfileId);
+      return projectAgent(generation, agent, sessionEntry, requesterProfileId, assertCurrent);
     }
     const projection = deps
       .buildProjection({
         context: deps.getContext(),
         facts: agent,
         requesterProfileId,
+        ...(assertCurrent ? { assertCurrent } : {}),
         ...profiles,
       })
       .then((prepared) => {
+        assertCurrent?.();
         const preparedProjection: PreparedAgentProjection = {
           ...prepared,
-          read: () => ({
-            ...prepared.read(),
-            ...(agent.commands !== undefined ? { commands: agent.commands } : {}),
-            swarmEnabled: agent.swarmEnabled,
-            accountSelection: resolveChatAccountSelection({
-              authStore: agent.authStore,
-              sessionEntry,
-              requesterProfileId,
-            }),
-          }),
+          read: () => {
+            // Revocation is terminal, not a stale projection for readCurrent to retry forever.
+            assertCurrent?.();
+            return {
+              ...prepared.read(),
+              ...(agent.commands !== undefined ? { commands: agent.commands } : {}),
+              swarmEnabled: agent.swarmEnabled,
+              accountSelection: resolveChatAccountSelection({
+                authStore: agent.authStore,
+                sessionEntry,
+                requesterProfileId,
+              }),
+            };
+          },
         };
         // Only this pending entry may publish its settlement; eviction or invalidation
         // must not let an obsolete completion replace a newer profile projection.
@@ -611,8 +619,12 @@ export function createGatewayChatMetadataRuntime(params: {
     }
   };
 
-  const read = async (readParams: ChatMetadataReadParams): Promise<ChatMetadataResult> =>
-    await readCurrent(async (generation) => {
+  const read = async (readParams: ChatMetadataReadParams): Promise<ChatMetadataResult> => {
+    const draft = readParams.draftAccountSelection;
+    const sessionEntry: ChatMetadataSessionEntry | undefined = draft
+      ? { authProfileOverride: draft.authProfileId, authProfileOverrideSource: "user" }
+      : readParams.sessionEntry;
+    return await readCurrent(async (generation) => {
       const agentId = normalizeAgentId(readParams.agentId);
       const agent = generation.agentsById.get(agentId);
       if (!agent) {
@@ -623,10 +635,12 @@ export function createGatewayChatMetadataRuntime(params: {
       return projectAgent(
         generation,
         agent,
-        readParams.sessionEntry,
-        readParams.requesterProfileId,
+        sessionEntry,
+        draft?.owner ?? readParams.requesterProfileId,
+        draft?.assertCurrent,
       );
     });
+  };
 
   const readStartup = async (
     readParams: ChatStartupProjectionReadParams,

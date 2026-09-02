@@ -1,18 +1,20 @@
 import { html, nothing } from "lit";
 import { ref } from "lit/directives/ref.js";
 import type {
+  ChatAccountSelection,
   UserModelAccount,
   UsersListModelAccountsResult,
 } from "../../../../../packages/gateway-protocol/src/index.ts";
+import type { GatewayBrowserClient } from "../../../api/gateway.ts";
 import { icons } from "../../../components/icons.ts";
 import { syncDropdownItemRadio } from "../../../components/web-awesome.ts";
 import { t } from "../../../i18n/index.ts";
 import { normalizeChatModelProviderId } from "../../../lib/chat/model-ref.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
-import type { ChatPageHost } from "../chat-state-host.ts";
 
 type AccountInventory = {
   model: string;
+  selection: ChatAccountSelection;
   accounts: UserModelAccount[];
   nextCursor?: string;
   loading: boolean;
@@ -20,44 +22,51 @@ type AccountInventory = {
   isCurrent: () => boolean;
 };
 
-type AccountControlHost = Pick<ChatPageHost, "client" | "chatAccountSelection" | "requestUpdate">;
-const inventories = new WeakMap<AccountControlHost, AccountInventory>();
+const inventories = new WeakMap<object, AccountInventory>();
 
 export function renderChatModelAccountControl(params: {
-  state: AccountControlHost;
+  owner: object;
+  client: GatewayBrowserClient | null | undefined;
+  selection: ChatAccountSelection | null | undefined;
   model: string;
   disabled: boolean;
   ownsSelection: () => boolean;
-  onSelect: (authProfileId: string) => Promise<boolean>;
+  onSelect: (account: UserModelAccount) => Promise<boolean>;
+  onAutomatic?: () => void;
   onManage?: () => void;
+  onRequestUpdate: () => void;
+  hint?: string;
 }) {
-  const { state } = params;
-  const selection = state.chatAccountSelection;
+  const { owner, selection, client } = params;
   if (!selection) {
     return nothing;
   }
-  let inventory = inventories.get(state);
-  if (!inventory?.isCurrent() || inventory.model !== params.model) {
+  let inventory = inventories.get(owner);
+  if (
+    !inventory?.isCurrent() ||
+    inventory.model !== params.model ||
+    inventory.selection !== selection
+  ) {
     inventory = {
       model: params.model,
+      selection,
       accounts: [],
       loading: false,
       error: null,
-      isCurrent: () => params.ownsSelection() && state.chatAccountSelection === selection,
+      isCurrent: params.ownsSelection,
     };
-    inventories.set(state, inventory);
+    inventories.set(owner, inventory);
   }
   const currentInventory = inventory;
   const ownsInventory = () =>
-    inventories.get(state) === currentInventory && currentInventory.isCurrent();
+    inventories.get(owner) === currentInventory && currentInventory.isCurrent();
   const loadAccounts = async (cursor?: string) => {
-    const client = state.client;
     if (!client || !ownsInventory() || currentInventory.loading) {
       return;
     }
     currentInventory.loading = true;
     currentInventory.error = null;
-    state.requestUpdate?.();
+    params.onRequestUpdate();
     try {
       const result = await client.request<UsersListModelAccountsResult>(
         "users.listModelAccounts",
@@ -79,7 +88,7 @@ export function renderChatModelAccountControl(params: {
     } finally {
       if (ownsInventory()) {
         currentInventory.loading = false;
-        state.requestUpdate?.();
+        params.onRequestUpdate();
       }
     }
   };
@@ -114,6 +123,9 @@ export function renderChatModelAccountControl(params: {
           label: account.label,
           description: description(account),
         })),
+      ...(params.onAutomatic
+        ? [{ value: "automatic", label: t("chat.modelAccounts.automatic") }]
+        : []),
       ...(currentInventory.loading
         ? [{ value: "loading", label: t("common.loading"), disabled: true }]
         : []),
@@ -128,6 +140,8 @@ export function renderChatModelAccountControl(params: {
     }
     if (value === "manage") {
       params.onManage?.();
+    } else if (value === "automatic") {
+      params.onAutomatic?.();
     } else if (value === "more") {
       void loadAccounts(currentInventory.nextCursor);
     } else {
@@ -136,7 +150,7 @@ export function renderChatModelAccountControl(params: {
           `account:${candidate.authProfileId}` === value && candidate.provider === provider,
       );
       if (account) {
-        void params.onSelect(account.authProfileId);
+        void params.onSelect(account);
       }
     }
   };
@@ -188,7 +202,7 @@ export function renderChatModelAccountControl(params: {
           `,
         )}
       </wa-dropdown>
-      <span class="chat-model-account__hint">${t("chat.modelAccounts.hint")}</span>
+      <span class="chat-model-account__hint">${params.hint ?? t("chat.modelAccounts.hint")}</span>
       ${currentInventory.error
         ? html`<span class="chat-model-account__error" role="alert"
             >${currentInventory.error}</span

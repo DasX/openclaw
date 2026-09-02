@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
 import {
   resolveUsableAgentCredentialModes,
@@ -10,6 +11,8 @@ import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-r
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { connectUserModelAccount } from "../../state/user-model-accounts.js";
+import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles.js";
+import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { createGatewayChatMetadataRuntime } from "./chat-metadata-runtime.js";
 import type { GatewayRequestContext } from "./types.js";
 
@@ -26,6 +29,73 @@ export function connectChatMetadataAccount(profileId: string): string {
     },
     assertCurrent() {},
   }).authProfileId;
+}
+
+export async function createPersonalChatMetadataFixture() {
+  const config = {
+    agents: {
+      defaults: { model: { primary: "openai/gpt-5.6-luna" } },
+      list: [{ id: "main", default: true }],
+    },
+  } satisfies OpenClawConfig;
+  const harness = createChatMetadataHarness(config, { useDefaultProjection: true });
+  const owner = createChatMetadataOwner(
+    config,
+    "gpt-5.6-luna",
+    {},
+    "openai",
+    "openai-chatgpt-responses",
+  );
+  harness.setOwner(owner);
+  await harness.runtime.refresh();
+  const alice = ensureProfileForEmail("alice@example.test");
+  const bob = ensureProfileForEmail("bob@example.test");
+  setDisplayName(alice.id, "Alice");
+  return {
+    harness,
+    owner,
+    alice,
+    bob,
+    aliceScope: { agentId: "main", requesterProfileId: alice.id },
+    bobScope: { agentId: "main", requesterProfileId: bob.id },
+  };
+}
+
+export function createDraftChatMetadataScope() {
+  const owner = randomUUID();
+  const error = new ModelAccountConnectAuthorityError();
+  let current = true;
+  return {
+    params: {
+      agentId: "main",
+      requesterProfileId: owner,
+      draftAccountSelection: {
+        owner,
+        authProfileId: `personal:${owner}:${randomUUID()}`,
+        assertCurrent() {
+          if (!current) {
+            throw error;
+          }
+        },
+      },
+    },
+    close() {
+      current = false;
+    },
+    error,
+  };
+}
+
+export function createOpenAIChatMetadataConfig(modelIds = ["gpt-5.6-sol"]): OpenClawConfig {
+  return {
+    agents: {
+      defaults: {
+        model: { primary: "openai/gpt-5.6-sol" },
+        models: Object.fromEntries(modelIds.map((id) => [`openai/${id}`, {}])),
+      },
+      list: [{ id: "main", default: true }],
+    },
+  };
 }
 
 export function createChatMetadataOwner(

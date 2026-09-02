@@ -42,12 +42,15 @@ describe("chat account selection", () => {
     const draw = () =>
       render(
         renderChatModelAccountControl({
-          state,
+          owner: state,
+          client: state.client,
+          selection: state.chatAccountSelection,
           model: "openai/gpt-5.5",
           disabled: false,
           ownsSelection: () => current,
           onSelect,
           onManage,
+          onRequestUpdate: () => draw(),
         }),
         container,
       );
@@ -112,7 +115,9 @@ describe("chat account selection", () => {
     );
     expect(view.container.textContent).not.toContain("Claude account");
     expect(view.select("account:openai:work")).toBe("Personal workspace");
-    expect(view.onSelect).toHaveBeenCalledWith("openai:work");
+    expect(view.onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ authProfileId: "openai:work", label: "Work workspace" }),
+    );
     expect(view.container.querySelector("[data-chat-account-trigger]")?.textContent).toContain(
       "Personal workspace",
     );

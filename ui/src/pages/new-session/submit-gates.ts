@@ -2,7 +2,6 @@
 // can be blocked. canSubmit, the Start tooltip, and blocked-Enter notices all
 // derive from this walk, so a gate cannot block silently.
 import { t } from "../../i18n/index.ts";
-import { chatModelUnavailableMessage } from "../../lib/chat/model-select-state.ts";
 import type { SessionMethodAccess } from "../../lib/session-method-access.ts";
 import type { SessionPlacementTarget } from "../../lib/sessions/session-placement-recovery.ts";
 import * as catalog from "./catalog-target.ts";
@@ -109,8 +108,8 @@ export function resolveNewSessionSubmitBlock(
   if (catalog.isRoutePending(snapshot.data, snapshot.context?.sessions)) {
     return { gate: "route-pending", reason: t("newSession.catalogUnavailable") };
   }
-  const modelUnavailableMessage = chatModelUnavailableMessage(
-    place.modelControl.modelUnavailableReason(place.selectedAgent()),
+  const modelUnavailableMessage = place.modelControl.modelSelectionBlockedReason(
+    place.selectedAgent(),
   );
   if (modelUnavailableMessage) {
     return { gate: "model-unavailable", reason: modelUnavailableMessage };

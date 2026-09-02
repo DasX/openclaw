@@ -60,7 +60,24 @@ export function prepareUserModelAccountAction(
   return { owner, assertCurrent };
 }
 
-export type UserModelAccountSelection = { authProfileId: string; assertCurrent: () => void };
+export type UserModelAccountSelection = ModelAccountConnectAction & { authProfileId: string };
+
+/** Preview and commit share the same self-owned selection; scope follows the requested action. */
+export function preparePersonalModelAccountSelection(
+  options: Pick<GatewayRequestHandlerOptions, "client" | "context" | "signal">,
+  authProfileId: string,
+  requiredScope: "operator.read" | "operator.write" = "operator.write",
+): UserModelAccountSelection {
+  const action = prepareUserModelAccountAction(options, undefined, requiredScope);
+  const assertCurrent = () => {
+    action.assertCurrent();
+    if (!isUserModelAuthProfileOwner({ profileId: action.owner, authProfileId })) {
+      throw new ModelAccountConnectAuthorityError();
+    }
+  };
+  assertCurrent();
+  return { owner: action.owner, authProfileId, assertCurrent };
+}
 
 /** New personal selections require the human owner; inherited pins need no new selection. */
 export function preparePersonalModelSelection(
@@ -72,13 +89,5 @@ export function preparePersonalModelSelection(
   if (!authProfileId || !isUserModelAuthProfileId(authProfileId)) {
     return undefined;
   }
-  const action = prepareUserModelAccountAction(options);
-  const assertCurrent = () => {
-    action.assertCurrent();
-    if (!isUserModelAuthProfileOwner({ profileId: action.owner, authProfileId })) {
-      throw new ModelAccountConnectAuthorityError();
-    }
-  };
-  assertCurrent();
-  return { authProfileId, assertCurrent };
+  return preparePersonalModelAccountSelection(options, authProfileId);
 }

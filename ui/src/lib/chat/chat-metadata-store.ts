@@ -33,7 +33,11 @@ type ChatMetadataEntry = {
 const chatMetadataCache = new WeakMap<GatewayBrowserClient, Map<string, ChatMetadataEntry>>();
 
 function metadataScopeKey(scope: ChatMetadataParams): string {
-  return JSON.stringify([scope.agentId?.trim() ?? "", scope.sessionKey ?? null]);
+  return JSON.stringify([
+    scope.agentId?.trim() ?? "",
+    scope.sessionKey ?? null,
+    scope.authProfileId ?? null,
+  ]);
 }
 
 function metadataEntryFor(
@@ -52,9 +56,9 @@ function metadataEntryFor(
       scope: params,
       listeners: new Set(),
       release: () => {
-        // Session projections live with their consumers, not every conversation ever opened.
+        // Selected-account projections live with their consumers, not every conversation/draft.
         // Retire the writer too: a late startup/read cannot repopulate a released entry.
-        if (params.sessionKey && created.listeners.size === 0) {
+        if ((params.sessionKey || params.authProfileId) && created.listeners.size === 0) {
           created.writer = undefined;
           if (cache.get(key) === created) {
             cache.delete(key);
@@ -249,7 +253,8 @@ export function invalidateChatMetadataStore(
   const invalidated = Array.from(entries).filter(
     (entry) =>
       (!scope?.agentId || entry.scope.agentId === scope.agentId) &&
-      (!scope?.sessionKey || entry.scope.sessionKey === scope.sessionKey),
+      (!scope?.sessionKey || entry.scope.sessionKey === scope.sessionKey) &&
+      (!scope?.authProfileId || entry.scope.authProfileId === scope.authProfileId),
   );
   // Retire every affected writer before subscribers can synchronously start replacements.
   for (const entry of invalidated) {

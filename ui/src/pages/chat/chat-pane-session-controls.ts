@@ -112,6 +112,7 @@ export function renderChatPaneComposerControls(params: {
   } = params;
   const sessionKey = state.sessionKey;
   const client = state.client;
+  const accountSelection = state.chatAccountSelection;
   const connectionEpoch = state.connectionEpoch;
   const agentScope = scopedAgentParamsForSession(state, sessionKey);
   const permissionScopeKey = JSON.stringify([sessionKey, agentScope.agentId]);
@@ -138,7 +139,9 @@ export function renderChatPaneComposerControls(params: {
         ${renderChatModelControls({
           renderAccountControl: (accountModel) =>
             renderChatModelAccountControl({
-              state,
+              owner: state,
+              client,
+              selection: accountSelection,
               model: accountModel,
               disabled:
                 !modelAccess.allowed ||
@@ -150,12 +153,14 @@ export function renderChatPaneComposerControls(params: {
                 Boolean(state.chatRunId) ||
                 state.chatStream !== null ||
                 Boolean(state.chatModelSwitchPromises[sessionKey]),
-              ownsSelection,
-              onSelect: (authProfileId) =>
+              ownsSelection: () =>
+                ownsSelection() && state.chatAccountSelection === accountSelection,
+              onSelect: (account) =>
                 ownsSelection() && modelAccess.allowed
-                  ? switchChatModel(state, `${accountModel}@${authProfileId}`, sessionKey)
+                  ? switchChatModel(state, `${accountModel}@${account.authProfileId}`, sessionKey)
                   : Promise.resolve(false),
               onManage: onModelAccounts,
+              onRequestUpdate: () => state.requestUpdate?.(),
             }),
           activeRunId: state.chatRunId,
           agentDefaultModel,

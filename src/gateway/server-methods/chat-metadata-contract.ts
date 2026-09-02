@@ -1,4 +1,5 @@
 import type { ChatAccountSelection } from "../../../packages/gateway-protocol/src/schema/users.js";
+import type { UserModelAccountSelection } from "./users-model-account-access.js";
 
 export type ChatMetadataSessionEntry = {
   authProfileOverride?: string;
@@ -10,6 +11,7 @@ export type ChatMetadataReadParams = {
   agentId: string;
   requesterProfileId?: string;
   sessionEntry?: ChatMetadataSessionEntry;
+  draftAccountSelection?: UserModelAccountSelection;
 };
 
 export type ChatMetadataResult = {

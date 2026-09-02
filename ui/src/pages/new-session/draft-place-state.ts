@@ -96,7 +96,7 @@ export class DraftPlaceState {
     return buildDraftSessionCreateParams({
       agentId: this.agentId,
       message: params.message,
-      model: this.modelControl.selected,
+      model: this.modelControl.modelForSubmission(),
       contextWindow: this.modelControl.contextWindow,
       thinkingLevel: this.modelControl.thinkingLevel,
       fastMode: this.modelControl.fastMode,

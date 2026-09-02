@@ -11,44 +11,30 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { clearUserProfileAuthLink } from "../../state/user-model-accounts.js";
-import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles.js";
+import {
+  clearUserProfileAuthLink,
+  listUserProfileAuthLinks,
+} from "../../state/user-model-accounts.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   connectChatMetadataAccount,
   createChatMetadataHarness,
   createChatMetadataOwner,
+  createDraftChatMetadataScope,
+  createOpenAIChatMetadataConfig,
+  createPersonalChatMetadataFixture,
 } from "./chat-metadata-runtime.test-support.js";
 import { WITHOUT_OPENAI_ENV_AUTH } from "./models-list-result.openai-routes.test-support.js";
 
 describe("gateway chat metadata runtime", () => {
-  test.each(["requester", "session pin"] as const)(
+  test.each(["requester", "session pin", "draft"] as const)(
     "keeps personal %s availability isolated through unlink",
     async (projection) => {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "personal-chat-metadata-", env: WITHOUT_OPENAI_ENV_AUTH },
         async () => {
-          const cfg = {
-            agents: {
-              defaults: { model: { primary: "openai/gpt-5.6-luna" } },
-              list: [{ id: "main", default: true }],
-            },
-          } satisfies OpenClawConfig;
-          const harness = createChatMetadataHarness(cfg, { useDefaultProjection: true });
-          const owner = createChatMetadataOwner(
-            cfg,
-            "gpt-5.6-luna",
-            {},
-            "openai",
-            "openai-chatgpt-responses",
-          );
-          harness.setOwner(owner);
-          await harness.runtime.refresh();
-          const alice = ensureProfileForEmail("alice@example.test");
-          const bob = ensureProfileForEmail("bob@example.test");
-          setDisplayName(alice.id, "Alice");
-          const aliceScope = { agentId: "main", requesterProfileId: alice.id };
-          const bobScope = { agentId: "main", requesterProfileId: bob.id };
+          const { harness, owner, alice, bob, aliceScope, bobScope } =
+            await createPersonalChatMetadataFixture();
           const shared = await harness.runtime.read({ agentId: "main" });
           expect(await harness.runtime.read(aliceScope)).toEqual(shared);
           const aliceAuthId = connectChatMetadataAccount(alice.id);
@@ -59,6 +45,22 @@ describe("gateway chat metadata runtime", () => {
           };
           if (projection === "requester") {
             await expect(harness.runtime.read(aliceScope)).resolves.toMatchObject(available);
+          }
+          if (projection === "draft") {
+            clearUserProfileAuthLink({ profileId: alice.id, provider: "openai" });
+            const draftScope = {
+              ...aliceScope,
+              draftAccountSelection: {
+                owner: alice.id,
+                authProfileId: aliceAuthId,
+                assertCurrent() {},
+              },
+            };
+            await expect(harness.runtime.read(draftScope)).resolves.toMatchObject({
+              ...available,
+              accountSelection: { kind: "personal", authProfileId: aliceAuthId, source: "user" },
+            });
+            expect(listUserProfileAuthLinks(alice.id)).toEqual([]);
           }
           expect(await harness.runtime.read(bobScope)).toEqual(shared);
           expect(await harness.runtime.read({ agentId: "main" })).toEqual(shared);
@@ -667,15 +669,7 @@ describe("gateway chat metadata runtime", () => {
   });
 
   test("keeps live provider discovery off chat metadata projection", async () => {
-    const config = {
-      agents: {
-        defaults: {
-          model: { primary: "openai/gpt-5.6-sol" },
-          models: { "openai/gpt-5.6-sol": {} },
-        },
-        list: [{ id: "main", default: true }],
-      },
-    } as OpenClawConfig;
+    const config = createOpenAIChatMetadataConfig();
     const harness = createChatMetadataHarness(config, { useDefaultProjection: true });
     const credentials: AgentCredentialMap = {
       openai: {
@@ -723,18 +717,9 @@ describe("gateway chat metadata runtime", () => {
   });
 
   test("keeps a locked session unavailable while the neutral prepared route is usable", async () => {
-    const harness = createChatMetadataHarness(
-      {
-        agents: {
-          defaults: {
-            model: { primary: "openai/gpt-5.6-sol" },
-            models: { "openai/gpt-5.6-sol": {} },
-          },
-          list: [{ id: "main", default: true }],
-        },
-      },
-      { useDefaultProjection: true },
-    );
+    const harness = createChatMetadataHarness(createOpenAIChatMetadataConfig(), {
+      useDefaultProjection: true,
+    });
     harness.setOwner(
       createChatMetadataOwner(
         harness.getPreparedOwner()!.config,
@@ -769,15 +754,7 @@ describe("gateway chat metadata runtime", () => {
   });
 
   test("adopts discovered wildcard models without restarting provider discovery", async () => {
-    const config = {
-      agents: {
-        defaults: {
-          model: { primary: "openai/gpt-5.6-sol" },
-          models: { "openai/*": {}, "openai/gpt-5.6-sol": {} },
-        },
-        list: [{ id: "main", default: true }],
-      },
-    } satisfies OpenClawConfig;
+    const config = createOpenAIChatMetadataConfig(["*", "gpt-5.6-sol"]);
     const credentials: AgentCredentialMap = {
       openai: {
         type: "oauth",
@@ -916,6 +893,9 @@ describe("gateway chat metadata runtime", () => {
         authProfileOverrideSource: "user",
       },
     });
+    const draft = createDraftChatMetadataScope();
+    const draftRead = harness.runtime.read(draft.params).catch((error: unknown) => error);
+    draft.close();
     const settled = vi.fn();
     const overriddenSettled = vi.fn();
     void read.then(settled, settled);
@@ -944,6 +924,30 @@ describe("gateway chat metadata runtime", () => {
       },
       sessionModelCatalog: [expect.objectContaining({ id: "replacement" })],
     });
+    expect(await draftRead).toEqual(draft.error);
+  });
+
+  test("rejects closed draft authority after projection without poisoning shared metadata", async () => {
+    const harness = createChatMetadataHarness();
+    await harness.runtime.refresh();
+    const shared = await harness.runtime.read({ agentId: "main" });
+    const draft = createDraftChatMetadataScope();
+    const entered = createDeferred();
+    const release = createDeferred();
+    harness.buildProjection.mockImplementationOnce(async ({ facts }) => {
+      entered.resolve();
+      await release.promise;
+      return { models: facts.modelCatalog.entries, modelCatalog: facts.modelCatalog.entries };
+    });
+    const reading = harness.runtime.read(draft.params).catch((error: unknown) => error);
+    try {
+      await Promise.race([entered.promise, reading]);
+      draft.close();
+    } finally {
+      release.resolve();
+    }
+    expect(await reading).toEqual(draft.error);
+    expect(await harness.runtime.read({ agentId: "main" })).toEqual(shared);
   });
 
   test.each(["resolve", "reject"] as const)(

@@ -62,7 +62,9 @@ The page lists saved accounts with friendly labels and marks the new-chat defaul
 
 The page reports the exact sign-in operation as pending, exchanging, connected, cancelled, expired, or failed. **Cancel** asks the Gateway to retire that operation, including an exchange already in flight. Disconnecting, losing permission, or restarting the Gateway prevents an unfinished sign-in from saving credentials; start a new sign-in after reconnecting. Refreshing profile identity does not interrupt account controls.
 
-In a chat, open the model menu to see its current account selection and choose one of your saved accounts for that provider. This changes the chat, not your new-chat default. The account control shows a collaborator a person-level label for someone else's personal account, not its private email, provider account label, or account id. The label describes the selection, not a billing receipt: configured shared failover accounts can still be used.
+In **New session** or an existing chat, open the model menu and use **Account for this chat** to choose one of your saved accounts for the selected provider. The account picker remains available when **Automatic** has no eligible models. In New session, choosing an account previews eligible models before your first message and applies only to the session you create; it does not change your new-chat default or saved model preference. In an existing chat, it changes that chat's selection.
+
+The account control shows a collaborator a person-level label for someone else's personal account, not its private email, provider account label, or account id. The label describes the selection, not a billing receipt: configured shared failover accounts can still be used.
 
 The CLI uses the same Gateway operations through [`openclaw models accounts`](/cli/models#personal-model-accounts). It targets the person signed in on that Gateway connection, not `--agent` or the operating-system username.
 
