@@ -613,6 +613,8 @@ export class NodeWorkerWorkspaceRuntime {
         if (isProtected()) {
           return;
         }
+        // Retain passes serialize. Fence new claims before filesystem awaits;
+        // a later retain cannot reopen this durable retirement tombstone.
         const retiring = store.retire(row);
         this.deletingWorkspaceGenerations.add(generationKey);
         try {

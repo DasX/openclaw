@@ -347,7 +347,7 @@ export function migrateConversationBindingTargets(
   return true;
 }
 
-/** Add the canonical preparation tuple without rebuilding the referenced environment table. */
+/** Add preparation and activation facts without rebuilding the referenced environment table. */
 export function migratePreparedWorkerOwnership(db: DatabaseSync, previousVersion: number): boolean {
   if (previousVersion >= 16 || !tableExists(db, "worker_environments")) {
     return false;
@@ -360,7 +360,9 @@ export function migratePreparedWorkerOwnership(db: DatabaseSync, previousVersion
   }
   const columns = splitSqlList(OPENCLAW_STATE_SCHEMA_SQL.slice(start + marker.length, end))
     .map((column) => column.trim())
-    .filter((column) => column.startsWith("preparation_"));
+    .filter(
+      (column) => column.startsWith("last_activated_at_ms ") || column.startsWith("preparation_"),
+    );
   let changed = false;
   // The final column carries the cross-column CHECK. All additions and schema
   // markers commit together, preserving inbound foreign keys and cleanup rows.

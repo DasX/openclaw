@@ -38,7 +38,9 @@ function preparedHarness(
     database: support.testState.stateDb,
     now: () => support.testState.nowMs,
   });
-  const harness = createHarness(placements, { isCurrentNodePlacement: () => nodeCurrent });
+  const harness = createHarness(support.testState.stateDb, placements, {
+    isCurrentNodePlacement: () => nodeCurrent,
+  });
   const environmentId = reserve ? "prepared-spare" : harness.ready.environmentId;
   const intent: WorkerProviderPreparedIntent = {
     providerId: "fake",

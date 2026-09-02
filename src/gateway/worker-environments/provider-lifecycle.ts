@@ -195,6 +195,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     provider = providerFor(record.providerId),
     signal?: AbortSignal,
     retainProviderSettlement?: (settled: Promise<void>) => void,
+    beforeProvision?: () => void,
   ) => {
     const pending = store.get(record.environmentId);
     if (pending?.preparation?.consumedAtMs === null && pending.preparation.expiresAtMs <= now()) {
@@ -246,8 +247,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
           provider,
         );
       }
-      const provisioning = record.state === "requested" ? move(record, "provisioning") : record;
-      return await finishProvision(provisioning, provider, installation, cancellation);
+      return await finishProvision(current, provider, installation, cancellation, beforeProvision);
     } finally {
       cancellation?.close();
     }
@@ -306,6 +306,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     initialRecord: WorkerEnvironmentRecord,
     signal?: AbortSignal,
     retainProviderSettlement?: (settled: Promise<void>) => void,
+    beforeProvision?: () => void,
   ): Promise<void> => {
     let record = initialRecord;
     if (record.state === "requested" && record.destroyRequestedAtMs !== null) {
@@ -341,7 +342,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       await (
         record.destroyRequestedAtMs !== null
           ? finishDestroy(record, provider)
-          : resumeProvision(record, provider, signal, retainProviderSettlement)
+          : resumeProvision(record, provider, signal, retainProviderSettlement, beforeProvision)
       ).catch(() => undefined);
       return;
     }
@@ -572,9 +573,14 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         // replay allocation or enrollment merely to maintain an unused ready node.
         const providerSettlements: Promise<void>[] = [];
         try {
-          await reconcileRecord(current, signal ?? new AbortController().signal, (settled) => {
-            providerSettlements.push(settled);
-          });
+          await reconcileRecord(
+            current,
+            signal ?? new AbortController().signal,
+            (settled) => {
+              providerSettlements.push(settled);
+            },
+            beforeReconcile,
+          );
         } finally {
           // A foreground provider timeout does not settle its raw allocation. Keep
           // the reserve concurrency slot and environment lock until that owner exits.

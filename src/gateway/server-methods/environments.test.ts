@@ -110,6 +110,7 @@ function workerRecord(overrides: Partial<TestWorkerRecord> = {}): TestWorkerReco
     createdAtMs: 1_000,
     updatedAtMs: 1_000,
     stateChangedAtMs: 1_000,
+    lastActivatedAtMs: null,
     idleSinceAtMs: null,
     lastError: null,
     tunnelStatus: "stopped",

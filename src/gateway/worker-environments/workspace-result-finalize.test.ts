@@ -8,9 +8,11 @@ import { runNodeWorkerWorkspaceTransfer } from "../../node-host/node-worker-tran
 import { NodeWorkerWorkspaceRuntime } from "../../node-host/node-worker-workspace.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import type { NodeWorkerWorkspaceRetainEntry } from "../../worker/node-workspace-retain-protocol.js";
+import { seedAttachedPlacementEnvironment } from "./placement-test-fixtures.js";
 import type { WorkerTunnelHandle } from "./tunnel-contract.js";
 import {
   cleanupWorkerTurnLauncherTest,
+  database,
   placements,
   root,
   sessionTarget,
@@ -103,6 +105,7 @@ describe("concurrent worker workspace results", () => {
         const identity = { sessionId, sessionKey: `agent:main:${sessionId}`, agentId: "main" };
         const transcriptTarget = { ...sessionTarget, ...identity };
         await upsertSessionEntryCore(transcriptTarget, { sessionId, updatedAt: Date.now() });
+        seedAttachedPlacementEnvironment(database, { environmentId, sessionId, ownerEpoch: 1 });
         let placement = placements.startDispatch(identity);
         for (const transition of [
           { from: "requested", to: "provisioning", patch: { environmentId } },

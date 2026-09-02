@@ -16,8 +16,16 @@ import type { WorkerEnvironmentRecord } from "./environment-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
 import type { WorkerProviderPreparedIntent } from "./preparation-identity.js";
 import { createPreparedWorkerPool } from "./prepared-pool.js";
+import { createWorkerNodeProvisioning } from "./provider-node-provisioning.js";
+import { createWorkerProviderOwnerLifecycle } from "./provider-owner-lifecycle.js";
+import { createWorkerProviderProvisioner } from "./provider-provisioning.js";
 import { createWorkerEnvironmentService, type WorkerEnvironmentService } from "./service.js";
+import type { WorkerEnvironmentState } from "./state.js";
 import { createWorkerEnvironmentStore } from "./store.js";
+import {
+  createWorkerEnvironmentServiceError,
+  WorkerEnvironmentServiceError,
+} from "./worker-error.js";
 
 const PROJECT_KEY = "a".repeat(64);
 const PREPARATION_KEY = "b".repeat(64);
@@ -227,7 +235,7 @@ describe("prepared worker reserve lifecycle", () => {
         patch: { activeOwnerEpoch: attached.ownerEpoch },
       });
     }
-    return attached;
+    return store.get(attached.environmentId)!;
   }
 
   function teardown(record: WorkerEnvironmentRecord) {
@@ -277,6 +285,94 @@ describe("prepared worker reserve lifecycle", () => {
   }
 
   const reserves = () => store.list().filter((record) => record.preparation !== null);
+
+  it.each(["resolution", "idle policy"])(
+    "cleans expired reserves and refills healthy projects after another provider's %s fails",
+    async (failure) => {
+      const expired = ready(seed("expired", { reserve: true }));
+      nowMs = 1_500;
+      attach(ready(seed("healthy", { projectKey: "c".repeat(64) })));
+      config.cloudWorkers!.profiles!.broken = { provider: "broken" };
+      attach(
+        ready(
+          store.createIntent({
+            environmentId: "broken",
+            providerId: "broken",
+            profileId: "broken",
+            profileSnapshot: profile(),
+            provisionOperationId: "provision:broken",
+          }),
+        ),
+      );
+      nowMs = 2_000;
+      const reconcile = vi.fn<PoolOptions["reconcile"]>(async () => {});
+      const owner = pool({
+        reconcile,
+        resolveProvider: (id) => {
+          if (id !== "broken") {
+            return provider;
+          }
+          if (failure === "resolution") {
+            throw new Error("provider resolution failed");
+          }
+          return {
+            ...provider,
+            resolvePreparedIdleTimeoutMs: () => {
+              throw new Error("provider idle policy failed");
+            },
+          };
+        },
+      });
+      await schedule(owner);
+      expect(store.get(expired.environmentId)?.destroyRequestedAtMs).toBe(nowMs);
+      expect(reconcile.mock.calls.map(([record]) => record)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            environmentId: expired.environmentId,
+            destroyRequestedAtMs: nowMs,
+          }),
+          expect.objectContaining({ preparation: expect.objectContaining({ demandAtMs: 1_500 }) }),
+        ]),
+      );
+    },
+  );
+
+  it.each(["available", "missing", "throwing"] as const)(
+    "retains terminal demand beyond seven days with %s provider policy",
+    async (policyState) => {
+      const dayMs = 24 * 60 * 60 * 1_000;
+      const source = attach(ready(seed("source")));
+      teardown(source);
+      const placements = createWorkerSessionPlacementStore({ database });
+      const placement = placements.get(`session:${source.environmentId}`)!;
+      placements.retireSessionPlacement({
+        sessionId: placement.sessionId,
+        expectedState: "failed",
+        expectedGeneration: placement.generation,
+      });
+      reopenStore();
+      nowMs += 8 * dayMs;
+      provider.resolvePreparedIdleTimeoutMs = () => 10 * dayMs;
+      const resolveProvider = () => {
+        if (policyState === "throwing") {
+          throw new Error("provider unavailable");
+        }
+        return policyState === "missing" ? undefined : provider;
+      };
+      const owner = pool({ resolveProvider });
+      expect(store.pruneTerminalEnvironments({ canPruneDemand: owner.canPruneDemand })).toBe(0);
+      expect(store.get(source.environmentId)?.lastActivatedAtMs).toBe(1_000);
+      if (policyState === "available") {
+        await schedule(owner);
+        expect(reserves()).toHaveLength(1);
+        expect(reserves()[0]?.preparation?.expiresAtMs).toBe(1_000 + 10 * dayMs);
+      }
+      nowMs += 2 * dayMs;
+      // Policy recovery permits metadata cleanup only after the original deadline.
+      expect(store.pruneTerminalEnvironments({ canPruneDemand: pool().canPruneDemand })).toBe(1);
+      expect(store.get(source.environmentId)).toBeUndefined();
+    },
+  );
 
   it("keeps expiry tied to originating demand across repeated maintenance and database reopen", async () => {
     attach(ready(seed("source")));
@@ -423,6 +519,28 @@ describe("prepared worker reserve lifecycle", () => {
     },
   );
 
+  it.each([false, true])(
+    "retains slow activation demand when teardown precedes refill (reserve=%s)",
+    async (reserve) => {
+      const idleWindow = 15 * 60_000;
+      provider.resolvePreparedIdleTimeoutMs = () => idleWindow;
+      const allocated = ready(seed("slow-activation", { reserve }));
+      const activatedAtMs = nowMs + 16 * 60_000;
+      const attached = attach(allocated, "active", activatedAtMs);
+      nowMs += 60_000;
+      teardown(attached);
+      reopenStore();
+
+      await schedule(pool());
+      const replacement = reserves().filter((record) => record.preparation?.consumedAtMs === null);
+      expect(replacement).toHaveLength(1);
+      expect(replacement[0]?.preparation).toMatchObject({
+        demandAtMs: activatedAtMs,
+        expiresAtMs: activatedAtMs + idleWindow,
+      });
+    },
+  );
+
   it("does not allocate when source preparation finishes after its demand deadline", async () => {
     attach(ready(seed("source")));
     const reconcile = vi.fn<PoolOptions["reconcile"]>(async () => {});
@@ -494,6 +612,9 @@ describe("prepared worker reserve lifecycle", () => {
       const source = attach(ready(seed("source")));
       await schedule(pool());
       expect(reserves()).toHaveLength(3);
+      for (const reserve of reserves()) {
+        ready(reserve);
+      }
       if (scope === "profile") {
         developmentProfile.readyWorkers = 1;
       } else {
@@ -647,6 +768,213 @@ describe("prepared worker reserve lifecycle", () => {
     );
     expect(reserves()).toHaveLength(1);
   });
+
+  it.each([
+    ["unchanged intent", false, undefined],
+    ["changed intent", true, undefined],
+    ["project active", false, "project"],
+    ["project cleanup", true, "project"],
+    ["global active", false, "global"],
+    ["global cleanup", true, "global"],
+    ["previous provider active", false, "provider"],
+    ["previous provider cleanup", true, "provider"],
+    ["later global active", false, "later-global"],
+    ["later global cleanup", true, "later-global"],
+  ] as const)(
+    "rechecks reserve intent and capacity after the provider queue (%s)",
+    async (_scenario, changed, cleanupScope) => {
+      let previous: WorkerEnvironmentRecord | undefined;
+      if (cleanupScope === "later-global") {
+        config.cloudWorkers!.preparedPool = { maxTotal: 1 };
+        attach(ready(seed("current-source")));
+      } else if (cleanupScope) {
+        const consumed =
+          cleanupScope === "global"
+            ? store.createIntent({
+                environmentId: "previous-global-worker",
+                providerId: provider.id,
+                profileId: "removed-profile",
+                provisionOperationId: "previous-global-operation",
+                profileSnapshot: profile("1".repeat(64)),
+                preparation: {
+                  key: PREPARATION_KEY,
+                  demandAtMs: nowMs,
+                  expiresAtMs: nowMs + IDLE_TIMEOUT_MS,
+                },
+              })
+            : seed("previous-worker", { reserve: true });
+        previous = attach(ready(consumed));
+        nowMs += 100;
+        if (cleanupScope === "global") {
+          config.cloudWorkers!.preparedPool = { maxTotal: 1 };
+        } else if (cleanupScope === "provider") {
+          provider = { ...provider, id: "replacement-provider" };
+          developmentProfile.provider = provider.id;
+        }
+        if (cleanupScope !== "project") {
+          attach(ready(seed("current-source")));
+        }
+      } else {
+        const reserve = seed("queued-provider-reserve", { reserve: true });
+        store.transition({
+          environmentId: reserve.environmentId,
+          from: "requested",
+          to: "provisioning",
+        });
+      }
+      const entered = createDeferred();
+      const release = createDeferred();
+      releases.push(() => release.resolve());
+      let intentChanged = false;
+      const callProvider = async <T>(_environmentId: string, run: () => Promise<T>): Promise<T> => {
+        entered.resolve();
+        await release.promise;
+        return await run();
+      };
+      const move: Parameters<typeof createWorkerProviderProvisioner>[0]["move"] = (
+        record,
+        to,
+        patch,
+      ) =>
+        store.transition({
+          environmentId: record.environmentId,
+          from: record.state,
+          expectedOwnerEpoch: record.ownerEpoch,
+          to,
+          patch,
+        });
+      const lifecycleOptions = {
+        store,
+        callProvider,
+        move,
+        serviceError: createWorkerEnvironmentServiceError,
+        isStopping: () => false,
+        inState: (record: WorkerEnvironmentRecord, ...states: WorkerEnvironmentState[]) =>
+          states.includes(record.state),
+      };
+      const { requireCurrentOwner } = createWorkerProviderOwnerLifecycle(lifecycleOptions);
+      const prepareInstallation = async () => ({
+        install: "bundle" as const,
+        ...RECEIPT,
+        tarballBytes: 1,
+        tarballSha256: "f".repeat(64),
+        tarballPath: path.join(root, "unused.tgz"),
+      });
+      const failBootstrap = async () => {
+        throw new Error("unexpected bootstrap");
+      };
+      const provision = createWorkerProviderProvisioner({
+        ...lifecycleOptions,
+        now: () => nowMs,
+        projectNamespace: "gateway",
+        prepareInstallation,
+        nodeProvisioning: createWorkerNodeProvisioning({
+          ...lifecycleOptions,
+          prepareInstallation,
+          commitReady: () => {
+            throw new Error("unexpected ready transition");
+          },
+          failBootstrap,
+        }),
+        requireWorkerProfile: () => ({}),
+        requireCurrentOwner,
+        installFor: () => "bundle",
+        finishBootstrap: failBootstrap,
+        failBootstrap,
+        isServiceError: (error, code) =>
+          error instanceof WorkerEnvironmentServiceError && error.code === code,
+        saveError: (record, error) =>
+          store.recordError({
+            environmentId: record.environmentId,
+            state: record.state,
+            error: String(error),
+          }),
+      });
+      provider.supportedExecutionModes = ["worker-turn"];
+      provider.supportsProjectPreparation = () => true;
+      provider.resolvePreparationTarget = () => ({
+        machineClass: "standard",
+        platform: "linux",
+        arch: "x64",
+      });
+      provider.provision = vi.fn(async () => {
+        throw new Error("allocation boundary reached");
+      });
+      const owner = pool({
+        assertIntentCurrent: () => {
+          if (intentChanged) {
+            throw createWorkerEnvironmentServiceError(
+              "invalid_profile",
+              "Worker profile changed during preparation",
+            );
+          }
+        },
+        reconcile: async (record, _signal, beforeReconcile) => {
+          await provision(record, provider, undefined, undefined, beforeReconcile);
+        },
+      });
+      const running = schedule(owner);
+      await Promise.race([entered.promise, running]);
+      expect(provider.provision).not.toHaveBeenCalled();
+      const pending = reserves().filter((record) => record.preparation?.consumedAtMs === null);
+      expect(pending).toHaveLength(1);
+      const reserve = pending[0]!;
+      expect(reserve).toMatchObject({
+        state: cleanupScope ? "requested" : "provisioning",
+        destroyRequestedAtMs: null,
+      });
+      if (cleanupScope === "later-global") {
+        nowMs += 100;
+        config.cloudWorkers!.preparedPool = { maxTotal: 2 };
+        const admitted = store.ensurePreparedIntent({
+          intent: {
+            environmentId: "later-global-worker",
+            providerId: provider.id,
+            profileId: "other-profile",
+            provisionOperationId: "later-global-operation",
+            profileSnapshot: profile("1".repeat(64)),
+            preparation: {
+              key: PREPARATION_KEY,
+              demandAtMs: nowMs,
+              expiresAtMs: nowMs + IDLE_TIMEOUT_MS,
+            },
+          },
+          projectKey: "1".repeat(64),
+          target: 1,
+          maxTotal: config.cloudWorkers!.preparedPool.maxTotal!,
+          assertCurrent: () => {},
+        });
+        expect(admitted).toBeDefined();
+        previous = attach(ready(admitted!));
+        expect(previous.createdAtMs).toBeGreaterThan(reserve.createdAtMs);
+        config.cloudWorkers!.preparedPool = { maxTotal: 1 };
+      }
+      if (cleanupScope && previous) {
+        if (changed) {
+          store.requestDestroy({ environmentId: previous.environmentId, state: previous.state });
+        }
+      } else {
+        intentChanged = changed;
+      }
+      release.resolve();
+      await running;
+      expect(provider.provision).toHaveBeenCalledTimes(changed ? 0 : 1);
+      expect(store.get(reserve.environmentId)).toMatchObject({
+        state: changed && cleanupScope ? "requested" : "provisioning",
+        leaseId: null,
+        provisionOperationId: reserve.provisionOperationId,
+        destroyRequestedAtMs: changed ? nowMs : null,
+      });
+      if (previous) {
+        expect(store.get(previous.environmentId)).toMatchObject({
+          state: "attached",
+          leaseId: previous.leaseId,
+          preparation: previous.preparation,
+          destroyRequestedAtMs: changed ? nowMs : null,
+        });
+      }
+    },
+  );
 
   it("keeps actual service reserve cleanup outside the installed placement fence while stop drains it", async () => {
     const reserve = ready(seed("expired", { reserve: true }));

@@ -98,11 +98,13 @@ export function createWorkerProviderProvisioner(options: WorkerProviderProvision
   };
 
   return async (
-    record: WorkerEnvironmentRecord,
+    initialRecord: WorkerEnvironmentRecord,
     provider: WorkerProvider,
     preparedInstallation?: WorkerInstallationArtifact,
     cancellation?: ReturnType<typeof createWorkerProvisionCancellation>,
+    beforeProvision?: () => void,
   ) => {
+    let record = initialRecord;
     let lease: WorkerLease;
     let executionMode: WorkerExecutionMode | undefined;
     let enrollmentOperation: ReturnType<typeof nodeProvisioning.createEnrollmentOperation>;
@@ -207,6 +209,9 @@ export function createWorkerProviderProvisioner(options: WorkerProviderProvision
           : undefined;
       cancellation?.assertActive();
       const provision = () => {
+        // Installation and the provider queue can outlive reserve policy. The pool
+        // records invalidation before this owner rereads its durable destroy intent.
+        beforeProvision?.();
         const current = requireCurrentOwner(record);
         if (
           current.preparation?.consumedAtMs === null &&
@@ -222,6 +227,9 @@ export function createWorkerProviderProvisioner(options: WorkerProviderProvision
         if (options.isStopping() || current.destroyRequestedAtMs !== null) {
           throw new Error("Worker provisioning operation is closed");
         }
+        // Only an attempted allocation needs provider reconciliation. Keep rejected
+        // fresh requests cancellable without resolving a lease that never existed.
+        record = current.state === "requested" ? move(current, "provisioning") : current;
         return provider.provision(profile, record.provisionOperationId, provisionOptions);
       };
       lease = requireWorkerLease(

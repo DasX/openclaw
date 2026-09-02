@@ -1851,6 +1851,7 @@ CREATE TABLE IF NOT EXISTS worker_environments (
   provider_id TEXT NOT NULL,
   profile_id TEXT NOT NULL,
   profile_snapshot_json TEXT NOT NULL,
+  last_activated_at_ms INTEGER,
   preparation_key TEXT,
   preparation_demand_at_ms INTEGER,
   preparation_expires_at_ms INTEGER,

@@ -34,6 +34,7 @@ type RecordBase = RecordIdentity & {
   attachedSessionIds: string[];
   lastError: string | null;
 } & { createdAtMs: number; updatedAtMs: number; stateChangedAtMs: number } & {
+  lastActivatedAtMs: number | null;
   idleSinceAtMs: number | null;
   destroyRequestedAtMs: number | null;
 };

@@ -248,6 +248,18 @@ keep all four values `NULL`; migration never classifies them as unused reserves.
 The consumed timestamp survives placement retirement and attachment rollback,
 so an assigned machine cannot return to the ready pool.
 
+The separate nullable `last_activated_at_ms` column records successful placement
+activation in the same transaction as the placement transition. It keeps the
+latest successful activation time after placement retirement; failed claims,
+refills, and cleanup do not advance it. Existing rows remain `NULL`, without an
+inferred activation backfill. A prepared worker without a successful activation
+keeps only its original demand window, including after a failed consumed claim.
+
+Terminal environment metadata normally expires after seven days. It remains
+available while its demand window is open, including when the provider's idle
+policy exceeds seven days. If that policy cannot be resolved, cleanup retains
+the metadata. This retention does not delay physical machine teardown.
+
 Dedicated nodes register their fixed build paths in the first-use
 `node_worker_prepared_workspaces` table before advertising readiness. Registration
 records the exact environment; binding adds the session and owner epoch once.

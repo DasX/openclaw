@@ -52,6 +52,7 @@ function attachedEnvironment() {
     createdAtMs: 1,
     updatedAtMs: 2,
     stateChangedAtMs: 2,
+    lastActivatedAtMs: null,
     idleSinceAtMs: null,
     destroyRequestedAtMs: null,
     state: "attached",

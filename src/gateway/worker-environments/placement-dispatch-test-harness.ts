@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import type { OpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import type { MintedWorkerCredential } from "./credential.js";
 import type {
   WorkerDispatchEnvironmentService,
@@ -19,6 +20,10 @@ import {
 import { createWorkerPlacementDispatchService } from "./placement-dispatch.js";
 import { createWorkerPlacementRunnerAvailabilityReader } from "./placement-projector.js";
 import { completeReclaimedWorkspaceTeardown } from "./placement-teardown.js";
+import {
+  seedAttachedPlacementEnvironment,
+  writePlacementEnvironmentFixture,
+} from "./placement-test-fixtures.js";
 import { WorkerTunnelOwnerDisconnectedError } from "./tunnel-contract.js";
 import type { WorkerTunnelHandle } from "./tunnel.js";
 import type { WorkerWorkspaceRecoveryFailureReport } from "./workspace-conflicts.js";
@@ -28,6 +33,7 @@ import {
 } from "./workspace-operation-coordinator.js";
 
 export function createHarness(
+  database: OpenClawStateDatabase,
   placementStore: PlacementStore,
   options: {
     runReclaimPreparation?: Parameters<
@@ -210,6 +216,18 @@ export function createHarness(
   const { attached, destroyedEnvironment, environmentId, ready } =
     createDispatchEnvironmentFixtures(options.environmentGeneration);
   let currentEnvironment: ReturnType<WorkerDispatchEnvironmentService["get"]> = ready;
+  const setEnvironment = (environment: NonNullable<typeof currentEnvironment>) => {
+    currentEnvironment = environment;
+    writePlacementEnvironmentFixture(database, environment);
+  };
+  const seedActive = (ownerEpoch: number, executionMode?: "worker-turn" | "remote-exec") => {
+    seedAttachedPlacementEnvironment(database, {
+      environmentId,
+      sessionId: REQUEST.sessionId,
+      ownerEpoch,
+    });
+    return seedActivePlacement(placementStore, { environmentId, ownerEpoch, executionMode });
+  };
   const tunnelHandle = (ownerEpoch: number): WorkerTunnelHandle => ({
     environmentId: ready.environmentId,
     ownerEpoch,
@@ -260,7 +278,7 @@ export function createHarness(
           },
         };
         placementStore.acceptWorkspaceResult(claim);
-        currentEnvironment = destroyedEnvironment(currentEnvironment?.ownerEpoch ?? 1);
+        setEnvironment(destroyedEnvironment(currentEnvironment?.ownerEpoch ?? 1));
         log.push("teardown:destroy");
         completeReclaimedWorkspaceTeardown({
           placements: placementStore,
@@ -356,10 +374,12 @@ export function createHarness(
       return ready;
     }),
     get: vi.fn(() => currentEnvironment),
-    attachSession: vi.fn(async () => {
+    attachSession: vi.fn(async ({ environmentId: attachedEnvironmentId }) => {
       fail("attach");
-      currentEnvironment = attached;
-      return minted;
+      const persisted = environments.get(attachedEnvironmentId);
+      const attachment = persisted?.state === "attached" ? persisted : attached;
+      setEnvironment(attachment);
+      return { ...minted, ownerEpoch: attachment.ownerEpoch };
     }),
     startTunnel: vi.fn(async ({ ownerEpoch }) => {
       fail("tunnel:attached");
@@ -379,16 +399,16 @@ export function createHarness(
           remainingDestroyFailures -= 1;
         }
         if (options.destroyFailureState) {
-          currentEnvironment = {
+          setEnvironment({
             ...attached,
             state: options.destroyFailureState,
             tunnelStatus: "stopped",
-          };
+          });
         }
         throw new Error("destroy pending");
       }
       const destroyed = destroyedEnvironment((currentEnvironment?.ownerEpoch ?? 1) + 1);
-      currentEnvironment = destroyed;
+      setEnvironment(destroyed);
       await options.afterDestroy?.();
       return destroyed;
     }),
@@ -519,9 +539,9 @@ export function createHarness(
         seedProvisioningPlacement(placementStore, environmentId, executionMode),
       seedStarting: () => seedStartingPlacement(placementStore, environmentId),
       seedActive: (ownerEpoch: number, executionMode?: "worker-turn" | "remote-exec") =>
-        seedActivePlacement(placementStore, { environmentId, ownerEpoch, executionMode }),
+        seedActive(ownerEpoch, executionMode),
       seedDraining: (ownerEpoch: number) => {
-        const active = seedActivePlacement(placementStore, { environmentId, ownerEpoch });
+        const active = seedActive(ownerEpoch);
         if (active.state !== "active") {
           throw new Error("active placement fixture was not active");
         }
@@ -537,10 +557,10 @@ export function createHarness(
     reportWorkspaceResultConflict,
     reportWorkspaceResultRecoveryFailure,
     markEnvironmentDestroyed: () => {
-      currentEnvironment = destroyedEnvironment((currentEnvironment?.ownerEpoch ?? 1) + 1);
+      setEnvironment(destroyedEnvironment((currentEnvironment?.ownerEpoch ?? 1) + 1));
     },
     markEnvironmentFailed: () => {
-      currentEnvironment = {
+      setEnvironment({
         ...destroyedEnvironment(currentEnvironment?.ownerEpoch ?? 1),
         state: "failed",
         leaseId: null,
@@ -548,25 +568,30 @@ export function createHarness(
         sharedHost: null,
         lastError: "Worker environment disappeared before teardown was requested",
         error: "Worker environment disappeared before teardown was requested",
-      };
+      });
     },
     markEnvironmentOwnerEpoch: (ownerEpoch: number) => {
       currentEnvironment = { ...attached, ownerEpoch };
+      seedAttachedPlacementEnvironment(database, {
+        environmentId,
+        sessionId: REQUEST.sessionId,
+        ownerEpoch,
+      });
     },
     markEnvironmentNodeDeviceId: (nodeDeviceId: string) => {
-      currentEnvironment = { ...attached, providerId: "device", nodeDeviceId, sshEndpoint: null };
+      setEnvironment({ ...attached, providerId: "device", nodeDeviceId, sshEndpoint: null });
     },
     markEnvironmentAttachments: (attachedSessionIds: string[]) => {
-      currentEnvironment = { ...attached, attachedSessionIds };
+      setEnvironment({ ...attached, attachedSessionIds });
     },
     markEnvironmentProtocolFeatures: (protocolFeatures: string[]) => {
       if (!currentEnvironment?.bootstrapReceipt) {
         throw new Error("worker environment fixture has no bootstrap receipt");
       }
-      currentEnvironment = {
+      setEnvironment({
         ...currentEnvironment,
         bootstrapReceipt: { ...currentEnvironment.bootstrapReceipt, protocolFeatures },
-      };
+      });
     },
     service,
     ready,

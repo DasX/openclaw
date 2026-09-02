@@ -62,33 +62,10 @@ export function createPreparedWorkerPool(options: PoolOptions) {
     const project = readWorkerProjectSnapshot(record.profileSnapshot.project);
     return project ? JSON.stringify([record.providerId, record.profileId, project.key]) : undefined;
   };
-  const activatedPlacements = (environmentId?: string) =>
-    new Map(
-      store
-        .listActivatedPlacements(environmentId)
-        .map((placement) => [placement.environmentId, placement]),
-    );
-  const demandAt = (
-    record: WorkerEnvironmentRecord,
-    placements: ReturnType<typeof activatedPlacements>,
-    requireActivation = false,
-  ): number | undefined => {
-    const inherited = requireActivation ? undefined : record.preparation?.demandAtMs;
-    if (record.preparation?.consumedAtMs === null) {
-      return inherited;
-    }
-    const placement = placements.get(record.environmentId);
-    if (!placement) {
-      // A failed claim retains the old deadline and never renews provider demand.
-      return inherited;
-    }
-    if (record.state === "attached" && placement.state === "active") {
-      return placement.stateChangedAtMs;
-    }
-    // Terminal transitions retain activation proof, but their timestamps are cleanup,
-    // not new demand. The bound claim time is a conservative retained deadline anchor.
-    return record.preparation?.consumedAtMs ?? undefined;
-  };
+  // Failed claims inherit only the original preparation window; success records
+  // a separate fact that survives teardown and placement retirement.
+  const demandAt = (record: WorkerEnvironmentRecord) =>
+    record.lastActivatedAtMs ?? record.preparation?.demandAtMs;
   const retire = (record: WorkerEnvironmentRecord, reason: "expired" | "invalidated") => {
     if (!record.preparation) {
       return;
@@ -111,10 +88,9 @@ export function createPreparedWorkerPool(options: PoolOptions) {
   const runPass = async () => {
     current();
     const records = store.list();
-    const placements = activatedPlacements();
     const sources = new Map<string, { record: WorkerEnvironmentRecord; demandAtMs: number }>();
     for (const record of records) {
-      const demandAtMs = demandAt(record, placements);
+      const demandAtMs = demandAt(record);
       const key = groupKey(record);
       if (
         key &&
@@ -144,19 +120,19 @@ export function createPreparedWorkerPool(options: PoolOptions) {
       if (limits.target === 0 || limits.maxTotal === 0) {
         continue;
       }
-      const provider = options.resolveProvider(record.providerId);
-      const timeout = provider?.resolvePreparedIdleTimeoutMs?.(snapshotSettings(record));
-      if (
-        !Number.isSafeInteger(timeout) ||
-        !timeout ||
-        timeout <= 0 ||
-        demandAtMs + timeout <= now()
-      ) {
-        continue;
-      }
-      const project = readWorkerProjectSnapshot(record.profileSnapshot.project)!;
-      const preparation = readWorkerProjectPreparation(record.profileSnapshot.project)!;
       try {
+        const provider = options.resolveProvider(record.providerId);
+        const timeout = provider?.resolvePreparedIdleTimeoutMs?.(snapshotSettings(record));
+        if (
+          !Number.isSafeInteger(timeout) ||
+          !timeout ||
+          timeout <= 0 ||
+          demandAtMs + timeout <= now()
+        ) {
+          continue;
+        }
+        const project = readWorkerProjectSnapshot(record.profileSnapshot.project)!;
+        const preparation = readWorkerProjectPreparation(record.profileSnapshot.project)!;
         const intent = await options.prepareIntent(record.profileId, {
           projectPath: project.root,
           ...(typeof record.profileSnapshot.machineClass === "string"
@@ -274,28 +250,23 @@ export function createPreparedWorkerPool(options: PoolOptions) {
             const key = groupKey(owned);
             const generation = key ? eligible.get(key) : undefined;
             const limits = policy(owned);
-            const pending = store
-              .list()
-              .filter(
-                (entry) =>
-                  entry.preparation?.consumedAtMs === null &&
-                  entry.destroyRequestedAtMs === null &&
-                  entry.state !== "destroyed" &&
-                  entry.state !== "failed",
-              )
-              .toSorted((a, b) => a.createdAtMs - b.createdAtMs);
-            const withinCapacity =
-              pending.findIndex((entry) => entry.environmentId === owned.environmentId) <
-                limits.maxTotal &&
-              pending
-                .filter((entry) => groupKey(entry) === key)
-                .findIndex((entry) => entry.environmentId === owned.environmentId) < limits.target;
+            const withinCapacity = store.isPreparedIntentWithinCapacity({
+              environmentId: owned.environmentId,
+              ...limits,
+            });
             if (owned.preparation.expiresAtMs <= now()) {
               retire(owned, "expired");
             } else if (!generation || !withinCapacity) {
               retire(owned, "invalidated");
             } else {
-              options.assertIntentCurrent(owned.profileId, generation.intent);
+              try {
+                options.assertIntentCurrent(owned.profileId, generation.intent);
+              } catch {
+                current();
+                // Intent drift must retain cleanup authority for a replay whose
+                // original allocation response may have been lost.
+                retire(owned, "invalidated");
+              }
             }
           };
           beforeReconcile();
@@ -335,8 +306,8 @@ export function createPreparedWorkerPool(options: PoolOptions) {
     if (record?.state !== "attached" || !record.leaseId || !preparation) {
       return;
     }
-    const demandAtMs = demandAt(record, activatedPlacements(environmentId), true);
-    if (demandAtMs === undefined) {
+    const demandAtMs = record.lastActivatedAtMs;
+    if (demandAtMs === null) {
       return;
     }
     const provider = options.resolveProvider(record.providerId);
@@ -385,5 +356,26 @@ export function createPreparedWorkerPool(options: PoolOptions) {
       }
     });
   };
-  return { schedule, noteDemand, candidates, maintain };
+  const canPruneDemand = (record: WorkerEnvironmentRecord, nowMs: number): boolean => {
+    const demandAtMs = demandAt(record);
+    if (demandAtMs === undefined || !readWorkerProjectPreparation(record.profileSnapshot.project)) {
+      return true;
+    }
+    // Unavailable policy cannot prove expiry. Retain metadata only; physical
+    // cleanup is independent and must not wait for a provider to return.
+    try {
+      const timeout = options
+        .resolveProvider(record.providerId)
+        ?.resolvePreparedIdleTimeoutMs?.(snapshotSettings(record));
+      return (
+        timeout !== undefined &&
+        Number.isSafeInteger(timeout) &&
+        timeout > 0 &&
+        demandAtMs + timeout <= nowMs
+      );
+    } catch {
+      return false;
+    }
+  };
+  return { schedule, noteDemand, candidates, maintain, canPruneDemand };
 }

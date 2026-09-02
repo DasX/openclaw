@@ -8,7 +8,10 @@ import {
 import { runExclusiveSqliteSessionWrite } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   REQUEST,
@@ -57,12 +60,13 @@ describe("worker workspace recovery transcript reporting", () => {
           })
         ).code,
       ).toBe(0);
-      const placements = createWorkerSessionPlacementStore();
+      const database = openOpenClawStateDatabase({ env: state.env });
+      const placements = createWorkerSessionPlacementStore({ database });
       const harnessOptions: { failAt?: DispatchStage; workspacePath: string } = {
         failAt: "workspace",
         workspacePath,
       };
-      const harness = createHarness(placements, harnessOptions);
+      const harness = createHarness(database, placements, harnessOptions);
       const active = harness.placements.seedActive(2);
       if (active.state !== "active") {
         throw new Error("expected active worker placement");

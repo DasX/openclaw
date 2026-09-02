@@ -10,7 +10,10 @@ import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-i
 import { NodeInvokeResultParamsSchema } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import { requireGit } from "../agents/worktrees/git.js";
 import { NODE_WORKER_WORKSPACE_PREPARE_COMMAND } from "../infra/node-commands.js";
-import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../infra/node-runner-inventory.js";
+import {
+  NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
+  NODE_WORKER_WORKSPACE_MANIFEST_VERSION,
+} from "../infra/node-runner-inventory.js";
 import type { NodeHostClient } from "../node-host/client.js";
 import {
   coerceNodeInvokePayload,
@@ -175,19 +178,22 @@ async function createPreparedNodeAcknowledgement(root: string, reserveRemainingM
       },
       { pairingIdentity: "fixture-pairing", pairingGeneration: "fixture-generation" },
     );
-    updateNodeRunnerInventory({
-      registry: nodeRegistry,
-      nodeId,
-      connId,
-      declaration: {
-        protocolFeatures: [NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE],
-        workerHost: {
-          enabled: true,
-          capacity: { total: 1, available: 1 },
-          environmentSession: 1,
+    const setWorkspaceManifest = (available: boolean) =>
+      updateNodeRunnerInventory({
+        registry: nodeRegistry,
+        nodeId,
+        connId,
+        declaration: {
+          protocolFeatures: [NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE],
+          workerHost: {
+            enabled: true,
+            capacity: { total: 1, available: 1 },
+            environmentSession: 1,
+            ...(available ? { workspaceManifest: NODE_WORKER_WORKSPACE_MANIFEST_VERSION } : {}),
+          },
         },
-      },
-    });
+      });
+    setWorkspaceManifest(true);
     const received: Array<Parameters<NodeRegistry["handleInvokeResult"]>[0]> = [];
     const accepted: boolean[] = [];
     const invoked: NodeInvokeRequestPayload[] = [];
@@ -317,6 +323,7 @@ async function createPreparedNodeAcknowledgement(root: string, reserveRemainingM
       accepted,
       invoked,
       cancelled,
+      setWorkspaceManifest,
       register,
       makeReady,
       bind: (signal?: AbortSignal) => options.bindPreparedWorkspace!({ ...binding, signal }),

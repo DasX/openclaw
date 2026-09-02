@@ -14,11 +14,12 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const migrationPaths = ["runtime open", "doctor repair"] as const;
 const preparationKey = "a".repeat(64);
-const preparedColumns = [
+const version16EnvironmentColumns = [
   "preparation_consumed_at_ms",
   "preparation_expires_at_ms",
   "preparation_demand_at_ms",
   "preparation_key",
+  "last_activated_at_ms",
 ] as const;
 const retainedTables = [
   "worker_environment_credentials",
@@ -55,7 +56,7 @@ function createVersion15Workers() {
   const legacy = openNodeSqliteDatabase(databasePath);
   try {
     // Remove the constrained column first to recover the actual v15 environment shape.
-    for (const column of preparedColumns) {
+    for (const column of version16EnvironmentColumns) {
       legacy.exec(`ALTER TABLE worker_environments DROP COLUMN ${column};`);
     }
     legacy.exec(`
@@ -109,6 +110,7 @@ describe("prepared worker schema migration", () => {
     expect(db.prepare("SELECT rowid, * FROM worker_environments").all()).toEqual(
       before.environments.map((row) => ({
         ...row,
+        last_activated_at_ms: null,
         preparation_key: null,
         preparation_demand_at_ms: null,
         preparation_expires_at_ms: null,

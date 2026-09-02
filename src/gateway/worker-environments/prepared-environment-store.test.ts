@@ -58,9 +58,14 @@ describe("prepared environment ownership", () => {
       preparation: { key, demandAtMs: 900, expiresAtMs: 2_000 },
     } satisfies WorkerEnvironmentIntentInput;
   }
-  function reserve(environmentId = "prepared-1", key = PREPARATION_KEY, maxTotal = 4) {
+  function reserve(
+    environmentId = "prepared-1",
+    key = PREPARATION_KEY,
+    maxTotal = 4,
+    providerId = "test-provider",
+  ) {
     return environments.ensurePreparedIntent({
-      intent: intent(environmentId, key),
+      intent: { ...intent(environmentId, key), providerId },
       projectKey: PROJECT_KEY,
       target: 1,
       maxTotal,
@@ -168,29 +173,35 @@ describe("prepared environment ownership", () => {
     },
   );
 
-  it("keeps an old preparation generation and uncertain cleanup inside the project capacity", () => {
-    reserve();
-    expect(reserve("prepared-2", "e".repeat(64))).toBeUndefined();
-    expect(
-      environments.requestPreparedDestroy({
-        environmentId: "prepared-1",
-        ownerEpoch: 0,
-        preparationKey: PREPARATION_KEY,
-        reason: "invalidated",
-        assertCurrent,
-      })?.destroyRequestedAtMs,
-    ).toBe(1_000);
-    expect(reserve("prepared-2", "e".repeat(64))).toBeUndefined();
-    environments.transition({ environmentId: "prepared-1", from: "requested", to: "failed" });
-    expect(reserve("prepared-2", "e".repeat(64))?.state).toBe("requested");
-  });
+  it.each(["test-provider", "replacement-provider"])(
+    "keeps an old generation and uncertain cleanup inside project capacity for %s",
+    (providerId) => {
+      reserve();
+      expect(reserve("prepared-2", "e".repeat(64), 4, providerId)).toBeUndefined();
+      expect(
+        environments.requestPreparedDestroy({
+          environmentId: "prepared-1",
+          ownerEpoch: 0,
+          preparationKey: PREPARATION_KEY,
+          reason: "invalidated",
+          assertCurrent,
+        })?.destroyRequestedAtMs,
+      ).toBe(1_000);
+      expect(reserve("prepared-2", "e".repeat(64), 4, providerId)).toBeUndefined();
+      environments.transition({ environmentId: "prepared-1", from: "requested", to: "failed" });
+      expect(reserve("prepared-2", "e".repeat(64), 4, providerId)?.state).toBe("requested");
+    },
+  );
 
-  it("counts consumed workers awaiting cleanup against the reserve cap", () => {
-    ready();
-    placements.bindPreparedEnvironment(selection());
-    environments.requestDestroy({ environmentId: "prepared-1", state: "ready" });
-    expect(reserve("prepared-2")).toBeUndefined();
-  });
+  it.each(["test-provider", "replacement-provider"])(
+    "counts consumed workers awaiting cleanup against the reserve cap for %s",
+    (providerId) => {
+      ready();
+      placements.bindPreparedEnvironment(selection());
+      environments.requestDestroy({ environmentId: "prepared-1", state: "ready" });
+      expect(reserve("prepared-2", PREPARATION_KEY, 4, providerId)).toBeUndefined();
+    },
+  );
 
   it("enforces the global cap, zero capacity, expiry and immutable intent replay", () => {
     expect(reserve("disabled", PREPARATION_KEY, 0)).toBeUndefined();

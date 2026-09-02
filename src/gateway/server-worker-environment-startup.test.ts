@@ -46,6 +46,29 @@ afterEach(() => {
 });
 
 describe("gateway worker environment startup", () => {
+  it.each(["register", "bind"] as const)(
+    "rejects prepared workspace %s without its manifest dialect before node I/O",
+    async (action) => {
+      const root = await fs.realpath(tempDirs.make("openclaw-prepared-dialect-"));
+      await withPreparedNodeAcknowledgement(root, async (f) => {
+        if (action === "bind") {
+          await f.register();
+          f.makeReady();
+        }
+        f.setWorkspaceManifest(false);
+        const invokedBefore = f.invoked.length;
+        await expect(f[action]()).rejects.toThrow("node worker supervisor dialect is unavailable");
+        expect(f.invoked).toHaveLength(invokedBefore);
+        const registration = f.preparedStore.find(f.record.environmentId);
+        if (action === "register") {
+          expect(registration).toBeUndefined();
+        } else {
+          expect(registration).toMatchObject({ session_id: null, bound_at_ms: null });
+        }
+      });
+    },
+  );
+
   it.each([false, true])(
     "round-trips actual prepared node acknowledgements and rejection reasons (source changed: %s)",
     async (changedSource) => {

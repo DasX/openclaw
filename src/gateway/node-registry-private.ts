@@ -5,6 +5,7 @@ import {
   NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
   NODE_WORKER_PRIVATE_COMMANDS,
   NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
+  NODE_WORKER_WORKSPACE_PREPARE_COMMAND,
 } from "../infra/node-commands.js";
 import {
   NODE_WORKER_BUNDLE_RETENTION_VERSION,
@@ -527,7 +528,10 @@ export function registerNodeRegistryPrivateRuntime(
           [],
           params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
             params.command === NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
-          params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
+          // Preparation always mutates manifest-bound state; callers cannot opt out,
+          // including when inventory changes during the pairing lookup.
+          params.command === NODE_WORKER_WORKSPACE_PREPARE_COMMAND ||
+            params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
             params.requireWorkspaceManifest === true,
         );
       if (!isProofCurrent()) {

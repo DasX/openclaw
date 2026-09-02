@@ -98,6 +98,51 @@ function snapshotProjectKey(snapshot: unknown): string {
   return snapshot.project.key;
 }
 
+function readPreparedReservations(db: DatabaseSync) {
+  return executeSqliteQuerySync(
+    db,
+    query(db)
+      .selectFrom("worker_environments")
+      .select([
+        "environment_id as environmentId",
+        "profile_id as profileId",
+        "profile_snapshot_json as profileSnapshot",
+        "lease_id as leaseId",
+      ])
+      .where("preparation_key", "is not", null)
+      .where("state", "not in", ["failed", "destroyed"])
+      .where((eb) =>
+        eb.or([
+          eb("preparation_consumed_at_ms", "is", null),
+          eb("destroy_requested_at_ms", "is not", null),
+          eb("state", "=", "orphaned"),
+        ]),
+      )
+      // Cleanup can start after replacement admission. It owns capacity before
+      // queued allocations regardless of creation order, until physical teardown.
+      .select((eb) =>
+        eb
+          .case()
+          .when("destroy_requested_at_ms", "is not", null)
+          .then(0)
+          .when("state", "=", "orphaned")
+          .then(0)
+          .else(1)
+          .end()
+          .as("cleanupOrder"),
+      )
+      .orderBy("cleanupOrder")
+      .orderBy("created_at_ms")
+      .orderBy("environment_id"),
+  ).rows.map(({ environmentId, profileId, leaseId, cleanupOrder, profileSnapshot }) => ({
+    environmentId,
+    profileId,
+    leaseId,
+    cleanupOrder,
+    projectKey: snapshotProjectKey(JSON.parse(profileSnapshot)),
+  }));
+}
+
 export function createPreparedEnvironmentStoreOps(options: {
   now: () => number;
   read: () => DatabaseSync;
@@ -106,23 +151,6 @@ export function createPreparedEnvironmentStoreOps(options: {
   get: (db: DatabaseSync, environmentId: string) => WorkerEnvironmentRecord | undefined;
 }) {
   return {
-    listActivatedPlacements(environmentId?: string) {
-      const db = options.read();
-      let statement = query(db)
-        .selectFrom("worker_session_placements")
-        .select([
-          "environment_id as environmentId",
-          "state",
-          "state_changed_at_ms as stateChangedAtMs",
-        ])
-        .where("active_owner_epoch", "is not", null)
-        .orderBy("active_owner_epoch");
-      if (environmentId !== undefined) {
-        statement = statement.where("environment_id", "=", environmentId);
-      }
-      // The newest successful owner wins when a reusable environment has prior placements.
-      return executeSqliteQuerySync(db, statement).rows;
-    },
     ensurePreparedIntent(input: {
       intent: WorkerEnvironmentIntentInput & { preparation: WorkerEnvironmentPreparationIntent };
       projectKey: string;
@@ -165,27 +193,9 @@ export function createPreparedEnvironmentStoreOps(options: {
         ) {
           return undefined;
         }
-        // Failed/destroyed rows have no remaining allocation obligation. An orphan or a
-        // consumed worker awaiting physical cleanup still occupies reserve capacity.
-        const reserved = executeSqliteQuerySync(
-          db,
-          query(db)
-            .selectFrom("worker_environments")
-            .select(["profile_id", "provider_id", "profile_snapshot_json"])
-            .where("preparation_key", "is not", null)
-            .where("state", "not in", ["failed", "destroyed"])
-            .where((eb) =>
-              eb.or([
-                eb("preparation_consumed_at_ms", "is", null),
-                eb("destroy_requested_at_ms", "is not", null),
-              ]),
-            ),
-        ).rows;
+        const reserved = readPreparedReservations(db);
         const projectCount = reserved.filter(
-          (row) =>
-            row.profile_id === input.intent.profileId &&
-            row.provider_id === input.intent.providerId &&
-            snapshotProjectKey(JSON.parse(row.profile_snapshot_json)) === input.projectKey,
+          (row) => row.profileId === input.intent.profileId && row.projectKey === input.projectKey,
         ).length;
         if (reserved.length >= input.maxTotal || projectCount >= input.target) {
           return undefined;
@@ -196,6 +206,33 @@ export function createPreparedEnvironmentStoreOps(options: {
         input.assertCurrent();
         return options.createIntent(db, input.intent);
       });
+    },
+
+    isPreparedIntentWithinCapacity(input: {
+      environmentId: string;
+      target: number;
+      maxTotal: number;
+    }): boolean {
+      const reservations = readPreparedReservations(options.read());
+      const owned = reservations.find((row) => row.environmentId === input.environmentId);
+      if (!owned) {
+        return false;
+      }
+      // Cleaning up surplus capacity must not cascade into retiring a retained
+      // worker that already has its lease. New allocations still count all cleanup.
+      const reserved = owned.leaseId
+        ? reservations.filter((row) => row.cleanupOrder === 1)
+        : reservations;
+      const index = reserved.findIndex((row) => row.environmentId === input.environmentId);
+      if (index < 0 || index >= input.maxTotal) {
+        return false;
+      }
+      return (
+        reserved
+          .slice(0, index + 1)
+          .filter((row) => row.profileId === owned.profileId && row.projectKey === owned.projectKey)
+          .length <= input.target
+      );
     },
 
     requestPreparedDestroy(input: {
@@ -276,6 +313,8 @@ export function consumePreparedEnvironment(
   }
   const preparation = readWorkerEnvironmentPreparation(environment);
   const profile: unknown = JSON.parse(environment.profile_snapshot_json);
+  // Reserves inherit their activating placement's explicit mode. Artifact hash
+  // defaults do not authorize inferring a mode when assigning a durable reserve.
   if (
     !preparation ||
     preparation.key !== input.preparationKey ||

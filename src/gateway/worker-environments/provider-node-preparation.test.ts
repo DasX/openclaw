@@ -30,6 +30,117 @@ import * as support from "./service.test-support.js";
 describe("prepared node registration ownership", () => {
   support.setupWorkerEnvironmentServiceSuite();
 
+  it.each(["unchanged", "ready workers", "total capacity", "provider"] as const)(
+    "rechecks reserve allocation policy after installation preparation: %s",
+    async (change) => {
+      const { store, config, root } = support.testState;
+      const repository = path.join(root, "source");
+      await fs.mkdir(repository);
+      await requireGit(repository, ["init", "--quiet"]);
+      await requireGit(repository, ["config", "user.name", "Preparation Test"]);
+      await requireGit(repository, ["config", "user.email", "preparation@example.invalid"]);
+      await fs.writeFile(path.join(repository, "input.txt"), "committed source\n");
+      await requireGit(repository, ["add", "."]);
+      await requireGit(repository, ["commit", "--quiet", "-m", "source"]);
+      const release = createDeferredCore();
+      const provision = vi.fn(async () => {
+        throw new Error("allocation boundary reached");
+      });
+      const resolveAllocation = vi.fn(async () => {
+        throw new Error("allocation does not exist");
+      });
+      const destroy = vi.fn(async () => {});
+      const provider = support.createProvider({
+        supportedExecutionModes: ["worker-turn"],
+        requiresNodeEnrollment: true,
+        supportsProjectPreparation: () => true,
+        resolvePreparationTarget: () => ({ machineClass: "small", platform: "linux", arch: "x64" }),
+        resolvePreparedIdleTimeoutMs: () => 60_000,
+        provision,
+        resolveAllocation,
+        destroy,
+      });
+      const prepareInstallation = vi.fn(async () => {
+        await release.promise;
+        return support.BUNDLE_ARTIFACT;
+      });
+      const service = createWorkerEnvironmentService({
+        store,
+        getConfig: () => config,
+        resolveProvider: (id) => (id === provider.id ? provider : undefined),
+        projectNamespace: "gateway",
+        prepareInstallation,
+        bootstrapWorker: support.testState.bootstrapWorker,
+        prepareNodeArtifacts: async () => ({
+          artifacts: {
+            nodeBootstrapSha256: support.NODE_BOOTSTRAP.sha256,
+            enabledPluginIds: [...support.NODE_BOOTSTRAP.enabledPluginIds],
+            workerBundleHash: support.BUNDLE_HASH,
+            workerArchiveSha256: support.BUNDLE_ARTIFACT.tarballSha256,
+            openclawVersion: support.BUNDLE_ARTIFACT.openclawVersion,
+            protocolFeatures: [],
+          },
+          assertCurrent: () => {},
+        }),
+        prepareNodeEnrollment: async () => {
+          throw new Error("fixture never enrolls");
+        },
+        executeInference: async () => ({ type: "error", reason: "cancelled", message: "unused" }),
+        now: () => support.testState.nowMs,
+      });
+      support.testState.service = service;
+      try {
+        const intent = await service.prepareProjectIntent("development", {
+          projectPath: repository,
+          executionMode: "worker-turn",
+        });
+        expect(intent.preparationKey).toBeDefined();
+        const reserve = store.createIntent({
+          environmentId: "queued-reserve",
+          providerId: intent.providerId,
+          profileId: "development",
+          profileSnapshot: intent.profileSnapshot,
+          provisionOperationId: "queued-reserve-operation",
+          preparation: {
+            key: intent.preparationKey!,
+            demandAtMs: support.testState.nowMs,
+            expiresAtMs: support.testState.nowMs + 60_000,
+          },
+        });
+        service.schedulePreparedRefill();
+        await support.waitForFast(() => expect(prepareInstallation).toHaveBeenCalledOnce());
+        expect(provision).not.toHaveBeenCalled();
+        if (change === "ready workers") {
+          support.getDevelopmentProfile().readyWorkers = 0;
+        } else if (change === "total capacity") {
+          config.cloudWorkers!.preparedPool = { maxTotal: 0 };
+        } else if (change === "provider") {
+          support.getDevelopmentProfile().provider = "replacement";
+        }
+        release.resolve();
+        await support.waitForFast(() =>
+          expect(store.get(reserve.environmentId)?.lastError).not.toBeNull(),
+        );
+        expect(provision).toHaveBeenCalledTimes(change === "unchanged" ? 1 : 0);
+        expect(store.get(reserve.environmentId)).toMatchObject({
+          state: change === "unchanged" ? "provisioning" : "requested",
+          destroyRequestedAtMs: change === "unchanged" ? null : support.testState.nowMs,
+        });
+        if (change !== "unchanged") {
+          await service.reconcileOnce();
+          await support.waitForFast(() =>
+            expect(store.get(reserve.environmentId)?.state).toBe("failed"),
+          );
+        }
+        expect(resolveAllocation).not.toHaveBeenCalled();
+        expect(destroy).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await service.stop();
+      }
+    },
+  );
+
   it("keeps the installed worker launchable while registration spans two retention sweeps", async () => {
     const { store, root, stateDb } = support.testState;
     const source = path.join(root, "bundle-source");

@@ -466,6 +466,7 @@ function fromRow(row: Row, fallbackPorts: readonly number[]): WorkerEnvironmentR
     createdAtMs: row.created_at_ms,
     updatedAtMs: row.updated_at_ms,
     stateChangedAtMs: row.state_changed_at_ms,
+    lastActivatedAtMs: row.last_activated_at_ms,
     idleSinceAtMs: row.idle_since_at_ms,
     destroyRequestedAtMs: row.destroy_requested_at_ms,
     lastError: row.last_error,
@@ -874,6 +875,7 @@ export function createWorkerEnvironmentStore(
           updated_at_ms: createdAtMs,
           state_changed_at_ms: createdAtMs,
           idle_since_at_ms: null,
+          last_activated_at_ms: null,
           destroy_requested_at_ms: null,
           last_error: null,
         }),
@@ -958,14 +960,25 @@ export function createWorkerEnvironmentStore(
       findCredentialByHash(read(), normalizeCredentialHash(credentialHash)),
     list: (): WorkerEnvironmentRecord[] => listRows(read(), false),
     listForReconcile: (): WorkerEnvironmentRecord[] => listRows(read(), true),
-    pruneTerminalEnvironments(params: { nowMs?: number; limit?: number } = {}): number {
-      return write((db) =>
-        pruneExpiredTerminalWorkerEnvironments({
-          db,
-          nowMs: params.nowMs ?? now(),
-          ...(params.limit === undefined ? {} : { limit: params.limit }),
-        }),
-      );
+    pruneTerminalEnvironments(
+      params: {
+        nowMs?: number;
+        limit?: number;
+        canPruneDemand?: (record: WorkerEnvironmentRecord, nowMs: number) => boolean;
+      } = {},
+    ): number {
+      const nowMs = params.nowMs ?? now();
+      return pruneExpiredTerminalWorkerEnvironments({
+        db: read(),
+        write,
+        nowMs,
+        limit: params.limit,
+        canPruneDemand: (row) =>
+          params.canPruneDemand
+            ? params.canPruneDemand(fromRow(row, []), nowMs)
+            : row.last_activated_at_ms === null &&
+              (row.preparation_expires_at_ms === null || row.preparation_expires_at_ms <= nowMs),
+      });
     },
     reconcileSharedHost(input: {
       environmentId: string;
