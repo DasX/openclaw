@@ -282,6 +282,14 @@ export async function runAcpAgentCommand(params: {
           }
         : {}),
       finalText: finalTextRaw,
+      terminalOutcome: buildAgentRunTerminalOutcomeFromLifecycleEvent({
+        phase: "end",
+        data: attemptExecutionRuntime.resolveAcpLifecycleEndFields(
+          params.opts.abortSignal,
+          stopReason,
+          resultStatus,
+        ),
+      }),
       sessionId: internalTarget?.sessionId ?? params.sessionId,
       sessionKey: internalTarget?.sessionKey ?? params.sessionKey,
       sessionEntry: internalTarget?.sessionEntry ?? sessionEntry,

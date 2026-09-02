@@ -82,7 +82,7 @@ vi.mock("../agents/command/delivery.runtime.js", () => ({
 }));
 
 vi.mock("../agents/command/attempt-execution.runtime.js", async () => {
-  const { buildAcpResult } = await vi.importActual<
+  const { buildAcpResult, resolveAcpLifecycleEndFields } = await vi.importActual<
     typeof import("../agents/command/attempt-execution.js")
   >("../agents/command/attempt-execution.js");
   const createAcpVisibleTextAccumulator = () => {
@@ -135,6 +135,7 @@ vi.mock("../agents/command/attempt-execution.runtime.js", async () => {
         data: { text, delta },
       }),
     buildAcpResult,
+    resolveAcpLifecycleEndFields,
     persistAcpTurnTranscript: attemptExecutionMocks.persistAcpTurnTranscript,
   };
 });

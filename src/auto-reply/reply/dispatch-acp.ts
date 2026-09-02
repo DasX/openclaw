@@ -23,6 +23,7 @@ import {
   prepareAgentRunAdmission,
   type AdmittedRunContext,
 } from "../../agents/admitted-run-context.js";
+import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../../agents/agent-run-terminal-outcome.js";
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -735,6 +736,17 @@ export async function tryDispatchAcpReplyCore(params: {
       expectedSessionId: transcriptSessionId,
       promptText: transcriptPromptText,
       finalText,
+      // Persistence precedes the end event; retain the same normalized outcome without publishing early.
+      terminalOutcome:
+        terminalOutcome ??
+        buildAgentRunTerminalOutcomeFromLifecycleEvent({
+          phase: "end",
+          data: auditRuntime.resolveAcpLifecycleEndFields(
+            params.abortSignal,
+            auditStopReason,
+            auditResultStatus,
+          ),
+        }),
       meta: acpResolution.kind === "ready" ? acpResolution.meta : undefined,
       threadId: params.ctx.MessageThreadId,
       userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,

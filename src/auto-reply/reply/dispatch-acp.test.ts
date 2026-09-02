@@ -11,6 +11,7 @@ import type { MediaUnderstandingSkipError } from "../../../packages/media-unders
 import type { AcpSessionResolution } from "../../acp/control-plane/manager.types.js";
 import { AcpRuntimeError } from "../../acp/runtime/errors.js";
 import type { AcpSessionStoreEntry } from "../../acp/runtime/session-meta.js";
+import { resolveAcpLifecycleEndFields } from "../../agents/command/attempt-execution.js";
 import { configureExecutionIdentityAdmissionSink } from "../../audit/execution-identity-admission.js";
 import { configureRuntimeActionDecisionSink } from "../../audit/runtime-action-decision.js";
 import { buildChannelInboundEventContext } from "../../channels/inbound-event/context.js";
@@ -176,6 +177,8 @@ vi.mock("../../agents/command/attempt-execution.runtime.js", () => ({
   emitAcpRuntimeEvent: auditMocks.emitAcpRuntimeEvent,
   emitAcpLifecycleEnd: auditMocks.emitAcpLifecycleEnd,
   emitAcpLifecycleError: auditMocks.emitAcpLifecycleError,
+  resolveAcpLifecycleEndFields: (...args: Parameters<typeof resolveAcpLifecycleEndFields>) =>
+    resolveAcpLifecycleEndFields(...args),
 }));
 
 vi.mock("../../acp/policy.js", () => ({
@@ -516,6 +519,7 @@ describe("tryDispatchAcpReplyCore", () => {
     auditMocks.emitAcpRuntimeEvent.mockReset();
     auditMocks.emitAcpLifecycleEnd.mockReset();
     auditMocks.emitAcpLifecycleError.mockReset();
+    auditMocks.emitAcpLifecycleError.mockReturnValue({ reason: "failed", status: "error" });
     managerMocks.resolveSession.mockReset();
     managerMocks.runTurn.mockReset();
     managerMocks.runTurn.mockImplementation(
@@ -1034,6 +1038,7 @@ describe("tryDispatchAcpReplyCore", () => {
     expect(transcript.sessionKey).toBe(sessionKey);
     expect(transcript.promptText).toBe("reply");
     expect(transcript.finalText).toBe("hello");
+    expect(transcript.terminalOutcome).toMatchObject({ reason: "completed", status: "ok" });
     expect(routeCall().mirror).toBe(false);
   });
 
@@ -1056,6 +1061,7 @@ describe("tryDispatchAcpReplyCore", () => {
     expect(transcript.sessionKey).toBe(sessionKey);
     expect(transcript.promptText).toBe("reply");
     expect(String(transcript.finalText)).toContain("acp exploded mid-turn");
+    expect(transcript.terminalOutcome).toMatchObject({ reason: "failed", status: "error" });
   });
 
   it("keeps streamed output ahead of the error when a turn fails mid-stream", async () => {
@@ -1300,6 +1306,7 @@ describe("tryDispatchAcpReplyCore", () => {
     expect(transcript.sessionKey).toBe(sessionKey);
     expect(transcript.promptText).toBe("cancel this turn");
     expect(transcript.finalText).toBe("partial");
+    expect(transcript.terminalOutcome).toMatchObject({ reason: "cancelled", status: "error" });
     expect(recordProcessed).toHaveBeenCalledWith("completed", { reason: "acp_aborted" });
     expect(markIdle).toHaveBeenCalledWith("message_aborted");
     expect(transcriptMocks.persistAcpDispatchTranscript.mock.invocationCallOrder[0]).toBeLessThan(
@@ -1480,6 +1487,11 @@ describe("tryDispatchAcpReplyCore", () => {
     expect(auditMocks.emitAcpLifecycleError).toHaveBeenCalledWith(
       expect.objectContaining({
         error: expect.objectContaining({ message: "output settlement failed" }),
+      }),
+    );
+    expect(transcriptMocks.persistAcpDispatchTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalOutcome: expect.objectContaining({ reason: "failed", status: "error" }),
       }),
     );
   });

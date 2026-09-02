@@ -47,6 +47,11 @@ Raw archives and [session exports](/tools/slash-commands) remain lossless. Exist
 consult records without the exclusion flag are not rewritten and remain eligible
 for model context.
 
+Stored Chat history shows the spoken answer without a second copy of the
+successful consult answer. The internal answer remains in the raw transcript and
+model context. Tool activity, progress, errors, and interrupted replies retain
+their existing visibility.
+
 OpenAI GA browser Talk keeps provider conversation order even when an assistant
 reply finishes before the user's transcription or item announcements arrive out
 of order. Text streams immediately in the call view; late predecessor metadata
