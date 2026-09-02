@@ -1937,15 +1937,17 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
   });
 
   it.each([
-    [1200, 800, "desktop", "overlay"],
-    [900, 500, "mobile-landscape-900", "inline"],
-    [640, 900, "mobile-responsive-640", "overlay"],
-    [320, 568, "mobile-320", "overlay"],
-    [375, 812, "mobile-375", "overlay"],
-    [430, 932, "mobile-430", "overlay"],
+    [1200, 800, "desktop", "overlay", false],
+    [900, 500, "mobile-landscape-900", "inline", false],
+    [640, 900, "mobile-responsive-640", "overlay", false],
+    [320, 568, "mobile-320", "overlay", false],
+    [375, 812, "mobile-375", "overlay", false],
+    [430, 932, "mobile-430", "overlay", false],
+    [1200, 800, "desktop-with-pull-request", "overlay", true],
+    [375, 812, "mobile-with-pull-request", "overlay", true],
   ] as const)(
-    "keeps floating notices below menus and clear of mobile chrome without shifting the %s transcript layout",
-    async (width, height, label, menuPlacement) => {
+    "keeps floating notices below menus and clear of mobile chrome without shifting the %sx%s (%s) transcript layout",
+    async (width, height, label, menuPlacement, withPullRequest) => {
       const page = await openBrowserPage(width, height);
       try {
         await page.setContent(`<!doctype html><html><head><style>${readUiCss()}</style></head><body style="margin:0;height:100vh;overflow:hidden">
@@ -1959,6 +1961,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
                     <div class="chat-main__conversation">
                       <div class="chat-thread" role="log"><div class="chat-thread-inner">Transcript</div></div>
                       <div class="chat-gutter-stack"><div class="task-suggestions">Task suggestion</div></div>
+                      ${withPullRequest ? '<div class="chat-prs"><article class="chat-pr" data-state="open"><a class="chat-pr__link" href="https://github.com/example/repo/pull/42">PR #42</a></article></div>' : ""}
                       <div class="agent-chat__composer-shell">
                         <div class="agent-chat__composer-overlay"></div>
                         <div class="agent-chat__input">Composer</div>

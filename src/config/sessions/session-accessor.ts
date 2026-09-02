@@ -254,6 +254,7 @@ export {
   readLatestTranscriptAssistantText,
   readTranscriptEventAtSeqSync,
   readTranscriptRawDelta,
+  readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,

@@ -450,11 +450,37 @@ describe("human mention directory", () => {
   });
 
   it.each([
-    ["administrator", "draft", true],
-    ["owner-only", "shared", false],
+    {
+      name: "administrator receiving a draft",
+      role: "administrator",
+      sessionKey: SESSION_KEY,
+      entry: { visibility: "draft" },
+      visible: true,
+    },
+    {
+      name: "owner-only recipient of a shared session",
+      role: "owner-only",
+      sessionKey: SESSION_KEY,
+      entry: { visibility: "shared" },
+      visible: false,
+    },
+    {
+      name: "administrator in an entry-flag incognito session",
+      role: "administrator",
+      sessionKey: "agent:main:dashboard:mention-incognito-flag",
+      entry: { visibility: "shared", incognito: true },
+      visible: false,
+    },
+    {
+      name: "administrator in a canonical-key incognito session",
+      role: "administrator",
+      sessionKey: "agent:main:dashboard:incognito-mention-key",
+      entry: { visibility: "shared" },
+      visible: false,
+    },
   ] as const)(
-    "applies the offline %s recipient's policy to %s sessions",
-    async (role, visibility, visible) => {
+    "applies offline recipient policy across directory, admission, and delivery: $name",
+    async ({ role, sessionKey, entry, visible }) => {
       const cfg: OpenClawConfig = {
         gateway: {
           roles: {
@@ -481,25 +507,32 @@ describe("human mention directory", () => {
         setUserProfileRole(f.bob.id, role);
         invalidateOperatorRolePolicy(f.bob.id);
         f.aliceClient.connect.scopes = ["operator.admin"];
+        f.bobClient.connect.scopes = ["operator.admin"];
         f.clients.length = 0;
+        const sessionId = sessionKey === SESSION_KEY ? SESSION_ID : "incognito-policy-session";
         await upsertSessionEntryCore(
-          { agentId: "main", sessionKey: SESSION_KEY },
+          { agentId: "main", sessionKey },
           {
-            sessionId: SESSION_ID,
+            sessionId,
             updatedAt: Date.now(),
-            visibility,
             createdActor: { type: "human", source: "profile", id: f.alice.id },
+            ...entry,
           },
         );
-        expect(
-          f.inbox.mentionable(f.aliceClient, { sessionKey: SESSION_KEY, query: "Bob" }),
-        ).toMatchObject({
-          ok: true,
-          value: { users: visible ? [{ profileId: f.bob.id, online: false }] : [] },
+        const directory = f.inbox.mentionable(f.aliceClient, { sessionKey, query: "Bob" });
+        const admission = f.inbox.validateRecipients(f.aliceClient, { sessionKey }, [f.bob.id]);
+        f.post("policy-source", { sessionKey, sessionId });
+        expect({
+          users: directory.ok && directory.value.users.map((user) => [user.profileId, user.online]),
+          accepted: admission.ok,
+          inboxKeys: read(f.inbox, f.bobClient).items.map((item) => item.sessionKey),
+          pushedRecipients: f.push.mock.calls.map(([mention]) => mention.recipientProfileId),
+        }).toEqual({
+          users: visible ? [[f.bob.id, false]] : [],
+          accepted: visible,
+          inboxKeys: visible ? [sessionKey] : [],
+          pushedRecipients: visible ? [f.bob.id] : [],
         });
-        expect(
-          f.inbox.validateRecipients(f.aliceClient, { sessionKey: SESSION_KEY }, [f.bob.id]).ok,
-        ).toBe(visible);
       }, cfg);
     },
   );

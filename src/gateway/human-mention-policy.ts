@@ -12,6 +12,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { readUserProfileVersion } from "../state/user-profile-events.js";
 import { listProfiles } from "../state/user-profiles.js";
@@ -159,7 +160,8 @@ export function createHumanMentionPolicy(params: {
     cfg: OpenClawConfig,
   ): MentionProfile | undefined {
     const profile = readProfile(profileId);
-    if (!profile) {
+    // Administrator read access does not make incognito sessions eligible for mentions.
+    if (!profile || target.entry.incognito === true || isIncognitoSessionKey(target.sessionKey)) {
       return undefined;
     }
     const policy = resolveOperatorRolePolicyForProfile(profile.profileId, cfg);

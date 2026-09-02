@@ -262,6 +262,10 @@ export type MessageContentItem =
       args?: unknown;
     }
   | {
+      type: "thinking";
+      thinking: string;
+    }
+  | {
       type: "attachment";
       attachment: {
         url: string;

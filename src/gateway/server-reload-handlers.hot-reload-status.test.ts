@@ -5,7 +5,10 @@
  * lifecycle instead of individual config writers.
  */
 import { describe, expect, it, vi } from "vitest";
-import { getRuntimeAuthProfileStoreCredentialsRevision } from "../agents/auth-profiles/runtime-snapshots.js";
+import {
+  getRuntimeAuthProfileStoreCredentialsRevision,
+  getRuntimeAuthProfileStoreSnapshotsRevision,
+} from "../agents/auth-profiles/runtime-snapshots.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildGatewayReloadPlan } from "./config-reload-plan.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
@@ -124,6 +127,7 @@ describe("startManagedGatewayConfigReloader hotReloadStatus plumbing", () => {
         config,
         authStores: [],
         authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
+        authStoreSnapshotsRevision: getRuntimeAuthProfileStoreSnapshotsRevision(),
         warnings: [],
         webTools: {},
       })) as never,
