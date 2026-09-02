@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
+import { prepareOomScoreAdjustedSpawn } from "../process/linux-oom-score.js";
 import { getFreePort } from "../test-utils/ports.js";
 import {
   ensureProviderLocalService,
@@ -25,6 +26,14 @@ describe("provider local service Linux OOM scoring", () => {
         return;
       }
       if (!Number.isFinite(hostOomScore) || hostOomScore >= 1000) {
+        skip();
+        return;
+      }
+
+      const preparedSpawn = prepareOomScoreAdjustedSpawn(process.execPath, [], {
+        env: process.env,
+      });
+      if (!preparedSpawn.wrapped) {
         skip();
         return;
       }
