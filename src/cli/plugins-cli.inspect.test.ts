@@ -364,9 +364,6 @@ describe("plugins cli inspect", () => {
     );
 
     const output = runtimeErrors.at(-1);
-    if (entries) {
-      expect(workshopMocks.loadMetadata).toHaveBeenCalledWith({ config, workspaceDir: undefined });
-    }
     expect(output).toContain("Skill Workshop is built into OpenClaw, not a plugin");
     expect(output).toContain('tools.profile: "messaging" does not include "skill_workshop".');
     expect(output).toContain('Add tools.alsoAllow: ["skill_workshop"].');

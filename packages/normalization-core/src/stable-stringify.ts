@@ -3,6 +3,7 @@
  * Serializes arbitrary values with deterministic key ordering and explicit
  * handling for errors, binary data, bigint, non-finite numbers, and cycles.
  */
+import { isErrorObject } from "./error-coercion.js";
 
 type StableStringNormalizer = (value: string) => string;
 
@@ -53,7 +54,7 @@ function stringifyObjectValue(
   stack: WeakSet<object>,
   normalizeString: StableStringNormalizer,
 ): string {
-  if (value instanceof Error) {
+  if (isErrorObject(value)) {
     return stringifyStableValue(
       {
         name: value.name,

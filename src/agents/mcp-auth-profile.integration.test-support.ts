@@ -540,10 +540,28 @@ async function runScopeScenario(root: string): Promise<void> {
     assert.equal(first.generation.pluginRegistry.providers.length, 1);
     assert.equal(second.generation.pluginRegistry.providers.length, 1);
     assert.equal(disabled.generation.pluginRegistry.providers.length, 0);
-    const checkScope = (owner: ScopedOwner, context?: HookContext) => {
+    const checkRequestScope = (owner: ScopedOwner) => {
       assert.deepEqual(getPluginRuntimeGatewayRequestScope(), {
         ...owner.request,
         pluginRegistry: owner.generation.pluginRegistry,
+      });
+      assert.equal(getPluginRuntimeGenerationRegistry(), owner.generation.pluginRegistry);
+    };
+    inspectHook = (name, context) => {
+      const owner = name === "first" ? first : second;
+      const plugin = owner.generation.pluginRegistry.plugins.find(
+        (record) => record.id === PLUGIN_ID,
+      );
+      assert(plugin);
+      assert.deepEqual(getPluginRuntimeGatewayRequestScope(), {
+        ...owner.request,
+        pluginRegistry: owner.generation.pluginRegistry,
+        pluginId: plugin.id,
+        pluginSource: plugin.source,
+        pluginOrigin: plugin.origin,
+        ...(plugin.trustedOfficialInstall !== undefined
+          ? { pluginTrustedOfficialInstall: plugin.trustedOfficialInstall }
+          : {}),
       });
       assert.equal(getPluginRuntimeGenerationRegistry(), owner.generation.pluginRegistry);
       if (context) {
@@ -551,11 +569,10 @@ async function runScopeScenario(root: string): Promise<void> {
         assert.equal(context.agentDir, owner.fixture.agentDir);
       }
     };
-    inspectHook = (name, context) => checkScope(name === "first" ? first : second, context);
     const bind = (owner: ScopedOwner) => {
       const wrapped = withMcpAuthProfileBearer({
         fetchFn: async (url, init) => {
-          checkScope(owner);
+          checkRequestScope(owner);
           return fetch(url, init);
         },
         serverName: "proof",
