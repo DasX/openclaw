@@ -851,9 +851,10 @@ response remains authoritative even if it contains no visible models; HTTP
 `401` and `403` return an empty catalog rather than exposing fallback models.
 
 <Note>
-The current bundled harness is `@openai/codex` `0.152.0`. A read-only `model/list`
-probe on September 1, 2026 against the official `0.152.0` app-server verified
-this public subset of picker rows:
+The current bundled harness is `@openai/codex` `0.152.0`. A `model/list` probe
+on September 1, 2026 against the official `0.152.0` app-server verified this
+public subset of picker rows. When no cached catalog is available, Codex can
+fetch remote models and write its local model cache:
 
 | Model id        | Input modalities | Reasoning efforts                    |
 | --------------- | ---------------- | ------------------------------------ |
