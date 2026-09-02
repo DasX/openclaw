@@ -107,7 +107,24 @@ export function createFixture(
 ) {
   fs.mkdirSync(root, { recursive: true });
   fs.mkdirSync(path.join(root, ".artifacts"));
-  fs.symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "junction");
+  // Keep real compiler packages, launchers and the shared Node type root, without
+  // traversing unrelated repository dependencies on every input snapshot.
+  for (const dependency of [
+    ".bin",
+    "@openclaw/fs-safe",
+    "@types/node",
+    "@typescript/native-preview",
+    "apache-arrow",
+    "playwright-core",
+    "pretty-ms",
+    "tsdown",
+    "tsx",
+    "typescript",
+  ]) {
+    const target = path.join(root, "node_modules", dependency);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.symlinkSync(path.resolve("node_modules", dependency), target, "junction");
+  }
   const write = (source: string, contents: string) => {
     const relative = path.relative(root, path.resolve(root, source));
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
