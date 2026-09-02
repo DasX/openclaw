@@ -3,7 +3,6 @@ import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import { selectApplicationSession } from "../../app/agent-selection.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
-import { beginNativeWindowDragFromTopInset } from "../../app/native-window-drag.ts";
 import { loadSettings } from "../../app/settings.ts";
 import { readPresenceEntries } from "../../app/user-profile.ts";
 import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
@@ -26,7 +25,11 @@ import * as catalog from "./catalog-target.ts";
 import { NewSessionDictationControl } from "./composer-dictation-control.ts";
 import { ConnectMachineSetupState, renderConnectMachineDialog } from "./connect-machine-dialog.ts";
 import { renderDetailChip, resolveDetailChip } from "./detail-chip.ts";
-import { renderNewSessionDraftComposer, renderNewSessionDraftErrors } from "./draft-composer.ts";
+import {
+  renderNewSessionBody,
+  renderNewSessionDraftComposer,
+  renderNewSessionDraftErrors,
+} from "./draft-composer.ts";
 import { DraftGatewayState } from "./draft-gateway-state.ts";
 import * as drafts from "./draft-navigation-handoff.ts";
 import { DraftPlaceBrowser } from "./draft-place-browser.ts";
@@ -77,6 +80,9 @@ export class NewSessionPage extends OpenClawLightDomElement {
   private readonly dictation: NewSessionDictationControl;
   private readonly subscriptions: SubscriptionsController;
   private readonly flushDraft = () => this.submission.draftPersistence.persistNow();
+  private readonly setImageLightbox = (item: ImageLightboxItem | null) => {
+    this.imageLightbox = item;
+  };
 
   constructor() {
     super();
@@ -598,9 +604,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
               }
             : undefined,
           onInput: (message, mentions) => this.setMessageFromUser(message, mentions),
-          onOpenImage: (item) => {
-            this.imageLightbox = item;
-          },
+          onOpenImage: this.setImageLightbox,
           onVisibilityChange: (visibility) => {
             if (!this.submission.submitting && !this.submission.pendingPlacement.sessionKey) {
               this.submission.setVisibility(visibility);
@@ -666,9 +670,11 @@ export class NewSessionPage extends OpenClawLightDomElement {
   }
 
   override render() {
+    const pendingMessage = this.submission.pendingMessage;
+    const incognito = this.submission.visibility === "incognito";
     return html`
       <div
-        class="new-session-page ${this.submission.visibility === "incognito"
+        class="new-session-page ${pendingMessage ? "chat" : ""} ${incognito
           ? "new-session-page--incognito"
           : ""}"
       >
@@ -676,14 +682,13 @@ export class NewSessionPage extends OpenClawLightDomElement {
           this.submission,
           this.submission.capabilities.canStartAsDraft(this.context),
         )}
-        <div
-          class="new-session-page__scroll"
-          ?inert=${this.submission.submitting}
-          aria-busy=${String(this.submission.submitting)}
-          @mousedown=${beginNativeWindowDragFromTopInset}
-        >
-          ${this.renderWelcome()}
-        </div>
+        ${renderNewSessionBody({
+          error: this.submission.error,
+          pendingMessage,
+          submitting: this.submission.submitting,
+          renderDraft: () => this.renderWelcome(),
+          onOpenImage: this.setImageLightbox,
+        })}
         ${renderConnectMachineDialog({
           open: this.connectMachine.open && this.place.isAdmin(),
           loading: this.connectMachine.loading,
@@ -699,9 +704,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
             this.context?.navigate("devices");
           },
         })}
-        ${renderChatImageLightbox(this.imageLightbox, () => {
-          this.imageLightbox = null;
-        })}
+        ${renderChatImageLightbox(this.imageLightbox, () => this.setImageLightbox(null))}
       </div>
     `;
   }
