@@ -246,12 +246,21 @@ type SavedUpdateFailureReport = {
   reportDirCreated: boolean;
 };
 
+function hasErrorCode(error: unknown, ...codes: string[]): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    codes.includes(error.code)
+  );
+}
+
 async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.stat(filePath);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (hasErrorCode(error, "ENOENT")) {
       return false;
     }
     throw error;
@@ -266,8 +275,8 @@ async function discardSavedUpdateFailureReport(
     await fs.rm(prepared.savedReportPath, { force: true });
   }
   if (saved.reportDirCreated) {
-    await fs.rmdir(path.dirname(prepared.savedReportPath)).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") {
+    await fs.rmdir(path.dirname(prepared.savedReportPath)).catch((error: unknown) => {
+      if (!hasErrorCode(error, "ENOENT", "ENOTEMPTY")) {
         throw error;
       }
     });
@@ -303,12 +312,14 @@ async function savePreparedUpdateFailureReport(
       });
       saved.reportCreated = true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      if (!hasErrorCode(error, "EEXIST")) {
         throw error;
       }
       const existing = await fs.readFile(prepared.savedReportPath, "utf8");
       if (existing !== prepared.body) {
-        throw new Error("The saved update report does not match the reviewed preview.");
+        throw new Error("The saved update report does not match the reviewed preview.", {
+          cause: error,
+        });
       }
     }
     ensureCurrentAuthority();
