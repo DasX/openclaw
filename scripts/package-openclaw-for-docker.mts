@@ -15,6 +15,7 @@ import {
 } from "./lib/arg-utils.runtime.mjs";
 import { DOCKER_SELECTED_PLUGIN_BUILD_IDS_ENV } from "./lib/bundled-plugin-build-entries.mjs";
 import { toErrorObject } from "./lib/error-format.mts";
+import { resolveNativeExecutable } from "./lib/executable-path.mts";
 import { terminateManagedChild } from "./lib/managed-child-process.mts";
 import { resolveNpmJsonEntries } from "./lib/npm-json-output.mts";
 import { assertRealOutputRoot } from "./lib/output-root-guard.mjs";
@@ -587,7 +588,7 @@ export async function prepareBundledAiRuntimePackage(
       // Archive basenames avoid GNU tar's Windows-drive remote syntax; forward-slash
       // directories prevent its -C parser from unquoting native Windows separators.
       run(
-        "tar",
+        resolveNativeExecutable("tar"),
         [
           "-xzf",
           path.basename(tarballPath),
@@ -785,11 +786,12 @@ async function normalizeOpenClawTarballModes(tarballPath: string) {
     "OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS",
     DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
   );
+  const tarCommand = resolveNativeExecutable("tar");
   const stageDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-package-modes-"));
   const tarDir = stageDir.split(path.sep).join("/");
   try {
     await run(
-      "tar",
+      tarCommand,
       ["-xzf", path.basename(tarballPath), "-C", tarDir],
       path.dirname(tarballPath),
       { timeoutMs },
@@ -818,7 +820,7 @@ async function normalizeOpenClawTarballModes(tarballPath: string) {
     const normalizedPath = `${tarballPath}.modes-tmp`;
     await fs.rm(normalizedPath, { force: true });
     await run(
-      "tar",
+      tarCommand,
       ["--no-xattrs", "-czf", path.basename(normalizedPath), "-C", tarDir, ...stageRootEntries],
       path.dirname(normalizedPath),
       {

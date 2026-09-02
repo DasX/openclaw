@@ -122,6 +122,7 @@ describe("scripts/build-and-run-mac.sh", () => {
         scriptPath,
         "scripts/prepare-apple-mermaid.mjs",
         "scripts/pnpm-runner.mts",
+        "scripts/lib/executable-path.mts",
         "scripts/lib/windows-cmd-helpers-runtime.mts",
         "scripts/lib/record-shared.mjs",
         "scripts/windows-cmd-helpers.mjs",

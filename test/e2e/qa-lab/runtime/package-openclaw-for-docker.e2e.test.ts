@@ -1,5 +1,5 @@
 // Package OpenClaw For Docker tests cover QA Lab package artifact evidence.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
@@ -671,6 +671,7 @@ describe("package-openclaw-for-docker", () => {
       "scripts/lib/bundled-plugin-build-entries.mjs",
       "scripts/lib/bundled-plugin-paths.mjs",
       "scripts/lib/error-format.mts",
+      "scripts/lib/executable-path.mts",
       "scripts/lib/managed-child-process.mts",
       "scripts/lib/vitest-resource-ownership.mts",
       "scripts/lib/npm-json-output.mts",
@@ -1561,6 +1562,10 @@ describe("package-openclaw-for-docker", () => {
   it("packs bundled workspace dependencies from legacy --pnpm-pack commands in isolated layouts", async () => {
     const sourceDir = createPackageSourceFixture("openclaw-package-source-");
     const outputDir = tempDirs.make("openclaw-legacy-pack-");
+    // Windows must not select an executable beside the archive instead of the caller's tar.
+    if (process.platform === "win32") {
+      fs.copyFileSync(process.execPath, path.join(outputDir, "tar.exe"));
+    }
     const packageJsonPath = path.join(sourceDir, "package.json");
     const originalPackageJson = `${JSON.stringify({
       name: "openclaw",
@@ -1613,6 +1618,14 @@ describe("package-openclaw-for-docker", () => {
       expect(fs.lstatSync(aiInstalled).isSymbolicLink()).toBe(true);
       expect(fs.realpathSync(aiInstalled)).toBe(fs.realpathSync(aiSource));
     }
+    // A semantic rejection proves the validator completed every system-tar phase.
+    const validation = spawnSync(
+      process.execPath,
+      [path.resolve("scripts/check-openclaw-package-tarball.mjs"), tarball],
+      { cwd: sourceDir, encoding: "utf8", timeout: 30_000 },
+    );
+    expect(validation.status, validation.stderr).toBe(1);
+    expect(validation.stderr).toContain("missing required tar entry dist/control-ui/index.html");
     const extracted = tempDirs.make("openclaw-legacy-pack-extract-");
     await tar.x({ file: tarball, cwd: extracted });
     expect(

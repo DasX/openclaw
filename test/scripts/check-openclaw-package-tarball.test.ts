@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { gte as semverGte, valid as validSemver } from "semver";
 import { describe, expect, it } from "vitest";
 import { LOCAL_BUILD_METADATA_DIST_PATHS } from "../../scripts/lib/local-build-metadata-paths.mts";
@@ -169,8 +169,12 @@ function withTarball(
     // against restrictive host umasks the way the packer normalizes artifacts.
     chmodTreeWorldReadable(packageRoot);
 
-    const tarball = join(root, "openclaw.tgz");
-    const pack = spawnSync("tar", ["-czf", tarball, "-C", root, "package"], {
+    const tarball = join(
+      root,
+      process.platform === "win32" ? "openclaw.tgz" : "openclaw:local.tgz",
+    );
+    const pack = spawnSync("tar", ["-czf", `./${basename(tarball)}`, "package"], {
+      cwd: root,
       encoding: "utf8",
     });
     expect(pack.status, pack.stderr).toBe(0);
@@ -261,6 +265,17 @@ describe("check-openclaw-package-tarball", () => {
     expect(extra.stderr).not.toContain("OpenClaw package tarball does not exist");
   });
 
+  it.skipIf(process.platform === "win32")("validates packages without a caller PATH", () => {
+    withTarball(["dist/index.js"], { "dist/index.js": "export {};\n" }, (tarball) => {
+      const result = spawnSync(process.execPath, [CHECK_SCRIPT, tarball], {
+        encoding: "utf8",
+        env: {},
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("OpenClaw package tarball integrity passed.");
+    });
+  });
+
   it.skipIf(process.platform === "win32")("rejects owner-only tar entry modes", () => {
     const root = mkdtempSync(join(tmpdir(), "openclaw-package-tarball-modes-"));
     try {
@@ -274,7 +289,8 @@ describe("check-openclaw-package-tarball", () => {
       chmodTreeWorldReadable(packageRoot);
       chmodSync(join(packageRoot, "dist", "index.js"), 0o600);
       const tarball = join(root, "openclaw.tgz");
-      const pack = spawnSync("tar", ["-czf", tarball, "-C", root, "package"], {
+      const pack = spawnSync("tar", ["-czf", `./${basename(tarball)}`, "package"], {
+        cwd: root,
         encoding: "utf8",
       });
       expect(pack.status, pack.stderr).toBe(0);
@@ -303,7 +319,8 @@ describe("check-openclaw-package-tarball", () => {
       ["dist/index.js"],
       { "dist/index.js": "export {};\n", ...largeEntryList },
       (tarball) => {
-        const listing = spawnSync("tar", ["-tf", tarball], {
+        const listing = spawnSync("tar", ["-tf", `./${basename(tarball)}`], {
+          cwd: dirname(tarball),
           encoding: "utf8",
           maxBuffer: NODE_DEFAULT_SPAWN_MAX_BUFFER_BYTES * 2,
         });
@@ -312,7 +329,10 @@ describe("check-openclaw-package-tarball", () => {
           NODE_DEFAULT_SPAWN_MAX_BUFFER_BYTES,
         );
 
-        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+        const result = spawnSync("node", [resolve(CHECK_SCRIPT), basename(tarball)], {
+          cwd: dirname(tarball),
+          encoding: "utf8",
+        });
 
         expect(result.status, result.stderr).toBe(0);
         expect(result.stdout).toContain("OpenClaw package tarball integrity passed.");
@@ -321,7 +341,7 @@ describe("check-openclaw-package-tarball", () => {
   });
 
   it.runIf(process.platform !== "win32")(
-    "removes the extract dir when tar extraction fails",
+    "resolves caller-relative tar and removes the extract dir when extraction fails",
     () => {
       const root = mkdtempSync(join(tmpdir(), "openclaw-package-tarball-extract-fail-"));
       try {
@@ -354,7 +374,7 @@ describe("check-openclaw-package-tarball", () => {
           env: {
             ...process.env,
             OPENCLAW_TEST_EXTRACT_DIR_FILE: extractDirFile,
-            PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+            PATH: `${relative(process.cwd(), fakeBin)}${delimiter}${process.env.PATH ?? ""}`,
           },
         });
 

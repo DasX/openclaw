@@ -10,6 +10,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { gte as semverGte, valid as validSemver } from "semver";
 import { coerceErrorMessage } from "./lib/error-format.mts";
+import { resolveNativeExecutable } from "./lib/executable-path.mts";
 import { LOCAL_BUILD_METADATA_DIST_PATHS } from "./lib/local-build-metadata-paths.mts";
 import { collectPackageDistImportErrors } from "./lib/package-dist-imports.mjs";
 import {
@@ -91,8 +92,15 @@ if (cliArgs.help) {
 }
 
 const { tarball } = cliArgs;
+const { base: archiveName, dir: archiveDir } = path.parse(path.resolve(tarball));
 if (!fs.existsSync(tarball)) {
   fail(`OpenClaw package tarball does not exist: ${tarball}`);
+}
+let tarCommand: string;
+try {
+  tarCommand = resolveNativeExecutable("tar");
+} catch (error) {
+  fail(coerceErrorMessage(error));
 }
 
 const PACKAGE_DEPENDENCY_SECTIONS = [
@@ -334,24 +342,26 @@ function runPhase<Result>(label: string, action: () => Result): Result {
   }
 }
 
-const list = runPhase("tar list", () =>
-  spawnSync("tar", ["-tf", tarball], {
-    encoding: "utf8",
-    maxBuffer: TAR_LIST_MAX_BUFFER_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
-  }),
-);
+// GNU tar treats drive letters as remote hosts and unquotes -C backslashes.
+// Keep filesystem paths native and encode only the external-tool arguments.
+function runTar(label: string, mode: "-tf" | "-tvf" | "-xf", destination?: string) {
+  const directoryArgs = destination ? ["-C", destination.split(path.sep).join("/")] : [];
+  return runPhase(label, () =>
+    spawnSync(tarCommand, [mode, `./${archiveName}`, ...directoryArgs], {
+      cwd: archiveDir,
+      encoding: "utf8",
+      ...(mode === "-xf" ? {} : { maxBuffer: TAR_LIST_MAX_BUFFER_BYTES }),
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+}
+
+const list = runTar("tar list", "-tf");
 if (list.status !== 0) {
   fail(`tar -tf failed for ${tarball}: ${list.stderr || list.error?.message || list.status}`);
 }
 
-const verboseList = runPhase("tar mode list", () =>
-  spawnSync("tar", ["-tvf", tarball], {
-    encoding: "utf8",
-    maxBuffer: TAR_LIST_MAX_BUFFER_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
-  }),
-);
+const verboseList = runTar("tar mode list", "-tvf");
 if (verboseList.status !== 0) {
   fail(
     `tar -tvf failed for ${tarball}: ${verboseList.stderr || verboseList.error?.message || verboseList.status}`,
@@ -385,12 +395,7 @@ function collectTarballEntryModeErrors(verboseListing: string): string[] {
 
 const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-package-tarball-"));
 try {
-  const extract = runPhase("tar extract", () =>
-    spawnSync("tar", ["-xf", tarball, "-C", extractDir], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }),
-  );
+  const extract = runTar("tar extract", "-xf", extractDir);
   if (extract.status !== 0) {
     fs.rmSync(extractDir, { recursive: true, force: true });
     fail(`tar -xf failed for ${tarball}: ${extract.stderr || extract.status}`);

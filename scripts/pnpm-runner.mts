@@ -1,7 +1,8 @@
 // Resolves and spawns pnpm commands portably across POSIX and Windows shells.
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { accessSync, closeSync, constants, openSync, readSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import path from "node:path";
+import { findExecutableOnPath, isExecutableFile, isRegularFile } from "./lib/executable-path.mts";
 import {
   buildCmdExeCommandLine,
   resolvePathEnvKey,
@@ -59,62 +60,6 @@ function hasNodeShebang(value: string) {
   }
 }
 
-function isExecutableFile(value: string) {
-  try {
-    if (!statSync(value).isFile()) {
-      return false;
-    }
-    accessSync(value, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isFile(value: string) {
-  try {
-    return statSync(value).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function findExecutableOnPath(
-  command: string,
-  envPath: string | undefined,
-  platform: NodeJS.Platform,
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-) {
-  if (typeof envPath !== "string" || envPath.length === 0) {
-    return null;
-  }
-  const extensions =
-    platform === "win32"
-      ? (
-          env[Object.keys(env).find((key) => key.toLowerCase() === "pathext") ?? "PATHEXT"] ??
-          ".COM;.EXE;.BAT;.CMD"
-        )
-          .split(";")
-          .filter(Boolean)
-          .map((extension) => extension.toLowerCase())
-      : [""];
-  const pathDelimiter = platform === "win32" ? ";" : path.delimiter;
-  for (const directory of envPath.split(pathDelimiter)) {
-    if (!directory) {
-      continue;
-    }
-    const resolvedDirectory = path.isAbsolute(directory) ? directory : path.resolve(cwd, directory);
-    for (const extension of extensions) {
-      const candidate = path.join(resolvedDirectory, `${command}${extension}`);
-      if (platform === "win32" ? isFile(candidate) : isExecutableFile(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
-
 function createWindowsRunner(command: string, args: string[], comSpec: string): PnpmRunner {
   const extension = getPortableExtension(command);
   if (extension === ".cmd" || extension === ".bat") {
@@ -134,7 +79,7 @@ function isNodeRunnablePnpmExecPath(value: string) {
   }
   const extension = getPortableExtension(value);
   if (extension === ".js" || extension === ".cjs" || extension === ".mjs") {
-    return isFile(value);
+    return isRegularFile(value);
   }
   if (extension.length > 0) {
     return false;
