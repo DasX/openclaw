@@ -63,63 +63,72 @@ final class WatchConnectivityTransport: NSObject, @unchecked Sendable {
     }
 
     func sendPayload(_ payload: [String: Any]) async throws -> WatchNotificationSendResult {
-        try await self.ensureActivated()
-        let session = try self.requireReadySession()
-        if session.isReachable {
-            do {
-                try await sendReachableWatchMessage(payload, with: session)
-                return WatchNotificationSendResult(
-                    deliveredImmediately: true,
-                    queuedForDelivery: false,
-                    transport: "sendMessage")
-            } catch {
-                Self.logger.error("watch sendMessage failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-
-        _ = session.transferUserInfo(payload)
-        return WatchNotificationSendResult(
-            deliveredImmediately: false,
-            queuedForDelivery: true,
-            transport: "transferUserInfo")
+        try await self.sendPayload(payload, isSnapshot: false)
     }
 
     func sendSnapshotPayload(_ payload: [String: Any]) async throws -> WatchNotificationSendResult {
-        try await self.ensureActivated()
-        let session = try self.requireReadySession()
-        if session.isReachable {
-            do {
+        try await self.sendPayload(payload, isSnapshot: true)
+    }
+
+    private func sendPayload(
+        _ payload: [String: Any],
+        isSnapshot: Bool) async throws -> WatchNotificationSendResult
+    {
+        try await Self.deliverPayload(
+            prepareSession: {
+                try await self.ensureActivated()
+                return try self.requireReadySession()
+            },
+            sendImmediately: { session in
+                guard session.isReachable else { return false }
                 try await sendReachableWatchMessage(payload, with: session)
+                return true
+            },
+            enqueue: { session in
+                if isSnapshot {
+                    do {
+                        try self.snapshotContextLock.withLock {
+                            let context = WatchMessagingPayloadCodec.encodeSnapshotApplicationContext(
+                                payload,
+                                merging: session.applicationContext)
+                            try session.updateApplicationContext(context)
+                        }
+                        return "applicationContext"
+                    } catch {
+                        Self.logger.error(
+                            "watch updateApplicationContext failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+                try Task.checkCancellation()
+                _ = session.transferUserInfo(payload)
+                return "transferUserInfo"
+            })
+    }
+
+    static func deliverPayload<Session>(
+        prepareSession: () async throws -> Session,
+        sendImmediately: (Session) async throws -> Bool,
+        enqueue: (Session) throws -> String) async throws -> WatchNotificationSendResult
+    {
+        let session = try await prepareSession()
+        // Activation may outlive its caller; only a live request may start a transfer.
+        try Task.checkCancellation()
+        do {
+            if try await sendImmediately(session) {
                 return WatchNotificationSendResult(
                     deliveredImmediately: true,
                     queuedForDelivery: false,
                     transport: "sendMessage")
-            } catch {
-                Self.logger.error(
-                    "watch snapshot sendMessage failed: \(error.localizedDescription, privacy: .public)")
             }
-        }
-
-        do {
-            try self.snapshotContextLock.withLock {
-                let context = WatchMessagingPayloadCodec.encodeSnapshotApplicationContext(
-                    payload,
-                    merging: session.applicationContext)
-                try session.updateApplicationContext(context)
-            }
-            return WatchNotificationSendResult(
-                deliveredImmediately: false,
-                queuedForDelivery: true,
-                transport: "applicationContext")
         } catch {
-            Self.logger.error(
-                "watch updateApplicationContext failed: \(error.localizedDescription, privacy: .public)")
-            _ = session.transferUserInfo(payload)
-            return WatchNotificationSendResult(
-                deliveredImmediately: false,
-                queuedForDelivery: true,
-                transport: "transferUserInfo")
+            Self.logger.error("watch sendMessage failed: \(error.localizedDescription, privacy: .public)")
         }
+        // A failed interactive attempt has not admitted a new background transfer.
+        try Task.checkCancellation()
+        return try WatchNotificationSendResult(
+            deliveredImmediately: false,
+            queuedForDelivery: true,
+            transport: enqueue(session))
     }
 
     private func updateCallbacks(_ update: (inout WatchConnectivityTransportCallbacks) -> Void) {

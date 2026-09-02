@@ -1,5 +1,6 @@
 import Foundation
 import OpenClawKit
+import Synchronization
 import Testing
 import UserNotifications
 import XCTest
@@ -95,19 +96,26 @@ struct NotificationServingPreferenceTests {
         let pause = NotificationOperationPause()
         let entered = XCTestExpectation(description: "notification operation suspended")
         let callerFinished = XCTestExpectation(description: "cancelled caller returned")
+        let operationCancelled = Mutex(false)
         let (cancellation, recordCancellation) = AsyncStream<Bool>.makeStream()
         let caller = Task { @MainActor in
             let result = await NotificationOperationRunner.run(timeoutSeconds: 30) {
-                await pause.wait(entered: entered)
-                recordCancellation.yield(Task.isCancelled)
-                recordCancellation.finish()
-                return 42
+                await withTaskCancellationHandler {
+                    await pause.wait(entered: entered)
+                    recordCancellation.yield(Task.isCancelled)
+                    recordCancellation.finish()
+                    return 42
+                } onCancel: {
+                    operationCancelled.withLock { $0 = true }
+                }
             }
             callerFinished.fulfill()
             return result
         }
         let ready = await XCTWaiter.fulfillment(of: [entered], timeout: 5)
         caller.cancel()
+        let cancelledWhenCallReturned = operationCancelled.withLock { $0 }
+        #expect(cancelledWhenCallReturned, "Cancellation must reach the operation before cancel() returns")
         let finished = await XCTWaiter.fulfillment(of: [callerFinished], timeout: 2)
         await pause.release()
         #expect(ready == .completed)

@@ -1587,6 +1587,7 @@ struct GatewayNodeSessionTests {
         OpenClawTalkCommand.pttStart.rawValue,
         OpenClawSystemCommand.notify.rawValue,
         OpenClawChatCommand.push.rawValue,
+        OpenClawWatchCommand.notify.rawValue,
     ])
     func `node invoke cancellation retires suspended side effects and preserves callbacks`(
         command: String) async throws
@@ -1690,7 +1691,11 @@ struct GatewayNodeSessionTests {
         await gateway.disconnect()
     }
 
-    @Test(arguments: [OpenClawSystemCommand.notify.rawValue, OpenClawChatCommand.push.rawValue])
+    @Test(arguments: [
+        OpenClawSystemCommand.notify.rawValue,
+        OpenClawChatCommand.push.rawValue,
+        OpenClawWatchCommand.notify.rawValue,
+    ])
     func `route replacement cancels notification work without awaiting its permission callback`(
         command: String) async throws
     {
