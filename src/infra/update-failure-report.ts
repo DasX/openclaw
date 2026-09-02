@@ -316,15 +316,24 @@ async function savePreparedUpdateFailureReport(
       if (!hasErrorCode(error, "EEXIST")) {
         throw error;
       }
-      const existing = await fs.readFile(prepared.savedReportPath, "utf8");
-      if (existing !== prepared.body) {
+      const existing = await fs
+        .readFile(prepared.savedReportPath, "utf8")
+        .catch((readError: unknown) => {
+          if (hasErrorCode(readError, "ENOENT")) {
+            return undefined;
+          }
+          throw readError;
+        });
+      if (existing !== undefined && existing !== prepared.body) {
         throw new Error("The saved update report does not match the reviewed preview.", {
           cause: error,
         });
       }
     }
     ensureCurrentAuthority();
-    await fs.chmod(prepared.savedReportPath, 0o600);
+    if (saved.reportCreated) {
+      await fs.chmod(prepared.savedReportPath, 0o600);
+    }
     ensureCurrentAuthority();
     return saved;
   } catch (error) {
