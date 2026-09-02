@@ -244,10 +244,14 @@ describe("package-openclaw-for-docker", () => {
     async (linkedDependencies) => {
       const { sourceDir, outputDir, files } = createSelectedPluginPackageFixture();
       if (linkedDependencies) {
-        const builtDependencies = path.join(sourceDir, "dist/extensions/demo/node_modules");
-        const sourceDependencies = path.join(sourceDir, "extensions/demo/node_modules");
-        fs.renameSync(builtDependencies, sourceDependencies);
-        fs.symlinkSync(sourceDependencies, builtDependencies, "junction");
+        const builtDependency = path.join(
+          sourceDir,
+          "dist/extensions/demo/node_modules/host-native",
+        );
+        const sourceDependency = path.join(sourceDir, "extensions/demo/node_modules/host-native");
+        fs.mkdirSync(path.dirname(sourceDependency), { recursive: true });
+        fs.renameSync(builtDependency, sourceDependency);
+        fs.symlinkSync(sourceDependency, builtDependency, "junction");
       }
       const inventoryPath = path.join(sourceDir, "dist/postinstall-inventory.json");
       const options = {

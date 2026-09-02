@@ -583,12 +583,18 @@ export async function prepareBundledAiRuntimePackage(
   const extractAiRuntime =
     packageOptions.extractAiRuntime ??
     ((tarballPath: string, destination: string) =>
-      // Source-ref validation runs this trusted harness outside the candidate's dependency tree.
-      // Keep extraction on the system tar contract so only the candidate checkout needs install.
-      // Use an archive basename so GNU tar cannot treat a Windows drive as a remote host.
+      // System tar keeps trusted harnesses independent of candidate-installed dependencies.
+      // Archive basenames avoid GNU tar's Windows-drive remote syntax; forward-slash
+      // directories prevent its -C parser from unquoting native Windows separators.
       run(
         "tar",
-        ["-xzf", path.basename(tarballPath), "-C", destination, "--strip-components=1"],
+        [
+          "-xzf",
+          path.basename(tarballPath),
+          "-C",
+          destination.split(path.sep).join("/"),
+          "--strip-components=1",
+        ],
         path.dirname(tarballPath),
         {
           timeoutMs: resolveTimeoutMs(
@@ -780,10 +786,11 @@ async function normalizeOpenClawTarballModes(tarballPath: string) {
     DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
   );
   const stageDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-package-modes-"));
+  const tarDir = stageDir.split(path.sep).join("/");
   try {
     await run(
       "tar",
-      ["-xzf", path.basename(tarballPath), "-C", stageDir],
+      ["-xzf", path.basename(tarballPath), "-C", tarDir],
       path.dirname(tarballPath),
       { timeoutMs },
     );
@@ -812,7 +819,7 @@ async function normalizeOpenClawTarballModes(tarballPath: string) {
     await fs.rm(normalizedPath, { force: true });
     await run(
       "tar",
-      ["--no-xattrs", "-czf", path.basename(normalizedPath), "-C", stageDir, ...stageRootEntries],
+      ["--no-xattrs", "-czf", path.basename(normalizedPath), "-C", tarDir, ...stageRootEntries],
       path.dirname(normalizedPath),
       {
         // BSD tar has separate PAX xattr and AppleDouble (._*) metadata paths.
