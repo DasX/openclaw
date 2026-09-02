@@ -111,7 +111,10 @@ function expectStableHeader(actual: HeaderGeometry, expected: HeaderGeometry) {
   expect(Math.abs(actual.left - expected.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(actual.top - expected.top)).toBeLessThanOrEqual(1);
   expect(Math.abs(actual.width - expected.width)).toBeLessThanOrEqual(1);
-  expect(Math.abs(actual.height - expected.height)).toBeLessThanOrEqual(1);
+  // Skills adds one compact secondary action beside the shared tabs; it may
+  // raise the row slightly, but must not shift or expand the shell materially.
+  expect(actual.height).toBeGreaterThanOrEqual(expected.height - 1);
+  expect(actual.height).toBeLessThanOrEqual(expected.height + 8);
 }
 
 async function captureScreenshot(page: Page, name: string) {
@@ -182,6 +185,7 @@ suite.define(() => {
           content:
             "*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }",
         });
+        await page.evaluate(() => document.fonts.ready.then(() => undefined));
         await waitForControlUiRoute(page, { pathname: "/plugins", routeId: "plugins" });
         await page.getByRole("heading", { name: "Your plugins" }).waitFor();
         const pluginsHeader = await headerGeometry(page);

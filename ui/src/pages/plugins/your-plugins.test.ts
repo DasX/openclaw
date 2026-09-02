@@ -4,7 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n/index.ts";
-import { createPlugin, createResult } from "./view.test-support.ts";
+import { createPlugin, createResult } from "./plugins-page.test-support.ts";
 import { renderYourPlugins, type YourPluginsProps } from "./your-plugins.ts";
 
 function baseProps(overrides: Partial<YourPluginsProps> = {}): YourPluginsProps {
