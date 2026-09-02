@@ -61,8 +61,7 @@ import {
 } from "./cli-runner.js";
 import {
   createManagedRun,
-  enqueueSystemEventMock,
-  requestHeartbeatMock,
+  enqueueSessionEventMock,
   supervisorSpawnMock,
 } from "./cli-runner.test-support.js";
 import { runCliRecovery } from "./cli-runner/cli-run-recovery.js";
@@ -363,7 +362,7 @@ function callArg(
 }
 
 function firstSystemEventCall(): Array<unknown> {
-  const call = enqueueSystemEventMock.mock.calls[0];
+  const call = enqueueSessionEventMock.mock.calls[0];
   if (!call) {
     throw new Error("expected system event call");
   }
@@ -492,7 +491,7 @@ describe("runCliAgent reliability", () => {
     );
   });
 
-  it("enqueues a system event and heartbeat wake on no-output watchdog timeout for session runs", async () => {
+  it("hands off a session event on no-output watchdog timeout for session runs", async () => {
     supervisorSpawnMock.mockResolvedValueOnce(
       makeManagedRun({
         reason: "no-output-timeout",
@@ -515,22 +514,20 @@ describe("runCliAgent reliability", () => {
       ),
     ).rejects.toThrow("produced no output");
 
-    expect(enqueueSystemEventMock).toHaveBeenCalledTimes(1);
+    expect(enqueueSessionEventMock).toHaveBeenCalledTimes(1);
     const [notice, opts] = firstSystemEventCall();
     expect(String(notice)).toContain("produced no output");
     expect(String(notice)).toContain("interactive input or an approval prompt");
     expect(requireRecord(opts, "system event options").sessionKey).toBe("agent:main:main");
-    expect(requestHeartbeatMock).toHaveBeenCalledWith({
-      source: "cli-watchdog",
-      intent: "event",
-      reason: "cli:watchdog:stall",
+    expect(opts).toMatchObject({
+      source: "exec",
       sessionKey: "agent:main:main",
+      expectedTarget: expect.objectContaining({ sessionKey: "agent:main:main" }),
     });
   });
 
   it("does not enqueue watchdog system events for side-question no-output timeouts", async () => {
-    enqueueSystemEventMock.mockClear();
-    requestHeartbeatMock.mockClear();
+    enqueueSessionEventMock.mockClear();
     supervisorSpawnMock.mockResolvedValueOnce(
       makeManagedRun({
         reason: "no-output-timeout",
@@ -554,8 +551,7 @@ describe("runCliAgent reliability", () => {
       ),
     ).rejects.toThrow("produced no output");
 
-    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
-    expect(requestHeartbeatMock).not.toHaveBeenCalled();
+    expect(enqueueSessionEventMock).not.toHaveBeenCalled();
   });
 
   it("fails with timeout when overall timeout trips", async () => {
@@ -2047,7 +2043,7 @@ describe("runCliAgent reliability", () => {
   });
 
   it("does not fresh retry a no-output timeout after CLI diagnostic output", async () => {
-    enqueueSystemEventMock.mockClear();
+    enqueueSessionEventMock.mockClear();
     const clearBeforeRetry = vi.fn(async () => true);
     supervisorSpawnMock.mockResolvedValueOnce(
       makeManagedRun({
@@ -2079,7 +2075,7 @@ describe("runCliAgent reliability", () => {
 
     expect(supervisorSpawnMock).toHaveBeenCalledTimes(1);
     expect(clearBeforeRetry).not.toHaveBeenCalled();
-    expect(enqueueSystemEventMock).toHaveBeenCalledTimes(1);
+    expect(enqueueSessionEventMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not fresh retry an empty supervisor cancellation", async () => {
@@ -2263,8 +2259,7 @@ describe("runCliAgent reliability", () => {
         runAgentEnd: vi.fn(async () => undefined),
       };
       setHookRunnerForTest(hookRunner);
-      enqueueSystemEventMock.mockClear();
-      requestHeartbeatMock.mockClear();
+      enqueueSessionEventMock.mockClear();
       const events: string[] = [];
       let spawnCount = 0;
       supervisorSpawnMock.mockImplementation(async () => {
@@ -2357,8 +2352,7 @@ describe("runCliAgent reliability", () => {
         expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
         expect(events).toEqual(["spawn-1", `clear-${reason}`, "spawn-2"]);
         if (reason === "timeout") {
-          expect(enqueueSystemEventMock).not.toHaveBeenCalled();
-          expect(requestHeartbeatMock).not.toHaveBeenCalled();
+          expect(enqueueSessionEventMock).not.toHaveBeenCalled();
         }
         expect(clearBeforeRetry).toHaveBeenCalledWith({
           provider: "claude-cli",

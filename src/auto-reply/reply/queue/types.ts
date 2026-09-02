@@ -15,7 +15,7 @@ import type { SilentReplyPromptMode } from "../../../agents/system-prompt.types.
 import type { ChatType } from "../../../channels/chat-type.js";
 import type { InboundEventKind } from "../../../channels/inbound-event/kind.js";
 import type { ChannelAdmissionEvidence } from "../../../channels/message-access/admission-evidence.js";
-import type { SessionEntry, SessionToolOverrides } from "../../../config/sessions.js";
+import type { SessionEntry, SessionToolOverrides } from "../../../config/sessions/types.js";
 import type { ReplyToMode } from "../../../config/types.base.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { GroupToolPolicyConfig } from "../../../config/types.tools.js";
@@ -37,6 +37,10 @@ import type { ReplyPayload } from "../../reply-payload.js";
 import type { OriginatingChannelType } from "../../templating.js";
 import type { ThinkingCatalogEntry } from "../../thinking.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "../directives.js";
+import type {
+  ScheduledSessionAutomation,
+  SessionEventExecution,
+} from "../session-event-contract.js";
 import { releaseRecentQueueMessageId } from "./recent-message-ids.js";
 
 export type QueueDropPolicy = "old" | "new" | "summarize";
@@ -167,6 +171,8 @@ export type FollowupRun = {
   /** Chat type for context-aware threading (e.g., DM vs channel). */
   originatingChatType?: string;
   run: {
+    scheduledAutomation?: ScheduledSessionAutomation | undefined;
+    internalEventExecution?: SessionEventExecution | undefined;
     agentId: string;
     agentDir: string;
     sessionId: string;

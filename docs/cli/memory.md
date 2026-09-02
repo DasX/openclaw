@@ -39,8 +39,9 @@ configured, falls back to the default agent.
 | `--verbose` | Emit detailed per-phase logs.                                                                                                                                                                                                                                                    |
 
 If the `Dreaming` line stays `off` even with `dreaming.enabled: true`, or
-scheduled sweeps never seem to run, the managed dreaming cron depends on the
-default agent's heartbeat firing to trigger reconciliation. See
+scheduled sweeps never seem to run, inspect the managed dreaming job with
+`openclaw cron list --all` and check the scheduler with `openclaw cron status`.
+Dreaming uses cron, not a periodic heartbeat engine. See
 [Dreaming](/concepts/dreaming) for scheduling details.
 
 Status also lists any extra search paths from `memory.search.extraPaths`.
@@ -60,7 +61,7 @@ extra-path details before showing indexing progress. The completion message
 reports the indexed file count. An empty corpus is a successful no-op: the
 command reports the resolved workspace path and that nothing was indexed, and
 leaves the missing `memory/` directory for the first memory write to create.
-Internal dreaming-narrative, cron, and heartbeat session transcripts are
+Internal dreaming-narrative, cron, and retained legacy heartbeat session transcripts are
 excluded from indexing, including retained compressed narrative archives whose
 original sessions are no longer active. Sessions previously selected by
 `memory forget` also remain excluded. `--force` removes stale index records for
@@ -202,7 +203,7 @@ In a shared workspace, a later purge for another agent also checks its indexed
 snapshots, even when the first purge already removed the shared file content.
 
 It also clears stale index records for internal dreaming-narrative, cron, or
-heartbeat sessions when the selection is nonempty. Index cleanup can therefore
+retained legacy heartbeat sessions when the selection is nonempty. Index cleanup can therefore
 include more than the selected sessions, and all chunks from a changed memory
 file may be invalidated for later reindexing.
 

@@ -28,6 +28,7 @@ import {
 } from "../../sessions/session-lifecycle-admission.js";
 import {
   createReplyOperation,
+  hasReplyOperationExecutionStarted,
   expireStaleReplyOperation,
   isReplyRunSuccessorAdmissionBlocked,
   isReplyRunEvidenceStale,
@@ -178,7 +179,7 @@ export async function admitReplyTurn(
       return { status: "skipped", reason: "aborted" };
     }
     if (isReplyRunSuccessorAdmissionBlocked(params.sessionKey)) {
-      if (params.kind === "heartbeat") {
+      if (params.kind === "background") {
         return { status: "skipped", reason: "active-run" };
       }
       const successorAdmission = await waitForReplyRunSuccessorAdmission(
@@ -334,7 +335,7 @@ export async function admitReplyTurn(
             originatingLeafEntryId: params.originatingLeafEntryId,
             upstreamAbortSignal: params.upstreamAbortSignal,
             respectFollowupAdmissionBarrier:
-              params.kind === "queued_followup" || params.kind === "heartbeat",
+              params.kind === "queued_followup" || params.kind === "background",
           });
         }
       } catch (error) {
@@ -402,13 +403,13 @@ export async function admitReplyTurn(
         return { status: "skipped", reason: "lifecycle-invalidated" };
       }
       if (error instanceof ReplyRunSuccessorAdmissionBlockedError) {
-        if (params.kind === "heartbeat") {
+        if (params.kind === "background") {
           return { status: "skipped", reason: "active-run" };
         }
         continue;
       }
       if (error instanceof ReplyRunFollowupAdmissionBlockedError) {
-        if (params.kind === "heartbeat") {
+        if (params.kind === "background") {
           return { status: "skipped", reason: "active-run" };
         }
         const followupAdmission = await waitForReplyRunFollowupAdmission(
@@ -432,15 +433,19 @@ export async function admitReplyTurn(
         throw error;
       }
       const activeOperation = replyRunRegistry.get(params.sessionKey);
-      if (params.kind === "visible" && activeOperation?.turnKind === "heartbeat") {
-        // Background heartbeats must yield before queue policy can steer this
-        // user turn into the heartbeat's model run and lose its visible reply.
+      if (
+        params.kind === "visible" &&
+        activeOperation?.turnKind === "background" &&
+        !hasReplyOperationExecutionStarted(activeOperation)
+      ) {
+        // Unstarted background work yields before queue policy can steer this
+        // user turn into a background run and lose its visible reply.
         activeOperation.supersede();
       }
       if (params.kind === "visible" && expireVisibleStaleOperation(activeOperation)) {
         continue;
       }
-      if (params.kind === "heartbeat") {
+      if (params.kind === "background") {
         return { status: "skipped", reason: "active-run", activeOperation };
       }
       // Visible and queued turns may wait for active runs when waitForActive is set.
@@ -486,6 +491,13 @@ export async function admitReplyTurn(
 }
 
 /** Resolves the default turn kind from reply options. */
-export function resolveReplyTurnKind(opts?: { isHeartbeat?: boolean }): ReplyTurnKind {
-  return opts?.isHeartbeat === true ? "heartbeat" : "visible";
+export function resolveReplyTurnKind(opts?: {
+  scheduledAutomation?: { job: { idleOnly?: boolean } };
+  internalEventExecution?: unknown;
+}): ReplyTurnKind {
+  return opts?.scheduledAutomation?.job.idleOnly
+    ? "background"
+    : opts?.internalEventExecution
+      ? "queued_followup"
+      : "visible";
 }

@@ -190,7 +190,7 @@ export function resolveFollowupDeliveryDecision(params: {
           sourceReplyDeliveryMode: sourcePolicy.sourceReplyDeliveryMode,
           sendPolicyDenied: sourcePolicy.sendPolicyDenied,
           successfulSourceReplyDelivery: completedSourceDelivery,
-          isHeartbeat: opts?.isHeartbeat === true,
+
           isRoomEvent: false,
         });
   if (recovery.kind === "retry") {
@@ -225,7 +225,7 @@ export function resolveFollowupDeliveryDecision(params: {
         yielded: result.meta?.yielded === true,
         yieldAcknowledgment: result.meta?.yieldAcknowledgment,
         isInteractive,
-        isHeartbeat: opts?.isHeartbeat,
+
         silentExpected: turn.queued.run.silentExpected,
         isSubagentSession:
           turn.session.kind === "session" && isSubagentSessionKey(turn.session.key),
@@ -239,7 +239,7 @@ export function resolveFollowupDeliveryDecision(params: {
       }) ??
       buildEmptyInteractiveReplyPayload({
         isInteractive,
-        isHeartbeat: opts?.isHeartbeat,
+
         silentExpected: turn.queued.run.silentExpected,
         allowEmptyAssistantReplyAsSilent: turn.queued.run.allowEmptyAssistantReplyAsSilent,
         hasPendingContinuation:
@@ -342,6 +342,20 @@ async function sendFollowupPayloads(params: {
     return;
   }
   const deliverQueuedBatch = sourceDisposition?.deliver;
+  if (turn.queued.run.internalEventExecution) {
+    // The occurrence's producer owns policy, cancellation and delivery accounting.
+    // Direct origin routing here would bypass that authority after queue waits.
+    if (!deliverQueuedBatch) {
+      throw new Error("Internal event lost its originating delivery owner");
+    }
+    await deliverQueuedBatch({
+      kind: "queued-followup",
+      runId: params.runId,
+      originatingChannel,
+      payloads,
+    });
+    return;
+  }
   const fallbackDispatcher = sourceDisposition ? undefined : defaults.opts?.onBlockReply;
   const dispatcherAvailable = Boolean(deliverQueuedBatch || fallbackDispatcher);
   if (!originRoutable && !dispatcherAvailable) {
@@ -353,7 +367,6 @@ async function sendFollowupPayloads(params: {
   const typing = createTypingSignaler({
     typing: defaults.typing,
     mode: defaults.typingMode,
-    isHeartbeat: defaults.opts?.isHeartbeat === true,
   });
   const crossChannelFailures: ReplyPayload[] = [];
   const queuedPayloads: ReplyPayload[] = [];
@@ -473,6 +486,7 @@ export async function deliverFollowupDecision(params: {
 }): Promise<void> {
   const { decision, turn, defaults } = params;
   if (decision.kind === "suppress") {
+    turn.queued.run.internalEventExecution?.onSuppressed?.(decision.reason);
     logVerbose(`followup queue: delivery suppressed (${decision.reason})`);
     return;
   }

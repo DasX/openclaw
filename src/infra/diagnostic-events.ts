@@ -355,7 +355,7 @@ export type DiagnosticSessionTurnCreatedEvent = DiagnosticBaseEvent & {
   sessionId?: string;
   agentId?: string;
   channel?: string;
-  trigger: "user" | "heartbeat";
+  trigger: "user" | "cron" | "event";
 };
 
 export type DiagnosticLaneEnqueueEvent = DiagnosticBaseEvent & {

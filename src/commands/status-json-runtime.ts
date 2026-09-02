@@ -4,7 +4,10 @@
 import { readBackupFreshness } from "./backup-health.js";
 import { buildStatusJsonPayload } from "./status-json-payload.ts";
 import { buildStatusOverviewSurfaceFromScan } from "./status-overview-surface.ts";
-import { resolveStatusRuntimeSnapshot } from "./status-runtime-shared.ts";
+import {
+  resolveStatusLastHeartbeat,
+  resolveStatusRuntimeSnapshot,
+} from "./status-runtime-shared.ts";
 import type { StatusScanResult } from "./status.scan-result.ts";
 
 /** Builds the status JSON object from a completed scan plus optional runtime/deep probes. */
@@ -21,7 +24,7 @@ export async function resolveStatusJsonOutput(params: {
   suppressHealthErrors?: boolean;
 }) {
   const { scan, opts } = params;
-  const { securityAudit, usage, health, lastHeartbeat, gatewayService, nodeService } =
+  const { securityAudit, usage, health, gatewayService, nodeService } =
     await resolveStatusRuntimeSnapshot({
       config: scan.cfg,
       sourceConfig: scan.sourceConfig,
@@ -33,6 +36,15 @@ export async function resolveStatusJsonOutput(params: {
       includeSecurityAudit: params.includeSecurityAudit,
       suppressHealthErrors: params.suppressHealthErrors,
     });
+
+  // The deprecated v4 field belongs only to deep JSON, never human status.
+  const lastHeartbeat = opts.deep
+    ? await resolveStatusLastHeartbeat({
+        config: scan.cfg,
+        timeoutMs: opts.timeoutMs,
+        gatewayReachable: scan.gatewayReachable,
+      })
+    : null;
 
   const payload = buildStatusJsonPayload({
     summary: scan.summary,

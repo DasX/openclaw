@@ -1,4 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { REPLY_ADMISSION_TICKET } from "../auto-reply/reply/reply-admission-ticket.js";
+import { publicChannelTurn, publicReplyOptions } from "./reply-options.js";
 import {
   createReplyDispatcher,
   type GetReplyOptions,
@@ -48,6 +50,26 @@ describe("reply runtime public progress contracts", () => {
 });
 
 describe("reply runtime public dispatcher compatibility", () => {
+  it("cannot import host-owned scheduler or admission capabilities through public reply options", () => {
+    const onReplyStart = () => {};
+    const options = {
+      onReplyStart,
+      suppressTyping: true,
+      scheduledAutomation: { job: { id: "copied-job" }, assertCurrent: () => {} },
+      admittedSessionSettings: { permissionMode: "full" },
+      replyOperation: { sessionId: "copied-session" },
+      internalEventExecution: { onStarted: () => {} },
+      [REPLY_ADMISSION_TICKET]: { copied: true },
+    };
+    const filtered = publicReplyOptions(options);
+    expect(filtered).toEqual({ onReplyStart, suppressTyping: true });
+    expect(options.scheduledAutomation.job.id).toBe("copied-job");
+    expect(publicChannelTurn({ replyOptions: options, context: "unchanged" })).toEqual({
+      replyOptions: filtered,
+      context: "unchanged",
+    });
+  });
+
   it("preserves deprecated admission counters beside settled receipt outcomes", async () => {
     let releaseFirstDelivery!: () => void;
     const firstDelivery = new Promise<void>((resolve) => {

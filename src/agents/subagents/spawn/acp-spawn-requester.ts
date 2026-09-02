@@ -15,16 +15,16 @@ import { formatErrorMessage } from "../../../infra/errors.js";
 import { getSessionBindingService } from "../../../infra/outbound/session-binding-service.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { isSubagentSessionKey, parseAgentSessionKey } from "../../../routing/session-key.js";
-import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
+import {
+  deliveryContextFromSession,
+  hasDeliveryTargetFields,
+  normalizeDeliveryContext,
+} from "../../../utils/delivery-context.shared.js";
 import { resolveRequesterOriginForChild } from "../../spawn-requester-origin.js";
 import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
 } from "../../tools/sessions-helpers.js";
-import {
-  hasSessionLocalHeartbeatRelayRoute,
-  isHeartbeatEnabledForSessionAgent,
-} from "./acp-spawn-heartbeat.js";
 
 const log = createSubsystemLogger("agents/acp-spawn");
 
@@ -41,8 +41,7 @@ export type AcpSpawnRequesterState = {
   isSubagentSession: boolean;
   hasActiveSubagentBinding: boolean;
   hasThreadContext: boolean;
-  heartbeatEnabled: boolean;
-  heartbeatRelayRouteUsable: boolean;
+  sessionRelayRouteUsable: boolean;
   origin: ReturnType<typeof normalizeDeliveryContext>;
 };
 
@@ -118,19 +117,21 @@ export function resolveAcpSpawnRequesterState(params: {
     isSubagentSession,
     hasActiveSubagentBinding,
     hasThreadContext,
-    heartbeatEnabled: isHeartbeatEnabledForSessionAgent({
-      cfg: params.cfg,
-      requesterAgentId: params.requesterAgentId,
-      sessionKey: params.parentSessionKey,
-    }),
-    heartbeatRelayRouteUsable:
-      params.parentSessionKey && params.requesterAgentId
-        ? hasSessionLocalHeartbeatRelayRoute({
-            cfg: params.cfg,
-            parentSessionKey: params.parentSessionKey,
-            requesterAgentId: params.requesterAgentId,
-          })
-        : false,
+    sessionRelayRouteUsable: Boolean(
+      params.parentSessionKey &&
+      params.cfg.session?.scope !== "global" &&
+      hasDeliveryTargetFields(
+        deliveryContextFromSession(
+          loadSessionEntryReadOnly({
+            storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
+              agentId: params.requesterAgentId,
+            }),
+            sessionKey: params.parentSessionKey,
+            clone: false,
+          }),
+        ),
+      ),
+    ),
     origin: resolveRequesterOriginForChild({
       cfg: params.cfg,
       targetAgentId: params.targetAgentId,
@@ -152,8 +153,7 @@ export function shouldStreamAcpSpawnToParent(params: {
   requester: AcpSpawnRequesterState;
 }): boolean {
   // For mode=run without thread binding, implicitly route output to parent
-  // only for spawned subagent orchestrator sessions with heartbeat enabled
-  // AND a session-local heartbeat delivery route (target=last + usable last route).
+  // only for spawned subagent orchestrator sessions with a session-local route.
   // Skip requester sessions that are thread-bound (or carrying thread context)
   // so user-facing threads do not receive unsolicited ACP progress chatter
   // unless streamTo="parent" is explicitly requested. Use resolved spawnMode
@@ -164,8 +164,7 @@ export function shouldStreamAcpSpawnToParent(params: {
     params.requester.isSubagentSession &&
     !params.requester.hasActiveSubagentBinding &&
     !params.requester.hasThreadContext &&
-    params.requester.heartbeatEnabled &&
-    params.requester.heartbeatRelayRouteUsable;
+    params.requester.sessionRelayRouteUsable;
 
   return params.streamToParentRequested || implicitStreamToParent;
 }

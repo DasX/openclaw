@@ -526,7 +526,6 @@ describe("agents delete command", () => {
       const cfg: OpenClawConfig = {
         agents: {
           defaults: {
-            heartbeat: { agentId: "ops" },
             systemAgent: { agentId: "ops" },
           },
           list: [
@@ -587,14 +586,12 @@ describe("agents delete command", () => {
         'Warning: cron cleanup was skipped for deleted agent "ops" because the Gateway could not be authenticated; scheduled jobs may remain.',
       );
       expect(output?.clearedOwnerRefs).toEqual([
-        "agents.defaults.heartbeat.agentId",
         "agents.defaults.systemAgent.agentId",
         "talk.agentId",
       ]);
       const replaceConfigFileCalls = configMocks.replaceConfigFile.mock.calls as unknown as Array<
         [{ nextConfig: OpenClawConfig }]
       >;
-      expect(replaceConfigFileCalls[0]?.[0].nextConfig.agents?.defaults?.heartbeat).toBeUndefined();
       expect(
         replaceConfigFileCalls[0]?.[0].nextConfig.agents?.defaults?.systemAgent,
       ).toBeUndefined();

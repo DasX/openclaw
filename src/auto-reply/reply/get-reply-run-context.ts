@@ -90,13 +90,13 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
   const runtimePolicySessionKey = resolveRuntimePolicySessionKey({ agentId, cfg, ctx, sessionKey });
   const { resolvedElevatedLevel, execOverrides, abortedLastRun } = params;
   let { sessionEntry } = params;
-  const isHeartbeat = opts?.isHeartbeat === true;
+
   const explicitThinkingLevelOverride = normalizeThinkLevel(opts?.thinkingLevelOverride);
   const effectiveQueueMode = opts?.queueModeOverride ?? perMessageQueueMode;
   const traceAttributes = {
     provider,
     hasSessionKey: Boolean(sessionKey),
-    isHeartbeat,
+
     queueMode: effectiveQueueMode ?? "configured",
   };
   const traceRunPhase = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
@@ -109,7 +109,6 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     sessionCtx,
     sessionEntry,
     ctx,
-    isHeartbeat,
   });
   copyChannelParticipantAdmissionEvidence(ctx, promptSessionCtx);
   if (sessionCtx !== ctx) {
@@ -120,16 +119,9 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     promptSessionCtx,
     opts,
   });
-  // Direct resolver callers (heartbeat wakes, system events) skip dispatch's
-  // stable-mode injection; resolve the same session-stable fact here so their
-  // binding facts and messageToolPolicyHash match dispatched chat turns —
-  // otherwise chat<->heartbeat transitions ping-pong the CLI session (#121485).
-  // Synthetic turns must not fall back to their effective turn mode: a
-  // response-tool heartbeat's message_tool_only is per-turn enforcement, not
-  // session policy, and hashing it recreates the ping-pong.
+  // Internal follow-ups keep session-stable delivery facts across CLI binding reuse.
   const isSyntheticTurn = isSyntheticSourceReplyTurn({
     inputProvenance: promptSessionCtx.InputProvenance,
-    isHeartbeat,
   });
   const sessionPromptSourceReplyDeliveryMode =
     injectedSessionStableMode ??
@@ -181,14 +173,14 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
   const { typingPolicy, suppressTyping } = resolveRunTypingPolicy({
     requestedPolicy: opts?.typingPolicy,
     suppressTyping: opts?.suppressTyping === true,
-    isHeartbeat,
+
     originatingChannel: ctx.OriginatingChannel,
   });
   const typingMode = resolveTypingMode({
     configured: resolveAgentConfig(cfg, agentId)?.typingMode ?? agentCfg?.typingMode,
     isGroupChat,
     wasMentioned: ctx.WasMentioned === true,
-    isHeartbeat,
+
     typingPolicy,
     suppressTyping,
     sourceReplyDeliveryMode,
@@ -228,12 +220,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     isGroupChat &&
     !isDirectedTurn &&
     (isAmbientRoomEvent || silentReplySettings.policy === "allow");
-  // Heartbeats retain the embedded runner's trigger-owned optional default.
-  const terminalReplyExpectation = isHeartbeat
-    ? undefined
-    : isAmbientRoomEvent
-      ? "optional"
-      : "required";
+  const terminalReplyExpectation = isAmbientRoomEvent ? "optional" : "required";
   const groupSystemPrompt = normalizeOptionalString(promptSessionCtx.GroupSystemPrompt) ?? "";
   const inboundMetaPrompt = buildInboundMetaSystemPrompt(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },
@@ -382,23 +369,15 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
           : {}),
       }
     : { ...sessionCtx, ThreadStarterBody: undefined };
-  let inboundContextSessionEntry = isHeartbeat
-    ? undefined
-    : (sessionStore?.[sessionKey] ?? sessionEntryHandle?.getCurrent() ?? sessionEntry);
+  let inboundContextSessionEntry =
+    sessionStore?.[sessionKey] ?? sessionEntryHandle?.getCurrent() ?? sessionEntry;
   let activeGoalContext = formatActiveGoalContext(inboundContextSessionEntry);
-  // Heartbeats are synthetic system turns: delivery facts still drive routing and
-  // formatting, but must not be presented to the model as user-role inbound context.
-  let inboundUserContext = isHeartbeat
-    ? ""
-    : buildInboundUserContextPrefix(
-        inboundUserContextSessionCtx,
-        envelopeOptions,
-        inboundContextSessionEntry,
-      );
+  let inboundUserContext = buildInboundUserContextPrefix(
+    inboundUserContextSessionCtx,
+    envelopeOptions,
+    inboundContextSessionEntry,
+  );
   const refreshInboundContextAfterAdmissionWait = async () => {
-    if (isHeartbeat) {
-      return;
-    }
     inboundContextSessionEntry =
       storePath && sessionKey
         ? loadSessionEntry({ storePath, sessionKey, readConsistency: "latest" })
@@ -423,7 +402,6 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     startupAction,
     startupContextPrelude,
     softResetTail,
-    isHeartbeat,
     inboundEventKind,
     sourceReplyDeliveryMode,
   });
@@ -445,7 +423,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     kind: "ready",
     params,
     runtimePolicySessionKey,
-    isHeartbeat,
+
     explicitThinkingLevelOverride,
     effectiveQueueMode,
     traceRunPhase,

@@ -72,11 +72,12 @@ async function createManualRunHarness(jobId: string) {
   const entered = createDeferred();
   const release = createDeferred<IsolatedRunResult>();
   const cron = new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: store.storePath,
     cronEnabled: true,
     log: logger,
     enqueueSystemEvent: () => {},
-    requestHeartbeat: () => {},
+    enqueueSessionEvent: () => {},
     runIsolatedAgentJob: async () => {
       entered.resolve();
       return await release.promise;
@@ -198,11 +199,12 @@ describe("cron activeJobIds — manual-run mark/clear", () => {
     const onIsolatedAgentSetupTimeout = vi.fn();
     let startedCount = 0;
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: logger,
       enqueueSystemEvent: () => {},
-      requestHeartbeat: () => {},
+      enqueueSessionEvent: () => {},
       onIsolatedAgentSetupTimeout,
       runIsolatedAgentJob: async ({ abortSignal }) => {
         startedCount += 1;

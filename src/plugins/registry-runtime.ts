@@ -18,6 +18,7 @@ import {
 import { createLazyRuntimeSurface } from "../shared/lazy-runtime.js";
 import {
   activatePluginRecordLifecycleEpoch,
+  capturePluginLifecycleAuthority,
   isPluginRecordLifecycleEpochActive,
   isPluginRegistryActivated,
   isPluginRegistryRetired,
@@ -27,6 +28,9 @@ import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRecord } from "./registry-types.js";
 import {
   getGatewayContextResolver,
+  withPluginRuntimeGatewayContextResolver,
+  withPluginRuntimeGatewayRequestScope,
+  getPluginRuntimeGatewayRequestScope,
   withPluginRuntimePluginIdScope,
   withPluginRuntimePluginScope,
   withPluginRuntimeRegistryScope,
@@ -166,6 +170,19 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       (module) => module.createPluginSessionOwnership(state, pluginId),
     );
     let scopedAgentRuntime: PluginRuntime["agent"] | undefined;
+    const systemRecord = pluginRuntimeRecordById.get(pluginId);
+    const systemAuthority = systemRecord
+      ? capturePluginLifecycleAuthority(registry, systemRecord, { registration: true })
+      : undefined;
+    // Full runtimes can be host-bound after construction; lazy runtimes carry
+    // their binding directly so inspecting this seam never materializes them.
+    const gatewayOwner =
+      getGatewayContextResolver(registryParams.runtime) ??
+      getGatewayContextResolver(
+        Object.getOwnPropertyDescriptor(registryParams.runtime, "subagent")?.value ??
+          registryParams.runtime,
+      );
+    let scopedSystem: PluginRuntime["system"] | undefined;
     const assertTrustedPluginRuntime = (
       methodName:
         | "dispatchHookAgentTurn"
@@ -276,6 +293,63 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
           } satisfies PluginRuntime["state"];
+        }
+        if (prop === "system") {
+          if (scopedSystem) {
+            return scopedSystem;
+          }
+          const system: PluginRuntime["system"] = getRuntimeProperty();
+          const runOwned = <T>(run: () => T): T => {
+            const context = gatewayOwner?.();
+            const assertCurrent = () => {
+              if (
+                !systemAuthority?.() ||
+                !systemRecord ||
+                pluginRuntimeRecordById.get(pluginId) !== systemRecord ||
+                !activePluginRuntimeRecords.has(systemRecord) ||
+                !context ||
+                gatewayOwner?.() !== context ||
+                // The bootstrap routing pointer outlives close prelude; only the
+                // Gateway instance resolver fences dispatch before registry retirement.
+                context.resolveGatewayContext?.() !== context
+              ) {
+                throw new Error(
+                  "Plugin system operation requires its original active registration and Gateway",
+                );
+              }
+            };
+            assertCurrent();
+            return withPluginRuntimeGatewayContextResolver(
+              () => {
+                assertCurrent();
+                return context;
+              },
+              () =>
+                withPluginRuntimeGatewayRequestScope(
+                  {
+                    ...getPluginRuntimeGatewayRequestScope()!,
+                    pluginRegistry: registry,
+                    pluginId,
+                    pluginSource: systemRecord?.source,
+                    pluginOrigin: systemRecord?.origin,
+                    pluginTrustedOfficialInstall: systemRecord?.trustedOfficialInstall,
+                    assertSystemOwnerCurrent: assertCurrent,
+                  },
+                  run,
+                ),
+              { inheritRequestScope: false },
+            );
+          };
+          scopedSystem = {
+            ...system,
+            captureSessionEventTarget: (...args) =>
+              runOwned(() => system.captureSessionEventTarget(...args)),
+            enqueueSessionEvent: (...args) => runOwned(() => system.enqueueSessionEvent(...args)),
+            requestHeartbeat: (...args) => runOwned(() => system.requestHeartbeat(...args)),
+            requestHeartbeatNow: (...args) => runOwned(() => system.requestHeartbeatNow(...args)),
+            runHeartbeatOnce: (...args) => runOwned(() => system.runHeartbeatOnce(...args)),
+          };
+          return scopedSystem;
         }
         if (prop === "config") {
           const config: PluginRuntime["config"] = getRuntimeProperty();
@@ -614,6 +688,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
     resolveRegisteredChannelRuntime: (record: PluginRecord) =>
       resolveRecordChannelRuntime(record, false),
     setPluginRuntimeRecord: (record: PluginRecord) => {
+      // A replacement registration gets a new closure; retained APIs keep the old owner.
+      pluginRuntimeById.delete(record.id);
       pluginRuntimeRecordById.set(record.id, record);
       activePluginRuntimeRecords.add(record);
     },

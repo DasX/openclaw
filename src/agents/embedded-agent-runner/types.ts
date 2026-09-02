@@ -274,7 +274,7 @@ export type EmbeddedAgentRunResult = {
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
   // Child sessions successfully accepted by sessions_spawn during the run.
   acceptedSessionSpawns?: AcceptedSessionSpawn[];
-  // Structured heartbeat outcome recorded by the heartbeat response tool.
+  /** @deprecated External SDK result only; ordinary automations record results through their run owner. */
   heartbeatToolResponse?: HeartbeatToolResponse;
   // Count of successful cron.add tool calls in this run.
   successfulCronAdds?: number;

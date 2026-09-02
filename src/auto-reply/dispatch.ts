@@ -196,7 +196,7 @@ type DispatchInboundResult = DispatchFromConfigResult;
 export { settleReplyDispatcher, withReplyDispatcher } from "./dispatch-dispatcher.js";
 
 /** Dispatches one finalized inbound message through reply resolution and queued delivery. */
-export async function dispatchInboundMessage(params: {
+export async function dispatchInboundMessageCore(params: {
   ctx: MsgContext | FinalizedMsgContext;
   cfg: OpenClawConfig;
   dispatcher: ReplyDispatcher;
@@ -277,7 +277,7 @@ type BufferedInboundDispatcherParams = {
   onSessionMetadataChanges?: (changes: CommandSessionMetadataChange[]) => void;
 };
 
-async function dispatchInboundMessageWithBufferedDispatcherCore(
+async function dispatchBufferedInboundWithOwnership(
   params: BufferedInboundDispatcherParams,
   ownership: {
     messageSending: "dispatcher" | "channel-delivery";
@@ -347,7 +347,7 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
     : replyOptions.onTypingController;
   markReplyPayloadSendingBeforeDeliverInstalled(dispatcher, replyPayloadBeforeDeliver);
   try {
-    return await dispatchInboundMessage({
+    return await dispatchInboundMessageCore({
       ctx: finalized,
       cfg: params.cfg,
       dispatcher,
@@ -374,10 +374,10 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
   }
 }
 
-export async function dispatchInboundMessageWithBufferedDispatcher(
+export async function dispatchInboundMessageWithBufferedDispatcherCore(
   params: BufferedInboundDispatcherParams,
 ): Promise<DispatchInboundResult> {
-  return await dispatchInboundMessageWithBufferedDispatcherCore(params, {
+  return await dispatchBufferedInboundWithOwnership(params, {
     messageSending: "dispatcher",
   });
 }
@@ -389,7 +389,7 @@ export async function dispatchInboundMessageWithRoutedChannelDispatcher(
   },
 ): Promise<DispatchInboundResult> {
   const { onReplyPayloadSuppressed, suppressOutboundHooks, ...dispatcherParams } = params;
-  return await dispatchInboundMessageWithBufferedDispatcherCore(dispatcherParams, {
+  return await dispatchBufferedInboundWithOwnership(dispatcherParams, {
     messageSending: "channel-delivery",
     ...(suppressOutboundHooks
       ? { outboundHooks: "disabled" as const }
@@ -442,7 +442,7 @@ async function dispatchInboundMessageWithPlainDispatcherCore(
     silentReplyContext: params.dispatcherOptions.silentReplyContext ?? silentReplyContext,
   });
   markReplyPayloadSendingBeforeDeliverInstalled(dispatcher, replyPayloadBeforeDeliver);
-  return await dispatchInboundMessage({
+  return await dispatchInboundMessageCore({
     ctx: params.ctx,
     cfg: params.cfg,
     dispatcher,
@@ -455,7 +455,7 @@ async function dispatchInboundMessageWithPlainDispatcherCore(
 }
 
 /** Creates a plain dispatcher, installs global send hooks, and dispatches the inbound message. */
-export async function dispatchInboundMessageWithDispatcher(params: {
+export async function dispatchInboundMessageWithDispatcherCore(params: {
   ctx: MsgContext | FinalizedMsgContext;
   cfg: OpenClawConfig;
   dispatcherOptions: ReplyDispatcherOptions;

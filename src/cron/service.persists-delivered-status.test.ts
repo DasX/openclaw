@@ -145,11 +145,12 @@ function createIsolatedCronWithFinishedBarrier(params: {
 }) {
   const finished = createFinishedBarrier();
   const cron = new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: params.storePath,
     cronEnabled: true,
     log: noopLogger,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({
       status: params.status ?? ("ok" as const),
       summary: "done",
@@ -332,11 +333,12 @@ describe("CronService persists delivered status", () => {
       const finish = createDeferred();
       let finishedEvent: CronEvent | undefined;
       const cron = new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         runCommandJob: async ({ job, abortSignal }) => {
           if (clockJumpMs > 0) {
@@ -432,11 +434,12 @@ describe("CronService persists delivered status", () => {
       resolveFinished = resolve;
     });
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       runCommandJob: async ({ job, abortSignal }) =>
         await runCronCommandJob({ job, abortSignal, nowMs: Date.now }),
@@ -515,11 +518,12 @@ describe("CronService persists delivered status", () => {
       resolveFinished = resolve;
     });
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       runCommandJob: async ({ job, abortSignal }) =>
         await runCronCommandJob({ job, abortSignal, nowMs: Date.now }),
@@ -639,11 +643,12 @@ describe("CronService persists delivered status", () => {
     });
     const store = await makeStorePath();
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       runCommandJob: vi.fn(async () => ({
         status: "ok" as const,
@@ -886,9 +891,9 @@ describe("CronService persists delivered status", () => {
     expect(updated?.state.lastDeliveryError).toBeUndefined();
   });
 
-  it("does not set lastDelivered for main session jobs", async () => {
+  it("does not claim delivery without a canonical session delivery receipt", async () => {
     const store = await makeStorePath();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -901,7 +906,7 @@ describe("CronService persists delivered status", () => {
     });
 
     expectDeliveryNotRequested(updated);
-    expect(enqueueSystemEvent).toHaveBeenCalled();
+    expect(runSessionEvent).toHaveBeenCalledOnce();
 
     cron.stop();
   });
@@ -994,11 +999,12 @@ describe("CronService persists delivered status", () => {
       }>();
       let finishedEvent: CronEvent | undefined;
       const cron = new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => {
           started.resolve();
           return await finish.promise;

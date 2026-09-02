@@ -44,12 +44,13 @@ async function expectPathMissing(targetPath: string): Promise<void> {
 
 function createStoreTestState(storePath: string, onEvent = vi.fn()) {
   return createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath,
     cronEnabled: true,
     log: logger,
     nowMs: () => STORE_TEST_NOW,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     onEvent,
   });

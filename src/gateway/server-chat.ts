@@ -1,5 +1,5 @@
 // Gateway chat runtime projects agent events into chat/session subscriber
-// streams, lifecycle persistence, heartbeat visibility, and live UI updates.
+// streams, lifecycle persistence, source visibility, and live UI updates.
 import { performance } from "node:perf_hooks";
 import type {
   ChatEvent,
@@ -15,7 +15,6 @@ import { isTimeoutError, resolveFailoverReasonFromError } from "../agents/failov
 import type { FailoverReason } from "../agents/failover/signal.js";
 import { resolveToolSearchCodeDisplayTarget } from "../agents/tool-display-common.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
-import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../auto-reply/heartbeat.js";
 import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
 import { normalizeAgentPlanSteps } from "../channels/streaming.js";
 import { getRuntimeConfig } from "../config/io.js";
@@ -26,7 +25,6 @@ import {
 } from "../infra/agent-events.js";
 import { getAgentRunContext, getAgentRunContextOwnerStatus } from "../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
 import { logError } from "../logger.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import {
@@ -141,43 +139,6 @@ function projectToolSearchCodeEventForChannelPayload<T extends { data?: unknown 
   return { ...payload, data: projectedData };
 }
 
-function resolveHeartbeatContext(runId: string, sourceRunId?: string) {
-  const primary = getAgentRunContext(runId);
-  if (primary?.isHeartbeat) {
-    return primary;
-  }
-  if (sourceRunId && sourceRunId !== runId) {
-    const source = getAgentRunContext(sourceRunId);
-    if (source?.isHeartbeat) {
-      return source;
-    }
-  }
-  return primary;
-}
-
-/**
- * Check if heartbeat ACK/noise should be hidden from interactive chat surfaces.
- */
-function shouldHideHeartbeatChatOutput(runId: string, sourceRunId?: string): boolean {
-  const runContext = resolveHeartbeatContext(runId, sourceRunId);
-  if (!runContext?.isHeartbeat) {
-    return false;
-  }
-
-  try {
-    const cfg = getRuntimeConfig();
-    const visibility = resolveHeartbeatVisibility({ cfg, channel: "webchat" });
-    return !visibility.showOk;
-  } catch {
-    // Default to suppressing if we can't load config
-    return true;
-  }
-}
-
-function shouldSuppressHeartbeatToolEvents(runId: string, sourceRunId?: string): boolean {
-  return Boolean(resolveHeartbeatContext(runId, sourceRunId)?.isHeartbeat);
-}
-
 function shouldMirrorAssistantEventToHiddenSessionMessages(data: unknown): boolean {
   if (!data || typeof data !== "object") {
     return false;
@@ -193,28 +154,6 @@ function shouldMirrorAssistantEventToHiddenSessionMessages(data: unknown): boole
 
 function shouldMirrorAgentEventToHiddenSessionMessages(evt: AgentEventPayload): boolean {
   return evt.stream === "thinking" || evt.stream === "approval" || evt.stream === "lifecycle";
-}
-
-function normalizeHeartbeatChatFinalText(params: {
-  runId: string;
-  sourceRunId?: string;
-  text: string;
-}): { suppress: boolean; text: string } {
-  if (!shouldHideHeartbeatChatOutput(params.runId, params.sourceRunId)) {
-    return { suppress: false, text: params.text };
-  }
-
-  const stripped = stripHeartbeatToken(params.text, {
-    mode: "heartbeat",
-    maxAckChars: DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
-  });
-  if (!stripped.didStrip) {
-    return { suppress: false, text: params.text };
-  }
-  if (stripped.shouldSkip) {
-    return { suppress: true, text: "" };
-  }
-  return { suppress: false, text: stripped.text };
 }
 
 /**
@@ -966,7 +905,7 @@ export function createAgentEventHandler({
     const run = internalChatRunRecord(chatRunState.getOrCreate(clientRunId));
     const flush = () => {
       const projected = chatRunState.resolveBuffer(clientRunId);
-      if (projected.suppress || shouldHideHeartbeatChatOutput(clientRunId, sourceRunId)) {
+      if (projected.suppress) {
         return;
       }
       broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, projected.text, {
@@ -1030,7 +969,7 @@ export function createAgentEventHandler({
     }
     const projected = chatRunState.resolveBuffer(clientRunId);
     const mergedText = projected.text;
-    if (projected.suppress || shouldHideHeartbeatChatOutput(clientRunId, sourceRunId)) {
+    if (projected.suppress) {
       return;
     }
     broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, mergedText, opts);
@@ -1038,23 +977,18 @@ export function createAgentEventHandler({
 
   const resolveBufferedChatTextState = (
     clientRunId: string,
-    sourceRunId: string,
+    _sourceRunId: string,
     options?: { final?: boolean; suppressLeadFragments?: boolean },
   ) => {
     const bufferedText = chatRunState
       .resolveBuffer(clientRunId, { final: options?.final })
       .text.trim();
-    const normalizedHeartbeatText = normalizeHeartbeatChatFinalText({
-      runId: clientRunId,
-      sourceRunId,
-      text: bufferedText,
-    });
-    const projected = projectLiveAssistantBufferedText(normalizedHeartbeatText.text.trim(), {
+    const projected = projectLiveAssistantBufferedText(bufferedText, {
       suppressLeadFragments: options?.suppressLeadFragments,
     });
     return {
       text: projected.text.trim(),
-      shouldSuppressSilent: normalizedHeartbeatText.suppress || projected.suppress,
+      shouldSuppressSilent: projected.suppress,
     };
   };
 
@@ -1079,11 +1013,7 @@ export function createAgentEventHandler({
       : resolveBufferedChatTextState(clientRunId, sourceRunId, {
           suppressLeadFragments: true,
         });
-    const shouldSuppressHeartbeatStreaming = shouldHideHeartbeatChatOutput(
-      clientRunId,
-      sourceRunId,
-    );
-    if (!text || shouldSuppressSilent || shouldSuppressHeartbeatStreaming) {
+    if (!text || shouldSuppressSilent) {
       return;
     }
 
@@ -1365,7 +1295,6 @@ export function createAgentEventHandler({
       evt.projectSessionLifecycle ?? runContext?.projectSessionLifecycle ?? true;
     const projectSessionMessages =
       evt.projectSessionMessages ?? runContext?.projectSessionMessages ?? true;
-    const isHeartbeat = runContext?.isHeartbeat;
     const restartRecoverySessionKey = RESTART_RECOVERY_LIFECYCLE_PHASES.has(lifecyclePhase ?? "")
       ? (eventSessionKey ?? sessionKey)
       : undefined;
@@ -1413,11 +1342,9 @@ export function createAgentEventHandler({
           sessionKey,
           ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
           ...(spawnedBy && { spawnedBy }),
-          ...(isHeartbeat !== undefined && { isHeartbeat }),
         }
       : {
           ...eventForClients,
-          ...(isHeartbeat !== undefined && { isHeartbeat }),
         };
     const hasSessionMessageSubscribers =
       projectSessionMessages && sessionKey
@@ -1429,8 +1356,6 @@ export function createAgentEventHandler({
     const isToolEvent = evt.stream === "tool";
     const isItemEvent = evt.stream === "item";
     const toolVerbose = isToolEvent ? resolveToolVerboseLevel(evt.runId, sessionKey) : "off";
-    const suppressHeartbeatToolEvents =
-      isToolEvent && shouldSuppressHeartbeatToolEvents(clientRunId, evt.runId);
     const shouldCoalesceAgentEvent = shouldCoalesceAgentTextEvent(evt);
     // Channel/node subscribers respect verbose; authenticated Control UI
     // recipients need tool result payloads to render live tool cards.
@@ -1453,7 +1378,6 @@ export function createAgentEventHandler({
           ts: Date.now(),
           sessionKey,
           ...(spawnedBy && { spawnedBy }),
-          ...(isHeartbeat !== undefined && { isHeartbeat }),
           data: {
             reason: "seq gap",
             expected: last + 1,
@@ -1480,7 +1404,7 @@ export function createAgentEventHandler({
         ...(explanation ? { explanation } : {}),
       };
     }
-    if (recordsInFlightProgress && !isAborted && !suppressHeartbeatToolEvents) {
+    if (recordsInFlightProgress && !isAborted) {
       // Persist the client-facing identity after run/session remapping. Route
       // changes discard transient UI rows, so history replay must use the same
       // payload identity as live delivery or tool results cannot reconcile.
@@ -1526,8 +1450,7 @@ export function createAgentEventHandler({
         toolPhase === "start" &&
         (isControlUiVisible || hasSessionMessageSubscribers) &&
         sessionKey &&
-        !isAborted &&
-        !suppressHeartbeatToolEvents
+        !isAborted
       ) {
         flushBufferedChatDeltaIfNeeded(
           sessionKey,
@@ -1547,12 +1470,7 @@ export function createAgentEventHandler({
       // messages to messaging surfaces (Telegram, Discord, etc.). Carry the
       // delivery key so scoped clients must also own the session subscription.
       const runToolRecipients = toolEventRecipients.get(evt.runId);
-      if (
-        isControlUiVisible &&
-        !suppressHeartbeatToolEvents &&
-        runToolRecipients &&
-        runToolRecipients.size > 0
-      ) {
+      if (isControlUiVisible && runToolRecipients && runToolRecipients.size > 0) {
         broadcastToConnIds(
           "agent",
           sessionKey
@@ -1569,12 +1487,7 @@ export function createAgentEventHandler({
           },
         );
       }
-      if (
-        !isControlUiVisible &&
-        sessionKey &&
-        hasSessionMessageSubscribers &&
-        !suppressHeartbeatToolEvents
-      ) {
+      if (!isControlUiVisible && sessionKey && hasSessionMessageSubscribers) {
         sendAgentPayload(
           sessionKey,
           { ...agentPayload, ...buildSessionEventSnapshot(sessionKey, undefined, sessionAgentId) },
@@ -1586,7 +1499,7 @@ export function createAgentEventHandler({
       // not know the runId in advance, so they cannot register as run-scoped
       // tool recipients. Mirror tool lifecycle onto a session-scoped event so
       // they can render live pending tool cards without polling history.
-      if (isControlUiVisible && sessionKey && !suppressHeartbeatToolEvents) {
+      if (isControlUiVisible && sessionKey) {
         const sessionSubscribers = excludeConnIds(
           sessionEventSubscribers.getAll(),
           runToolRecipients,
@@ -1668,12 +1581,7 @@ export function createAgentEventHandler({
     if ((isControlUiVisible || hasSessionMessageSubscribers) && sessionKey) {
       // Send tool events to node/channel subscribers only when verbose is enabled;
       // WS clients already received the event above via broadcastToConnIds.
-      if (
-        isControlUiVisible &&
-        isToolEvent &&
-        !suppressHeartbeatToolEvents &&
-        toolVerbose !== "off"
-      ) {
+      if (isControlUiVisible && isToolEvent && toolVerbose !== "off") {
         sendNodeAgentPayload(
           sessionKey,
           projectToolSearchCodeEventForChannelPayload({

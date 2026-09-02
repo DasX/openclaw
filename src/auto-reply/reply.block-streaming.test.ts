@@ -76,11 +76,13 @@ vi.mock("./reply/get-reply-run.js", () => ({
   runPreparedReply: (...args: unknown[]) => mocks.runPreparedReply(...args),
 }));
 
-let getReplyFromConfig: typeof import("./reply/get-reply.js").getReplyFromConfig;
+let getReplyFromConfig: typeof import("./reply/get-reply.js").getReplyFromConfigCore;
 let resolveAgentWorkspaceDirMock: typeof import("../agents/agent-scope.js").resolveAgentWorkspaceDir;
 
 async function loadFreshGetReplyModuleForTest() {
-  ({ getReplyFromConfig } = await loadGetReplyModuleForTest({ cacheKey: import.meta.url }));
+  ({ getReplyFromConfigCore: getReplyFromConfig } = await loadGetReplyModuleForTest({
+    cacheKey: import.meta.url,
+  }));
   ({ resolveAgentWorkspaceDir: resolveAgentWorkspaceDirMock } =
     await import("../agents/agent-scope.js"));
 }

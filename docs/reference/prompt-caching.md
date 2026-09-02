@@ -4,7 +4,7 @@ title: "Prompt caching"
 read_when:
   - You want to reduce prompt token costs with cache retention
   - You need per-agent cache behavior in multi-agent setups
-  - You are tuning heartbeat and cache-ttl pruning together
+  - You are tuning scheduled checks and cache-ttl pruning together
 ---
 
 Prompt caching lets a model provider reuse an unchanged prompt prefix (system/developer instructions, tool definitions, other stable context) across turns instead of reprocessing it every request. This cuts token cost and latency on long-running sessions with repeated context.
@@ -75,16 +75,27 @@ agents:
 
 See [Session pruning](/concepts/session-pruning) for full behavior.
 
-### Heartbeat keep-warm
+### Scheduled checks and cache reuse
 
-Heartbeat can keep cache windows warm and reduce repeated cache writes after idle gaps. Configurable globally (`agents.defaults.heartbeat`) or per agent (`agents.entries.*.heartbeat`).
+Monitoring runs are ordinary [cron jobs](/automation/cron-jobs). A job that runs
+in the same session with the same model can reuse its prompt cache. Choose a
+cadence below the provider's cache TTL only when the checks are useful and their
+model-call cost is worthwhile; cache reuse is not guaranteed.
 
-```yaml
-agents:
-  defaults:
-    heartbeat:
-      every: "55m"
+For example, after selecting long retention for the main session's model:
+
+```sh
+openclaw cron add \
+  --name "Pending-work check" \
+  --every "55m" \
+  --session main \
+  --system-event "Review pending work. Report only actionable changes; otherwise return NO_REPLY." \
+  --wake now
 ```
+
+The job owns its schedule and content; `agents.defaults.heartbeat` and per-agent
+heartbeat settings are retired. See [Heartbeat migration](/gateway/heartbeat)
+for existing configurations. A quiet `NO_REPLY` result still uses model tokens.
 
 ## Provider behavior
 
@@ -180,18 +191,20 @@ agents:
   list:
     - id: "research"
       default: true
-      heartbeat:
-        every: "55m"
     - id: "alerts"
       params:
         cacheRetention: "none"
 ```
 
+If `research` needs periodic checks, create an ordinary job for that agent and
+select its session explicitly. A separate isolated job does not warm the main
+session's conversation cache.
+
 ### Cost-first baseline
 
 - Set baseline `cacheRetention: "short"`.
 - Enable `contextPruning.mode: "cache-ttl"`.
-- Keep heartbeat below your TTL only for agents that benefit from warm caches.
+- Schedule useful checks below your TTL only for sessions that benefit from warm caches.
 
 ## Live regression tests
 

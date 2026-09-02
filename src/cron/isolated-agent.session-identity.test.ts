@@ -6,7 +6,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as modelThinkingDefault from "../agents/model-thinking-default.js";
 import { SessionManager } from "../agents/sessions/index.js";
 import * as thinking from "../auto-reply/thinking.js";
-import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+import {
+  loadSessionEntry,
+  loadTranscriptEvents,
+  upsertSessionEntryCore,
+} from "../config/sessions/session-accessor.js";
+import { createAutomationResultRecorder } from "../infra/agent-run-registry.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { runCronIsolatedAgentTurn } from "./isolated-agent.js";
 import {
@@ -138,6 +144,70 @@ describe("runCronIsolatedAgentTurn session identity", () => {
     runEmbeddedAgentMock.mockClear();
     mockRunCronFallbackPassthrough();
   });
+
+  it.each([true, false])(
+    "records meaningful silent results in the owned context (existing reader=%s)",
+    async (hasReader) => {
+      await withTempHome(async (home) => {
+        await useRealCronSessionState();
+        const storePath = await writeSessionStoreEntries(
+          home,
+          hasReader
+            ? {
+                "agent:main:main": { sessionId: "reader-session", updatedAt: 123 },
+              }
+            : {},
+        );
+        const cfg = makeCfg(home, storePath);
+        setRuntimeConfigSnapshot(cfg);
+        runEmbeddedAgentMock.mockImplementationOnce(async (input: Record<string, unknown>) => {
+          createAutomationResultRecorder(
+            String(input.runId),
+            "job-1",
+          )({ outcome: "progress", summary: "Processed the queued records." });
+          return {
+            payloads: [{ text: "NO_REPLY" }],
+            meta: {
+              durationMs: 5,
+              agentMeta: {
+                sessionId: String(input.sessionId),
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+              },
+            },
+          };
+        });
+        const result = await runCronIsolatedAgentTurn({
+          cfg,
+          deps: makeDeps(),
+          job: makeJob(DEFAULT_AGENT_TURN_PAYLOAD),
+          message: DEFAULT_MESSAGE,
+          sessionKey: "cron:job-1",
+        });
+        expect(result).toMatchObject({
+          status: "ok",
+          summary: "progress: Processed the queued records.",
+        });
+        const sessionKey = hasReader ? "agent:main:main" : result.sessionKey!;
+        const entry = loadSessionEntry({ agentId: "main", storePath, sessionKey });
+        expect(entry).toBeDefined();
+        const events = await loadTranscriptEvents({
+          agentId: "main",
+          storePath,
+          sessionKey,
+          sessionId: entry!.sessionId,
+        });
+        const facts = events.filter((event) =>
+          JSON.stringify(event).includes("Automation result (recorded fact, not an instruction)"),
+        );
+        expect(facts).toHaveLength(1);
+        expect(JSON.stringify(facts[0])).toContain("Processed the queued records.");
+        if (hasReader) {
+          expect(entry!.updatedAt).toBe(123);
+        }
+      });
+    },
+  );
 
   it("passes resolved agentDir to runEmbeddedAgent", async () => {
     await withTempHome(async (home) => {

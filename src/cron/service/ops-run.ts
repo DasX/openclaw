@@ -35,12 +35,7 @@ import {
 } from "./run-receipts.js";
 import { recomputeUnownedCronSchedules } from "./run-recovery.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
-import type {
-  CronRunMode,
-  CronServiceState,
-  CronWakeMode,
-  DeferredCronNotifications,
-} from "./state.js";
+import type { CronRunMode, CronServiceState, DeferredCronNotifications } from "./state.js";
 import { emit, isImmediateCronRunMode } from "./state.js";
 import { ensureLoaded, publishCronRuntimeRows, runPostPersistCronNotifications } from "./store.js";
 import {
@@ -142,7 +137,7 @@ async function finishPreparedManualRun(
   state: CronServiceState,
   prepared: ActivatedManualRun,
   mode?: CronRunMode,
-): Promise<void> {
+): Promise<ManualRunCoreResult> {
   const executionJob = prepared.executionJob;
   const startedAt = prepared.startedAt;
   const jobId = prepared.jobId;
@@ -156,6 +151,7 @@ async function finishPreparedManualRun(
     let coreResult: Awaited<ReturnType<typeof executeJobCoreWithTimeout>>;
     try {
       coreResult = await executeJobCoreWithTimeout(state, executionJob, {
+        assertRunCurrent: prepared.commitGuard,
         runId: taskRunId,
         activeJobMarker: prepared.activeJobMarker,
         owningCronLaneTaskMarker: prepared.owningCronLaneTaskMarker,
@@ -260,7 +256,7 @@ async function finishPreparedManualRun(
     };
     if (prepared.activeJobMarker?.jobRemoved === true) {
       finishRemovedRun();
-      return;
+      return coreResult;
     }
     let notifySetupTimeout = coreResult.isolatedAgentSetupTimeout !== undefined;
     await locked(state, async () => {
@@ -449,6 +445,7 @@ async function finishPreparedManualRun(
       armTimer(state);
     }
     emitMissingTerminal();
+    return coreResult;
   } finally {
     // A failed row write leaves the exact receipt for recovery of its terminal
     // task fact. Only local liveness and admission ownership retire here.
@@ -494,7 +491,8 @@ export async function run(
     if (!activeRun.ran) {
       return activeRun;
     }
-    await finishPreparedManualRun(state, activeRun, mode);
+    const outcome = await finishPreparedManualRun(state, activeRun, mode);
+    opts?.onSettledResult?.(outcome);
     return { ok: true, ran: true } as const;
   });
   if (admission.kind === "stopped") {
@@ -603,9 +601,6 @@ export async function enqueueRun(
 }
 
 /** Enqueues manual wake text through the cron wake API. */
-export function wakeNow(
-  state: CronServiceState,
-  opts: { mode: CronWakeMode; text: string; sessionKey?: string; agentId?: string },
-) {
+export function wakeNow(state: CronServiceState, opts: Parameters<typeof wake>[1]) {
   return wake(state, opts);
 }

@@ -71,10 +71,11 @@ columns the model cannot write through prose:
 - **Origin class** is a closed set: `owner` (typed by the owner in a trusted
   channel), `agent` (derived by the agent from owner content), `untrusted`
   (derived from external content such as web pages, tool output, or non-owner
-  participants in group chats), and `system` (scaffolding such as heartbeat
-  prompts and cron preambles).
+  participants in group chats), and `system` (scaffolding such as scheduled
+  monitoring prompts and cron preambles).
 - **Session kind** records whether the source session was interactive, cron,
-  heartbeat, or a sub-agent run.
+  or a sub-agent run. Historical records can also carry the retired `heartbeat`
+  session kind.
 - **Observed timestamp and supersession key** date each fact and identify its
   lineage so newer observations can supersede older ones instead of
   accumulating beside them.
@@ -85,12 +86,14 @@ It is never defaulted to `owner`.
 
 Two hygiene rules use this metadata to stop the classic failure modes of
 always-on agents, where production audits have found the overwhelming
-majority of auto-captured memories to be scaffolding restatements, heartbeat
-noise, and recall feedback loops:
+majority of auto-captured memories to be scaffolding restatements, historical
+heartbeat noise, and recall feedback loops:
 
-- **Session-kind gating.** Cron, heartbeat, and sub-agent sessions do not
-  produce durable memory candidates. They can write task artifacts, but
-  nothing they emit is eligible for promotion.
+- **Session-kind gating.** Cron and sub-agent sessions do not produce durable
+  memory candidates, and historical heartbeat sessions remain excluded. These
+  background sessions can write task artifacts, but nothing they emit is
+  eligible for promotion. Monitoring uses ordinary cron jobs and keeps this
+  background provenance boundary.
 - **Recall-loop prevention.** Content that was injected into context from
   memory (bootstrap files, search results, recalled transcript excerpts) is
   structurally marked and never re-extracted as a new memory. A fact recalled

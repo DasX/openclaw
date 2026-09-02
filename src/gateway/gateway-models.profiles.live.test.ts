@@ -4171,7 +4171,7 @@ type OpenAIUltraWireObservation = {
     callId: string;
     sessionId?: string;
     sessionKey?: string;
-    isHeartbeat?: boolean;
+    automationJobId?: string;
   } | null;
 };
 
@@ -4239,7 +4239,7 @@ function startOpenAIUltraWireCapture(upstreamBaseUrls: readonly string[]): OpenA
   );
   const observations: Array<
     OpenAIUltraWireObservation & {
-      owner?: { diagnostic: DiagnosticEmbeddedRunOwner; isHeartbeat: boolean };
+      owner?: { diagnostic: DiagnosticEmbeddedRunOwner; automationJobId: string };
     }
   > = [];
   const dispatches = new Map<
@@ -4325,10 +4325,21 @@ function startOpenAIUltraWireCapture(upstreamBaseUrls: readonly string[]): OpenA
               context.lifecycleGeneration === getAgentRunLifecycleGeneration() &&
               captureAgentRunLifecycleGeneration(runId) === context.lifecycleGeneration &&
               validateAgentRunDelegatedAuthority(authority);
+            const runs = ownsRequest ? [...(context.cronRunsByJobId ?? [])] : [];
+            let automationJobId: string | undefined;
+            const onlyRun = runs.length === 1 ? runs[0] : undefined;
+            if (onlyRun && !onlyRun[1].closed && onlyRun[1].assertCurrent) {
+              try {
+                onlyRun[1].assertCurrent();
+                automationJobId = onlyRun[0];
+              } catch {
+                // A stale automation claim cannot establish request purpose.
+              }
+            }
             observations.push({
               ...readOpenAIUltraWireObservation(init.body),
-              ...(ownsRequest && typeof context.isHeartbeat === "boolean"
-                ? { owner: { diagnostic, isHeartbeat: context.isHeartbeat } }
+              ...(ownsRequest && automationJobId !== undefined
+                ? { owner: { diagnostic, automationJobId } }
                 : {}),
               requestIndex: observations.length + 1,
               ...(traceparent ? { traceparent } : {}),
@@ -4358,7 +4369,10 @@ function startOpenAIUltraWireCapture(upstreamBaseUrls: readonly string[]): OpenA
         return Object.assign(entry, {
           dispatch:
             dispatch && dispatch.model === entry.model
-              ? { ...dispatch.facts, ...(matchesOwner ? { isHeartbeat: owner.isHeartbeat } : {}) }
+              ? {
+                  ...dispatch.facts,
+                  ...(matchesOwner ? { automationJobId: owner.automationJobId } : {}),
+                }
               : null,
         });
       });
@@ -4408,7 +4422,25 @@ function createOpenAIUltraTestRun(purpose: string) {
     isCompacting: () => false,
     abort: () => {},
   };
-  registerAgentRunContext(runId, { sessionId, sessionKey, isHeartbeat: true });
+  let closed = false;
+  const automationJobId = `${purpose}-job`;
+  registerAgentRunContext(runId, {
+    sessionId,
+    sessionKey,
+    cronRunsByJobId: new Map([
+      [
+        automationJobId,
+        {
+          pacingEnabled: true,
+          assertCurrent: () => {
+            if (closed) {
+              throw new Error("Automation settled");
+            }
+          },
+        },
+      ],
+    ]),
+  });
   const authority = claimAgentRunDelegatedAuthority({ runId, instanceId: randomUUID() });
   setActiveEmbeddedRun(sessionId, handle, sessionKey);
   return {
@@ -4417,7 +4449,9 @@ function createOpenAIUltraTestRun(purpose: string) {
     sessionKey,
     handle,
     authority,
+    automationJobId,
     close: () => {
+      closed = true;
       clearActiveEmbeddedRun(sessionId, handle, sessionKey);
       releaseAgentRunDelegatedAuthority(authority);
       clearAgentRunContext(runId);
@@ -4434,11 +4468,11 @@ describe("OpenAI Ultra wire capture", () => {
     const capture = startOpenAIUltraWireCapture(["https://api.openai.com/v1"]);
     const model = createGatewayLiveTestModel("openai", "gpt-5.6-luna");
     const fetchModel = expectDefined(getAiTransportHost().buildModelFetch(model), "model fetch");
-    // Even a heartbeat flag on accepted probe/child admissions cannot lower Ultra.
+    // Even a automation tag on accepted probe/child admissions cannot lower Ultra.
     const probe = createOpenAIUltraTestRun("probe");
     const child = createOpenAIUltraTestRun("child");
-    const heartbeat = createOpenAIUltraTestRun("heartbeat");
-    const runs = [probe, child, heartbeat];
+    const automation = createOpenAIUltraTestRun("automation");
+    const runs = [probe, child, automation];
     const ultraRuns = new Map([probe, child].map((run) => [run.runId, run.sessionKey]));
     const send = async (run: (typeof runs)[number], effort: string, call: number) => {
       const trace = createDiagnosticTraceContext();
@@ -4469,7 +4503,7 @@ describe("OpenAI Ultra wire capture", () => {
     };
     try {
       await send(probe, "max", 1);
-      await send(heartbeat, "medium", 1);
+      await send(automation, "medium", 1);
       await send(child, "max", 1);
       await send(probe, "max", 2);
       await send(child, "max", 2);
@@ -4481,12 +4515,12 @@ describe("OpenAI Ultra wire capture", () => {
       expect(runs.every((run) => getAgentRunContext(run.runId) === undefined)).toBe(true);
       expect(beforeDelivery.every((entry) => entry.dispatch === null)).toBe(true);
       const observations = capture.observations;
-      expect(observations.map((entry) => entry.dispatch?.isHeartbeat)).toEqual([
-        true,
-        true,
-        true,
-        true,
-        true,
+      expect(observations.map((entry) => entry.dispatch?.automationJobId)).toEqual([
+        probe.automationJobId,
+        automation.automationJobId,
+        child.automationJobId,
+        probe.automationJobId,
+        child.automationJobId,
       ]);
       expect(transport).toHaveBeenCalledTimes(5);
       const childContinuation = observations.with(1, {
@@ -4495,7 +4529,7 @@ describe("OpenAI Ultra wire capture", () => {
           runId: "continuation-run",
           callId: "continuation-call",
           sessionKey: child.sessionKey,
-          isHeartbeat: true,
+          automationJobId: "continuation-job",
         },
       });
       expect(() =>
@@ -4509,7 +4543,7 @@ describe("OpenAI Ultra wire capture", () => {
         assertOpenAIUltraWireEffort({ expectedModel: model.id, observations, ultraRuns }),
       ).toBe(5);
       // A lost explicit override on a medium-default fixture is a failure, as are
-      // downgrades on descendants/continuations and a heartbeat elevated to max.
+      // downgrades on descendants/continuations and a automation elevated to max.
       for (const [index, entry] of observations.entries()) {
         const wrongEfforts = index === 1 ? ["low", "max"] : ["low", "medium"];
         for (const reasoningEffort of wrongEfforts) {
@@ -4560,7 +4594,7 @@ describe("OpenAI Ultra wire capture", () => {
     const capture = startOpenAIUltraWireCapture(["https://api.openai.com/v1"]);
     const model = createGatewayLiveTestModel("openai", "gpt-5.6-luna");
     const fetchModel = expectDefined(getAiTransportHost().buildModelFetch(model), "model fetch");
-    const run = createOpenAIUltraTestRun("invalid-heartbeat");
+    const run = createOpenAIUltraTestRun("invalid-automation");
     const trace = createDiagnosticTraceContext();
     const event = {
       runId: run.runId,
@@ -4613,7 +4647,7 @@ describe("OpenAI Ultra wire capture", () => {
       );
       await waitForDiagnosticEventsDrained();
       expect(capture.observations).toHaveLength(1);
-      expect(capture.observations[0]?.dispatch?.isHeartbeat).toBeUndefined();
+      expect(capture.observations[0]?.dispatch?.automationJobId).toBeUndefined();
       expect(() =>
         assertOpenAIUltraWireEffort({
           expectedModel: model.id,
@@ -4829,17 +4863,17 @@ function assertOpenAIUltraWireEffort(params: {
   ).toBeGreaterThan(0);
   const ultraSessions = new Set(params.ultraRuns.values());
   const expectedEffort = ({ dispatch }: OpenAIUltraWireObservation) =>
-    dispatch?.isHeartbeat === true &&
+    typeof dispatch?.automationJobId === "string" &&
     !params.ultraRuns.has(dispatch.runId) &&
     !ultraSessions.has(dispatch.sessionKey ?? "")
       ? OPENAI_ULTRA_NORMAL_EFFORT
       : "max";
-  const heartbeats = matching.filter(
+  const automations = matching.filter(
     (entry) => expectedEffort(entry) === OPENAI_ULTRA_NORMAL_EFFORT,
   );
-  if (heartbeats.length) {
+  if (automations.length) {
     logProgress(
-      `[ultra] ${params.expectedModel}: independent_heartbeats=${heartbeats.length} first=${JSON.stringify(heartbeats.slice(0, 3))}`,
+      `[ultra] ${params.expectedModel}: independent_automations=${automations.length} first=${JSON.stringify(automations.slice(0, 3))}`,
     );
   }
   const violations = matching.flatMap((entry, index) =>
@@ -4871,7 +4905,7 @@ function assertOpenAIUltraWireEffort(params: {
     ),
   ];
   logProgress(
-    `[ultra] ${params.expectedModel}: checked=${matching.length} max=${matching.length - heartbeats.length} medium=${heartbeats.length} sessions_spawn wire schemas=${spawnSchemas.join(",")}`,
+    `[ultra] ${params.expectedModel}: checked=${matching.length} max=${matching.length - automations.length} medium=${automations.length} sessions_spawn wire schemas=${spawnSchemas.join(",")}`,
   );
   return matching.length;
 }

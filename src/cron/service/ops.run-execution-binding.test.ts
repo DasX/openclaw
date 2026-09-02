@@ -79,12 +79,13 @@ describe("cron run execution binding", () => {
           },
         );
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           cronEnabled: true,
           storePath: store.storePath,
           log: noopLogger,
           nowMs: () => dueAt,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob,
         });
 
@@ -150,12 +151,13 @@ describe("cron run execution binding", () => {
         };
         await saveCronStore(store.storePath, { version: 1, jobs: [job] });
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           cronEnabled: true,
           storePath: store.storePath,
           log: noopLogger,
           nowMs: () => dueAt,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(),
         });
         const prepared = prepareCronRunReceiptClaim({

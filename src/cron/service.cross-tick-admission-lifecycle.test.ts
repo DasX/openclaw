@@ -47,12 +47,13 @@ describe("cron service cross-tick admission lifecycle", () => {
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => nowMs,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     await start(state);
@@ -128,12 +129,13 @@ describe("cron service cross-tick admission lifecycle", () => {
     let pendingStartCount = 0;
     const releasePending = createDeferred<{ status: "ok"; summary: string }>();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => t0,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async ({ job }: { job: CronJob }) => {
         switch (job.id) {
           case scheduledA.id:
@@ -250,12 +252,13 @@ describe("cron service cross-tick admission lifecycle", () => {
     const directRootRetired = createDeferred();
     const subordinateResult = createDeferred<unknown>();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => t0,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async ({ job }: { job: CronJob }) => {
         switch (job.id) {
           case scheduledA.id:
@@ -346,12 +349,13 @@ describe("cron service cross-tick admission lifecycle", () => {
       return { status: "ok" as const, summary: "pending" };
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => t0,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1;

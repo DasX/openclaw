@@ -2,9 +2,8 @@
 import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { canonicalizePath } from "../agents/utils/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveHeartbeatSchedulerSeed } from "../infra/heartbeat-runner.js";
-import { resolveHeartbeatPhaseMs } from "../infra/heartbeat-schedule.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
+import { resolveSchedulerSeed, resolveSchedulePhaseMs } from "./schedule-phase.js";
 import type { CronJob, CronJobCreate } from "./types.js";
 
 export const SKILL_COLLECTION_REVIEW_DECLARATION_PREFIX = "skill-collection-review:";
@@ -33,7 +32,7 @@ export function resolveSkillCollectionReviewMonitorSpecs(
     workspaceAgents.set(workspaceDir, agentIds);
   }
 
-  const schedulerSeed = resolveHeartbeatSchedulerSeed(options.schedulerSeed);
+  const schedulerSeed = resolveSchedulerSeed(options.schedulerSeed);
   const enabled = resolveSkillWorkshopConfig(cfg).autonomous.mode === "auto";
   return [...workspaceAgents.values()].flatMap((agentIds) => {
     const agentId = agentIds[0];
@@ -52,7 +51,7 @@ export function resolveSkillCollectionReviewMonitorSpecs(
           schedule: {
             kind: "every",
             everyMs: SKILL_COLLECTION_REVIEW_EVERY_MS,
-            anchorMs: resolveHeartbeatPhaseMs({
+            anchorMs: resolveSchedulePhaseMs({
               schedulerSeed,
               agentId,
               intervalMs: SKILL_COLLECTION_REVIEW_EVERY_MS,

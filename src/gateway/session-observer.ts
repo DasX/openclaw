@@ -11,7 +11,6 @@ import {
   terminalHealthFor,
 } from "../agents/session-activity-notes.js";
 import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
-import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   createSessionObserverAudience,
@@ -513,7 +512,7 @@ export function createSessionObserver(deps: SessionObserverDeps): SessionObserve
   };
 
   const handleEvent = (event: SessionObserverEvent, settledError = false) => {
-    if (disposed || getAgentRunContext(event.runId)?.isHeartbeat) {
+    if (disposed) {
       return;
     }
     const lifecyclePhase = event.stream === "lifecycle" ? event.data.phase : undefined;

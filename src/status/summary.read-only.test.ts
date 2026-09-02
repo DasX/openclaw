@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { getAgentLocalStatuses } from "../commands/status.agent-local.js";
@@ -13,9 +13,19 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import { recordDefaultProactiveJobInDatabase } from "../cron/proactive-job-receipt.js";
+import { CronService } from "../cron/service.js";
+import { createNoopLogger } from "../cron/service.test-harness.js";
+import { buildHealthAgentSummaries, resolveHealthAgentOrder } from "../gateway/health/collector.js";
+import { resolveHeartbeatSummaryForAgent } from "../infra/heartbeat-summary.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
+import * as machineState from "../state/config-machine-state.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import * as stateDatabase from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import {
   createDirectOutboundTestAdapter,
   createOutboundTestPlugin,
@@ -25,6 +35,53 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getStatusSummary } from "./summary.js";
 
 describe("getStatusSummary read-only session access", () => {
+  it.each(["status", "health"])(
+    "does not create shared state for a cold legacy %s projection",
+    async (surface) => {
+      await withOpenClawTestState({ prefix: "status-cold-projection-" }, async (state) => {
+        const databasePath = path.join(state.stateDir, "state", "openclaw.sqlite");
+        expect(fs.existsSync(databasePath)).toBe(false);
+        if (surface === "status") {
+          await getStatusSummary({ includeChannelSummary: false, config: {} });
+        } else {
+          await buildHealthAgentSummaries({}, resolveHealthAgentOrder({}));
+        }
+        expect(fs.existsSync(databasePath)).toBe(false);
+      });
+    },
+  );
+  it.each(["status", "health"])(
+    "does not migrate shared state for a legacy %s projection",
+    async (surface) => {
+      await withOpenClawTestState({ prefix: "status-old-projection-" }, async (state) => {
+        const databasePath = state.statePath("state", "openclaw.sqlite");
+        fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+        const db = new DatabaseSync(databasePath);
+        db.exec("PRAGMA user_version = 1");
+        db.close();
+        const before = fs.readFileSync(databasePath);
+        await expect(
+          surface === "status"
+            ? getStatusSummary({ includeChannelSummary: false, config: {} })
+            : buildHealthAgentSummaries({}, resolveHealthAgentOrder({})),
+        ).rejects.toThrow("doctor --fix");
+        expect(fs.readFileSync(databasePath)).toEqual(before);
+      });
+    },
+  );
+  it("does not treat unreadable shared state as an empty store", async () => {
+    await withOpenClawTestState({ prefix: "status-unreadable-projection-" }, async (state) => {
+      const databasePath = state.statePath("state", "openclaw.sqlite");
+      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+      fs.writeFileSync(databasePath, "not a SQLite database");
+      const before = fs.readFileSync(databasePath);
+      await expect(
+        getStatusSummary({ includeChannelSummary: false, config: {} }),
+      ).rejects.toThrow();
+      expect(fs.readFileSync(databasePath)).toEqual(before);
+    });
+  });
+
   const previousRegistry = getActivePluginRegistry();
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -59,47 +116,147 @@ describe("getStatusSummary read-only session access", () => {
     }
   });
 
-  it("does not create the heartbeat session database while checking its route", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-status-heartbeat-"));
-    const databasePath = path.join(tempDir, "openclaw-agent.sqlite");
-
-    try {
-      const summary = await getStatusSummary({
-        includeChannelSummary: false,
-        config: { session: { store: databasePath } },
-      });
-
-      expect(summary.heartbeat.agents[0]?.waitingForRoute).toBe(true);
-      expect(fs.existsSync(databasePath)).toBe(false);
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it.each([undefined, "owner"])(
-    "resolves the configured owner DM without writing session state for target %s",
-    async (target) => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-status-owner-"));
-      const databasePath = path.join(tempDir, "openclaw-agent.sqlite");
-
-      try {
-        const summary = await getStatusSummary({
-          includeChannelSummary: false,
-          config: {
-            ...(target ? { agents: { defaults: { heartbeat: { target } } } } : {}),
-            commands: { ownerAllowFrom: ["telegram:123"] },
-            channels: { telegram: { allowFrom: ["123"] } },
-            session: { store: databasePath },
-          },
+  it.each([
+    ["last", false, true],
+    ["owner", true, false],
+  ] as const)(
+    "checks the converted %s route without creating a session database",
+    async (target, owner, waitingForRoute) => {
+      await withOpenClawTestState({ prefix: "status-legacy-route-" }, async (state) => {
+        const databasePath = state.path("sessions", "openclaw-agent.sqlite");
+        const storePath = state.path("cron", "jobs.json");
+        const config = {
+          cron: { enabled: true, store: storePath },
+          session: { store: databasePath },
+          ...(owner
+            ? {
+                commands: { ownerAllowFrom: ["telegram:123"] },
+                channels: { telegram: { allowFrom: ["123"] } },
+              }
+            : {}),
+        };
+        const cron = new CronService({
+          storePath,
+          cronEnabled: true,
+          log: createNoopLogger(),
+          enqueueSystemEvent: vi.fn(),
+          runIsolatedAgentJob: vi.fn(),
         });
-
-        expect(summary.heartbeat.agents[0]?.waitingForRoute).toBe(false);
-        expect(fs.existsSync(databasePath)).toBe(false);
-      } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
+        try {
+          const job = await cron.add({
+            agentId: "main",
+            name: "converted",
+            enabled: true,
+            schedule: { kind: "every", everyMs: 60_000 },
+            sessionTarget: "session:agent:main:main",
+            wakeMode: "now",
+            payload: { kind: "agentTurn", message: "check" },
+            delivery:
+              target === "owner"
+                ? { mode: "announce", target }
+                : { mode: "announce", channel: target },
+          });
+          recordDefaultProactiveJobInDatabase(
+            openOpenClawStateDatabase().db,
+            storePath,
+            "main",
+            job.id,
+            1,
+          );
+          const summary = await getStatusSummary({ includeChannelSummary: false, config });
+          expect(summary.heartbeat.agents[0]?.waitingForRoute).toBe(waitingForRoute);
+          expect(fs.existsSync(databasePath)).toBe(false);
+        } finally {
+          cron.stop();
+        }
+      });
     },
   );
+
+  it("preserves raw legacy projections with one read-only snapshot for the whole fleet", async () => {
+    await withOpenClawTestState({ prefix: "status-fleet-projection-" }, async (state) => {
+      const storePath = state.path("cron", "jobs.json");
+      const config = {
+        cron: { enabled: true },
+        agents: {
+          defaults: { systemAgent: { agentId: "main" } },
+          entries: { main: {}, disabled: {}, event: {} },
+        },
+      };
+      const cron = new CronService({
+        storePath,
+        cronEnabled: true,
+        log: createNoopLogger(),
+        enqueueSystemEvent: vi.fn(),
+        runIsolatedAgentJob: vi.fn(),
+      });
+      try {
+        for (const agentId of ["main", "disabled", "event"]) {
+          const job = await cron.add({
+            agentId,
+            name: agentId,
+            enabled: agentId !== "disabled",
+            schedule:
+              agentId === "event"
+                ? { kind: "cron", expr: "0 9 * * *" }
+                : { kind: "every", everyMs: 60_000 },
+            sessionTarget: "isolated",
+            wakeMode: "now",
+            payload: { kind: "agentTurn", message: "check" },
+            delivery: { mode: "none" },
+          });
+          if (agentId !== "main") {
+            recordDefaultProactiveJobInDatabase(
+              openOpenClawStateDatabase().db,
+              storePath,
+              agentId,
+              job.id,
+              1,
+            );
+          }
+        }
+        machineState.writeConfigMachineState("cron.store", storePath);
+        const legacy = ["main", "disabled", "event"].map((id) =>
+          resolveHeartbeatSummaryForAgent(config, id),
+        );
+        closeOpenClawStateDatabaseForTest();
+        const databasePath = state.statePath("state", "openclaw.sqlite");
+        const before = fs.readFileSync(databasePath);
+        const reader = vi.spyOn(stateDatabase, "openExistingOpenClawStateDatabaseReadOnly");
+        const machineReader = vi.spyOn(machineState, "readConfigMachineState");
+        const writer = vi.spyOn(stateDatabase, "openOpenClawStateDatabase");
+        try {
+          const status = await getStatusSummary({ config, includeChannelSummary: false });
+          expect(reader).toHaveBeenCalledTimes(1);
+          const health = await buildHealthAgentSummaries(config, resolveHealthAgentOrder(config));
+          expect(reader).toHaveBeenCalledTimes(2);
+          expect(writer).not.toHaveBeenCalled();
+          expect(machineReader.mock.calls.filter(([key]) => key === "cron.store")).toHaveLength(0);
+          expect(health.map((agent) => agent.heartbeat)).toEqual(legacy);
+          expect(
+            status.heartbeat.agents.map(({ agentId, enabled, every, everyMs }) => ({
+              agentId,
+              enabled,
+              every,
+              everyMs,
+            })),
+          ).toEqual([
+            { agentId: "main", enabled: false, every: "disabled", everyMs: null },
+            { agentId: "disabled", enabled: false, every: "disabled", everyMs: null },
+            { agentId: "event", enabled: true, every: "scheduled", everyMs: null },
+          ]);
+          expect(await cron.status()).toMatchObject({ enabled: true, jobs: 3 });
+          expect(fs.readFileSync(databasePath)).toEqual(before);
+        } finally {
+          machineReader.mockRestore();
+          reader.mockRestore();
+          writer.mockRestore();
+        }
+      } finally {
+        cron.stop();
+      }
+    });
+  });
 
   it.each(["sessions.json", "shared.sqlite"])(
     "reports each agent's activity and reads each physical session store once for %s",

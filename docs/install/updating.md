@@ -468,9 +468,10 @@ path for a remote or externally managed Gateway, never downgrades a newer
 Gateway, and never overrides an `extended-stable` channel pin.
 
 When the update succeeds, the app queues a one-time welcome event for the most
-recent top-level direct session with a real user/channel interaction. Cron runs,
-heartbeats, and background-only session updates do not move that selection. In
-remote mode, the app updates only its local Mac node runtime and sends the event
+recent top-level direct session with a real user/channel interaction. Cron runs
+(including scheduled monitoring), legacy heartbeat activity, and background-only
+session updates do not move that selection. In remote mode, the app updates only
+its local Mac node runtime and sends the event
 only when the connected remote Gateway is at least as new as the app.
 
 ## After updating

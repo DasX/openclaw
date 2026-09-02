@@ -16,7 +16,6 @@ import {
   finalizeToolTerminalPresentation,
   formatToolExecutionErrorMessage,
   getBeforeToolCallFailureDisposition,
-  HEARTBEAT_RESPONSE_TOOL_NAME,
   embeddedAgentLog,
   getChannelAgentToolMeta,
   getPluginToolMeta,
@@ -29,14 +28,12 @@ import {
   isToolResultError,
   isMessagingTool,
   isMessagingToolSendAction,
-  normalizeHeartbeatToolResponse,
   resolveToolExecutionErrorKind,
   resolveToolResultFailureKind,
   runAgentHarnessAfterToolCallHook,
   sanitizeToolResult,
   setBeforeToolCallDiagnosticsEnabled,
   type AnyAgentTool,
-  type HeartbeatToolResponse,
   type MessagingToolSend,
   type MessagingToolSourceReplyPayload,
   wrapToolWithBeforeToolCallHook,
@@ -430,7 +427,6 @@ export type CodexDynamicToolBridge = {
     messagingToolSentMediaUrls: string[];
     messagingToolSentTargets: MessagingToolSend[];
     messagingToolSourceReplyPayloads: MessagingToolSourceReplyPayload[];
-    heartbeatToolResponse?: HeartbeatToolResponse;
     toolMediaUrls: string[];
     toolAutoDeliveryMediaUrls: string[];
     coreTtsToolResults: object[];
@@ -1188,14 +1184,12 @@ function collectToolTelemetry(params: {
   if (params.isError) {
     return undefined;
   }
-  if (!params.isError && params.toolName === "cron" && isCronAddAction(params.args)) {
+  if (
+    !params.isError &&
+    (params.toolName === "automations" || params.toolName === "cron") &&
+    isCronAddAction(params.args)
+  ) {
     params.telemetry.successfulCronAdds = (params.telemetry.successfulCronAdds ?? 0) + 1;
-  }
-  if (!params.isError && params.toolName === HEARTBEAT_RESPONSE_TOOL_NAME) {
-    const response = normalizeHeartbeatToolResponse(params.result?.details);
-    if (response) {
-      params.telemetry.heartbeatToolResponse = response;
-    }
   }
   // Only a live invocation may accept new media; committed effects remain evidence.
   if (params.result && !params.signal.aborted) {

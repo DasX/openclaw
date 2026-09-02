@@ -337,8 +337,8 @@ whether self-learning is on; use the config setting to choose all three modes.
 The Control UI can review older work without enabling autonomous self-learning.
 Open **Plugins → Workshop** and select **Find skill ideas**. The scan starts with
 the newest eligible sessions and reviews a bounded window of substantial work.
-It skips cron, heartbeat, hook, subagent, ACP, plugin-owned, and internal review
-sessions, plus conversations with fewer than six model turns.
+It skips cron, legacy heartbeat, hook, subagent, ACP, plugin-owned, and internal
+review sessions, plus conversations with fewer than six model turns.
 
 The reviewer uses the selected agent's configured model and receives a
 secret-redacted, size-bounded transcript bundle. It applies the same conservative

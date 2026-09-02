@@ -75,12 +75,13 @@ describe("cron outcome receipt finalization", () => {
       const retiredReceipt = claimReceipt(store.storePath, retired, startedAt);
       const currentReceipt = claimReceipt(store.storePath, current, startedAt);
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => startedAt,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(),
       });
       const taskRunId = tryCreateCronTaskRunHandle({
@@ -178,12 +179,13 @@ describe("cron outcome receipt finalization", () => {
     await saveCronStore(store.storePath, edited);
     const events: Array<{ action: string; jobId: string; job?: CronJob }> = [];
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => startedAt + 2,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       onEvent: (event) => events.push(event),
     });
@@ -230,13 +232,14 @@ describe("cron outcome receipt finalization", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       cronConfig: { triggers: { enabled: true } },
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => dueAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       evaluateCronTrigger: vi.fn(async () => ({ kind: "evaluated" as const, fire: false })),
       runIsolatedAgentJob,
     });
@@ -270,12 +273,13 @@ describe("cron outcome receipt finalization", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [completed, imported] });
     const receipt = claimReceipt(store.storePath, completed, startedAt);
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => startedAt + 1,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
 
@@ -317,12 +321,13 @@ describe("cron outcome receipt finalization", () => {
     const events: Array<{ action: string; jobId: string }> = [];
     const warn = vi.fn();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: { ...noopLogger, warn },
       nowMs: () => startedAt + 1,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       onEvent: (event) => events.push(event),
     });

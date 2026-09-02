@@ -28,7 +28,7 @@ title: "Gateway architecture"
 - Maintains provider connections.
 - Exposes a typed WS API (requests, responses, server-push events).
 - Validates inbound frames against JSON Schema.
-- Emits events like `agent`, `chat`, `presence`, `health`, `heartbeat`, `cron`.
+- Emits events like `agent`, `chat`, `presence`, `health`, and `cron`. The protocol-v4 `heartbeat` event remains a deprecated compatibility projection of automation state, not a separate execution engine; see [Heartbeat migration](/gateway/heartbeat).
 
 ### Clients (mac app / CLI / web admin)
 

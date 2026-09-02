@@ -10,6 +10,10 @@ title: "Database schemas"
 
 OpenClaw stores control-plane state in a global SQLite database and agent data in one SQLite database per agent. Schema migrations run forward when a database opens. Older OpenClaw builds refuse databases written by a newer schema.
 
+The current schema versions are **16** for shared state and **19** for per-agent
+data. [State schema 16](#state-schema-16) protects the job policies introduced by
+heartbeat retirement; it does not add a table or advance the agent schema.
+
 ## Database layout
 
 | Scope                | Default path                                               | Contents                                                                                              |
@@ -122,6 +126,8 @@ Treat a change as material when it introduces or materially changes any of these
 
 The discussion should identify the owning store and lifecycle, the problem being solved, alternatives that avoid new persistence, canonical versus derived data, schema and upgrade/downgrade behavior, retention and deletion behavior, concurrency and recovery invariants, performance/storage impact, rollback plan, and validation limits. The implementing PR must link the accepted decision.
 
+Track accepted but deferred cleanup in the [planned database changes README](https://github.com/openclaw/openclaw/blob/main/src/state/README.md). Each entry records the owning store, data disposition, prerequisites, removal boundary, and verification; an entry is not approval to advance a schema version.
+
 The checkpoint normally does not apply to a read-only query that preserves existing semantics, a bounded query-plan improvement with no material write/disk tradeoff, routine maintenance of an existing approved schema, or tests, generated baselines, and documentation that only follow an already accepted design. A mechanical migration or repair still links the decision that approved its persistent contract.
 
 For an urgent data-loss, security, or recovery fix, a maintainer may authorize a narrowly scoped exception before implementation. The appropriate public or private review record must capture the reason, temporary scope, rollback and validation plan, and any follow-up needed for the full design decision. The exception accelerates the design record; it does not waive review before merge.
@@ -212,7 +218,37 @@ Normal admission remains bounded at 32 identities. Same-store alias repair sums 
 | 12      | Thirteen singleton/cache tables retired; durable state folded into config_machine_state                                                                                                                                                                                                                                         | Unreleased          |
 | 13      | State consolidation: cron jobs and subagent runs become JSON-canonical (113 projection columns, five unused indexes removed); installed_plugin_index and shared auth-profile singletons fold into config_machine_state; workspace_attestations merges into workspace_setup_state; gateway origin device tokens become canonical | Unreleased          |
 | 14      | Source-qualified cron creator capture; historical human job creators remain unknown                                                                                                                                                                                                                                             | Unreleased          |
-| 15      | Conversation bindings use exact target keys; redundant agent/session projections removed                                                                                                                                                                                                                                        | Unreleased          |
+| 15      | Conversation bindings use exact target keys; redundant agent/session projections removed                                                                                                                                                                                                                                        | `v2026.8.1`         |
+| 16      | Ordinary cron jobs replace heartbeat monitoring; the version fence protects new job policies from older writers ([#134994](https://github.com/openclaw/openclaw/issues/134994))                                                                                                                                                 | Unreleased          |
+
+### State schema 16
+
+Schema 16 fences the [heartbeat retirement](/gateway/heartbeat). Monitoring
+becomes ordinary editable cron jobs with per-job execution windows, idle-only
+admission, owner delivery, direct-message policy, and empty-scratch suppression.
+These fields live in existing canonical job JSON; no new table is added. Builds
+supporting schema 15 or earlier would ignore the new policies, so they must not
+open or write the converted state.
+
+Run `openclaw doctor --fix` from the compatible build to convert existing
+monitors and task blocks in place. Conversion preserves job IDs, history,
+scratch revisions and tombstones, disabled state, schedule anchors, and pending
+scheduling slots. Doctor verifies the canonical jobs before removing retired
+heartbeat configuration. A per-agent provisioning receipt in existing
+`config_machine_state` remains after job deletion, so repeated Doctor runs and
+restarts do not recreate deleted jobs.
+
+Agent schema stays **19**. Meaningful pending heartbeat context moves to normal
+session-delivery/context ownership; `heartbeat_outcomes` remains structurally
+present but inert. Its later removal is tracked in the
+[planned database changes README](https://github.com/openclaw/openclaw/blob/main/src/state/README.md)
+and requires a separately approved agent-schema bump.
+
+Stop writers and create a verified, WAL-aware backup before upgrading. To return
+to a schema-15 build, restore that pre-upgrade backup into a separate state
+directory with the matching older build. Do not lower the version markers:
+keeping the table shapes while ignoring the new job policies is not a safe
+downgrade.
 
 ### State schema 15
 

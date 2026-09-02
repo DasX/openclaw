@@ -19,7 +19,6 @@ import { createBlockReplyContentKey, createBlockReplyPipeline } from "./block-re
 import { createReplyToModeFilterForChannel } from "./reply-threading.js";
 
 const baseParams = {
-  isHeartbeat: false,
   didLogHeartbeatStrip: false,
   blockStreamingEnabled: false,
   blockReplyPipeline: null,
@@ -307,9 +306,8 @@ describe("buildReplyPayloads media filter integration", () => {
     });
   });
 
-  it("strips legacy bracket tool blocks from heartbeat replies", async () => {
+  it("strips legacy bracket tool blocks from replies", async () => {
     const { replyPayloads } = await buildTestReplyPayloads({
-      isHeartbeat: true,
       payloads: [
         {
           text: [

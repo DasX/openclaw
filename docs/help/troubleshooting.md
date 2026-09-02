@@ -190,7 +190,7 @@ flowchart TD
   B --> D[Dashboard or Control UI will not connect]
   B --> E[Gateway will not start or service not running]
   B --> F[Channel connects but messages do not flow]
-  B --> G[Cron or heartbeat did not fire or did not deliver]
+  B --> G[Scheduled job did not fire or did not deliver]
   B --> H[Node is paired but camera canvas screen exec fails]
   B --> I[Browser tool fails]
 
@@ -312,12 +312,12 @@ flowchart TD
 
   </Accordion>
 
-  <Accordion title="Cron or heartbeat did not fire or did not deliver">
+  <Accordion title="Scheduled job did not fire or did not deliver">
     ```bash
     openclaw status
     openclaw gateway status
     openclaw cron status
-    openclaw cron list
+    openclaw cron list --all
     openclaw cron runs --id <jobId> --limit 20
     openclaw logs --follow
     ```
@@ -326,18 +326,23 @@ flowchart TD
 
     - `cron status` shows the scheduler enabled with a next wake.
     - `cron runs` shows recent `ok` entries.
-    - Heartbeat is enabled and inside active hours.
+    - The job is enabled, has the intended schedule and session, and is inside any `activeHours` window.
 
-    Log signatures:
+    Check job policy and delivery separately:
 
     - `cron: scheduler disabled; jobs will not run automatically` → cron is disabled.
-    - `heartbeat skipped` reason `quiet-hours` → outside configured active hours.
-    - `heartbeat skipped` reason `empty-heartbeat-file` → heartbeat monitor scratch contains only blank, comment, header, fence, or empty-checklist scaffolding.
-    - `heartbeat skipped` reason `alerts-disabled` → `showOk`, `showAlerts`, and `useIndicator` are all off.
-    - `requests-in-flight` → main lane busy; heartbeat wake deferred.
-    - `unknown accountId` → heartbeat delivery target account does not exist.
+    - `activeHours` → runs outside the configured window do not start.
+    - `idleOnly` → the job yields to foreground work or session recovery before starting.
+    - `payload.skipIfScratchEmpty` → present scratch containing only blank lines, comments, headings, fences, or empty checklist stubs skips the run; absent scratch does not.
+    - `NO_REPLY` → intentional quiet completion, not a missing run.
+    - `delivery.mode: "none"`, a blocked direct target, or an unresolved owner/route → inspect the delivery policy and result before changing the schedule.
+    - `unknown accountId` → the delivery target account does not exist.
 
-    Deep pages: [Cron and heartbeat delivery](/gateway/troubleshooting#cron-and-heartbeat-delivery), [Scheduled tasks: Troubleshooting](/automation/cron-jobs#troubleshooting), [Heartbeat](/gateway/heartbeat)
+    Immediate exec, task, hook, and restart follow-ups do not depend on cron or
+    monitoring being enabled. If an older setup still reports heartbeat config
+    errors, use `openclaw doctor --fix` to migrate it.
+
+    Deep pages: [Scheduled job delivery](/gateway/troubleshooting#cron-and-heartbeat-delivery), [Scheduled tasks: Troubleshooting](/automation/cron-jobs#troubleshooting), [Heartbeat migration](/gateway/heartbeat)
 
   </Accordion>
 
@@ -450,4 +455,4 @@ flowchart TD
 - [Gateway Troubleshooting](/gateway/troubleshooting) — gateway-specific issues
 - [Doctor](/gateway/doctor) — automated health checks and repairs
 - [Channel Troubleshooting](/channels/troubleshooting) — channel connectivity issues
-- [Scheduled tasks: Troubleshooting](/automation/cron-jobs#troubleshooting) — cron and heartbeat issues
+- [Scheduled tasks: Troubleshooting](/automation/cron-jobs#troubleshooting) — scheduling and delivery issues

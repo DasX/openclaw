@@ -38,7 +38,7 @@ describe("loadGatewayDiagnostics", () => {
       "diagnostics.lanes",
       "status",
       "health",
-      "last-heartbeat",
+      "cron.status",
     ]);
   });
 });

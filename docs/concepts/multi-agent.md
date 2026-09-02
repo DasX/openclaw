@@ -232,7 +232,7 @@ Bindings are deterministic and most-specific wins. See [Channel routing](/channe
 - If a binding sets multiple match fields (for example `peer` + `guildId`), all specified fields must match (`AND` semantics).
 - A binding that omits `accountId` matches only the default account, not every account. Use `accountId: "*"` for a channel-wide fallback, or `accountId: "<name>"` for one account. Adding the same binding again with an explicit account id upgrades the existing channel-only binding instead of duplicating it.
 
-For existing multi-agent configs, `openclaw doctor --fix` materializes legacy ambient default routing into channel-wide bindings plus explicit heartbeat, Custodian, and Talk targets. Single-agent configs are unchanged.
+For existing multi-agent configs, `openclaw doctor --fix` materializes legacy ambient default routing into channel-wide bindings plus explicit Custodian and Talk targets. Legacy heartbeat ownership and delivery settings move into ordinary monitoring jobs as part of [heartbeat retirement](/gateway/heartbeat); the routing migration leaves single-agent routing unchanged.
 
 For a multi-agent roster defined directly in the main config file without a
 legacy `default: true` marker, Doctor adds `agents.ownership: "explicit"` for

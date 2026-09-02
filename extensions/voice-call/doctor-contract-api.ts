@@ -156,6 +156,8 @@ function describeVoiceCallSchemaMigration(migration: OpenClawStateDatabaseSchema
       return "cron creators -> explicit principal namespaces";
     case "conversation-binding-targets-v15":
       return "conversation bindings -> exact target keys without agent/session projections";
+    case "automation-policy-fence-v16":
+      return "automation execution policies -> schema-16 reader fence";
     case "worker-placement-execution-mode-v8":
       return "cloud worker placements -> execution-mode claims";
     case "operator-approvals-system-agent":

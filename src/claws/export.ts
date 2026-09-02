@@ -9,13 +9,24 @@ import { openLocalAgentAvatarFile } from "../agents/identity-avatar-file.js";
 import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../agents/workspace-bootstrap-read.js";
 import { normalizeConfiguredMcpServers } from "../config/mcp-config-normalize.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readCronJobScratchState } from "../cron/scratch-store.js";
+import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
+import { cronStoreKey } from "../cron/store/key.js";
+import { loadCronRows, loadedCronStoreFromRows } from "../cron/store/row-codec.js";
+import { loadCronRuntimeAuthorities } from "../cron/store/runtime-authority-store.js";
 import { readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
 import { FsSafeError, root as fsSafeRoot } from "../infra/fs-safe.js";
 import { AVATAR_MAX_BYTES, isAvatarDataUrl, isAvatarHttpUrl } from "../shared/avatar-policy.js";
-import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  type OpenClawStateDatabaseOptions,
+} from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
+import { clawCronGatewayJobMatchesRef } from "./cron.js";
+import { ClawExportError } from "./export-error.js";
 import { readClawStatus } from "./lifecycle-state.js";
 import type { PackageRemovalDeps } from "./package-remove.js";
+import { exportPortableHeartbeat } from "./portable-heartbeat.js";
 import { readClawManifestFile } from "./reader.js";
 import { isPortableClawAvatar } from "./schema-portability.js";
 import { parseClawManifest, parseClawOpenClawProfile } from "./schema.js";
@@ -31,6 +42,8 @@ import {
   type ClawOpenClawProfile,
   type ClawPackagePreflight,
 } from "./types.js";
+
+export { ClawExportError } from "./export-error.js";
 
 export const CLAW_EXPORT_RESULT_SCHEMA_VERSION = "openclaw.clawExportResult.v1" as const;
 const MAX_EXPORT_FILE_BYTES = 1024 * 1024;
@@ -57,16 +70,6 @@ type ClawExportResult = {
 };
 
 const DRIFTED_BOOTSTRAP_STATES = new Set<string>(["modified", "unsafe", "unknown"]);
-
-export class ClawExportError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ClawExportError";
-  }
-}
 
 function portableAgent(agent: AgentConfig, avatar: string | undefined): ClawManifest["agent"] {
   const identity = {
@@ -137,37 +140,6 @@ function portableOpenClawProfile(
                 ? { sources: agent.memory.search.sources }
                 : {}),
             },
-          },
-        }
-      : {}),
-    ...(agent.heartbeat
-      ? {
-          heartbeat: {
-            ...(agent.heartbeat.every ? { every: agent.heartbeat.every } : {}),
-            ...(agent.heartbeat.activeHours
-              ? {
-                  activeHours: {
-                    ...(agent.heartbeat.activeHours.start
-                      ? { start: agent.heartbeat.activeHours.start }
-                      : {}),
-                    ...(agent.heartbeat.activeHours.end
-                      ? { end: agent.heartbeat.activeHours.end }
-                      : {}),
-                    ...(agent.heartbeat.activeHours.timezone
-                      ? { timezone: agent.heartbeat.activeHours.timezone }
-                      : {}),
-                  },
-                }
-              : {}),
-            ...(agent.heartbeat.lightContext !== undefined
-              ? { lightContext: agent.heartbeat.lightContext }
-              : {}),
-            ...(agent.heartbeat.isolatedSession !== undefined
-              ? { isolatedSession: agent.heartbeat.isolatedSession }
-              : {}),
-            ...(agent.heartbeat.timeoutSeconds !== undefined
-              ? { timeoutSeconds: agent.heartbeat.timeoutSeconds }
-              : {}),
           },
         }
       : {}),
@@ -319,7 +291,7 @@ export async function exportClawAgent(
     bootstrapPath?: string;
   },
 ): Promise<ClawExportResult> {
-  const status = await readClawStatus(agentId, options);
+  const status = await readClawStatus(agentId, { ...options, readOnly: true });
   const record = status.records.find((candidate) => candidate.install.agentId === agentId);
   if (!record) {
     throw new ClawExportError(
@@ -387,9 +359,25 @@ export async function exportClawAgent(
       `Cannot export the package bootstrap ${JSON.stringify(record.bootstrap.path)} in ${JSON.stringify(record.bootstrapState)} state; restore the seeded file or pass a reviewed --bootstrap replacement.`,
     );
   }
-  const unresolvedCronJobs = record.cronJobs.filter(
-    (cron) => cron.status !== "complete" || !cron.schedulerJobId,
-  );
+  const storePath = resolveCronJobsStorePathFromConfig(options.config, options.env);
+  const readOptions = { ...options, readOnly: true };
+  const { db } = openOpenClawStateDatabase(readOptions);
+  const storeKey = cronStoreKey(storePath);
+  const jobs = loadedCronStoreFromRows(loadCronRows(db, storeKey)).store.jobs;
+  loadCronRuntimeAuthorities({ db, storeKey, jobs });
+  // Provenance records the imported declaration, not the operator's current job.
+  // Export must not revive deleted jobs or discard edits the artifact cannot encode.
+  const unresolvedCronJobs = record.cronJobs.filter((cron) => {
+    const job = jobs.find((candidate) => candidate.id === cron.schedulerJobId);
+    return (
+      cron.status !== "complete" ||
+      !job ||
+      !clawCronGatewayJobMatchesRef(agentId, cron, job) ||
+      job.runtimeAuthority !== undefined ||
+      job.runtimeAuthorityRecoveryRequired === true ||
+      readCronJobScratchState(storePath, job.id, readOptions).scratch !== undefined
+    );
+  });
   const unavailableMcpServers = record.mcpServers.filter((server) => server.state !== "present");
   if (unavailableMcpServers.length > 0) {
     throw new ClawExportError(
@@ -402,7 +390,7 @@ export async function exportClawAgent(
   if (unresolvedCronJobs.length > 0) {
     throw new ClawExportError(
       "cron_jobs_unavailable",
-      `Cannot export cron declarations with unresolved ownership: ${unresolvedCronJobs
+      `Cannot export cron declarations with unresolved ownership, changed definitions, or unrepresentable scratch; reconcile the ordinary jobs before exporting: ${unresolvedCronJobs
         .map((cron) => cron.manifestId)
         .join(", ")}.`,
     );
@@ -423,6 +411,13 @@ export async function exportClawAgent(
       content: await workspace.readBytes(file.path, { maxBytes: MAX_EXPORT_FILE_BYTES }),
     })),
   );
+  const portableHeartbeat = exportPortableHeartbeat(agentId, options.config, {
+    ...options,
+    readOnly: true,
+  });
+  if (portableHeartbeat?.scratch !== undefined) {
+    allContents.push({ path: "HEARTBEAT.md", content: Buffer.from(portableHeartbeat.scratch) });
+  }
   const soul = allContents.find((file) => file.path === "SOUL.md");
   const decodedSoul = soul ? decodeUtf8(soul.content) : undefined;
   let clawMarkdownBody =
@@ -484,7 +479,11 @@ export async function exportClawAgent(
       version: pkg.version,
     }))
     .toSorted((left, right) => comparePortableText(left.id, right.id));
-  const openClawProfile = portableOpenClawProfile(agent, extensions);
+  let openClawProfile = portableOpenClawProfile(agent, extensions);
+  if (portableHeartbeat) {
+    openClawProfile ??= { schemaVersion: 1, agent: {}, extensions };
+    openClawProfile.agent.heartbeat = portableHeartbeat.heartbeat;
+  }
   const openClawProfilePath = "profiles/openclaw.yml";
   const openClawProfileRaw = openClawProfile
     ? Buffer.from(stringifyYaml(openClawProfile))

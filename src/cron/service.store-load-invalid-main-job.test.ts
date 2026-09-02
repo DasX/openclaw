@@ -37,7 +37,7 @@ describe("CronService store load", () => {
     const { dir, storePath } = await makeStorePath();
     tempDir = dir;
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
 
     const job = {
       id: "job-1",
@@ -55,11 +55,12 @@ describe("CronService store load", () => {
     await writeCronStoreSnapshot({ storePath, jobs: [job] });
 
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -68,7 +69,7 @@ describe("CronService store load", () => {
     await cron.run("job-1", "due");
 
     expect(enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(requestHeartbeat).not.toHaveBeenCalled();
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
 
     const jobs = await cron.list({ includeDisabled: true });
     expect(jobs[0]?.state.lastStatus).toBe("skipped");

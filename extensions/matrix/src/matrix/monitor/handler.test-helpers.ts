@@ -240,6 +240,10 @@ export function createMatrixHandlerTestHarness(
       if (!("route" in turn) || !("delivery" in turn)) {
         throw new Error("expected assembled Matrix channel turn plan");
       }
+      const delivery = turn.delivery;
+      if (!delivery.deliver) {
+        throw new Error("expected core-managed Matrix delivery");
+      }
       return await runPrepared({
         channel: turn.channel,
         accountId: turn.accountId,
@@ -258,8 +262,8 @@ export function createMatrixHandlerTestHarness(
             cfg: turn.cfg,
             dispatcherOptions: {
               ...turn.dispatcherOptions,
-              deliver: turn.delivery.deliver,
-              onError: turn.delivery.onError,
+              deliver: delivery.deliver,
+              onError: delivery.onError,
             },
             replyOptions: turn.replyOptions,
             replyResolver: turn.replyResolver,

@@ -430,7 +430,7 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     aliasIndex: params.aliasIndex,
     provider: params.provider,
     model: params.model,
-    hasResolvedHeartbeatModelOverride: false,
+    hasResolvedTurnModelOverride: false,
     typing: params.typing,
     opts: params.opts,
     skillFilter: params.skillFilter,

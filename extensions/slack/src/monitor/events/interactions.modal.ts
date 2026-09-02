@@ -1,10 +1,9 @@
 // Slack plugin module implements interactions.modal behavior.
 import type { AllMiddlewareArgs } from "@slack/bolt";
-import { requestHeartbeat } from "openclaw/plugin-sdk/heartbeat-runtime";
 import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
-import { enqueueRoutedSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { dispatchSlackPluginInteractiveHandler } from "../../interactive-dispatch.js";
 import { parseSlackModalPrivateMetadata } from "../../modal-metadata.js";
+import { getSlackRuntime } from "../../runtime.js";
 import { authorizeSlackSystemEventSender } from "../auth.js";
 import type { SlackMonitorContext } from "../context.js";
 import { resolveSlackDeferredActionTarget } from "../deferred-action-routing.js";
@@ -450,10 +449,11 @@ async function emitSlackModalLifecycleEvent(params: {
       })
     : undefined;
 
-  const queued = enqueueRoutedSystemEvent(
+  const receipt = getSlackRuntime().system.enqueueSessionEvent(
     params.formatSystemEvent({ ...eventPayload, ...pluginEventFields }),
-    sessionRouting,
     {
+      agentId: sessionRouting.agentId,
+      sessionKey: sessionRouting.sessionKey,
       contextKey: [params.contextPrefix, params.teamId, callbackId, viewId, userId]
         .filter(Boolean)
         .join(":"),
@@ -464,16 +464,13 @@ async function emitSlackModalLifecycleEvent(params: {
       },
     },
   );
-  if (queued) {
-    requestHeartbeat({
-      source: "hook",
-      intent: "immediate",
-      reason: "hook:slack-interaction",
-      agentId: sessionRouting.agentId,
-      sessionKey: sessionRouting.sessionKey,
-      heartbeat: { target: "last" },
-    });
-  }
+  void receipt.settled.then((outcome) => {
+    if (outcome.status !== "completed") {
+      params.ctx.runtime.log?.(
+        `slack:interaction follow-up ${outcome.status}: ${outcome.error ?? "cancelled"}`,
+      );
+    }
+  });
 }
 
 export function registerModalLifecycleHandler(params: {

@@ -107,7 +107,7 @@ describe("describeHeartbeatSessionTargetIssues", () => {
     expect(warnings[0]).toContain(`no entry in ${databasePath}`);
     expect(warnings[0]).not.toContain(`no entry in ${storePath}`);
     expect(warnings[0]).toContain('reason="no-target"');
-    expect(warnings[0]).toContain("Heartbeats will run");
+    expect(warnings[0]).toContain("Migrated automations will run");
   });
 
   it("does not read a canonical database as JSON for a missing heartbeat target", async () => {

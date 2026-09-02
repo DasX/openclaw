@@ -96,20 +96,25 @@ paths should use message adapters and durable message helpers from
 
 ## Internal turn sources
 
-`MsgContext.InternalTurnSource` identifies an internal wake: `"heartbeat"`,
-`"cron"`, or `"exec"`. Leave it unset for ordinary channel messages. It keeps
-internal turns from resetting sessions or replacing the conversation binding;
-it does not grant execution authority or replace `InputProvenance`.
+`MsgContext.InternalTurnSource` identifies an internal turn independently of
+transport. Leave it unset for ordinary channel messages. It keeps internal
+turns from resetting sessions or replacing the conversation binding; it does
+not grant execution authority or replace `InputProvenance`. Scheduled monitoring
+uses ordinary cron jobs, and immediate follow-ups use ordinary session admission,
+not a separate heartbeat execution path.
 
 Keep `Provider` and `Surface` for transport identity, and keep the reply route in
 `OriginatingChannel` and `OriginatingTo`. An internal wake may have no transport
 or explicit reply target. Do not put a wake label in those channel fields.
 
-For existing SDK callers, inbound finalization and session-recording entrypoints
-translate legacy `Provider` values `"heartbeat"`, `"cron-event"`, and
-`"exec-event"` into `InternalTurnSource`. They remove those labels from channel
-fields while preserving a real reply route. New callers should set the typed
-source directly.
+For existing SDK callers, `InternalTurnSource: "heartbeat"` and legacy `Provider`
+values `"heartbeat"`, `"cron-event"`, and `"exec-event"` remain deprecated boundary
+inputs. Inbound finalization and session-recording entrypoints translate the
+provider labels into an internal source and remove them from channel fields while
+preserving a real reply route. These adapters do not retain a heartbeat scheduler
+or runner. Use only source values supported by the installed SDK. See
+[Heartbeat migration](/gateway/heartbeat) for the retirement and compatibility
+boundary.
 
 ## Receive acknowledgment policy
 

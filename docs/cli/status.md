@@ -42,6 +42,23 @@ security audit, plugin compatibility, and memory-vector probes are left to
 `openclaw status --all`, `openclaw status --deep`, `openclaw security audit`,
 and `openclaw memory status --deep`.
 
+## Automations and legacy diagnostics
+
+Human status reports show **Automations** from the Gateway's `cron.status`:
+scheduler enablement, total jobs (including disabled jobs), and next wake.
+No scheduled wake does not mean the scheduler is disabled; event-driven jobs
+may be enabled without an interval timer. An unavailable scheduler is reported
+as unavailable, not disabled. Inspect individual jobs and outcomes with
+`openclaw automations list --all` and `openclaw automations runs --id <jobId>`.
+
+The Control UI Debug summary uses the same scheduler data. Its **Raw protocol /
+legacy inspection** section retains unmodified status and health payloads.
+The public JSON/RPC `heartbeat` fields describe converted/default automation
+jobs only, not all automations. Those protocol v4 fields, health cadence fields,
+and deep JSON `lastHeartbeat` remain compatibility data, not product status
+labels. Reading these legacy projections does not create or migrate shared
+state; an existing unreadable or migration-required database remains an error.
+
 ## Session and model resolution
 
 - Session status output separates `Execution:` from `Runtime:`. `Execution`

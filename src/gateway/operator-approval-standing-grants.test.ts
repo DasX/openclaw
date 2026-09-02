@@ -475,6 +475,18 @@ describe("cron standing grant consumption", () => {
     expect(consume({ databaseOptions, revision }).outcome).toBe("job-revision-changed");
   });
 
+  it("does not let an unchanged stored grant authorize a different per-run delivery", () => {
+    const { databaseOptions, revision } = seedMintedGrant();
+    const effective = cronJob({ delivery: { mode: "none" } });
+    const effectiveRevision = resolveCronJobConfigRevision(effective);
+    expect(effectiveRevision).not.toBe(revision);
+    expect(consume({ databaseOptions, revision: effectiveRevision }).outcome).toBe(
+      "job-revision-changed",
+    );
+    expect(readGrantRows(databaseOptions)?.[0]?.use_count).toBe(0);
+    expect(consume({ databaseOptions, revision }).outcome).toBe("consumed");
+  });
+
   it("fails closed when the minting approval row is gone or reversed", () => {
     const { databaseOptions, revision } = seedMintedGrant();
     const database = openOpenClawStateDatabase(databaseOptions);

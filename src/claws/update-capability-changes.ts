@@ -4,9 +4,7 @@ import { stableStringify } from "@openclaw/normalization-core";
 import { listAgentEntries, toAgentEntriesRecord } from "../agents/agent-scope.js";
 import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
 import { expandToolGroups, resolveToolProfilePolicy } from "../agents/tool-policy-shared.js";
-import { parseDurationMs } from "../cli/parse-duration.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveHeartbeatSummaryForAgent } from "../infra/heartbeat-summary.js";
 import { resolveRememberAcrossConversations } from "../memory-host-sdk/host/config-utils.js";
 import { resolveClawToolProfileSnapshot } from "./tool-profile-consent.js";
 
@@ -102,37 +100,6 @@ function classifyToolSet(
   return [...currentTools].some((tool) => !desiredTools.has(tool)) ? "reduction" : "neutral";
 }
 
-function classifyHeartbeatEvery(
-  current: unknown,
-  desired: unknown,
-): ClawUpdateCapabilityChange["classification"] {
-  const toInterval = (value: unknown): number | undefined => {
-    if (value === "disabled") {
-      return 0;
-    }
-    if (typeof value !== "string") {
-      return undefined;
-    }
-    try {
-      return Math.max(0, parseDurationMs(value, { defaultUnit: "m" }));
-    } catch {
-      return undefined;
-    }
-  };
-  const currentMs = toInterval(current);
-  const desiredMs = toInterval(desired);
-  if (currentMs === undefined || desiredMs === undefined || currentMs === desiredMs) {
-    return "neutral";
-  }
-  if (currentMs === 0) {
-    return "escalation";
-  }
-  if (desiredMs === 0) {
-    return "reduction";
-  }
-  return desiredMs < currentMs ? "escalation" : "reduction";
-}
-
 function classifyAgentCapability(
   path: string,
   current: unknown,
@@ -179,17 +146,6 @@ function classifyAgentCapability(
     const rank = { session: 0, agent: 1, shared: 2 } as Record<string, number>;
     return compareRankedCapability(current, desired, rank);
   }
-  if (path === "heartbeat.every") {
-    return classifyHeartbeatEvery(current, desired);
-  }
-  if (path === "heartbeat.isolatedSession") {
-    return desired === true ? "reduction" : "escalation";
-  }
-  if (path === "heartbeat.timeoutSeconds") {
-    return typeof current === "number" && typeof desired === "number" && desired < current
-      ? "reduction"
-      : "escalation";
-  }
   if (path === "tools.fs.workspaceOnly") {
     return desired === true ? "reduction" : "escalation";
   }
@@ -232,7 +188,6 @@ function classifyAgentCapability(
   }
   return path.startsWith("sandbox.") ||
     path.startsWith("tools.") ||
-    path.startsWith("heartbeat.") ||
     path.startsWith("memory.search.")
     ? "escalation"
     : "neutral";
@@ -253,8 +208,6 @@ function pushAgentCapabilityChanges(params: {
   desiredAgent: unknown;
   currentSandbox?: unknown;
   desiredSandbox?: unknown;
-  currentHeartbeat?: unknown;
-  desiredHeartbeat?: unknown;
   currentMemorySearch?: unknown;
   desiredMemorySearch?: unknown;
   currentTools?: unknown;
@@ -272,14 +225,9 @@ function pushAgentCapabilityChanges(params: {
     ["memory", "search", "enabled"],
     ["memory", "search", "rememberAcrossConversations"],
     ["memory", "search", "sources"],
-    ["heartbeat", "every"],
-    ["heartbeat", "activeHours"],
-    ["heartbeat", "isolatedSession"],
-    ["heartbeat", "timeoutSeconds"],
   ] as const;
   for (const field of fields) {
     const sandboxField = field[0] === "sandbox" ? field.slice(1) : undefined;
-    const heartbeatField = field[0] === "heartbeat" ? field.slice(1) : undefined;
     const memorySearchField =
       field[0] === "memory" && field[1] === "search" ? field.slice(2) : undefined;
     const effectiveToolField =
@@ -289,22 +237,18 @@ function pushAgentCapabilityChanges(params: {
         : undefined;
     const currentValue = sandboxField
       ? getPath(params.currentSandbox, sandboxField)
-      : heartbeatField
-        ? getPath(params.currentHeartbeat, heartbeatField)
-        : memorySearchField
-          ? getPath(params.currentMemorySearch, memorySearchField)
-          : effectiveToolField
-            ? getPath(params.currentTools, effectiveToolField)
-            : getPath(params.currentAgent, field);
+      : memorySearchField
+        ? getPath(params.currentMemorySearch, memorySearchField)
+        : effectiveToolField
+          ? getPath(params.currentTools, effectiveToolField)
+          : getPath(params.currentAgent, field);
     const desiredValue = sandboxField
       ? getPath(params.desiredSandbox, sandboxField)
-      : heartbeatField
-        ? getPath(params.desiredHeartbeat, heartbeatField)
-        : memorySearchField
-          ? getPath(params.desiredMemorySearch, memorySearchField)
-          : effectiveToolField
-            ? getPath(params.desiredTools, effectiveToolField)
-            : getPath(params.desiredAgent, field);
+      : memorySearchField
+        ? getPath(params.desiredMemorySearch, memorySearchField)
+        : effectiveToolField
+          ? getPath(params.desiredTools, effectiveToolField)
+          : getPath(params.desiredAgent, field);
     const profileField = field[0] === "tools" && field[1] === "profile";
     const current = profileField ? resolveProfileCapabilities(currentValue) : currentValue;
     const desired = profileField ? resolveProfileCapabilities(desiredValue) : desiredValue;
@@ -392,16 +336,6 @@ function normalizeLegacyAgent(
       ...(snapshot.allow.length > 0 ? { allow: snapshot.allow } : {}),
       ...(snapshot.deny.length > 0 ? { deny: snapshot.deny } : {}),
     },
-  };
-}
-
-function resolveHeartbeat(config: OpenClawConfig, agentId: string): unknown {
-  const defaults = config.agents?.defaults?.heartbeat;
-  const overrides = listAgentEntries(config).find((agent) => agent.id === agentId)?.heartbeat;
-  return {
-    ...defaults,
-    ...overrides,
-    every: resolveHeartbeatSummaryForAgent(config, agentId).every,
   };
 }
 
@@ -499,8 +433,6 @@ export function pushResolvedAgentCapabilityChanges(params: {
       ? resolveSandboxConfigForAgent(currentConfig, params.agentId)
       : undefined,
     desiredSandbox: resolveSandboxConfigForAgent(desiredConfig, params.agentId),
-    currentHeartbeat: currentAgent ? resolveHeartbeat(currentConfig, params.agentId) : undefined,
-    desiredHeartbeat: resolveHeartbeat(desiredConfig, params.agentId),
     currentMemorySearch: currentAgent
       ? resolvePortableMemorySearch(params.config, params.agentId)
       : undefined,

@@ -27,12 +27,13 @@ describe("resolveTransientCronRetryDecision", () => {
         state: { runningAtMs: startedAt, nextRunAtMs: startedAt },
       });
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: `/tmp/cron-incidental-${scheduleKind}.json`,
         cronEnabled: true,
         log: createNoopLogger(),
         nowMs: () => endedAt,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         runCommandJob: vi.fn(async () => ({
           status: "error" as const,
@@ -72,12 +73,13 @@ describe("resolveTransientCronRetryDecision", () => {
           state: { runningAtMs: startedAt, nextRunAtMs: startedAt },
         });
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/cron-provider-overload.json",
           cronEnabled: true,
           log: createNoopLogger(),
           nowMs: () => endedAt,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({
             status: "error" as const,
             error,

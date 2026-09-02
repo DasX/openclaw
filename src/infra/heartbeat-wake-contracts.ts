@@ -3,9 +3,9 @@ export type HeartbeatRunResult =
   | { status: "skipped"; reason: string; retryAtMs?: number }
   | { status: "failed"; reason: string };
 
-export type HeartbeatWakeIntent = "scheduled" | "task" | "event" | "immediate" | "manual";
+type HeartbeatWakeIntent = "scheduled" | "task" | "event" | "immediate" | "manual";
 
-export type HeartbeatWakeSource =
+type HeartbeatWakeSource =
   | "interval"
   | "manual"
   | "exec-event"
@@ -28,7 +28,7 @@ export type HeartbeatWakeOverride = {
 };
 
 /** Cron-owned periodic work carried directly into a guarded heartbeat turn. */
-export type HeartbeatScheduledTask = {
+type HeartbeatScheduledTask = {
   jobId: string;
   name: string;
   prompt: string;
@@ -38,6 +38,8 @@ export type HeartbeatWakeRequest = {
   source: HeartbeatWakeSource;
   intent: HeartbeatWakeIntent;
   reason?: string;
+  /** @deprecated No coalescing scheduler remains; session admission owns ordering. */
+  coalesceMs?: number;
   agentId?: string;
   sessionKey?: string;
   heartbeat?: HeartbeatWakeOverride;
@@ -47,5 +49,3 @@ export type HeartbeatWakeRequest = {
   /** Internal marker for work retained after a spacing/cooldown deferral. */
   retainedWork?: boolean;
 };
-
-export type HeartbeatWakeHandler = (opts: HeartbeatWakeRequest) => Promise<HeartbeatRunResult>;

@@ -101,7 +101,8 @@ function reconcileStreamSourceIdentity(job: CronJob, nextJob: CronJob): void {
     sourceChanged || !currentIdentity ? createCronStreamSourceIdentity() : currentIdentity;
 }
 
-function finalizeUpdatedJob(params: {
+/** Applies definition-owned scheduling changes before the caller's guarded durable write. */
+export function finalizeCronJobUpdate(params: {
   job: CronJob;
   nextJob: CronJob;
   now: number;
@@ -181,6 +182,8 @@ function finalizeUpdatedJob(params: {
     // the old one and looks perpetually stale against the new slots (#91944).
     nextJob.state.scheduleActivatedAtMs = now;
     nextJob.state.startupCatchupAtMs = undefined;
+    // A queued reservation belongs to the old scheduling inputs, including in Doctor cutover.
+    nextJob.state.queuedAtMs = undefined;
     // A paced timestamp is owned by the exact schedule, pacing bounds, and
     // trigger mode that produced it. Configuration changes release both the
     // slot and its provenance so natural schedule math can take ownership.
@@ -190,7 +193,6 @@ function finalizeUpdatedJob(params: {
       nextJob.state.nextRunAtMs = computeJobNextRunAtMs(nextJob, now);
     } else {
       nextJob.state.nextRunAtMs = undefined;
-      nextJob.state.queuedAtMs = undefined;
       // Preserve only genuine execution. Queued reservations must clear so a
       // disabled job can accept a later force run with the same timestamp.
       if (!isCronJobActive(nextJob.id)) {
@@ -298,6 +300,11 @@ export async function add(
   let pendingSessionCleanup: Promise<void> | undefined;
   return await locked(state, async () => {
     warnIfDisabled(state, "add");
+    if (input.payload?.kind === "heartbeat") {
+      throw new Error(
+        "Heartbeat jobs are report-only; run openclaw doctor --fix to convert existing jobs",
+      );
+    }
     const declarationKey = normalizeOptionalString(input.declarationKey);
     if (
       input.payload &&
@@ -374,7 +381,7 @@ export async function add(
         return { ...existing, created: false, updated: false, job: existing };
       }
       const snapshot = snapshotStoreForRollback(state);
-      finalizeUpdatedJob({
+      finalizeCronJobUpdate({
         job: existing,
         nextJob,
         now,
@@ -476,6 +483,9 @@ async function updateLoadedJob(params: {
 }) {
   const { state, id, patch, precondition, opts } = params;
   warnIfDisabled(state, "update");
+  if (patch.payload?.kind === "heartbeat") {
+    throw new Error("Heartbeat jobs are report-only; run openclaw doctor --fix");
+  }
   // Mirrors the add-time boundary: no caller may patch a job into (or edit)
   // a system-owned monitor payload; the gateway converges via add only.
   if (patch.payload && isSystemOwnedCronPayloadKind(patch.payload.kind)) {
@@ -483,6 +493,9 @@ async function updateLoadedJob(params: {
   }
   await ensureLoaded(state, { skipRecompute: true });
   const job = findJobOrThrow(state, id);
+  if (job.payload.kind === "heartbeat") {
+    throw new Error("Heartbeat jobs are report-only; run openclaw doctor --fix before editing");
+  }
   // Existing monitors are config-driven: any patch (disable, reschedule,
   // repurpose) would silently diverge from its owner until the next reconcile,
   // so updates are rejected outright. Removal stays allowed only to the owner.
@@ -510,7 +523,7 @@ async function updateLoadedJob(params: {
       throw new Error(`cron job agent is unavailable: ${agentId}`);
     }
   }
-  finalizeUpdatedJob({
+  finalizeCronJobUpdate({
     job,
     nextJob,
     now,

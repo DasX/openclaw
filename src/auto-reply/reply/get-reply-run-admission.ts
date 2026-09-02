@@ -32,10 +32,7 @@ import {
   loadSessionUpdatesRuntime,
   routeThreadIdsMatch,
 } from "./get-reply-run-helpers.js";
-import {
-  REPLY_RUN_STILL_SHUTTING_DOWN_TEXT,
-  resolvePreparedReplyQueueState,
-} from "./get-reply-run-queue.js";
+import { resolvePreparedReplyQueueState } from "./get-reply-run-queue.js";
 import { buildReplyPromptEnvelope } from "./prompt-prelude.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { resolveQueueSettings } from "./queue/settings-runtime.js";
@@ -153,7 +150,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         sessionKey: systemEventSessionKey,
         isMainSession: isCurrentSession && isMainSession,
         isNewSession: isCurrentSession && isNewSession,
-        suppressHeartbeatOwnedEvents: context.isHeartbeat,
       });
       if (eventsBlock) {
         drainedSystemEventBlocks.push(eventsBlock);
@@ -175,7 +171,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       startupAction,
       startupContextPrelude,
       softResetTail,
-      isHeartbeat: context.isHeartbeat,
       inboundEventKind,
       sourceReplyDeliveryMode,
       threadContextNote,
@@ -215,14 +210,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     sessionEntryHandle?.replaceCurrent(sessionEntry);
   }
   const skillsSnapshot = skillResult.skillsSnapshot;
-  let {
-    prefixedCommandBody,
-    queuedBody,
-    transcriptBody,
-    transcriptCommandBody,
-    media: promptMedia,
-    currentInboundContext,
-  } = await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies());
+  await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies());
   const isRoomEvent = inboundEventKind === "room_event";
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await traceRunPhase("reply.resolve_default_thinking", () =>
@@ -372,23 +360,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   )
     ? undefined
     : rawActiveSessionIdForInterrupt;
-  const shouldPreemptHeartbeat =
-    !isRoomEvent && !context.isHeartbeat && rawActiveSessionIdForInterrupt !== undefined;
-  const heartbeatPreemption =
-    shouldPreemptHeartbeat && embeddedAgentRuntime
-      ? await embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun(
-          rawActiveSessionIdForInterrupt,
-          REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-        )
-      : "not-heartbeat";
-  if (heartbeatPreemption === "timed-out") {
-    typing.cleanup();
-    return {
-      kind: "reply",
-      reply: { text: REPLY_RUN_STILL_SHUTTING_DOWN_TEXT },
-    } as const;
-  }
-  const visibleTurnPreemptsHeartbeat = heartbeatPreemption === "drained";
   if (
     activeRunQueueMode === "interrupt" &&
     !isRoomEvent &&
@@ -538,13 +509,10 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     !isRoomEvent &&
     queueAdmissionState !== "ready" &&
     activeRunAcceptsCurrentThread &&
-    !context.isHeartbeat &&
     !effectiveResetTriggered &&
-    !visibleTurnPreemptsHeartbeat &&
     resolvedQueue.mode === "steer";
   const shouldFollowup =
     !effectiveResetTriggered &&
-    !visibleTurnPreemptsHeartbeat &&
     ((isRoomEvent && isActive) ||
       resolvedQueue.mode === "steer" ||
       resolvedQueue.mode === "followup" ||
@@ -552,7 +520,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   const activeRunQueueAction = resolveActiveRunQueueAction({
     queueAdmissionState,
     isActive,
-    isHeartbeat: context.isHeartbeat,
+
     shouldFollowup,
     queueMode: activeRunQueueMode,
     resetTriggered: effectiveResetTriggered,
@@ -593,14 +561,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         // The interrupted run may have changed goal or suggestion state while admission waited.
         await refreshInboundContextAfterAdmissionWait();
         sessionEntry = context.getSessionEntry();
-        ({
-          prefixedCommandBody,
-          queuedBody,
-          transcriptBody,
-          transcriptCommandBody,
-          media: promptMedia,
-          currentInboundContext,
-        } = await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies()));
+        await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies());
       },
       resolveBusyState: resolveQueueBusyState,
     });
@@ -609,17 +570,15 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       return { kind: "reply", reply: queueState.reply } as const;
     }
   }
-  if (activeRunQueueAction !== "drop") {
-    await traceRunPhase("reply.drain_system_events", () => drainSystemEventBlocks());
-    ({
-      prefixedCommandBody,
-      queuedBody,
-      transcriptBody,
-      transcriptCommandBody,
-      media: promptMedia,
-      currentInboundContext,
-    } = await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies()));
-  }
+  await traceRunPhase("reply.drain_system_events", () => drainSystemEventBlocks());
+  const {
+    prefixedCommandBody,
+    queuedBody,
+    transcriptBody,
+    transcriptCommandBody,
+    media: promptMedia,
+    currentInboundContext,
+  } = await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies());
 
   return {
     kind: "ready",

@@ -396,13 +396,14 @@ describe("cron failure alert account routing", () => {
   ])("$name", (testCase) => {
     const { globalAlert, jobAlert, expected } = testCase;
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/openclaw-cron-failure-alert-account-routing.json",
       cronEnabled: true,
       defaultAgentId: "main",
       cronConfig: { failureAlert: globalAlert },
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job: CronJob = {
@@ -476,12 +477,13 @@ describe("cron failure alert account routing", () => {
     const { result, expectedText, expectAlert } = testCase;
     const sendCronFailureAlert = vi.fn(async () => undefined);
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/openclaw-cron-unthreaded-failure-destination.json",
       cronEnabled: true,
       cronConfig: { failureAlert: { enabled: true, after: 1 } },
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       sendCronFailureAlert,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
@@ -543,11 +545,12 @@ describe("cron failure alert account routing", () => {
     ({ deliveryStatus, implicit }) => {
       const sendCronFailureAlert = vi.fn(async () => undefined);
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: "/tmp/openclaw-cron-recorded-delivery-alert.json",
         cronEnabled: true,
         log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         sendCronFailureAlert,
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
@@ -646,6 +649,7 @@ describe("cron failure alert account routing", () => {
     const sendCronFailureAlert = vi.fn(async () => undefined);
     const recipient = `${"targetPrefix" in testCase ? testCase.targetPrefix : testCase.channel}:alerts`;
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/openclaw-cron-failure-alert-aliased-routing.json",
       cronEnabled: true,
       cronConfig: {
@@ -661,7 +665,7 @@ describe("cron failure alert account routing", () => {
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       nowMs: () => 2_000,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       sendCronFailureAlert,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
@@ -711,13 +715,14 @@ describe("cron failure alert account routing", () => {
     const endedAt = runAtMs + 5 * 60_000;
     const sendCronFailureAlert = vi.fn(async () => undefined);
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/openclaw-cron-failure-alert-run-time.json",
       cronEnabled: true,
       cronConfig: { failureAlert: { enabled: true, after: 1, cooldownMs: 60_000 } },
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       nowMs: () => endedAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       sendCronFailureAlert,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
@@ -776,12 +781,13 @@ describe("cron failure alert account routing", () => {
     const { failureAlert } = testCase;
     const sendCronFailureAlert = vi.fn(async () => undefined);
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/openclaw-cron-failure-alert-thread-routing.json",
       cronEnabled: true,
       cronConfig: { failureAlert: { enabled: true, after: 1 } },
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       sendCronFailureAlert,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });

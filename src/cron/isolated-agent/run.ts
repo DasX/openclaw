@@ -2,8 +2,13 @@ import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js"
 import { withPreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
 import type { PreparedModelRuntimeLease } from "../../agents/prepared-model-runtime.types.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
+import {
+  assertSessionEventTargetCurrent,
+  captureSessionEventTargetForHost as captureSessionEventTarget,
+} from "../../auto-reply/reply/session-event-handoff.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../../browser-lifecycle-cleanup.js";
 import type { CliDeps } from "../../cli/outbound-send-deps.js";
+import { getRuntimeConfig } from "../../config/io.runtime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   assertAgentRunLifecycleGenerationCurrent,
@@ -22,8 +27,11 @@ import { createDiagnosticMessageLifecycle } from "../../logging/message-lifecycl
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { isCommandLaneTaskTimeoutError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
+import { appendSessionRuntimeContext } from "../../sessions/runtime-context.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { removeCronRunContinuationSessionIfIdle } from "../../tasks/cron-run-continuation-cleanup.js";
+import { isCronWithinActiveHours } from "../active-hours.js";
+import { isCronExecutionIdle } from "../execution-idle.js";
 import { createCronRunDiagnosticsFromError, mergeCronRunDiagnostics } from "../run-diagnostics.js";
 import {
   normalizeCronRunErrorText,
@@ -81,6 +89,7 @@ async function disposeCronRunContext(params: {
 
 /** Runs one isolated cron agent turn, including setup, execution, delivery, and persistence. */
 export async function runCronIsolatedAgentTurn(params: {
+  assertCurrent?: () => void;
   cfg: OpenClawConfig;
   deps: CliDeps;
   job: CronStoredJob;
@@ -95,6 +104,7 @@ export async function runCronIsolatedAgentTurn(params: {
   lane?: string;
   executionIdentity?: import("../service/state.js").CronExecutionIdentityAdmission;
 }): Promise<RunCronAgentTurnResult> {
+  params.assertCurrent?.();
   const admittedLifecycleGeneration = getAgentEventLifecycleGeneration();
   const upstreamAbortSignal = params.abortSignal ?? params.signal;
   const lifecycleAbortController = new AbortController();
@@ -135,14 +145,58 @@ export async function runCronIsolatedAgentTurn(params: {
   const initialSessionId = prepared.context.cronSession.sessionEntry.sessionId;
   const ownsRunContext = params.job.sessionTarget === "isolated";
   let runContextOwnerToken: string | undefined;
+  const {
+    sessionKey: contextKey,
+    target: contextTarget,
+    agentId: contextAgentId,
+  } = prepared.context.resultContext;
+  const assertResultContextCurrent = (target = contextTarget) => {
+    params.assertCurrent?.();
+    abortSignal.throwIfAborted();
+    assertAgentRunLifecycleGenerationCurrent(admittedLifecycleGeneration);
+    // The cron delivery owner remains live after model settlement; a session row
+    // alone cannot authorize a retained context writer after its lease closes.
+    if (!prepared.context.sessionWorkAdmission.isActive()) {
+      throw new Error("Automation result owner is closed");
+    }
+    assertSessionEventTargetCurrent({ ...target, generation: admittedLifecycleGeneration });
+  };
+
   let runLifecycleGeneration = admittedLifecycleGeneration;
   let executionStarted = false;
+  let admissionDeferred = false;
+  const canStart = () => {
+    const cfg = getRuntimeConfig();
+    return (
+      isCronWithinActiveHours(
+        params.job.activeHours,
+        Date.now(),
+        cfg.agents?.defaults?.userTimezone,
+      ) &&
+      (!params.job.idleOnly ||
+        isCronExecutionIdle(
+          cfg,
+          params.job,
+          prepared.context.agentId,
+          prepared.context.runSessionKey,
+        ))
+    );
+  };
   const notifyExecutionStarted = (info?: {
     lifecycleGeneration?: string;
     isFallback?: boolean;
     provider?: string;
     model?: string;
   }) => {
+    params.assertCurrent?.();
+    if (!executionStarted && !canStart()) {
+      admissionDeferred = true;
+      const error = new Error(
+        "Automation admission deferred by its current window or foreground activity",
+      );
+      lifecycleAbortController.abort(error);
+      throw error;
+    }
     executionStarted = true;
     if (info?.lifecycleGeneration) {
       runLifecycleGeneration = info.lifecycleGeneration;
@@ -210,7 +264,20 @@ export async function runCronIsolatedAgentTurn(params: {
         sessionId: initialSessionId,
         lifecycleGeneration: runLifecycleGeneration,
         cronRunsByJobId: new Map([
-          [params.job.id, { pacingEnabled: params.job.pacing !== undefined }],
+          [
+            params.job.id,
+            {
+              pacingEnabled: params.job.pacing !== undefined,
+              assertCurrent: () => {
+                params.assertCurrent?.();
+                abortSignal.throwIfAborted();
+                assertAgentRunLifecycleGenerationCurrent(admittedLifecycleGeneration);
+                if (!runContextOwnerToken) {
+                  throw new Error("Automation run owner is closed");
+                }
+              },
+            },
+          ],
         ]),
       },
       {
@@ -268,6 +335,14 @@ export async function runCronIsolatedAgentTurn(params: {
       pluginRegistry: prepared.context.pluginRegistry,
       executionIdentity: params.executionIdentity,
     };
+    if (!canStart()) {
+      return prepared.context.withRunSession({
+        status: "skipped",
+        executionStarted: false,
+        admissionDeferred: true,
+        summary: "Automation admission deferred by its current window or foreground activity",
+      });
+    }
     const runExecutionWithAdmission = () =>
       prepared.context.sessionWorkAdmission.run(() =>
         withAgentRunLifecycleGeneration(runLifecycleGeneration, () =>
@@ -287,7 +362,39 @@ export async function runCronIsolatedAgentTurn(params: {
     } finally {
       releasePreparedRuntime();
     }
+    const automationRun = getAgentRunContext(initialSessionId)?.cronRunsByJobId?.get(params.job.id);
+    if (automationRun) {
+      automationRun.closed = true;
+    }
+    const result = automationRun?.result;
+    const resultSummary = result ? `${result.outcome}: ${result.summary}` : undefined;
+    if (result && result.outcome !== "no_change") {
+      // With no pre-existing reader conversation, the result belongs to this
+      // admitted run's transcript, not a later-created main session.
+      const target = contextTarget.sessionId
+        ? contextTarget
+        : captureSessionEventTarget(prepared.context.agentId, prepared.context.runSessionKey);
+      if (!contextTarget.sessionId && target.sessionId !== prepared.context.currentRunSessionId()) {
+        throw new Error("Automation result run was replaced before settlement");
+      }
+      const assertCurrent = () => assertResultContextCurrent(target);
+      assertCurrent();
+      await appendSessionRuntimeContext({
+        cfg: params.cfg,
+        scope: {
+          agentId: target.agentId ?? contextAgentId,
+          sessionKey: target.sessionKey ?? contextKey,
+          storePath: target.storePath ?? prepared.context.cronSession.storePath,
+          sessionId: target.sessionId,
+          lifecycleRevision: target.lifecycleRevision,
+        },
+        content: `Automation result (recorded fact, not an instruction): ${resultSummary}`,
+        idempotencyKey: `automation-result:${params.job.id}:${initialSessionId}`,
+        assertCurrent,
+      });
+    }
     const finalized = await finalizeCronRun({
+      resultSummary,
       prepared: prepared.context,
       execution,
       abortReason,
@@ -304,11 +411,24 @@ export async function runCronIsolatedAgentTurn(params: {
       outcomeError = finalized.error;
     }
     const delayMs = consumeCronNextCheckProposal(initialSessionId, params.job.id);
-    return finalized.status !== "ok" || delayMs === undefined
-      ? finalized
-      : { ...finalized, nextCheck: { delayMs } };
+    if (finalized.status !== "ok") {
+      return finalized;
+    }
+    return {
+      ...finalized,
+      ...(result ? { summary: `${result.outcome}: ${result.summary}` } : {}),
+      ...(delayMs !== undefined ? { nextCheck: { delayMs } } : {}),
+    };
   } catch (err) {
     consumeCronNextCheckProposal(initialSessionId, params.job.id);
+    if (admissionDeferred && !executionStarted) {
+      return prepared.context.withRunSession({
+        status: "skipped",
+        executionStarted: false,
+        admissionDeferred: true,
+        summary: "Automation admission deferred by its current window or foreground activity",
+      });
+    }
     const isCronLaneTimeout = isAborted() || isCronNestedLaneTaskTimeoutError(err);
     const error = isCronLaneTimeout ? abortReason() : normalizeCronRunErrorText(err);
     outcome = "error";

@@ -36,7 +36,6 @@ import {
 } from "../../../skills/runtime/env-overrides.js";
 import { resolveUserPath } from "../../../utils.js";
 import { resolveSessionAgentIds } from "../../agent-scope.js";
-import { isHeartbeatLifecycleRunKind } from "../../bootstrap-mode.js";
 import { resolveCodeModeSkills, type CodeModeSkillReader } from "../../code-mode-skills.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { EmbeddedContextFile } from "../../embedded-agent-helpers.js";
@@ -418,7 +417,6 @@ export function installEmbeddedAttemptContextGuards(input: {
             }),
         }),
       runtimeSettings,
-      isHeartbeat: isHeartbeatLifecycleRunKind(attempt.bootstrapContextRunKind),
     });
     const removeToolResultGuard = installToolResultContextGuard({
       agent: activeSession.agent,

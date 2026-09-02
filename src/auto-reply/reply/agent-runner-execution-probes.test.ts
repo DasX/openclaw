@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { FailoverError } from "../../agents/failover-error.js";
-import { HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveFallbackCandidateRun } from "./agent-runner-auth-profile.js";
@@ -474,22 +473,13 @@ describe("executeAgentTurn: primary probe routing", () => {
       label: "exhausted",
       outcome: "exhausted" as const,
       attempts: [{ error: "missing tool result" }],
-      isHeartbeat: false,
       expectedText: GENERIC_RUN_FAILURE_TEXT,
     },
     {
       label: "completed",
       outcome: "completed" as const,
       attempts: [],
-      isHeartbeat: false,
       expectedText: GENERIC_RUN_FAILURE_TEXT,
-    },
-    {
-      label: "heartbeat",
-      outcome: "completed" as const,
-      attempts: [],
-      isHeartbeat: true,
-      expectedText: HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
     },
   ])("surfaces an empty $label terminal result through the normal reply path", async (testCase) => {
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
@@ -513,7 +503,6 @@ describe("executeAgentTurn: primary probe routing", () => {
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     const result = await executeAgentTurn({
       ...createMinimalRunAgentTurnParams({ replyOperation }),
-      isHeartbeat: testCase.isHeartbeat,
     });
 
     expect(result).toMatchObject({

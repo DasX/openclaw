@@ -3,24 +3,23 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { mergeMockedModule } from "../../../test-utils/vitest-module-mocks.js";
 
-const enqueueSystemEventMock = vi.fn();
-const requestHeartbeatMock = vi.fn();
+const { enqueueSessionEventMock, captureSessionEventTargetMock } = vi.hoisted(() => ({
+  enqueueSessionEventMock: vi.fn((_text: string, _options: Record<string, unknown>) => ({
+    id: "occurrence",
+    cancel: vi.fn(),
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
+  })),
+  captureSessionEventTargetMock: vi.fn(() => ({
+    sessionId: "parent-original",
+    generation: "generation-original",
+  })),
+}));
 const recordAcpParentStreamEventsMock = vi.fn();
 
-vi.mock("../../../infra/system-events.js", () => ({
-  enqueueSystemEvent: (...args: unknown[]) => enqueueSystemEventMock(...args),
+vi.mock("../../../auto-reply/reply/session-event-handoff.js", () => ({
+  enqueueSessionEventForHost: enqueueSessionEventMock,
+  captureSessionEventTargetForHost: captureSessionEventTargetMock,
 }));
-
-vi.mock("../../../infra/heartbeat-wake.js", async () => {
-  return await mergeMockedModule(
-    await vi.importActual<typeof import("../../../infra/heartbeat-wake.js")>(
-      "../../../infra/heartbeat-wake.js",
-    ),
-    () => ({
-      requestHeartbeat: (...args: unknown[]) => requestHeartbeatMock(...args),
-    }),
-  );
-});
 
 vi.mock("./acp-parent-stream-store.sqlite.js", async () => {
   return await mergeMockedModule(
@@ -60,7 +59,7 @@ function progressModeConfig(acp?: OpenClawConfig["acp"]): OpenClawConfig {
 }
 
 function collectedTexts() {
-  return enqueueSystemEventMock.mock.calls.map((call) =>
+  return enqueueSessionEventMock.mock.calls.map((call) =>
     typeof call[0] === "string" ? call[0] : (JSON.stringify(call[0]) ?? ""),
   );
 }
@@ -91,8 +90,12 @@ describe("startAcpSpawnParentStreamRelay", () => {
   });
 
   beforeEach(() => {
-    enqueueSystemEventMock.mockClear();
-    requestHeartbeatMock.mockClear();
+    enqueueSessionEventMock.mockClear();
+    captureSessionEventTargetMock.mockReset();
+    captureSessionEventTargetMock.mockReturnValue({
+      sessionId: "parent-original",
+      generation: "generation-original",
+    });
     recordAcpParentStreamEventsMock.mockReset();
     recordAcpParentStreamEventsMock.mockImplementation(() => undefined);
     vi.useFakeTimers();
@@ -111,6 +114,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
       threadId: 1122,
     };
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-1",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-1",
@@ -144,7 +149,7 @@ describe("startAcpSpawnParentStreamRelay", () => {
       "codex: hello from child",
       "codex run completed in 2s.",
     ]);
-    const systemEventCalls = enqueueSystemEventMock.mock.calls as Array<
+    const systemEventCalls = enqueueSessionEventMock.mock.calls as Array<
       [
         string,
         {
@@ -177,29 +182,44 @@ describe("startAcpSpawnParentStreamRelay", () => {
         deliveryContext,
       },
     ]);
-    const heartbeatCalls = requestHeartbeatMock.mock.calls as Array<
-      [{ source?: string; intent?: string; reason?: string; sessionKey?: string }]
-    >;
-    expect(heartbeatCalls.map(([options]) => options)).toEqual([
-      {
-        source: "acp-spawn",
-        intent: "event",
-        reason: "acp:spawn:stream",
-        sessionKey: "agent:main:main",
-      },
-      {
-        source: "acp-spawn",
-        intent: "event",
-        reason: "acp:spawn:stream",
-        sessionKey: "agent:main:main",
-      },
-      {
-        source: "acp-spawn",
-        intent: "event",
-        reason: "acp:spawn:stream",
-        sessionKey: "agent:main:main",
-      },
-    ]);
+    expect(captureSessionEventTargetMock).not.toHaveBeenCalled();
+    for (const [, options] of enqueueSessionEventMock.mock.calls as unknown as Array<
+      [string, Record<string, unknown>]
+    >) {
+      expect(options).toMatchObject({
+        agentId: "main",
+        source: "task",
+        expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
+      });
+    }
+    relay.dispose();
+  });
+
+  it("keeps the admission target across delayed progress and completion", () => {
+    const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
+      runId: "run-reset",
+      parentSessionKey: "agent:main:main",
+      childSessionKey: "agent:child:acp:reset",
+      agentId: "child",
+      emitStartNotice: false,
+      streamFlushMs: 10,
+    });
+    captureSessionEventTargetMock.mockReturnValueOnce({
+      sessionId: "parent-successor",
+      generation: "generation-next",
+    });
+    emitAgentEvent({ runId: "run-reset", stream: "assistant", data: { delta: "late progress" } });
+    vi.advanceTimersByTime(10);
+    emitAgentEvent({ runId: "run-reset", stream: "lifecycle", data: { phase: "end" } });
+    expect(captureSessionEventTargetMock).not.toHaveBeenCalled();
+    expect(enqueueSessionEventMock).toHaveBeenCalledTimes(2);
+    for (const call of enqueueSessionEventMock.mock.calls) {
+      expect(call[1]).toMatchObject({
+        expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
+      });
+    }
     relay.dispose();
   });
 
@@ -210,6 +230,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
       })
       .mockImplementation(() => undefined);
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-diagnostic-retry",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:diagnostic-retry",
@@ -249,6 +271,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("remaps cron-run parent session keys while relaying stream events", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "ops",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-cron",
       parentSessionKey: "agent:ops:cron:nightly:run:run-1:subagent:worker",
       childSessionKey: "agent:codex:acp:child-cron",
@@ -268,7 +292,7 @@ describe("startAcpSpawnParentStreamRelay", () => {
     });
     vi.advanceTimersByTime(15);
 
-    const progressEvent = enqueueSystemEventMock.mock.calls.find(
+    const progressEvent = enqueueSessionEventMock.mock.calls.find(
       ([text]) => typeof text === "string" && text.includes("codex: hello from child"),
     );
     expect(progressEvent?.[0]).toContain("codex: hello from child");
@@ -277,17 +301,17 @@ describe("startAcpSpawnParentStreamRelay", () => {
       | undefined;
     expect(progressOptions?.contextKey).toBe("acp-spawn:run-cron:progress");
     expect(progressOptions?.sessionKey).toBe("global");
-    const heartbeatOptions = firstMockCall(requestHeartbeatMock, "heartbeat request")[0] as
-      | { agentId?: string; reason?: string }
-      | undefined;
-    expect(heartbeatOptions?.agentId).toBe("ops");
-    expect(heartbeatOptions?.reason).toBe("acp:spawn:stream");
-    expect(heartbeatOptions).not.toHaveProperty("sessionKey");
+    expect(firstMockCall(enqueueSessionEventMock, "session event")[1]).toMatchObject({
+      agentId: "ops",
+      sessionKey: "global",
+    });
     relay.dispose();
   });
 
   it("emits a pre-prompt stall notice and a resumed notice when output returns", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-2",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-2",
@@ -327,6 +351,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("classifies stalls after prompt submission but before the first runtime event", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-prompt-stall",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-prompt-stall",
@@ -356,6 +382,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("classifies runtime activity without visible assistant output separately from input waits", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-runtime-stall",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-runtime-stall",
@@ -401,6 +429,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("auto-disposes stale relays after max lifetime timeout", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-3",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-3",
@@ -413,7 +443,7 @@ describe("startAcpSpawnParentStreamRelay", () => {
     vi.advanceTimersByTime(1_001);
     expectTextWithFragment(collectedTexts(), "stream relay timed out after 1s");
 
-    const before = enqueueSystemEventMock.mock.calls.length;
+    const before = enqueueSessionEventMock.mock.calls.length;
     emitAgentEvent({
       runId: "run-3",
       stream: "assistant",
@@ -423,12 +453,14 @@ describe("startAcpSpawnParentStreamRelay", () => {
     });
     vi.advanceTimersByTime(5);
 
-    expect(enqueueSystemEventMock.mock.calls).toHaveLength(before);
+    expect(enqueueSessionEventMock.mock.calls).toHaveLength(before);
     relay.dispose();
   });
 
   it("supports delayed start notices", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-4",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-4",
@@ -446,6 +478,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("can keep background relays out of the parent session while still logging", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-quiet",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-quiet",
@@ -473,12 +507,14 @@ describe("startAcpSpawnParentStreamRelay", () => {
     });
 
     expect(collectedTexts()).toStrictEqual([]);
-    expect(requestHeartbeatMock).not.toHaveBeenCalled();
+    expect(enqueueSessionEventMock).not.toHaveBeenCalled();
     relay.dispose();
   });
 
   it("preserves delta whitespace boundaries in progress relays", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-5",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-5",
@@ -510,6 +546,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("suppresses commentary-phase assistant relay text", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-commentary",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-commentary",
@@ -536,6 +574,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("relays the latest replaceable assistant snapshot instead of superseded drafts", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-replaceable-assistant",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-replaceable-assistant",
@@ -582,6 +622,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("relays commentary-phase assistant text in explicit parent progress mode", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-commentary-default",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-commentary-default",
@@ -634,6 +676,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
   ])("defaults commentary on for $label parent progress mode", ({ channelId, deliveryContext }) => {
     const runId = `run-${channelId}-commentary-default`;
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId,
       parentSessionKey: "agent:main:main",
       childSessionKey: `agent:codex:acp:child-${channelId}-commentary-default`,
@@ -672,6 +716,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("flushes visible commentary before final answer text", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-commentary-final",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-commentary-final",
@@ -709,6 +755,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("relays preamble item progress without duplicating snapshots", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-preamble-item",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-preamble-item",
@@ -746,6 +794,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("replaces buffered preamble item progress when snapshots change text", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-preamble-item-replacement",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-preamble-item-replacement",
@@ -783,6 +833,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("omits already flushed preamble item progress from later prefix snapshots", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-preamble-item-after-flush",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-preamble-item-after-flush",
@@ -821,6 +873,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("suppresses Discord parent progress commentary when streaming is unset", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-discord-unset-streaming",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-discord-unset-streaming",
@@ -856,6 +910,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("honors explicit Discord parent streaming off", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-discord-streaming-off",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-discord-streaming-off",
@@ -895,6 +951,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("suppresses commentary-phase assistant text when parent progress commentary is disabled", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-commentary-disabled",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-commentary-disabled",
@@ -932,6 +990,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("suppresses preamble item progress when parent progress commentary is disabled", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-preamble-item-disabled",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-preamble-item-disabled",
@@ -970,6 +1030,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("applies normalized account commentary opt-outs", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-account-commentary-disabled",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-account-commentary-disabled",
@@ -1018,6 +1080,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("applies account streaming mode opt-outs", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-account-stream-mode-off",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-account-stream-mode-off",
@@ -1065,6 +1129,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("inherits parent channel progress mode for account commentary overrides", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-account-commentary-enabled",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-account-commentary-enabled",
@@ -1111,6 +1177,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("preserves explicit channel streaming off for account commentary overrides", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-account-commentary-channel-off",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-account-commentary-channel-off",
@@ -1159,6 +1227,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("relays ACP status progress when progress commentary and tag visibility are enabled", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-status-commentary-enabled",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-status-commentary-enabled",
@@ -1193,6 +1263,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("flushes buffered commentary before ACP status progress", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-commentary-status-boundary",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-commentary-status-boundary",
@@ -1238,6 +1310,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("does not relay hidden ACP status tags when progress commentary is enabled", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-status-commentary-hidden",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-status-commentary-hidden",
@@ -1278,6 +1352,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("does not relay ACP status tags hidden by default when progress commentary is enabled", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-status-commentary-default-hidden",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-status-commentary-default-hidden",
@@ -1306,6 +1382,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("classifies opted-in commentary as visible output for stall notices", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-commentary-visible-stall",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-commentary-visible-stall",
@@ -1355,6 +1433,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
 
   it("still relays final_answer assistant text after suppressed commentary", () => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-final",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:child-final",
@@ -1400,6 +1480,8 @@ describe("startAcpSpawnParentStreamRelay", () => {
     },
   ])("keeps $name on UTF-16 boundaries", ({ delta, expected }) => {
     const relay = startAcpSpawnParentStreamRelay({
+      requesterAgentId: "main",
+      expectedTarget: { sessionId: "parent-original", generation: "generation-original" },
       runId: "run-utf16-safe",
       parentSessionKey: "agent:main:main",
       childSessionKey: "agent:codex:acp:utf16-safe",

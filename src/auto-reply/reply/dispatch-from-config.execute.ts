@@ -87,7 +87,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
   const flushDeferredFinalText = async () => {
     const delivered = await flushDispatchDeferredFinalText({
       deferFinalTtsText,
-      isHeartbeat: params.replyOptions?.isHeartbeat === true,
+
       state,
     });
     didDeliverVisiblePartialReply ||= delivered;
@@ -110,6 +110,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                 ...({
                   onDeliberateSilentTerminalReply: () => {
                     deliberateSilentTerminalReply = true;
+                    params.replyOptions?.onDeliberateSilentTerminalReply?.();
                   },
                   onPendingContinuation: (settlement) => {
                     pendingContinuation = true;
@@ -589,7 +590,6 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     const failedAgentRun = getAgentRunTerminalOutcome() === "failed";
     const adopted = state.turnAdoptionState?.adopted === true;
     if (
-      params.replyOptions?.isHeartbeat === true ||
       (!failedAgentRun && !didDeliverVisiblePartialReply && !adopted) ||
       isDispatchOperationAborted()
     ) {

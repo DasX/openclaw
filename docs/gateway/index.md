@@ -319,7 +319,9 @@ Defaults include isolated state/config and base gateway port `19001`.
 - Common events include `connect.challenge`, `agent`, `chat`,
   `session.message`, `session.operation`, `session.tool`, opt-in
   `session.approval`, `sessions.changed`, `presence`, `tick`, `health`,
-  `heartbeat`, pairing/approval lifecycle events, and `shutdown`.
+  pairing/approval lifecycle events, and `shutdown`. The deprecated `heartbeat`
+  event remains a protocol-v4 adapter over monitoring-job outcomes; `tick` is the
+  transport keepalive.
 
 Agent runs are two-stage:
 

@@ -1,3 +1,4 @@
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimAgentRunContext,
@@ -23,7 +24,7 @@ function createScopedTool(jobId = JOB_ID) {
 function registerRun(pacingEnabled: boolean) {
   claimAgentRunContext(RUN_ID, {
     sessionKey: `agent:main:cron:${JOB_ID}`,
-    cronRunsByJobId: new Map([[JOB_ID, { pacingEnabled }]]),
+    cronRunsByJobId: new Map([[JOB_ID, { pacingEnabled, assertCurrent: () => {} }]]),
   });
 }
 
@@ -31,7 +32,9 @@ describe("cron next_check action", () => {
   it("lets a restricted isolated run record a proposal for its own paced job", async () => {
     registerRun(true);
 
-    const result = await createScopedTool().execute("call-next-check", {
+    const tool = createScopedTool();
+    expect(Value.Check(tool.parameters, { action: "next_check", in: "15m" })).toBe(true);
+    const result = await tool.execute("call-next-check", {
       action: "next_check",
       in: "1h30m",
     });
@@ -56,9 +59,11 @@ describe("cron next_check action", () => {
 
   it("rejects a proposal when the current job has no pacing", async () => {
     registerRun(false);
+    const tool = createScopedTool();
+    expect(Value.Check(tool.parameters, { action: "next_check", in: "15m" })).toBe(false);
 
     await expect(
-      createScopedTool().execute("call-next-check", { action: "next_check", in: "15m" }),
+      tool.execute("call-next-check", { action: "next_check", in: "15m" }),
     ).rejects.toThrow("cron next_check requires pacing on the current job");
   });
 
@@ -76,6 +81,7 @@ describe("cron next_check action", () => {
 
   it("rejects next_check outside a current cron run", async () => {
     const tool = createCronTool(undefined, { callGatewayTool: vi.fn() });
+    expect(Value.Check(tool.parameters, { action: "next_check", in: "15m" })).toBe(false);
 
     await expect(
       tool.execute("call-next-check-unscoped", { action: "next_check", in: "15m" }),
@@ -90,7 +96,7 @@ describe("cron next_check action", () => {
     });
 
     claimAgentRunContext(RUN_ID, {
-      cronRunsByJobId: new Map([["next-job", { pacingEnabled: true }]]),
+      cronRunsByJobId: new Map([["next-job", { pacingEnabled: true, assertCurrent: () => {} }]]),
     });
     await createScopedTool("next-job").execute("call-next-check-next-job", {
       action: "next_check",

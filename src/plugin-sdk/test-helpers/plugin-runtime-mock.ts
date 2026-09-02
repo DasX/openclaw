@@ -659,6 +659,8 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
       },
     },
     system: {
+      captureSessionEventTarget: vi.fn<PluginRuntime["system"]["captureSessionEventTarget"]>(),
+      enqueueSessionEvent: vi.fn<PluginRuntime["system"]["enqueueSessionEvent"]>(),
       enqueueSystemEvent: vi.fn<PluginRuntime["system"]["enqueueSystemEvent"]>(),
       requestHeartbeat: vi.fn<PluginRuntime["system"]["requestHeartbeat"]>(),
       requestHeartbeatNow: vi.fn<PluginRuntime["system"]["requestHeartbeatNow"]>(),

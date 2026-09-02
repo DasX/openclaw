@@ -16,8 +16,6 @@ import { applyDefaultCronToolsAllow, cronJobUsesToolRuntime } from "../tools-all
 import type {
   CronDelivery,
   CronDeliveryPatch,
-  CronFailureAlert,
-  CronFailureAlertPatch,
   CronJobCreate,
   CronJobPatch,
   CronJobState,
@@ -26,6 +24,7 @@ import type {
   CronToolsAllowExecTarget,
   CronToolsAllowProvenance,
 } from "../types.js";
+import { mergeCronFailureAlert } from "./failure-alert-merge.js";
 import { resolveInitialCronDelivery } from "./initial-delivery.js";
 import {
   computeJobNextRunAtMs,
@@ -40,6 +39,7 @@ import {
   assertFailureDestinationSupport,
   assertMainSessionAgentId,
   assertPacingSupport,
+  assertExecutionPolicy,
   assertScriptPayloadSupport,
   assertStreamScheduleSupport,
   assertSupportedJobSpec,
@@ -181,6 +181,7 @@ function validateFullJob(
   }
   assertSupportedJobSpec(job);
   assertPacingSupport(job);
+  assertExecutionPolicy(job);
   if (context.kind !== "declarative") {
     validateCapabilities();
   }
@@ -254,6 +255,8 @@ export function createJob(
     updatedAtMs: now,
     schedule,
     ...(input.pacing !== undefined ? { pacing: structuredClone(input.pacing) } : {}),
+    ...(input.activeHours !== undefined ? { activeHours: structuredClone(input.activeHours) } : {}),
+    ...(input.idleOnly !== undefined ? { idleOnly: input.idleOnly } : {}),
     sessionTarget: input.sessionTarget,
     wakeMode: input.wakeMode,
     payload:
@@ -363,6 +366,20 @@ export function applyJobPatch(
   }
   if (patch.sessionTarget) {
     job.sessionTarget = patch.sessionTarget;
+  }
+  if ("activeHours" in patch) {
+    if (patch.activeHours == null) {
+      delete job.activeHours;
+    } else {
+      job.activeHours = structuredClone(patch.activeHours);
+    }
+  }
+  if ("idleOnly" in patch) {
+    if (patch.idleOnly == null) {
+      delete job.idleOnly;
+    } else {
+      job.idleOnly = patch.idleOnly;
+    }
   }
   if (patch.wakeMode) {
     job.wakeMode = patch.wakeMode;
@@ -502,6 +519,16 @@ export function applyDeclarativeJobSpec(
   } else {
     delete job.pacing;
   }
+  if (input.activeHours !== undefined) {
+    job.activeHours = structuredClone(input.activeHours);
+  } else {
+    delete job.activeHours;
+  }
+  if (input.idleOnly !== undefined) {
+    job.idleOnly = input.idleOnly;
+  } else {
+    delete job.idleOnly;
+  }
   job.payload =
     input.payload.kind === "script"
       ? normalizeCronScriptPayload(structuredClone(input.payload))
@@ -563,6 +590,8 @@ function mergeCronDelivery(
   const hasCompletionDestinationPatch = "completionDestination" in patch;
   const next: CronDelivery = {
     mode: existing?.mode ?? implicitMode,
+    target: existing?.target,
+    directPolicy: existing?.directPolicy,
     channel: existing?.channel,
     to: existing?.to,
     threadId: existing?.threadId,
@@ -591,6 +620,12 @@ function mergeCronDelivery(
   }
   if ("channel" in patch) {
     next.channel = normalizeOptionalString(patch.channel);
+  }
+  if ("target" in patch) {
+    next.target = patch.target ?? undefined;
+  }
+  if ("directPolicy" in patch) {
+    next.directPolicy = patch.directPolicy ?? undefined;
   }
   if ("to" in patch) {
     next.to = normalizeOptionalString(patch.to);
@@ -666,6 +701,8 @@ function mergeCronDelivery(
   if (
     existing === undefined &&
     !("mode" in patch) &&
+    next.target === undefined &&
+    next.directPolicy === undefined &&
     next.channel === undefined &&
     next.to === undefined &&
     next.threadId === undefined &&
@@ -680,57 +717,3 @@ function mergeCronDelivery(
 
   return next;
 }
-
-function mergeCronFailureAlert(
-  existing: CronFailureAlert | false | undefined,
-  patch: CronFailureAlertPatch | false | null | undefined,
-): CronFailureAlert | false | undefined {
-  if (patch === false) {
-    return false;
-  }
-  if (patch === null) {
-    return undefined;
-  }
-  if (patch === undefined) {
-    return existing;
-  }
-  const base = existing === false || existing === undefined ? {} : existing;
-  const next: CronFailureAlert = { ...base };
-
-  if ("after" in patch) {
-    const after = typeof patch.after === "number" && Number.isFinite(patch.after) ? patch.after : 0;
-    next.after = after > 0 ? Math.floor(after) : undefined;
-  }
-  if ("channel" in patch) {
-    next.channel = normalizeOptionalString(patch.channel);
-  }
-  if ("to" in patch) {
-    next.to = normalizeOptionalString(patch.to);
-  }
-  if ("cooldownMs" in patch) {
-    const cooldownMs =
-      typeof patch.cooldownMs === "number" && Number.isFinite(patch.cooldownMs)
-        ? patch.cooldownMs
-        : -1;
-    next.cooldownMs = cooldownMs >= 0 ? Math.floor(cooldownMs) : undefined;
-  }
-  if ("includeSkipped" in patch) {
-    next.includeSkipped =
-      typeof patch.includeSkipped === "boolean" ? patch.includeSkipped : undefined;
-  }
-  if ("mode" in patch) {
-    const mode = normalizeOptionalString(patch.mode) ?? "";
-    next.mode = mode === "announce" || mode === "webhook" ? mode : undefined;
-  }
-  if ("accountId" in patch) {
-    const accountId = normalizeOptionalString(patch.accountId) ?? "";
-    next.accountId = accountId ? accountId : undefined;
-  }
-
-  return next;
-}
-
-/**
- * Covers both durable reservations and the process marker that survives mutable job state.
- * Every timer/manual admission path must use this or disable/re-enable can duplicate a run.
- */

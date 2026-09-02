@@ -542,16 +542,6 @@ describe("incomplete-turn delivery resolution", () => {
   });
 
   it.each([
-    [
-      "heartbeat responses",
-      {
-        heartbeatToolResponse: {
-          outcome: "progress" as const,
-          notify: false,
-          summary: "Still working",
-        },
-      },
-    ],
     ["tool media", { toolMediaUrls: ["file:///tmp/render.png"] }],
     ["voice media", { toolAudioAsVoice: true }],
     ["trusted local media", { toolTrustedLocalMedia: true }],

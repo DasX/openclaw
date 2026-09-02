@@ -100,8 +100,9 @@ export keeps only that a message was omitted plus its byte count.
 The Gateway records a bounded, payload-free stability stream by default when
 diagnostics are enabled. It captures operational facts, not content.
 
-The same heartbeat also samples liveness when the event loop or CPU looks
-saturated, emitting `diagnostic.liveness.warning` events with event-loop delay,
+The diagnostic heartbeat runs independently of scheduled monitoring jobs. It
+also samples liveness when the event loop or CPU looks saturated, emitting
+`diagnostic.liveness.warning` events with event-loop delay,
 event-loop utilization, CPU-core ratio, active/waiting/queued session counts,
 the current startup/runtime phase (when known), recent phase spans, and
 bounded work labels. These become Gateway `warn`-level log lines only when

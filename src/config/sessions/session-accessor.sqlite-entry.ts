@@ -78,6 +78,7 @@ import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import { resolveDeliveryProvenCanonicalSessionKey } from "./store-entry.js";
 import type { GroupKeyResolution, InternalSessionEntry as SessionEntry } from "./types.js";
 import { mergeSessionEntry, mergeSessionEntryPreserveActivity } from "./types.js";
+export { loadExactSessionEntryReadOnly } from "./session-accessor.read.js";
 
 export { ensureSessionEntrySync } from "./session-accessor.sqlite-initial-entry.js";
 
@@ -161,27 +162,6 @@ export function listSessionEntryKeysReadOnly(
     ).rows.map((row) => row.session_key);
   }, toDatabaseOptions(resolved));
   return result.found ? result.value : [];
-}
-
-/** Exact persisted-key probe on the read-only handle, for per-row hot paths. */
-export function loadExactSessionEntryReadOnly(
-  scope: SessionAccessScope,
-): ExactSessionEntry | undefined {
-  const sessionKey = scope.sessionKey.trim();
-  if (!sessionKey) {
-    return undefined;
-  }
-  const resolved = resolveSqliteScope(scope);
-  const result = withOpenClawAgentDatabaseReadOnly(
-    (database) => readExactSessionEntryRowValidated(database, sessionKey)?.entry,
-    toDatabaseOptions(resolved),
-  );
-  return result.found && result.value
-    ? {
-        sessionKey,
-        entry: result.value,
-      }
-    : undefined;
 }
 
 /** Lists direct child rows without cloning or rebuilding the complete session store. */

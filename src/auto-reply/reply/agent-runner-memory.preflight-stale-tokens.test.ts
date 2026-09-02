@@ -87,7 +87,6 @@ describe("runSessionCompactionIfNeeded stale totalTokens gating", () => {
       sessionStore: { "agent:main:main": sessionEntry },
       sessionKey: "agent:main:main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       abortSignal: new AbortController().signal,
     });
   }
@@ -179,7 +178,6 @@ describe("runSessionCompactionIfNeeded stale totalTokens gating", () => {
       sessionStore: { "agent:main:main": sessionEntry },
       sessionKey: "agent:main:main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       abortSignal: new AbortController().signal,
     });
 
@@ -265,7 +263,6 @@ describe("runSessionCompactionIfNeeded stale totalTokens gating", () => {
         sessionStore: { main: sessionEntry },
         sessionKey: "main",
         storePath,
-        isHeartbeat: false,
         abortSignal: new AbortController().signal,
       });
 

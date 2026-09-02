@@ -52,7 +52,7 @@ type PreparedAgentSession = {
   rotatedSessionId: boolean;
   touchInteraction: boolean;
   sessionPersistedBeforeGatewayAdmission: boolean;
-  effectiveBootstrapContextRunKind?: "default" | "heartbeat" | "cron";
+  effectiveBootstrapContextRunKind?: "default" | "cron";
   restoredCronContinuationIdentity?: Pick<
     RestoredCronContinuation,
     "lifecycleRevision" | "sessionId"
@@ -70,7 +70,7 @@ export function prepareAgentSession(params: {
   request: AgentRunRequest;
   canUseCronRunContinuation: boolean;
   lifecycleGeneration: string;
-  effectiveBootstrapContextRunKind?: "default" | "heartbeat" | "cron";
+  effectiveBootstrapContextRunKind?: "default" | "cron";
   preAttachmentSession?: { canonicalKey: string; sessionId?: string };
   respond: GatewayRequestHandlerOptions["respond"];
 }): PreparedAgentSession | undefined {
@@ -238,9 +238,7 @@ export function prepareAgentSession(params: {
         })
     : undefined;
   const visibleRequest =
-    effectiveBootstrapContextRunKind !== "cron" &&
-    effectiveBootstrapContextRunKind !== "heartbeat" &&
-    !params.request.internalEvents?.length;
+    effectiveBootstrapContextRunKind !== "cron" && !params.request.internalEvents?.length;
   const failedSessionTranscriptMissing = (candidateEntry: SessionEntry | undefined): boolean => {
     if (candidateEntry?.status !== "failed" || !candidateEntry.sessionId?.trim()) {
       return false;
@@ -261,7 +259,7 @@ export function prepareAgentSession(params: {
   };
   const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId: canonicalSessionAgentId });
   const isSystemGatewayRun =
-    effectiveBootstrapContextRunKind === "cron" || effectiveBootstrapContextRunKind === "heartbeat";
+    effectiveBootstrapContextRunKind === "cron" || Boolean(params.request.internalEvents?.length);
   const requestedSessionMatchesEntry = Boolean(
     params.requestedSessionId && entry?.sessionId?.trim() === params.requestedSessionId,
   );

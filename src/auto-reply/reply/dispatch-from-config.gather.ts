@@ -259,21 +259,7 @@ export async function gatherDispatchRequest(
   const initialDispatchReplyOperation = dispatchOperationSessionKey
     ? replyRunRegistry.get(dispatchOperationSessionKey)
     : undefined;
-  if (
-    params.replyOptions?.isHeartbeat === true &&
-    dispatchOperationSessionKey &&
-    initialDispatchReplyOperation
-  ) {
-    noteDispatchProcessedOutcome({ outcome: "skipped", reason: "reply-operation-active" });
-    messageAuditTerminal?.note("skipped", { reason: "reply-operation-active" });
-    return {
-      status: "complete" as const,
-      result: {
-        queuedFinal: false,
-        counts: dispatcher.getQueuedCounts(),
-      },
-    };
-  }
+
   const markProgress = () => {
     if (!canTrackSession || !sessionKey) {
       return;

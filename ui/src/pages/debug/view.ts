@@ -2,6 +2,7 @@
 import { html, nothing } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import type { EventLogEntry } from "../../api/event-log.ts";
+import type { CronStatus } from "../../api/types.ts";
 import { highlightJsonHtml } from "../../components/markdown-code-blocks.ts";
 import {
   renderSettingsEmpty,
@@ -24,8 +25,8 @@ type DebugProps = {
   loading: boolean;
   status: Record<string, unknown> | null;
   health: Record<string, unknown> | null;
+  automations: CronStatus | null;
   models: unknown[];
-  heartbeat: unknown;
   lanes: CommandLaneSnapshot[];
   dynamic: CommandLaneDynamicSummary | null;
   diagnosticsError: string | null;
@@ -121,10 +122,27 @@ export function renderDebug(props: DebugProps) {
     },
     html`
       ${renderDiagnosticsError(props.diagnosticsError)} ${renderSecurityRow(props)}
-      ${renderJsonRow(t("debug.status"), props.status)}
-      ${renderJsonRow(t("debug.health"), props.health)}
-      ${renderJsonRow(t("debug.lastHeartbeat"), props.heartbeat)}
+      ${renderSettingsRow({
+        title: t("debug.automations"),
+        description: t("debug.automationsSubtitle"),
+        control: html`${props.automations
+          ? t("debug.automationsSummary", {
+              state: t(props.automations.enabled ? "common.enabled" : "common.disabled"),
+              count: String(props.automations.jobs),
+              next:
+                props.automations.nextWakeAtMs == null
+                  ? t("debug.noWakeScheduled")
+                  : formatTimeMs(props.automations.nextWakeAtMs),
+            })
+          : t("debug.overlay.unavailable")}`,
+      })}
     `,
+  );
+
+  const rawSection = renderSettingsSection(
+    { title: t("debug.rawProtocolTitle"), description: t("debug.rawProtocolSubtitle") },
+    html`${renderJsonRow(t("debug.status"), props.status)}
+    ${renderJsonRow(t("debug.health"), props.health)}`,
   );
 
   const lanesSection = renderSettingsSection(
@@ -233,7 +251,8 @@ ${unsafeHTML(highlightJsonHtml(JSON.stringify(props.models ?? [], null, 2)))}</p
   );
 
   return renderSettingsPage(
-    html`${snapshotsSection} ${lanesSection} ${rpcSection} ${modelsSection} ${eventLogSection}`,
+    html`${snapshotsSection} ${rawSection} ${lanesSection} ${rpcSection} ${modelsSection}
+    ${eventLogSection}`,
     { wide: true },
   );
 }

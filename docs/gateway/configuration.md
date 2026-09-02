@@ -52,7 +52,7 @@ field map and defaults.
   <Tab title="CLI (one-liners)">
     ```bash
     openclaw config get agents.defaults.workspace
-    openclaw config set agents.defaults.heartbeat.every "2h"
+    openclaw config set agents.defaults.userTimezone "America/Chicago"
     openclaw config unset plugins.entries.brave.config.webSearch.apiKey
     ```
   </Tab>
@@ -386,24 +386,19 @@ candidate contains a redacted secret placeholder such as `***` or `[redacted]`.
 
   </Accordion>
 
-  <Accordion title="Set up heartbeat (periodic check-ins)">
-    ```json5
-    {
-      agents: {
-        defaults: {
-          heartbeat: {
-            every: "30m",
-            target: "owner",
-          },
-        },
-      },
-    }
-    ```
+  <Accordion title="Set up periodic check-ins">
+    Create or edit an ordinary [cron job](/automation/cron-jobs) in the
+    automation UI or with `openclaw cron`. The job owns its schedule, prompt,
+    model, session, and delivery; these are not agent config settings.
 
-    - `every`: duration string (`30m`, `2h`). Set `0m` to disable recurring cadence; targeted event-driven wakes can still run one agent turn. Default: `30m`.
-    - `target`: `owner` (default operator DM) | `last` (latest conversation, including groups) | `none` (internal only) | `<channel-id>`
-    - `directPolicy`: `allow` (default) or `block` for DM-style heartbeat targets
-    - See [Heartbeat](/gateway/heartbeat) for the full guide.
+    - Use per-job `activeHours` for an execution window and `idleOnly` to yield to foreground work.
+    - Use `delivery.target: "owner"` for a positively identified owner DM. It does not fall back to the latest conversation, which may be a group.
+    - Use `delivery.directPolicy: "block"` to prevent DM delivery, or `delivery.mode: "none"` for no automatic announcement.
+    - Disable or delete the job to stop that check. Immediate exec, task, hook, and restart follow-ups still use normal session admission even when cron is disabled.
+
+    Upgrading from `agents.*.heartbeat`? Run `openclaw doctor --fix` before
+    editing the converted jobs. See [Heartbeat migration](/gateway/heartbeat)
+    for preserved state and deprecated client controls.
 
   </Accordion>
 
@@ -556,7 +551,7 @@ The earlier `hot` and `restart` modes are retired; [`openclaw doctor --fix`](/cl
 ### What hot-applies vs what needs a restart
 
 Most fields hot-apply without downtime; some hot-applied sections restart just that
-subsystem (channel, cron, heartbeat, health monitor) rather than the whole Gateway. In
+subsystem (channel, cron, health monitor) rather than the whole Gateway. In
 `hybrid` mode, Gateway-restart-required changes are handled automatically.
 
 By default, changing `agents.defaults.mediaMaxMb` restarts channel runtimes so their inherited
@@ -572,7 +567,7 @@ back to OpenClaw.
 | ------------------- | ----------------------------------------------------------------------- | ---------------------------- |
 | Channels            | `channels.*`, `web` (WhatsApp) - all built-in and plugin channels       | No (restarts that channel)   |
 | Agent & models      | `agent`, `agents`, `models`, `routing`                                  | No                           |
-| Automation          | `hooks`, `cron`, `agent.heartbeat`                                      | No (restarts that subsystem) |
+| Automation          | `hooks`, `cron`                                                         | No (restarts that subsystem) |
 | Sessions & messages | `session`, `messages`                                                   | No                           |
 | Tools & media       | `tools`, `skills`, `mcp`, `audio`, `talk`                               | No                           |
 | Plugin config       | `plugins.entries.*`, `plugins.allow`, `plugins.deny`, `plugins.enabled` | No (reloads plugin runtime)  |

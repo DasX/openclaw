@@ -1,7 +1,15 @@
+import { resolveSessionAgentId } from "../agents/agent-scope.js";
+import { captureSessionEventTargetForHost as captureSessionEventTarget } from "../auto-reply/reply/session-event-handoff.js";
+import { getRuntimeConfig } from "../config/io.js";
+import { resolveSystemMainSessionTarget } from "../config/sessions/main-session.js";
 import {
   isPairedDeviceNodeBindingCurrent,
   resolveCurrentPairedDeviceNodeBinding,
 } from "../infra/device-pairing-node-state.js";
+import {
+  resolveEventSessionKeyForPolicy,
+  resolveEventSessionRoutingPolicy,
+} from "../infra/event-session-routing.js";
 import type { VoiceWakeRoutingConfig } from "../infra/voicewake-routing.js";
 import { GATEWAY_EVENT_NODE_RUNNER_INVENTORY_CHANGED } from "./events.js";
 import {
@@ -44,6 +52,20 @@ export function createGatewayNodeSessionRuntime(params: {
   const { nodeRegistry, nodeWorkerSupervisorTransport } = createNodeRegistryRuntime(
     () =>
       new NodeRegistry({
+        captureSystemRunEventTarget: (requestedKey) => {
+          const cfg = getRuntimeConfig();
+          const source = requestedKey
+            ? {
+                sessionKey: requestedKey,
+                agentId: resolveSessionAgentId({ config: cfg, sessionKey: requestedKey }),
+              }
+            : resolveSystemMainSessionTarget(cfg);
+          const sessionKey = resolveEventSessionKeyForPolicy(
+            source.sessionKey,
+            resolveEventSessionRoutingPolicy({ cfg, sessionKey: source.sessionKey }),
+          );
+          return captureSessionEventTarget(source.agentId, sessionKey);
+        },
         listRegisteredNodePluginToolCommands: params.listRegisteredNodePluginToolCommands,
         nodePluginToolsEnabled: params.nodePluginToolsEnabled,
         nodeSkillsEnabled: params.nodeSkillsEnabled,

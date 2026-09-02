@@ -194,7 +194,7 @@ without continuation, and paired-node archive remains unavailable. See
 See [Codex supervision](/plugins/codex-supervision) for operator setup and the
 visible Control UI behavior.
 
-## Visible replies and heartbeats
+## Visible replies and scheduled monitoring
 
 Direct/source chat turns through the Codex harness default to automatic final
 assistant delivery for internal WebChat surfaces, matching the Pi harness
@@ -202,11 +202,20 @@ contract: the agent replies normally and OpenClaw posts the final text to the
 source conversation. Set `messages.visibleReplies: "message_tool"` to keep
 final assistant text private unless the agent calls `message(action="send")`.
 
-Codex heartbeat turns get `heartbeat_respond` in the searchable OpenClaw tool
-catalog by default so the agent can record whether the wake should stay quiet
-or notify. Heartbeat turns use the same Codex Default collaboration mode as
-ordinary chat turns. The heartbeat monitor's cron scratch is appended to the
-scheduled heartbeat user message when present.
+Scheduled monitoring runs as ordinary cron jobs, using the same Codex Default
+collaboration mode as ordinary chat turns. The job owns its schedule, prompt,
+model, session target, and delivery policy; Codex does not have a separate
+heartbeat execution path. Present job scratch is bounded and included in the
+scheduled turn context, not loaded as a workspace bootstrap file.
+
+The searchable `automations` tool exposes self-scoped `scratch_get`,
+revision-checked `scratch_set`, and `record_result` with an `outcome` and
+`summary`. Use `NO_REPLY` for a quiet completion and `next_check` for an
+existing paced job. Recording a result does not itself select delivery.
+Immediate exec, task, hook, and restart follow-ups use ordinary session
+admission, including when cron or monitoring jobs are disabled. See
+[Cron jobs](/automation/cron-jobs) and
+[Heartbeat migration](/gateway/heartbeat).
 
 ## Hook boundaries
 

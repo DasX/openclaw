@@ -165,6 +165,12 @@ vi.mock("./doctor-heartbeat-cadence-migration.js", () => ({
   maybeMigrateHeartbeatCadenceToCron: vi.fn().mockResolvedValue({ changes: [], warnings: [] }),
 }));
 
+vi.mock("./doctor-heartbeat-retirement.js", () => ({
+  retireHeartbeatWithDoctor: vi.fn<
+    typeof import("./doctor-heartbeat-retirement.js").retireHeartbeatWithDoctor
+  >(async (cfg) => cfg),
+}));
+
 vi.mock("./doctor-heartbeat-scratch-migration.js", () => ({
   collectHeartbeatScratchMigrationFindings: vi.fn().mockResolvedValue([]),
   maybeMigrateHeartbeatFilesToScratch: vi.fn().mockResolvedValue({ changes: [], warnings: [] }),

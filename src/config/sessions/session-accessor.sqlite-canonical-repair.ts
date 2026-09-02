@@ -1,4 +1,5 @@
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { copyRetiredSessionOutcomesForDoctor } from "../../commands/doctor-session-artifacts.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -473,6 +474,12 @@ function copySqliteSessionOwnedStateForRepair(params: {
     reconcileSessionTranscriptIndexInTransaction(params.destination.db, sessionId);
     publishSessionEntryCacheInvalidation(params.destination);
   }
+  copyRetiredSessionOutcomesForDoctor(
+    params.source,
+    params.destination,
+    sourceKeys,
+    params.canonicalKey,
+  );
   // Membership is authorization state and follows the selected winner. Boards,
   // suggestions, and heartbeat state merge by their own revision/id contracts.
   deleteSessionMembersForRepair(params.destination, params.canonicalKey);

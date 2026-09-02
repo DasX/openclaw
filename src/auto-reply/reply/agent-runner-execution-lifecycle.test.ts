@@ -16,6 +16,7 @@ import {
   configureChannelAdmissionDecisionSink,
   configureChannelAdmissionEvidenceCollection,
 } from "../../channels/message-access/admission-evidence.js";
+import { makeCronJob } from "../../cron/delivery.test-helpers.js";
 import { getDiagnosticSessionActivitySnapshot } from "../../logging/diagnostic-run-activity.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions } from "../types.js";
@@ -841,7 +842,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
     expect(runtime.pendingMcpAppModelContext).toBeUndefined();
   });
 
-  it("requires explicit message targets on heartbeat CLI runs", async () => {
+  it("requires explicit message targets on scheduled CLI runs", async () => {
     state.isCliProviderMock.mockReturnValue(true);
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
       result: await params.run("claude-cli", "sonnet-4.6", initialFallbackAttemptOptions(params)),
@@ -858,21 +859,20 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
     followupRun.run.model = "sonnet-4.6";
     const params = createMinimalRunAgentTurnParams({
       followupRun,
-      opts: { isHeartbeat: true },
     });
-    params.isHeartbeat = true;
+    params.followupRun.run.scheduledAutomation = { job: makeCronJob({}), assertCurrent: () => {} };
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     await executeAgentTurn(params);
 
     expectMockCallArgFields(state.runCliAgentMock, 0, "CLI run params", {
-      trigger: "heartbeat",
+      trigger: "cron",
       requireExplicitMessageTarget: true,
     });
   });
 
-  it("requires explicit message targets on heartbeat embedded runs", async () => {
-    // Heartbeat ambient From/To must not become implicit message-tool recipients.
+  it("requires explicit message targets on scheduled embedded runs", async () => {
+    // Scheduled ambient From/To must not become implicit message-tool recipients.
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
       result: await params.run("anthropic", "claude", initialFallbackAttemptOptions(params)),
       provider: "anthropic",
@@ -885,15 +885,13 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
     });
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
-    const params = createMinimalRunAgentTurnParams({
-      opts: { isHeartbeat: true },
-    });
-    params.isHeartbeat = true;
+    const params = createMinimalRunAgentTurnParams({});
+    params.followupRun.run.scheduledAutomation = { job: makeCronJob({}), assertCurrent: () => {} };
 
     await executeAgentTurn(params);
 
-    expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "heartbeat embedded run params", {
-      trigger: "heartbeat",
+    expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "scheduled embedded run params", {
+      trigger: "cron",
       requireExplicitMessageTarget: true,
     });
   });

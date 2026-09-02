@@ -652,7 +652,7 @@ internal data class CronWakeModeOption(
 
 internal fun cronWakeModeOptions(): List<CronWakeModeOption> =
   listOf(
-    CronWakeModeOption(code = "next-heartbeat", label = nativeString("Next heartbeat")),
+    CronWakeModeOption(code = "next-heartbeat", label = nativeString("Next scheduled run")),
     CronWakeModeOption(code = "now", label = nativeString("Now")),
   )
 

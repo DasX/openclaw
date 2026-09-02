@@ -830,8 +830,6 @@ describe("createCopilotToolBridge", () => {
           requireExplicitMessageTarget: true,
           disableMessageTool: false,
           forceMessageTool: true,
-          enableHeartbeatTool: true,
-          forceHeartbeatTool: false,
           delegationCapability: "report_only",
         } as never,
         createOpenClawCodingTools,
@@ -862,7 +860,6 @@ describe("createCopilotToolBridge", () => {
         replyToMode: "first",
         requireExplicitMessageTarget: true,
         forceMessageTool: true,
-        enableHeartbeatTool: true,
         delegationCapability: "report_only",
       });
     });

@@ -4,11 +4,20 @@ import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { retainLegacyDefaultAgentId } from "../../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { makeCronJob } from "../../cron/delivery.test-helpers.js";
+import { recordDefaultProactiveJobInDatabase } from "../../cron/proactive-job-receipt.js";
+import { resolveCronJobsStorePathFromConfig, saveCronJobsStore } from "../../cron/store.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import {
+  createOpenClawTestState,
+  type OpenClawTestState,
+} from "../../test-utils/openclaw-test-state.js";
 
 let testConfig: OpenClawConfig = {};
 let healthPluginsForTest: ChannelPlugin[] = [];
 const tempDirs = createTempDirTracker();
 let sessionStorePath: string;
+let state: OpenClawTestState;
 
 let collectGatewayHealthSnapshot: typeof import("./collector.js").collectGatewayHealthSnapshot;
 let createChannelTestPluginBase: typeof import("../../test-utils/channel-plugins.js").createChannelTestPluginBase;
@@ -68,7 +77,8 @@ describe("collectGatewayHealthSnapshot legacy owner projection", () => {
     createChannelTestPluginBase = channelTestUtils.createChannelTestPluginBase;
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    state = await createOpenClawTestState({ prefix: "health-legacy-jobs-" });
     sessionStorePath = path.join(
       tempDirs.make("openclaw-health-legacy-sessions-"),
       "sessions.json",
@@ -76,7 +86,8 @@ describe("collectGatewayHealthSnapshot legacy owner projection", () => {
     healthPluginsForTest = [createHealthPlugin()];
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await state.cleanup();
     tempDirs.cleanup();
   });
 
@@ -105,7 +116,7 @@ describe("collectGatewayHealthSnapshot legacy owner projection", () => {
     );
     const migratedOwner = migrated.agents.find((agent) => agent.isDefault);
     expect(migratedOwner?.agentId).toBe("ops");
-    expect(migratedOwner?.heartbeat.enabled).toBe(true);
+    expect(migratedOwner?.heartbeat.enabled).toBe(false);
     expect(migrated.agents.find((agent) => agent.agentId === "first")?.heartbeat.enabled).toBe(
       false,
     );
@@ -127,54 +138,39 @@ describe("collectGatewayHealthSnapshot legacy owner projection", () => {
     expect(explicit.heartbeatSeconds).toBe(0);
   });
 
-  it("projects the configured heartbeat owner's cadence", async () => {
-    testConfig = {
-      agents: {
-        ownership: "explicit",
-        defaults: { heartbeat: { agentId: "research", every: "30m" } },
-        entries: {
-          ops: {},
-          research: { heartbeat: { every: "5m" } },
-        },
-      },
-    };
-
-    const health = await collectGatewayHealthSnapshot({ audience: "admin", probe: false });
-
-    expect(health.agents.map((agent) => agent.agentId)).toEqual(["ops", "research"]);
-    expect(health.agents.find((agent) => agent.agentId === "research")?.heartbeat.enabled).toBe(
-      true,
-    );
-    expect(health.heartbeatSeconds).toBe(5 * 60);
-  });
-
-  it.each([
-    { label: "an earlier agent", heartbeatAgentId: undefined },
-    { label: "the configured owner", heartbeatAgentId: "ops" },
-  ])(
-    "reports the active heartbeat when $label disables its cadence",
-    async ({ heartbeatAgentId }) => {
+  it.each([true, false])(
+    "reports converted job cadence independently of another job enabled=%s",
+    async (enabled) => {
       testConfig = {
-        agents: {
-          ownership: "explicit",
-          defaults: {
-            heartbeat: {
-              every: "30m",
-              ...(heartbeatAgentId ? { agentId: heartbeatAgentId } : {}),
-            },
-          },
-          entries: {
-            ops: { heartbeat: { every: "0m" } },
-            research: { heartbeat: { every: "1h" } },
-          },
-        },
+        agents: { ownership: "explicit", entries: { ops: {}, research: {} } },
       };
+      const storePath = resolveCronJobsStorePathFromConfig(testConfig);
+      await saveCronJobsStore(storePath, {
+        version: 1,
+        jobs: [
+          makeCronJob({ id: "converted-ops", agentId: "ops", enabled, delivery: { mode: "none" } }),
+          makeCronJob({
+            id: "converted-research",
+            agentId: "research",
+            schedule: { kind: "every", everyMs: 300_000 },
+            delivery: { mode: "none" },
+          }),
+        ],
+      });
+      for (const agentId of ["ops", "research"]) {
+        recordDefaultProactiveJobInDatabase(
+          openOpenClawStateDatabase().db,
+          storePath,
+          agentId,
+          `converted-${agentId}`,
+          1,
+        );
+      }
 
       const health = await collectGatewayHealthSnapshot({ audience: "admin", probe: false });
-
       expect(health.agents.map((agent) => agent.agentId)).toEqual(["ops", "research"]);
-      expect(health.agents.map((agent) => agent.heartbeat.enabled)).toEqual([false, true]);
-      expect(health.heartbeatSeconds).toBe(60 * 60);
+      expect(health.agents.map((agent) => agent.heartbeat.enabled)).toEqual([enabled, true]);
+      expect(health.heartbeatSeconds).toBe(enabled ? 60 : 300);
     },
   );
 });

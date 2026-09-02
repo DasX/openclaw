@@ -54,7 +54,7 @@ struct SessionsSettings: View {
     @ViewBuilder
     private var content: some View {
         if self.rows.isEmpty, self.errorMessage == nil {
-            Text("No threads yet. They appear after the first inbound message or heartbeat.")
+            Text("No threads yet. They appear after the first message or automation run.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)

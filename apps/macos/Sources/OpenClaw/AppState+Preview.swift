@@ -24,7 +24,6 @@ extension AppState {
         state.talkPhaseSoundsEnabled = true
         state.talkShiftToStopEnabled = true
         state.iconOverride = .system
-        state.heartbeatsEnabled = true
         state.connectionMode = .local
         state.remoteTransport = .ssh
         state.canvasEnabled = true

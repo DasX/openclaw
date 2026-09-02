@@ -10,6 +10,10 @@ import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
 import { installOpenClawPluginSdkNativeResolver } from "./plugin-sdk-native-resolver.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { withPluginRegistrationContext } from "./runtime.js";
+import {
+  bindGatewayContextResolver,
+  getGatewayContextResolver,
+} from "./runtime/gateway-request-scope.js";
 import { createRuntimeBase } from "./runtime/runtime-base.js";
 import type {
   CreatePluginRuntimeOptions,
@@ -230,7 +234,7 @@ export function createLazyPluginRuntime(params: {
       },
     };
   };
-  return new Proxy({} as PluginRuntime, {
+  const runtime = new Proxy({} as PluginRuntime, {
     get(_target, prop, receiver) {
       // Instance-bound surfaces are complete runtime objects. Keep them direct so
       // the first Gateway call does not materialize the broad plugin runtime graph.
@@ -264,6 +268,10 @@ export function createLazyPluginRuntime(params: {
       return Reflect.getPrototypeOf(resolveRuntime() as object);
     },
   });
+  if (params.runtimeOptions?.subagent) {
+    bindGatewayContextResolver(runtime, getGatewayContextResolver(params.runtimeOptions.subagent));
+  }
+  return runtime;
 }
 
 export function resolvePluginModuleExport(moduleExport: unknown): {

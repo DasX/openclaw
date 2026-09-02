@@ -248,14 +248,6 @@ Save to `~/.openclaw/openclaw.json` and you can DM the bot from that number.
       mediaMaxMb: 5,
       typingIntervalSeconds: 5,
       maxConcurrent: 3,
-      heartbeat: {
-        every: "30m",
-        model: "anthropic/claude-sonnet-4-6",
-        target: "whatsapp",
-        directPolicy: "allow", // allow (default) | block
-        to: "+15555550123",
-        prompt: "HEARTBEAT",
-      },
       sandbox: {
         mode: "non-main",
         scope: "session", // preferred over legacy perSession: true
@@ -477,6 +469,20 @@ example `~/.agents/skills/manager -> ~/Projects/manager/skills`.
   set `skills.workshop.allowSymlinkTargetWrites: true`.
 
 ## Common patterns
+
+### Periodic check-ins
+
+Monitoring lives in ordinary cron jobs, separate from `openclaw.json`. Create or
+edit a job in the automation UI or with [the cron CLI](/cli/cron), then set its
+schedule, prompt, model, session, and delivery there. For example, a check-in job
+can run every 30 minutes with an `agentTurn` payload, deliver to an explicit
+WhatsApp recipient, and use `delivery.directPolicy: "allow"`.
+
+Use per-job `activeHours` for a time window, `idleOnly` to yield to foreground
+work, and `delivery.target: "owner"` when delivery should resolve the identified
+owner DM rather than a fixed recipient. These are job fields, not root config
+keys. See [Cron jobs](/automation/cron-jobs) for job examples and
+[Heartbeat migration](/gateway/heartbeat) for existing heartbeat settings.
 
 ### Shared skill baseline with one override
 

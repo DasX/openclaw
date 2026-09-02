@@ -86,6 +86,10 @@ export function installMSTeamsTestRuntime(options: MSTeamsTestRuntimeOptions = {
     if (!("route" in turn) || !("delivery" in turn)) {
       throw new Error("expected assembled MSTeams channel turn plan");
     }
+    const delivery = turn.delivery;
+    if (!delivery.deliver) {
+      throw new Error("expected core-managed MSTeams delivery");
+    }
     const preparedTurn = {
       channel: turn.channel,
       accountId: turn.accountId,
@@ -104,8 +108,8 @@ export function installMSTeamsTestRuntime(options: MSTeamsTestRuntimeOptions = {
           cfg: turn.cfg,
           dispatcherOptions: {
             ...turn.dispatcherOptions,
-            deliver: turn.delivery.deliver,
-            onError: turn.delivery.onError,
+            deliver: delivery.deliver,
+            onError: delivery.onError,
           },
           toolsAllow: turn.toolsAllow,
           replyOptions: turn.replyOptions,

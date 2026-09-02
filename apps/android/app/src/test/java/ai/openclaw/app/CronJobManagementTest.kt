@@ -22,7 +22,7 @@ class CronJobManagementTest {
       listOf("next-heartbeat", "now"),
       cronWakeModeOptions().map { it.code },
     )
-    assertEquals("Next heartbeat", cronWakeModeLabel("next-heartbeat"))
+    assertEquals("Next scheduled run", cronWakeModeLabel("next-heartbeat"))
     assertEquals("Now", cronWakeModeLabel("now"))
     assertEquals("future-mode", cronWakeModeLabel("future-mode"))
   }

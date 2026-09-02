@@ -332,9 +332,7 @@ describe("anthropic provider replay hooks", () => {
       mode: "cache-ttl",
       ttl: "1h",
     });
-    expectFields(next?.agents?.defaults?.heartbeat, {
-      every: "30m",
-    });
+    expect(next?.agents?.defaults?.heartbeat).toBeUndefined();
     expect(
       next?.agents?.defaults?.models?.["anthropic/claude-opus-4-6"]?.params?.cacheRetention,
     ).toBe("short");
@@ -393,9 +391,7 @@ describe("anthropic provider replay hooks", () => {
       },
     } as never);
 
-    expectFields(next?.agents?.defaults?.heartbeat, {
-      every: "1h",
-    });
+    expect(next?.agents?.defaults?.heartbeat).toBeUndefined();
     const models = requireRecord(next?.agents?.defaults?.models, "models");
     for (const modelId of [
       "anthropic/claude-opus-4-8",

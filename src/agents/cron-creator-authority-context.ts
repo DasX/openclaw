@@ -44,7 +44,7 @@ export function shouldAdmitFreshChannelOwnerCronAuthority(params: {
   senderIsOwner: boolean;
   messageProvider?: string;
   senderId?: string;
-  isHeartbeat: boolean;
+
   isRoomEvent: boolean;
   inputProvenance?: unknown;
   spawnedBy?: string;
@@ -54,7 +54,6 @@ export function shouldAdmitFreshChannelOwnerCronAuthority(params: {
     params.senderIsOwner &&
     Boolean(params.messageProvider) &&
     Boolean(normalizeOptionalString(params.senderId)) &&
-    !params.isHeartbeat &&
     !params.isRoomEvent &&
     params.inputProvenance === undefined &&
     params.spawnedBy === undefined &&

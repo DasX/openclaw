@@ -316,7 +316,6 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     shouldSuppressTyping: state.shouldSuppressTyping,
     messageToolAvailable,
     sessionStableMessageToolAvailable,
-    isHeartbeat: params.replyOptions?.isHeartbeat,
   } as const;
   let sourceReplyPolicy = resolveSourceReplyVisibilityPolicy({
     ...sourceReplyPolicyParams,

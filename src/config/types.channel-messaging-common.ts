@@ -60,7 +60,7 @@ export type CommonChannelMessagingConfig<
   textChunkLimit?: number;
   /** Delivery streaming config: chunk mode plus block streaming controls. */
   streaming?: TStreaming;
-  /** Heartbeat visibility settings for this channel. */
+  /** @deprecated Doctor input only; use automation delivery policy. */
   heartbeatVisibility?: ChannelHeartbeatVisibilityConfig;
   /** @deprecated Doctor-only legacy input. */
   heartbeat?: ChannelHeartbeatVisibilityConfig;

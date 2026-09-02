@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as embeddedAgent from "../agents/embedded-agent.js";
-import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
+import { getReplyFromConfigCore as getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
 import { clearConfigCache, getRuntimeConfig } from "../config/config.js";
 import {
   appendTranscriptMessage,

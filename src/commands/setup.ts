@@ -238,19 +238,6 @@ export async function setupCommand(
     next = { ...next, gateway: { ...next.gateway, mode: "local" } };
   }
 
-  if (!snapshot.exists) {
-    const { ensureOnboardingAgent } = await import("./onboard-agent.js");
-    const onboardingAgent = await ensureOnboardingAgent({
-      config: next,
-      workspace,
-      baseConfig: cfg,
-    });
-    next = onboardingAgent.config;
-    for (const warning of onboardingAgent.sessionMigrationWarnings ?? []) {
-      runtime.log(`Warning: ${warning}`);
-    }
-  }
-
   const configChanged =
     !snapshot.exists || shouldPersistRoster || shouldWriteWorkspace || shouldWriteGatewayMode;
   let configStatus: "created" | "updated" | "unchanged";
@@ -318,6 +305,10 @@ export async function setupCommand(
     deps.resolveSessionTranscriptsDir ?? resolveDefaultSessionTranscriptsDir
   )(selectedAgentId);
   await (deps.mkdir ?? fs.mkdir)(sessionsDir, { recursive: true });
+  const { provisionDefaultProactiveJob } = await import("../cron/default-proactive-job.js");
+  const job = provisionDefaultProactiveJob(next, selectedAgentId);
+  const { publishProvisionedCronJob } = await import("../gateway/cron-lifecycle-publication.js");
+  await publishProvisionedCronJob(next, job);
   if (opts?.json) {
     writeRuntimeJson(runtime, {
       ok: true,

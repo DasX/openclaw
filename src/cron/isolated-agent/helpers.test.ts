@@ -46,14 +46,21 @@ describe("text payload pickers", () => {
 });
 
 describe("cron delivery outcomes", () => {
-  it.each(["NO_REPLY", "HEARTBEAT_OK"])(
-    "keeps %s as a silent heartbeat acknowledgement",
+  it.each(["NO_REPLY", '"NO_REPLY"', '{"action":"NO_REPLY"}'])(
+    "keeps %s as a silent acknowledgement",
     (acknowledgement) => {
       expect(
         resolveCronPayloadOutcome({ payloads: [{ text: acknowledgement }] }).deliveryDisposition,
-      ).toEqual({ kind: "heartbeat", controlOnly: true });
+      ).toEqual({ kind: "silent", controlOnly: true });
     },
   );
+
+  it("does not interpret a retired heartbeat acknowledgement as a cron control", () => {
+    const payload = { text: "HEARTBEAT_OK" };
+    const outcome = resolveCronPayloadOutcome({ payloads: [payload] });
+    expect(outcome.deliveryDisposition).toEqual({ kind: "visible" });
+    expect(outcome.deliveryPayloads).toEqual([payload]);
+  });
 
   it("keeps media visible even when its text is a silent acknowledgement", () => {
     const payload = { text: "NO_REPLY", mediaUrl: "https://example.com/update.png" };

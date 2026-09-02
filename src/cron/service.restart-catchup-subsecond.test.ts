@@ -37,11 +37,12 @@ describe("CronService restart catch-up within a cron slot's first second", () =>
     });
 
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       runCommandJob: runCommandJob as never,
     });
@@ -104,11 +105,12 @@ describe("CronService restart catch-up within a cron slot's first second", () =>
     });
 
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       runCommandJob: runCommandJob as never,
     });

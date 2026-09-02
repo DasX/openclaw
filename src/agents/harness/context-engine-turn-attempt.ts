@@ -30,12 +30,11 @@ export type ContextEngineTurnAttemptFacts = {
   promptError: boolean;
   aborted: boolean;
   yieldAborted: boolean;
-  isHeartbeat?: boolean;
 };
 
 export async function drainPendingContextEngineTurnsBeforeRun(params: {
   admission: TranscriptTurnBoundary["admission"] | undefined;
-  isHeartbeat?: boolean;
+
   lease: ContextEngineLogicalTurnLease;
   recorder?: UserTurnTranscriptRecorder;
   sessionTarget?: ContextEngineSessionTarget;
@@ -103,7 +102,7 @@ export async function drainPendingContextEngineTurnsBeforeRun(params: {
         admission,
         database,
         engineId: params.lease.effectiveEngineId,
-        isHeartbeat: params.isHeartbeat === true,
+
         ownerPluginId: params.lease.effectiveEnginePluginId,
       });
     };
@@ -205,7 +204,7 @@ export async function finalizeAcceptedContextEngineTurn(params: {
       boundary: params.facts.boundary,
       database,
       engineId: params.lease.effectiveEngineId,
-      isHeartbeat: params.facts.isHeartbeat === true,
+
       ownerPluginId: params.lease.effectiveEnginePluginId,
     });
     const closedTurn = readClosedTranscriptTurn({
@@ -220,7 +219,7 @@ export async function finalizeAcceptedContextEngineTurn(params: {
           database,
           engineId: params.lease.effectiveEngineId,
           failure: closedTurn.kind,
-          isHeartbeat: params.facts.isHeartbeat === true,
+
           ownerPluginId: params.lease.effectiveEnginePluginId,
         });
       }
@@ -232,7 +231,7 @@ export async function finalizeAcceptedContextEngineTurn(params: {
       ownerPluginId: params.lease.effectiveEnginePluginId,
       payload: {
         boundary: params.facts.boundary,
-        isHeartbeat: params.facts.isHeartbeat === true,
+
         messages: closedTurn.messages,
       },
     });

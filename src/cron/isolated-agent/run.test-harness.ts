@@ -4,6 +4,7 @@ import { vi, type Mock } from "vitest";
 import { resolveFastModeState as resolveFastModeStateImpl } from "../../agents/fast-mode.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 
 // Central mock harness for isolated cron agent run orchestration tests.
@@ -898,6 +899,9 @@ export function restoreFastTestEnv(previousFastTestEnv: string | undefined): voi
 
 export async function loadRunCronIsolatedAgentTurn() {
   const { runCronIsolatedAgentTurn } = await import("./run.js");
-  return runCronIsolatedAgentTurn;
+  return (params: Parameters<typeof runCronIsolatedAgentTurn>[0]) => {
+    setRuntimeConfigSnapshot(params.cfg);
+    return runCronIsolatedAgentTurn(params);
+  };
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

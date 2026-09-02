@@ -1,10 +1,64 @@
 /** Stale-state notice text, coalescing keys, and watcher eligibility. */
-import { requestHeartbeat } from "../infra/heartbeat-wake.js";
-import { enqueueSystemEvent } from "../infra/system-events.js";
+import { createInboundDebouncer } from "../auto-reply/inbound-debounce.js";
+import {
+  captureSessionEventTargetForHost as captureSessionEventTarget,
+  enqueueSessionEventForHost as enqueueSessionEvent,
+  type SessionEventTarget,
+} from "../auto-reply/reply/session-event-handoff.js";
+import { withSystemEventOwner } from "../infra/system-event-ownership.js";
+import {
+  enqueueSystemEventEntry,
+  peekSystemEventEntries,
+  type SystemEvent,
+} from "../infra/system-events.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { isSubagentSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 
 const SESSION_STATE_CONTEXT_PREFIX = "session-state:";
-const SESSION_STATE_WAKE_COALESCE_MS = 20_000;
+const log = createSubsystemLogger("sessions/state-notices");
+const notices = createInboundDebouncer<{
+  sessionKey: string;
+  agentId: string;
+  target: SessionEventTarget;
+  occurrence: SystemEvent;
+}>({
+  debounceMs: 20_000,
+  buildKey: ({ sessionKey, target, occurrence }) =>
+    JSON.stringify([
+      sessionKey,
+      target.sessionId,
+      target.lifecycleRevision,
+      target.generation,
+      occurrence.contextKey,
+    ]),
+  onFlush: (items, createFlush) =>
+    createFlush({
+      dispatch: async (lifecycle) => {
+        const latest = items.at(-1)!;
+        const pending = peekSystemEventEntries(latest.sessionKey);
+        // Polling/replacement owns cancellation before admission; never recreate a consumed notice.
+        const occurrence = items
+          .toReversed()
+          .find((item) => pending.some((event) => event.id === item.occurrence.id))?.occurrence;
+        if (!occurrence) {
+          return;
+        }
+        const receipt = enqueueSessionEvent(occurrence.text, {
+          agentId: latest.agentId,
+          sessionKey: latest.sessionKey,
+          source: "session",
+          expectedTarget: latest.target,
+          occurrence,
+          onAdopted: lifecycle.onAdopted,
+        });
+        const outcome = await receipt.settled;
+        if (outcome.status === "failed") {
+          throw new Error(outcome.error ?? "Session state notice failed");
+        }
+      },
+    }),
+  onError: (error) => log.warn(`Session state notice was not delivered: ${String(error)}`),
+});
 
 function encodeNoticeTarget(sessionKey: string): string {
   return Buffer.from(sessionKey, "utf8").toString("hex");
@@ -42,7 +96,7 @@ function shouldWakeWatcher(watcherSessionKey: string): boolean {
 }
 
 // Bare keys (session.scope="global") are store-local per agent, but cursors, the
-// system-event queue, and heartbeat wakes are keyed by session key alone. A notice
+// system-event queue, and session-event turns are keyed by session key alone. A notice
 // for one agent's child could be drained and acknowledged by another agent's global
 // turn — a cross-A2A metadata leak plus a lost notification. Until watcher identity
 // is agent-scoped end-to-end, such watchers get durable events and changesSince but
@@ -57,26 +111,33 @@ export function enqueueSessionStateNotice(params: {
   lastSeenSequence: number;
   queueOnly?: boolean;
 }): void {
-  enqueueSystemEvent(sessionStateNoticeText(params.targetSessionKey, params.lastSeenSequence), {
-    sessionKey: params.watcherSessionKey,
-    contextKey: `${SESSION_STATE_CONTEXT_PREFIX}${encodeNoticeTarget(params.targetSessionKey)}`,
-    ...(params.queueOnly ? { replace: true } : {}),
-  });
-  // Group activity is ambient context. Coalesce it for the next main turn instead
-  // of waking the personal agent once per inbound group message.
-  if (params.queueOnly) {
+  const agentId = parseAgentSessionKey(params.watcherSessionKey)?.agentId;
+  if (!agentId) {
     return;
   }
-  if (!shouldWakeWatcher(params.watcherSessionKey)) {
+  const text = sessionStateNoticeText(params.targetSessionKey, params.lastSeenSequence);
+  if (text.length > 4000) {
+    throw new Error("Session state notice target exceeds the supported prompt bound");
+  }
+  const target =
+    !params.queueOnly && shouldWakeWatcher(params.watcherSessionKey)
+      ? captureSessionEventTarget(agentId, params.watcherSessionKey)
+      : undefined;
+  const occurrence = enqueueSystemEventEntry(
+    text,
+    withSystemEventOwner(
+      {
+        sessionKey: params.watcherSessionKey,
+        contextKey: `${SESSION_STATE_CONTEXT_PREFIX}${encodeNoticeTarget(params.targetSessionKey)}`,
+        replace: true,
+      },
+      agentId,
+    ),
+  );
+  // Group/subagent notices remain passive context. Active notices coalesce by exact
+  // watcher generation and changed target through the ordinary inbound debouncer.
+  if (!target || !occurrence) {
     return;
   }
-  // Collapse bursts of watched-session changes into one main-session wake. Notices
-  // are already queued and deduped, so none are lost; 20 seconds bounds added latency.
-  requestHeartbeat({
-    source: "session-state",
-    intent: "immediate",
-    reason: `session-state:${params.targetSessionKey}`,
-    sessionKey: params.watcherSessionKey,
-    coalesceMs: SESSION_STATE_WAKE_COALESCE_MS,
-  });
+  void notices.enqueue({ sessionKey: params.watcherSessionKey, agentId, target, occurrence });
 }

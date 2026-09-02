@@ -147,7 +147,7 @@ async function resolveModelDirective(params: {
     aliasIndex: createAliasIndex(),
     provider: "anthropic",
     model: "claude-opus-4-6",
-    hasResolvedHeartbeatModelOverride: false,
+    hasResolvedTurnModelOverride: false,
     typing: makeTypingController(),
   });
   return { result, sessionEntry, sessionCtx };
@@ -232,7 +232,6 @@ describe("reply directive resolution", () => {
       typingSignals: createTypingSignaler({
         typing: makeTypingController(),
         mode: "never",
-        isHeartbeat: false,
       }),
       blockStreamingEnabled: result.result.blockStreamingEnabled,
       blockReplyPipeline: null,

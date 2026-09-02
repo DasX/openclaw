@@ -191,17 +191,14 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         return;
       }
       const commit = async () => {
-        if (plan.restartHeartbeat || plan.reconcileSkillReviewJobs) {
+        if (plan.reconcileSkillReviewJobs) {
           // Runtime publication promises that durable monitor rows reflect this config.
           // A retrying or superseded pass leaves the previous generation authoritative.
-          const reconciliation = await nextState.cronState.reconcileHeartbeatJobs(nextConfig);
+          const reconciliation = await nextState.cronState.reconcileSkillReviewJobs(nextConfig);
           assertReloadPublicationCurrent(publication?.isCurrent() ?? true, isRestartRetryStopped());
           if (reconciliation !== "converged") {
             throw new GatewayHotReloadRecoveryError("cron monitor");
           }
-        }
-        if (plan.restartHeartbeat) {
-          nextState.heartbeatRunner.updateConfig(nextConfig);
         }
         revokeActiveSkillReviewsBeforeConfigPublication(nextConfig);
         // Config, plugin hooks, and prepared stores publish as one generation. Synchronously

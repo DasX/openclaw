@@ -180,6 +180,8 @@ export type SessionTranscriptTurnMessageAppend = TranscriptMessageAppendOptions<
    * Rechecks the newest assistant row after the write transaction begins.
    * Direct synchronous writers bypass the process queue, so prepared facts can be stale.
    */
+  /** Synchronous owner fence, checked immediately before append or idempotent replay. */
+  assertCommitAllowed?: () => void;
   shouldAppendInTransaction?: (latestAssistantMessage: unknown) => boolean;
 };
 

@@ -26,12 +26,13 @@ async function withState(run: (state: ReturnType<typeof createCronServiceState>)
   await withEnvAsync({ OPENCLAW_STATE_DIR: path.dirname(path.dirname(storePath)) }, async () => {
     await run(
       createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath,
         cronEnabled: true,
         log: logger,
         nowMs: () => NOW,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       }),
     );

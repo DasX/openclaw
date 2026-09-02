@@ -390,7 +390,7 @@ async function buildDynamicToolsForTest(
   options: Partial<
     Pick<
       Parameters<typeof testing.buildDynamicTools>[0],
-      "forceHeartbeatTool" | "ignoreDisableMessageTool" | "ignoreRuntimePlan"
+      "ignoreDisableMessageTool" | "ignoreRuntimePlan"
     >
   > = {},
 ) {
@@ -2241,7 +2241,7 @@ describe("runCodexAppServerAttempt", () => {
     const tools = [
       createRuntimeDynamicTool("message"),
       createRuntimeDynamicTool("web_search"),
-      createRuntimeDynamicTool("heartbeat_respond"),
+      createRuntimeDynamicTool("automations"),
       createRuntimeDynamicTool("agents_list"),
       createRuntimeDynamicTool("sessions_spawn"),
       createRuntimeDynamicTool("sessions_yield"),
@@ -2254,7 +2254,7 @@ describe("runCodexAppServerAttempt", () => {
     const specs = flattenSpecsWithNamespace(toolBridge.specs);
     const message = specs.find((tool) => tool.name === "message");
     const webSearch = specs.find((tool) => tool.name === "web_search");
-    const heartbeat = specs.find((tool) => tool.name === "heartbeat_respond");
+    const automation = specs.find((tool) => tool.name === "automations");
     const agentsList = specs.find((tool) => tool.name === "agents_list");
     const sessionsSpawn = specs.find((tool) => tool.name === "sessions_spawn");
     const sessionsYield = specs.find((tool) => tool.name === "sessions_yield");
@@ -2262,8 +2262,8 @@ describe("runCodexAppServerAttempt", () => {
     expect(message).not.toHaveProperty("deferLoading");
     expect(webSearch?.namespace).toBe("openclaw");
     expect(webSearch?.deferLoading).toBe(true);
-    expect(heartbeat?.namespace).toBe("openclaw");
-    expect(heartbeat?.deferLoading).toBe(true);
+    expect(automation?.namespace).toBe("openclaw");
+    expect(automation?.deferLoading).toBe(true);
     expect(agentsList).not.toHaveProperty("namespace");
     expect(agentsList).not.toHaveProperty("deferLoading");
     expect(sessionsSpawn).not.toHaveProperty("namespace");
@@ -2272,15 +2272,13 @@ describe("runCodexAppServerAttempt", () => {
     expect(sessionsYield).not.toHaveProperty("deferLoading");
   });
 
-  it("keeps the heartbeat schema deferred and stable across normal and heartbeat turns", async () => {
-    testing.setOpenClawCodingToolsFactoryForTests((options) => [
+  it("keeps automation schema deferred and stable across normal and scheduled turns", async () => {
+    testing.setOpenClawCodingToolsFactoryForTests(() => [
       createRuntimeDynamicTool("message"),
-      ...(options?.enableHeartbeatTool === true
-        ? [createRuntimeDynamicTool("heartbeat_respond")]
-        : []),
+      createRuntimeDynamicTool("automations"),
     ]);
     const { sessionFile, workspaceDir } = createRunPaths();
-    const createHeartbeatRunParams = (trigger?: EmbeddedRunAttemptParams["trigger"]) => {
+    const createScheduledRunParams = (trigger?: EmbeddedRunAttemptParams["trigger"]) => {
       const params = createParams(sessionFile, workspaceDir);
       params.disableTools = false;
       params.runtimePlan = createCodexRuntimePlanFixture();
@@ -2292,26 +2290,26 @@ describe("runCodexAppServerAttempt", () => {
     };
     const registeredTools = [
       createRuntimeDynamicTool("message"),
-      createRuntimeDynamicTool("heartbeat_respond"),
+      createRuntimeDynamicTool("automations"),
     ];
     const normalBridge = createCodexToolBridgeForTest(
-      createHeartbeatRunParams(),
+      createScheduledRunParams(),
       [createRuntimeDynamicTool("message")],
       registeredTools,
     );
-    const normalInstructions = testing.buildDeveloperInstructions(createHeartbeatRunParams(), {
+    const normalInstructions = testing.buildDeveloperInstructions(createScheduledRunParams(), {
       dynamicTools: normalBridge.availableSpecs,
     });
-    const heartbeatParams = createHeartbeatRunParams("heartbeat");
-    const heartbeatBridge = createCodexToolBridgeForTest(
-      heartbeatParams,
-      [createRuntimeDynamicTool("message"), createRuntimeDynamicTool("heartbeat_respond")],
+    const scheduledParams = createScheduledRunParams("cron");
+    const scheduledBridge = createCodexToolBridgeForTest(
+      scheduledParams,
+      [createRuntimeDynamicTool("message"), createRuntimeDynamicTool("automations")],
       registeredTools,
     );
-    const heartbeatInstructions = testing.buildDeveloperInstructions(heartbeatParams, {
-      dynamicTools: heartbeatBridge.availableSpecs,
+    const scheduledInstructions = testing.buildDeveloperInstructions(scheduledParams, {
+      dynamicTools: scheduledBridge.availableSpecs,
     });
-    const nextNormalParams = createHeartbeatRunParams();
+    const nextNormalParams = createScheduledRunParams();
     const nextNormalBridge = createCodexToolBridgeForTest(
       nextNormalParams,
       [createRuntimeDynamicTool("message")],
@@ -2319,21 +2317,21 @@ describe("runCodexAppServerAttempt", () => {
     );
     const registeredToolNames = specNames(normalBridge.specs);
     expect(registeredToolNames).toContain("message");
-    expect(registeredToolNames).toContain("heartbeat_respond");
+    expect(registeredToolNames).toContain("automations");
     expect(normalInstructions).not.toContain(
-      "Deferred searchable OpenClaw dynamic tools available: heartbeat_respond",
+      "Deferred searchable OpenClaw dynamic tools available: automations",
     );
-    expect(heartbeatInstructions).toContain(
-      "Deferred searchable OpenClaw dynamic tools available: heartbeat_respond.",
+    expect(scheduledInstructions).toContain(
+      "Deferred searchable OpenClaw dynamic tools available: automations.",
     );
-    for (const bridge of [normalBridge, heartbeatBridge, nextNormalBridge]) {
-      const heartbeat = flattenSpecsWithNamespace(bridge.specs).find(
-        (tool) => tool.name === "heartbeat_respond",
+    for (const bridge of [normalBridge, scheduledBridge, nextNormalBridge]) {
+      const automation = flattenSpecsWithNamespace(bridge.specs).find(
+        (tool) => tool.name === "automations",
       );
-      expect(heartbeat?.namespace).toBe("openclaw");
-      expect(heartbeat?.deferLoading).toBe(true);
+      expect(automation?.namespace).toBe("openclaw");
+      expect(automation?.deferLoading).toBe(true);
     }
-    expect(codexDynamicToolsFingerprint(heartbeatBridge.specs)).toBe(
+    expect(codexDynamicToolsFingerprint(scheduledBridge.specs)).toBe(
       codexDynamicToolsFingerprint(normalBridge.specs),
     );
     expect(codexDynamicToolsFingerprint(nextNormalBridge.specs)).toBe(
@@ -2342,7 +2340,7 @@ describe("runCodexAppServerAttempt", () => {
     let startedThreadId: string | undefined;
     const request = vi.fn(async (method: string) => {
       if (method === "thread/start") {
-        startedThreadId = "thread-stable-heartbeat";
+        startedThreadId = "thread-stable-automation";
         return threadStartResult(startedThreadId);
       }
       if (method === "thread/resume") {
@@ -2352,7 +2350,7 @@ describe("runCodexAppServerAttempt", () => {
     });
     const turns = [
       { params: createRunParams(), bridge: normalBridge },
-      { params: heartbeatParams, bridge: heartbeatBridge },
+      { params: scheduledParams, bridge: scheduledBridge },
       { params: nextNormalParams, bridge: nextNormalBridge },
     ];
     for (const turn of turns) {
@@ -2416,16 +2414,14 @@ describe("runCodexAppServerAttempt", () => {
     });
   });
 
-  it("keeps the persistent dynamic schema stable across heartbeat-only turns", async () => {
-    testing.setOpenClawCodingToolsFactoryForTests((options) => [
+  it("keeps the persistent dynamic schema stable across restricted scheduled turns", async () => {
+    testing.setOpenClawCodingToolsFactoryForTests(() => [
       createRuntimeDynamicTool("message"),
       createRuntimeDynamicTool("web_search"),
-      ...(options?.enableHeartbeatTool === true
-        ? [createRuntimeDynamicTool("heartbeat_respond")]
-        : []),
+      createRuntimeDynamicTool("automations"),
     ]);
     const { sessionFile, workspaceDir } = createRunPaths();
-    const createHeartbeatRunParams = (trigger?: EmbeddedRunAttemptParams["trigger"]) => {
+    const createScheduledRunParams = (trigger?: EmbeddedRunAttemptParams["trigger"]) => {
       const params = createParams(sessionFile, workspaceDir);
       params.disableTools = false;
       const runtimePlan = createCodexRuntimePlanFixture();
@@ -2433,9 +2429,7 @@ describe("runCodexAppServerAttempt", () => {
         ...runtimePlan,
         tools: {
           normalize: (tools: Array<{ name: string }>) =>
-            trigger === "heartbeat"
-              ? tools.filter((tool) => tool.name === "heartbeat_respond")
-              : tools,
+            trigger === "cron" ? tools.filter((tool) => tool.name === "automations") : tools,
           logDiagnostics: () => undefined,
         },
       } as unknown as NonNullable<EmbeddedRunAttemptParams["runtimePlan"]>;
@@ -2447,25 +2441,25 @@ describe("runCodexAppServerAttempt", () => {
     const registeredTools = [
       createRuntimeDynamicTool("message"),
       createRuntimeDynamicTool("web_search"),
-      createRuntimeDynamicTool("heartbeat_respond"),
+      createRuntimeDynamicTool("automations"),
     ];
     const normalBridge = createCodexToolBridgeForTest(
-      createHeartbeatRunParams(),
+      createScheduledRunParams(),
       registeredTools,
       registeredTools,
     );
-    const heartbeatBridge = createCodexToolBridgeForTest(
-      createHeartbeatRunParams("heartbeat"),
-      [createRuntimeDynamicTool("heartbeat_respond")],
+    const scheduledBridge = createCodexToolBridgeForTest(
+      createScheduledRunParams("cron"),
+      [createRuntimeDynamicTool("automations")],
       registeredTools,
     );
     const nextNormalBridge = createCodexToolBridgeForTest(
-      createHeartbeatRunParams(),
+      createScheduledRunParams(),
       registeredTools,
       registeredTools,
     );
-    expect(specNames(heartbeatBridge.availableSpecs)).toEqual(["heartbeat_respond"]);
-    expect(specNames(heartbeatBridge.specs)).toEqual(specNames(normalBridge.specs));
+    expect(specNames(scheduledBridge.availableSpecs)).toEqual(["automations"]);
+    expect(specNames(scheduledBridge.specs)).toEqual(specNames(normalBridge.specs));
     expect(specNames(nextNormalBridge.specs)).toEqual(specNames(normalBridge.specs));
   });
   it("disables Codex native tool surfaces when runtime toolsAllow is empty", async () => {
@@ -3049,7 +3043,7 @@ describe("runCodexAppServerAttempt", () => {
     expect(JSON.stringify(result.messagesSnapshot)).not.toContain("tool_search");
     expect(JSON.stringify(result.messagesSnapshot)).not.toContain("function_call_output");
   });
-  it.each(["none", "heartbeat", "ordinary", "authorized"])(
+  it.each(["none", "legacy-heartbeat-hook", "ordinary", "authorized"])(
     "keeps private native history out of prompt acquisition and clones (%s)",
     async (kind) => {
       const marker = "synthetic-native-payload:";
@@ -3062,7 +3056,9 @@ describe("runCodexAppServerAttempt", () => {
             : [
                 {
                   hookName:
-                    kind === "heartbeat" ? "heartbeat_prompt_contribution" : "before_prompt_build",
+                    kind === "legacy-heartbeat-hook"
+                      ? "heartbeat_prompt_contribution"
+                      : "before_prompt_build",
                   ...(kind === "authorized" ? { requiresToolAuthority: true as const } : {}),
                   handler: hook,
                 },
@@ -3117,8 +3113,8 @@ describe("runCodexAppServerAttempt", () => {
         });
       try {
         const harness = createStartedThreadHarness();
-        if (kind === "heartbeat") {
-          params.trigger = "heartbeat";
+        if (kind === "legacy-heartbeat-hook") {
+          params.trigger = "cron";
         }
         if (kind === "authorized") {
           params.toolAuthorityFingerprint = "synthetic-authority";
@@ -3129,7 +3125,10 @@ describe("runCodexAppServerAttempt", () => {
         await run;
         expect(privateParseBytes).toBe(0);
         expect(privateCloneBytes).toBe(0);
-        if (kind === "none" || kind === "heartbeat") {
+        if (kind === "legacy-heartbeat-hook") {
+          expect(hook).not.toHaveBeenCalled();
+        }
+        if (kind === "none" || kind === "legacy-heartbeat-hook") {
           expect(historyClones).toBe(0);
         } else {
           expect(historyClones).toBeGreaterThan(0);
@@ -4669,16 +4668,16 @@ describe("runCodexAppServerAttempt", () => {
   it.each([
     { name: "non-empty legacy HEARTBEAT.md", contents: "Heartbeat checklist goes here." },
     { name: "empty legacy HEARTBEAT.md", contents: "\n\n" },
-  ])("keeps $name out of Codex heartbeat context", async ({ contents }) => {
+  ])("keeps $name out of Codex scheduled context", async ({ contents }) => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const heartbeatPath = path.join(workspaceDir, "HEARTBEAT.md");
     await fs.mkdir(workspaceDir, { recursive: true });
     await fs.writeFile(heartbeatPath, contents);
     const harness = createStartedThreadHarness();
     const params = createParams(sessionFile, workspaceDir);
-    params.trigger = "heartbeat";
+    params.trigger = "cron";
     params.bootstrapContextMode = "lightweight";
-    params.bootstrapContextRunKind = "heartbeat";
+    params.bootstrapContextRunKind = "cron";
     const run = runCodexAppServerAttempt(params);
     await harness.waitForMethod("turn/start");
     await new Promise<void>((resolve) => {

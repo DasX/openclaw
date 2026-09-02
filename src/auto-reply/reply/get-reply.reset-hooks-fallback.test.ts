@@ -27,10 +27,12 @@ vi.mock("./commands-core.runtime.js", () => ({
 }));
 registerGetReplyRuntimeOverrides(mocks);
 
-let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
+let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfigCore;
 
 async function loadGetReplyRuntimeForTest() {
-  ({ getReplyFromConfig } = await loadGetReplyModuleForTest({ cacheKey: import.meta.url }));
+  ({ getReplyFromConfigCore: getReplyFromConfig } = await loadGetReplyModuleForTest({
+    cacheKey: import.meta.url,
+  }));
 }
 
 function createContinueDirectivesResult(resetHookTriggered: boolean) {

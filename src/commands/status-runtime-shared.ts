@@ -3,6 +3,7 @@
 
 import type { Result } from "@openclaw/normalization-core/result";
 import type { OpenClawConfig } from "../config/types.js";
+import type { CronStatusSummary } from "../cron/service/state.js";
 import type { HeartbeatEventPayload } from "../infra/heartbeat-events.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import type { HealthSummary } from "./health.js";
@@ -110,8 +111,36 @@ export async function resolveStatusGatewayDiagnosticsSafe(params: {
   );
 }
 
+export type StatusAutomationsResult = Result<
+  Pick<CronStatusSummary, "enabled" | "jobs" | "nextWakeAtMs">,
+  string
+>;
+
+/** The live scheduler, not legacy heartbeat receipts, owns product status. */
+export async function resolveStatusAutomations(params: {
+  config: OpenClawConfig;
+  timeoutMs?: number;
+  gatewayReachable: boolean;
+  callOverrides?: { url: string; token?: string; password?: string };
+}): Promise<StatusAutomationsResult> {
+  if (!params.gatewayReachable) {
+    return { ok: false, error: "gateway unreachable" };
+  }
+  const { callGateway } = await gatewayCallModuleLoader.load();
+  return callGateway<CronStatusSummary>({
+    method: "cron.status",
+    params: {},
+    ...params.callOverrides,
+    config: params.config,
+    timeoutMs: params.timeoutMs,
+  }).then<StatusAutomationsResult, StatusAutomationsResult>(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error: String(error) }),
+  );
+}
+
 /** Reads the most recent gateway heartbeat only when the gateway probe succeeded. */
-async function resolveStatusLastHeartbeat(params: {
+export async function resolveStatusLastHeartbeat(params: {
   config: OpenClawConfig;
   timeoutMs?: number;
   gatewayReachable: boolean;
@@ -144,7 +173,6 @@ export async function resolveStatusServiceSummaries(timeoutMs?: number) {
 type StatusUsageSummary = Awaited<ReturnType<typeof resolveStatusUsageSummary>>;
 type StatusGatewayHealth = Awaited<ReturnType<typeof resolveStatusGatewayHealth>>;
 type StatusGatewayHealthResult = StatusGatewayHealth | { error: string };
-type StatusLastHeartbeat = Awaited<ReturnType<typeof resolveStatusLastHeartbeat>>;
 type StatusGatewayServiceSummary = Awaited<ReturnType<typeof getDaemonStatusSummary>>;
 type StatusNodeServiceSummary = Awaited<ReturnType<typeof getNodeDaemonStatusSummary>>;
 type StatusSecurityAudit = Awaited<ReturnType<typeof resolveStatusSecurityAudit>>;
@@ -185,26 +213,16 @@ async function resolveStatusRuntimeDetails(params: {
           timeoutMs: params.timeoutMs,
         })
     : undefined;
-  // Last heartbeat is a deep-only gateway call; fast status should not spend network time here.
-  const lastHeartbeat = params.deep
-    ? await resolveStatusLastHeartbeat({
-        config: params.config,
-        timeoutMs: params.timeoutMs,
-        gatewayReachable: params.gatewayReachable,
-      })
-    : null;
   const [gatewayService, nodeService] = await resolveStatusServiceSummaries(params.timeoutMs);
   const result = {
     usage,
     health,
-    lastHeartbeat,
     gatewayService,
     nodeService,
   };
   return result satisfies {
     usage?: StatusUsageSummary;
     health?: StatusGatewayHealthResult;
-    lastHeartbeat: StatusLastHeartbeat;
     gatewayService: StatusGatewayServiceSummary;
     nodeService: StatusNodeServiceSummary;
   };
@@ -257,7 +275,6 @@ export async function resolveStatusRuntimeSnapshot(params: {
     securityAudit?: StatusSecurityAudit;
     usage?: StatusUsageSummary;
     health?: StatusGatewayHealthResult;
-    lastHeartbeat: StatusLastHeartbeat;
     gatewayService: StatusGatewayServiceSummary;
     nodeService: StatusNodeServiceSummary;
   };

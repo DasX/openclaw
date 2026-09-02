@@ -5,7 +5,6 @@ import path from "node:path";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import type { AnyAgentTool } from "openclaw/plugin-sdk/agent-harness";
 import {
-  HEARTBEAT_RESPONSE_TOOL_NAME,
   embeddedAgentLog,
   getPluginToolMeta,
   wrapToolWithBeforeToolCallHook,
@@ -696,7 +695,7 @@ describe("createCodexDynamicToolBridge", () => {
       tools: [
         createTool({ name: "web_search", resultContentSource: "network" }),
         createTool({ name: "message" }),
-        createTool({ name: HEARTBEAT_RESPONSE_TOOL_NAME }),
+        createTool({ name: "automations" }),
         createTool({ name: "agents_list" }),
         createTool({ name: "sessions_spawn" }),
         createTool({ name: "sessions_yield" }),
@@ -707,7 +706,7 @@ describe("createCodexDynamicToolBridge", () => {
     const specs = flattenSpecsWithNamespace(bridge.specs);
     const webSearch = specs.find((tool) => tool.name === "web_search");
     const message = specs.find((tool) => tool.name === "message");
-    const heartbeat = specs.find((tool) => tool.name === HEARTBEAT_RESPONSE_TOOL_NAME);
+    const automation = specs.find((tool) => tool.name === "automations");
     const agentsList = specs.find((tool) => tool.name === "agents_list");
     const sessionsSpawn = specs.find((tool) => tool.name === "sessions_spawn");
     const sessionsYield = specs.find((tool) => tool.name === "sessions_yield");
@@ -722,8 +721,8 @@ describe("createCodexDynamicToolBridge", () => {
       namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
       deferLoading: true,
     });
-    expectDynamicSpec(heartbeat, {
-      name: HEARTBEAT_RESPONSE_TOOL_NAME,
+    expectDynamicSpec(automation, {
+      name: "automations",
       namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
       deferLoading: true,
     });
@@ -848,14 +847,14 @@ describe("createCodexDynamicToolBridge", () => {
   });
 
   it("can register a durable tool schema while denying execution for the current turn", async () => {
-    const heartbeatExecute = vi.fn(async () => textToolResult("heartbeat recorded"));
+    const automationExecute = vi.fn(async () => textToolResult("automation recorded"));
     const onAgentToolResult = vi.fn();
     const onToolOutcome = vi.fn();
     const bridge = createCodexDynamicToolBridge({
       tools: [createTool({ name: "message" })],
       registeredTools: [
         createTool({ name: "message" }),
-        createTool({ name: HEARTBEAT_RESPONSE_TOOL_NAME, execute: heartbeatExecute }),
+        createTool({ name: "automations", execute: automationExecute }),
       ],
       signal: new AbortController().signal,
       hookContext: { runId: "run-unavailable", onToolOutcome },
@@ -863,7 +862,7 @@ describe("createCodexDynamicToolBridge", () => {
 
     expect(specNames(bridge.availableSpecs)).toEqual(["message"]);
     expect(bridge.availableTools.map((tool) => tool.name)).toEqual(["message"]);
-    expect(specNames(bridge.specs)).toEqual([HEARTBEAT_RESPONSE_TOOL_NAME, "message"]);
+    expect(specNames(bridge.specs)).toEqual(["automations", "message"]);
 
     const result = await bridge.handleToolCall(
       {
@@ -871,7 +870,7 @@ describe("createCodexDynamicToolBridge", () => {
         turnId: "turn-1",
         callId: "call-1",
         namespace: null,
-        tool: HEARTBEAT_RESPONSE_TOOL_NAME,
+        tool: "automations",
         arguments: {},
       },
       { onAgentToolResult },
@@ -882,31 +881,31 @@ describe("createCodexDynamicToolBridge", () => {
       contentItems: [
         {
           type: "inputText",
-          text: `OpenClaw tool is not available for this turn: ${HEARTBEAT_RESPONSE_TOOL_NAME}`,
+          text: "OpenClaw tool is not available for this turn: automations",
         },
       ],
     });
     expect(result.executionStarted).toBe(false);
     expect(result.executedArguments).toEqual({});
-    expect(heartbeatExecute).not.toHaveBeenCalled();
+    expect(automationExecute).not.toHaveBeenCalled();
     expect(onAgentToolResult).toHaveBeenCalledWith({
-      toolName: HEARTBEAT_RESPONSE_TOOL_NAME,
+      toolName: "automations",
       result: {
         content: [
           {
             type: "text",
-            text: `OpenClaw tool is not available for this turn: ${HEARTBEAT_RESPONSE_TOOL_NAME}`,
+            text: "OpenClaw tool is not available for this turn: automations",
           },
         ],
         details: {
           status: "failed",
-          error: `OpenClaw tool is not available for this turn: ${HEARTBEAT_RESPONSE_TOOL_NAME}`,
+          error: "OpenClaw tool is not available for this turn: automations",
         },
       },
       isError: true,
     });
     expect(onToolOutcome).toHaveBeenLastCalledWith({
-      toolName: HEARTBEAT_RESPONSE_TOOL_NAME,
+      toolName: "automations",
       argsHash: "",
       resultHash: "",
       terminalPresentation: undefined,
@@ -3190,38 +3189,6 @@ describe("createCodexDynamicToolBridge", () => {
     expect(bridge.telemetry.messagingToolSentTargets).toEqual([]);
   });
 
-  it("accepts heartbeat response tool outcomes", async () => {
-    const bridge = createBridgeWithToolResult(
-      HEARTBEAT_RESPONSE_TOOL_NAME,
-      textToolResult("Accepted.", {
-        status: "accepted",
-        outcome: "needs_attention",
-        notify: true,
-        summary: "Build is blocked.",
-        notificationText: "Build is blocked on missing credentials.",
-        priority: "high",
-      }),
-    );
-
-    const result = await bridge.handleToolCall({
-      threadId: "thread-1",
-      turnId: "turn-1",
-      callId: "call-1",
-      namespace: null,
-      tool: HEARTBEAT_RESPONSE_TOOL_NAME,
-      arguments: {},
-    });
-
-    expect(result).toEqual(expectInputText("Accepted."));
-    expect(bridge.telemetry.heartbeatToolResponse).toEqual({
-      outcome: "needs_attention",
-      notify: true,
-      summary: "Build is blocked.",
-      notificationText: "Build is blocked on missing credentials.",
-      priority: "high",
-    });
-  });
-
   it("applies agent tool result middleware from the active plugin registry", async () => {
     const registry = createEmptyPluginRegistry();
     const handler = vi.fn(
@@ -3941,29 +3908,32 @@ describe("createCodexDynamicToolBridge", () => {
     expect(bridge.telemetry.successfulCronAdds).toBe(1);
   });
 
-  it("snapshots executed arguments before after_tool_call hooks can mutate them", async () => {
-    const afterToolCall = vi.fn((event: unknown) => {
-      const eventRecord = requireRecord(event, "after_tool_call event");
-      const paramsRecord = requireRecord(eventRecord.params, "after_tool_call params");
-      paramsRecord.action = "status";
-    });
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
-    );
-    const bridge = createBridgeWithToolResult("cron", textToolResult("added", { id: "job-1" }));
+  it.each(["automations", "cron"])(
+    "snapshots %s arguments before after_tool_call hooks can mutate them",
+    async (toolName) => {
+      const afterToolCall = vi.fn((event: unknown) => {
+        const eventRecord = requireRecord(event, "after_tool_call event");
+        const paramsRecord = requireRecord(eventRecord.params, "after_tool_call params");
+        paramsRecord.action = "status";
+      });
+      initializeGlobalHookRunner(
+        createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
+      );
+      const bridge = createBridgeWithToolResult(toolName, textToolResult("added", { id: "job-1" }));
 
-    const result = await bridge.handleToolCall({
-      threadId: "thread-1",
-      turnId: "turn-1",
-      callId: "call-1",
-      namespace: null,
-      tool: "cron",
-      arguments: { action: "add", job: { name: "reminder" } },
-    });
+      const result = await bridge.handleToolCall({
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-1",
+        namespace: null,
+        tool: toolName,
+        arguments: { action: "add", job: { name: "reminder" } },
+      });
 
-    expect(result.sideEffectEvidence).toBe(true);
-    expect(bridge.telemetry.successfulCronAdds).toBe(1);
-  });
+      expect(result.sideEffectEvidence).toBe(true);
+      expect(bridge.telemetry.successfulCronAdds).toBe(1);
+    },
+  );
 
   it("does not mark pre-execution argument failures as side-effect evidence", async () => {
     const execute = vi.fn(async () => textToolResult("should not run"));

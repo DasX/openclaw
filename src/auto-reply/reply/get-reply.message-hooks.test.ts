@@ -50,14 +50,16 @@ vi.mock("../../media-understanding/apply.runtime.js", () => ({
 }));
 registerGetReplyRuntimeOverrides(mocks);
 
-let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
+let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfigCore;
 let resolveAgentWorkspaceDirMock: typeof import("../../agents/agent-scope.js").resolveAgentWorkspaceDir;
 let resolveDefaultModelMock: typeof import("./directive-handling.defaults.js").resolveDefaultModel;
 let runPreparedReplyMock: typeof import("./get-reply-run.js").runPreparedReply;
 let stageSandboxMediaMock: typeof import("./stage-sandbox-media.runtime.js").stageSandboxMedia;
 
 async function loadGetReplyRuntimeForTest() {
-  ({ getReplyFromConfig } = await loadGetReplyModuleForTest({ cacheKey: import.meta.url }));
+  ({ getReplyFromConfigCore: getReplyFromConfig } = await loadGetReplyModuleForTest({
+    cacheKey: import.meta.url,
+  }));
   ({ resolveAgentWorkspaceDir: resolveAgentWorkspaceDirMock } =
     await import("../../agents/agent-scope.js"));
   ({ resolveDefaultModel: resolveDefaultModelMock } =

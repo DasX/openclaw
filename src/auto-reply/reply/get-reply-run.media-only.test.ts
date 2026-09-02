@@ -27,11 +27,7 @@ import {
   buildInboundUserContextPrefix,
   resolveInboundUserContextPromptJoiner,
 } from "./inbound-meta.js";
-import {
-  REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-  createReplyOperation,
-  getActiveReplyRunCount,
-} from "./reply-run-registry.js";
+import { createReplyOperation, getActiveReplyRunCount } from "./reply-run-registry.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { routeReply } from "./route-reply.runtime.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
@@ -52,7 +48,6 @@ vi.mock("../../agents/embedded-agent.runtime.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   isEmbeddedAgentRunActive: vi.fn().mockReturnValue(false),
   isEmbeddedAgentRunStreaming: vi.fn().mockReturnValue(false),
-  preemptAndDrainEmbeddedHeartbeatRun: vi.fn().mockResolvedValue("not-heartbeat"),
   resolveActiveEmbeddedRunSessionId: vi.fn().mockReturnValue(undefined),
   resolveActiveEmbeddedRunSessionIdBySessionFile: vi.fn().mockReturnValue(undefined),
   resolveEmbeddedSessionLane: vi.fn().mockReturnValue("session:session-key"),
@@ -363,6 +358,10 @@ function createSessionTurn<
   return { ...createSessionBody(body), ...createProviderSurface(provider), ChatType: chatType };
 }
 
+const internalEventOptions = {
+  internalEventExecution: { onStarted: () => {}, onTerminal: async () => {} },
+};
+
 function baseParams(
   overrides: Partial<Parameters<typeof runPreparedReply>[0]> = {},
 ): Parameters<typeof runPreparedReply>[0] {
@@ -433,8 +432,14 @@ function baseParams(
     workspaceDir: "/tmp/workspace",
     abortedLastRun: false,
   };
-  const ctx = overrides.ctx ?? defaults.ctx;
-  const sessionCtx = overrides.sessionCtx ?? defaults.sessionCtx;
+  const eventContext = overrides.opts?.internalEventExecution
+    ? {
+        InputProvenance: { kind: "internal_system" as const, sourceTool: "session-event" },
+        InternalTurnSource: "event" as const,
+      }
+    : {};
+  const ctx = { ...eventContext, ...(overrides.ctx ?? defaults.ctx) };
+  const sessionCtx = { ...eventContext, ...(overrides.sessionCtx ?? defaults.sessionCtx) };
   const resolveTestCanonicalText = (value: Record<string, unknown>) => {
     const { commandText, agentText, rawText } = finalizeInboundContextForSdk({ ...value });
     return { commandText, agentText, rawText };
@@ -2312,147 +2317,6 @@ describe("runPreparedReply media-only handling", () => {
     expect(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
   });
-  it("interrupts an embedded-only heartbeat before running a visible Telegram turn", async () => {
-    const queueSettings = await import("./queue/settings-runtime.js");
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
-    let embeddedRunActive = true;
-    vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "steer" });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockImplementation(() =>
-      embeddedRunActive ? "session-embedded-heartbeat" : undefined,
-    );
-    vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockImplementation(
-      async (sessionId) => {
-        if (sessionId !== "session-embedded-heartbeat") {
-          return "not-heartbeat";
-        }
-        embeddedRunActive = false;
-        return "drained";
-      },
-    );
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockImplementation(
-      () => embeddedRunActive,
-    );
-    vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).mockImplementation(async () => {
-      embeddedRunActive = false;
-      return true;
-    });
-
-    try {
-      await expect(
-        runPrepared({
-          isNewSession: false,
-          sessionId: "session-embedded-heartbeat",
-          ctx: {
-            ...createInboundTurn("answer this now", "telegram", "direct"),
-            OriginatingChannel: "telegram",
-            OriginatingTo: "user:1",
-          },
-          sessionCtx: {
-            ...createSessionTurn("answer this now", "telegram", "direct"),
-            OriginatingChannel: "telegram",
-            OriginatingTo: "user:1",
-          },
-        }),
-      ).resolves.toEqual({ text: "ok" });
-    } finally {
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(undefined);
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReturnValue(false);
-      vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockResolvedValue(
-        "not-heartbeat",
-      );
-      vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).mockResolvedValue(true);
-    }
-
-    expect(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).toHaveBeenCalledWith(
-      "session-embedded-heartbeat",
-      REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-    );
-    expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
-    expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
-  });
-  it("drains an embedded heartbeat hidden by the visible pre-dispatch operation", async () => {
-    const queueSettings = await import("./queue/settings-runtime.js");
-    const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
-    const operation = createReplyOperation({
-      sessionId: "session-pre-dispatch-heartbeat",
-      sessionKey: "session-key",
-      turnKind: "visible",
-      resetTriggered: false,
-    });
-    let embeddedRunActive = true;
-    let releaseDrain: (() => void) | undefined;
-    const drainBarrier = new Promise<void>((resolve) => {
-      releaseDrain = resolve;
-    });
-    vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "steer" });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockImplementation(() =>
-      embeddedRunActive ? "session-pre-dispatch-heartbeat" : undefined,
-    );
-    vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockImplementation(
-      async () => {
-        await drainBarrier;
-        embeddedRunActive = false;
-        return "drained";
-      },
-    );
-    vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockImplementation(
-      () => embeddedRunActive,
-    );
-    vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).mockImplementation(async () => {
-      await drainBarrier;
-      embeddedRunActive = false;
-      return true;
-    });
-
-    try {
-      const runPromise = runPrepared({
-        isNewSession: false,
-        sessionId: "session-pre-dispatch-heartbeat",
-        opts: { replyOperation: operation } as never,
-        ctx: {
-          ...createInboundTurn("answer this now", "telegram", "direct"),
-          OriginatingChannel: "telegram",
-          OriginatingTo: "user:1",
-        },
-        sessionCtx: {
-          ...createSessionTurn("answer this now", "telegram", "direct"),
-          OriginatingChannel: "telegram",
-          OriginatingTo: "user:1",
-        },
-      });
-
-      await vi.waitFor(
-        () => {
-          expect(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).toHaveBeenCalledWith(
-            "session-pre-dispatch-heartbeat",
-            REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-          );
-        },
-        { timeout: 1_000 },
-      );
-      expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
-      expect(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
-
-      releaseDrain?.();
-      await expect(runPromise).resolves.toEqual({ text: "ok" });
-    } finally {
-      releaseDrain?.();
-      operation.complete();
-      vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId)
-        .mockReset()
-        .mockReturnValue(undefined);
-      vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun)
-        .mockReset()
-        .mockResolvedValue("not-heartbeat");
-      vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunActive).mockReset().mockReturnValue(false);
-      vi.mocked(embeddedAgentRuntime.waitForEmbeddedAgentRunEnd)
-        .mockReset()
-        .mockResolvedValue(true);
-    }
-
-    expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
-  });
   it("refreshes goal context after interrupt admission waits", async () => {
     const queueSettings = await import("./queue/settings-runtime.js");
     const inboundMeta = await import("./inbound-meta.js");
@@ -2566,7 +2430,7 @@ describe("runPreparedReply media-only handling", () => {
       activeOperation.complete();
     }
   });
-  it("does not enable steering for active heartbeat runs", async () => {
+  it("queues internal events behind active runs without steering", async () => {
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
@@ -2582,14 +2446,14 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(embeddedAgentRuntime.isEmbeddedAgentRunStreaming).mockReturnValueOnce(true);
 
     await runPrepared({
-      opts: { isHeartbeat: true },
+      opts: { ...internalEventOptions },
     });
 
     const call = vi.mocked(runReplyAgent).mock.calls.at(-1)?.[0];
     expect(call?.shouldSteer).toBe(false);
     expect(call?.shouldFollowup).toBe(true);
     expect(call?.isActive).toBe(true);
-    expect(call?.followupRun.run.terminalReplyExpectation).toBeUndefined();
+    expect(call?.followupRun.run.terminalReplyExpectation).toBe("required");
   });
 
   it.each([
@@ -3560,28 +3424,28 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.run.sourceReplyDeliveryMode).toBe("message_tool_only");
   });
 
-  it.each(["heartbeat", "cron", "exec"] as const)(
-    "keeps %s heartbeat metadata out of the model prompt",
+  it.each(["event", "cron", "exec"] as const)(
+    "keeps %s metadata in per-turn context rather than the cached model prompt",
     async (source) => {
-      const heartbeatPrompt = "Read HEARTBEAT.md and run any due maintenance.";
+      const eventPrompt = "Inspect the completed operation and report useful results.";
       const syntheticConversationInfo =
         'Conversation info:\n```json\n{"chat_id":"discord:channel-123"}\n```';
       vi.mocked(buildInboundUserContextPrefix).mockReturnValueOnce(syntheticConversationInfo);
 
       await runPrepared({
-        opts: { isHeartbeat: true },
+        opts: { ...internalEventOptions },
         ctx: {
-          Body: heartbeatPrompt,
-          RawBody: heartbeatPrompt,
-          CommandBody: heartbeatPrompt,
+          Body: eventPrompt,
+          RawBody: eventPrompt,
+          CommandBody: eventPrompt,
           InternalTurnSource: source,
           ChatType: "direct",
           OriginatingChannel: "discord",
           OriginatingTo: "discord:channel-123",
         },
         sessionCtx: {
-          Body: heartbeatPrompt,
-          BodyStripped: heartbeatPrompt,
+          Body: eventPrompt,
+          BodyStripped: eventPrompt,
           InternalTurnSource: source,
           ChatType: "direct",
           OriginatingChannel: "discord",
@@ -3590,47 +3454,21 @@ describe("runPreparedReply media-only handling", () => {
       });
 
       const call = requireLastRunReplyAgentCall();
-      expect(call?.commandBody).toContain(heartbeatPrompt);
-      expect(call?.followupRun.prompt).toContain(heartbeatPrompt);
+      expect(call?.commandBody).toContain(eventPrompt);
+      expect(call?.followupRun.prompt).toContain(eventPrompt);
       expect(call?.followupRun.prompt).not.toContain(syntheticConversationInfo);
-      expect(buildInboundUserContextPrefix).not.toHaveBeenCalled();
+      expect(call.followupRun.currentInboundContext?.text).toContain(syntheticConversationInfo);
       expect(call?.sessionCtx).toMatchObject({
         OriginatingChannel: "discord",
         OriginatingTo: "discord:channel-123",
       });
-      expect(call?.transcriptCommandBody).toBe("[OpenClaw heartbeat poll]");
-      expect(call?.followupRun.transcriptPrompt).toBe("[OpenClaw heartbeat poll]");
+      expect(call?.transcriptCommandBody).toBe(eventPrompt);
+      expect(call?.followupRun.transcriptPrompt).toBe(eventPrompt);
       expect(call?.followupRun.userTurnTranscriptRecorder?.message).toMatchObject({
-        provenance: { kind: "internal_system", sourceTool: "heartbeat" },
+        provenance: { kind: "internal_system", sourceTool: "session-event" },
       });
     },
   );
-
-  it("keeps active goal context out of background heartbeat turns", async () => {
-    const sessionEntry: SessionEntry = {
-      sessionId: "heartbeat-goal-session",
-      updatedAt: 1,
-      goal: {
-        schemaVersion: 1,
-        id: "heartbeat-goal",
-        objective: "Finish the interactive task",
-        status: "active",
-        createdAt: 1,
-        updatedAt: 1,
-        tokenStart: 0,
-        tokensUsed: 0,
-        continuationTurns: 0,
-      },
-    };
-
-    await runPrepared({
-      opts: { isHeartbeat: true },
-      sessionEntry,
-      sessionStore: { "session-key": sessionEntry },
-    });
-
-    expect(buildInboundUserContextPrefix).not.toHaveBeenCalled();
-  });
 
   it("uses persisted Discord chat metadata for system-event CLI static prompt identity", async () => {
     vi.mocked(buildGroupChatContext).mockImplementation(({ sessionCtx }) =>
@@ -3638,7 +3476,7 @@ describe("runPreparedReply media-only handling", () => {
     );
 
     await runPrepared({
-      opts: { isHeartbeat: true },
+      opts: { ...internalEventOptions },
       isNewSession: false,
       systemSent: true,
       ctx: {
@@ -3781,7 +3619,7 @@ describe("runPreparedReply media-only handling", () => {
       await runPrepared({
         cfg: caseCfg,
         opts: {
-          isHeartbeat: true,
+          ...internalEventOptions,
           sourceReplyDeliveryMode: stableMode,
           sessionPromptSourceReplyDeliveryMode: stableMode,
         },
@@ -3803,18 +3641,18 @@ describe("runPreparedReply media-only handling", () => {
       // match dispatched turns or the CLI session ping-pongs (#121485).
       await runPrepared({
         cfg: caseCfg,
-        opts: { isHeartbeat: true },
+        opts: { ...internalEventOptions },
         isNewSession: false,
         systemSent: true,
         sessionEntry,
         ctx: {
           ...createInboundBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
+          InternalTurnSource: "event",
           SessionKey: "agent:main:telegram:-100123",
         },
         sessionCtx: {
           ...createSessionBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
+          InternalTurnSource: "event",
         },
       });
       // Response-tool heartbeats carry an effective message_tool_only turn
@@ -3822,18 +3660,18 @@ describe("runPreparedReply media-only handling", () => {
       // policy fact, or these heartbeats keep ping-ponging the binding.
       await runPrepared({
         cfg: caseCfg,
-        opts: { isHeartbeat: true, sourceReplyDeliveryMode: "message_tool_only" },
+        opts: { ...internalEventOptions, sourceReplyDeliveryMode: "message_tool_only" },
         isNewSession: false,
         systemSent: true,
         sessionEntry,
         ctx: {
           ...createInboundBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
+          InternalTurnSource: "event",
           SessionKey: "agent:main:telegram:-100123",
         },
         sessionCtx: {
           ...createSessionBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
+          InternalTurnSource: "event",
         },
       });
 
@@ -3887,18 +3725,18 @@ describe("runPreparedReply media-only handling", () => {
 
     await runPrepared({
       cfg: { session: {}, channels: {}, agents: { defaults: {} } },
-      opts: { isHeartbeat: true },
+      opts: { ...internalEventOptions },
       isNewSession: false,
       systemSent: true,
       sessionEntry,
       ctx: {
         ...createInboundBody("scheduled wake"),
-        InternalTurnSource: "heartbeat",
+        InternalTurnSource: "event",
         SessionKey: "agent:main:main",
       },
       sessionCtx: {
         ...createSessionBody("scheduled wake"),
-        InternalTurnSource: "heartbeat",
+        InternalTurnSource: "event",
         ChatType: "direct",
       },
     });
@@ -3944,18 +3782,18 @@ describe("runPreparedReply media-only handling", () => {
         messages: { visibleReplies: "message_tool" as const },
         tools: { deny: ["message"] },
       },
-      opts: { isHeartbeat: true },
+      opts: { ...internalEventOptions },
       isNewSession: false,
       systemSent: true,
       sessionEntry,
       ctx: {
         ...createInboundBody("scheduled wake"),
-        InternalTurnSource: "heartbeat",
+        InternalTurnSource: "event",
         SessionKey: "agent:main:telegram:-100123",
       },
       sessionCtx: {
         ...createSessionBody("scheduled wake"),
-        InternalTurnSource: "heartbeat",
+        InternalTurnSource: "event",
       },
     });
 
@@ -4316,7 +4154,7 @@ describe("runPreparedReply media-only handling", () => {
         },
         agents: { defaults: {} },
       },
-      opts: { isHeartbeat: true },
+      opts: { ...internalEventOptions },
       ctx: {
         ...createInboundBody("scheduled wake"),
         InternalTurnSource: "cron",
@@ -4566,7 +4404,7 @@ describe("runPreparedReply media-only handling", () => {
       baseParams({
         agentId: "alpha",
         sessionKey: "global",
-        opts: { isHeartbeat: true },
+        opts: { ...internalEventOptions },
       }),
     );
 

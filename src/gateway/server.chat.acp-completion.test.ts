@@ -7,7 +7,7 @@ import type { WebSocket } from "ws";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { AcpRuntimeError } from "../acp/runtime/errors.js";
-import type { dispatchInboundMessage } from "../auto-reply/dispatch.js";
+import type { dispatchInboundMessageCore as dispatchInboundMessage } from "../auto-reply/dispatch.js";
 import { createAcpSessionMeta } from "../auto-reply/reply/test-fixtures/acp-runtime.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import {
@@ -219,7 +219,7 @@ describe("Gateway ACP completion ownership", () => {
         dispatcher,
         replyOptions: inboundReplyOptions,
       } = input as Parameters<typeof dispatchInboundMessage>[0];
-      return actualDispatch.dispatchInboundMessage({
+      return actualDispatch.dispatchInboundMessageCore({
         ctx,
         cfg,
         dispatcher,

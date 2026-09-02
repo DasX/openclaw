@@ -319,7 +319,7 @@ openclaw claws add ./incident-triage.claw.json --dry-run --json
 The plan reports the derived agent and workspace, every proposed action,
 prerequisites, blockers, distinct capability escalations, and a `planIntegrity`
 digest. Capability records show the exact package, MCP, scheduled-work, sandbox,
-tool, or heartbeat effect. Review the plan before creating the agent:
+or tool effect. Review the plan before creating the agent:
 
 ```bash
 openclaw claws add ./incident-triage.claw.json \

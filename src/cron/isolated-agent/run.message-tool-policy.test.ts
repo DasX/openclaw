@@ -1254,16 +1254,16 @@ describe("runCronIsolatedAgentTurn message tool policy", () => {
     expect(getAgentRunContext("test-session-id")).toBeUndefined();
   });
 
-  it("skips cron delivery when output is heartbeat-only", async () => {
+  it("skips cron delivery when output is silent-only", async () => {
     mockRunCronFallbackPassthrough();
     resolveCronDeliveryPlanMock.mockReturnValue(makeAnnounceDeliveryPlan());
     resolveCronPayloadOutcomeMock.mockReturnValue({
-      summary: "HEARTBEAT_OK",
-      outputText: "HEARTBEAT_OK",
-      synthesizedText: "HEARTBEAT_OK",
-      deliveryPayload: { text: "HEARTBEAT_OK" },
-      deliveryPayloads: [{ text: "HEARTBEAT_OK" }],
-      deliveryDisposition: { kind: "heartbeat", controlOnly: true },
+      summary: "NO_REPLY",
+      outputText: "NO_REPLY",
+      synthesizedText: "NO_REPLY",
+      deliveryPayload: { text: "NO_REPLY" },
+      deliveryPayloads: [{ text: "NO_REPLY" }],
+      deliveryDisposition: { kind: "silent", controlOnly: true },
       deliveryPayloadHasStructuredContent: false,
       hasFatalErrorPayload: false,
       hasFatalStructuredErrorPayload: false,
@@ -1278,7 +1278,7 @@ describe("runCronIsolatedAgentTurn message tool policy", () => {
     expect(dispatchCronDeliveryMock).toHaveBeenCalledTimes(1);
     expectDispatchFields({
       deliveryRequested: true,
-      skipDelivery: "heartbeat",
+      skipDelivery: "silent",
     });
   });
 

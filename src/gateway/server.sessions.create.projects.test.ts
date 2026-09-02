@@ -8,7 +8,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runWithCanonicalSkillWorkspace } from "../agents/skill-workshop-workspace-context.js";
 import { createConfiguredSkillWorkshopTool } from "../agents/tools/skill-workshop-tool-factory.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
-import type { dispatchInboundMessage } from "../auto-reply/dispatch.js";
+import type { dispatchInboundMessageCore as dispatchInboundMessage } from "../auto-reply/dispatch.js";
 import { getRuntimeConfig } from "../config/io.js";
 import {
   listSessionPendingInputs,

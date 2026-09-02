@@ -12,7 +12,6 @@ import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import { fenceSessionSuspensionWritesForGatewayShutdown } from "../agents/session-suspension.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
 import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
-import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { closePluginStateDatabase } from "../plugin-state/plugin-state-store.js";
 import { clearActivePluginRegistry } from "../plugins/runtime.js";
@@ -38,6 +37,7 @@ import {
 } from "./server-chat-state.js";
 import type { MediaCleanupStopResult } from "./server-media-cleanup-lifecycle.js";
 import { clearSessionTypingState } from "./server-methods/session-typing-state.js";
+import type { SessionServices } from "./server-runtime-service-shared.js";
 import type { GatewayMaintenanceHandles } from "./server-runtime-services.js";
 
 const shutdownLog = createSubsystemLogger("gateway/shutdown");
@@ -681,7 +681,7 @@ export function createGatewayCloseHandler(
     disposeAllCodeModeRuns: () => Promise<void> | void;
     closeProviderTransportDispatcherPool: () => Promise<void>;
     cron: { stop: () => void; stopAndDrain?: () => Promise<void> };
-    heartbeatRunner: HeartbeatRunner;
+    sessionServices: SessionServices;
     updateCheckStop?: (() => void) | null;
     stopTaskRegistryMaintenance?: (() => Promise<void> | void) | null;
     nodePresenceTimers: Map<string, ReturnType<typeof setInterval>>;
@@ -914,7 +914,7 @@ export function createGatewayCloseHandler(
         () => (params.cron.stopAndDrain ? params.cron.stopAndDrain() : params.cron.stop()),
         warnings,
       );
-      await shutdownStep("heartbeat-runner", () => params.heartbeatRunner.stop(), warnings);
+      await shutdownStep("session-services", () => params.sessionServices.stop(), warnings);
       await shutdownStep(
         "task-registry-maintenance",
         () => params.stopTaskRegistryMaintenance?.(),

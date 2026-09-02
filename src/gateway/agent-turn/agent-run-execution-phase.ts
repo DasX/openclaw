@@ -95,7 +95,7 @@ export function startAgentRunExecution(params: {
   groupSpace?: string;
   bestEffortDeliver: boolean;
   lifecycleGeneration: string;
-  effectiveBootstrapContextRunKind?: "default" | "heartbeat" | "cron";
+  effectiveBootstrapContextRunKind?: "default" | "cron";
   preserveUserFacingSessionModelState: boolean;
   sessionEffects?: "visible" | "internal";
   skipAgentInitialSessionTouch: boolean;

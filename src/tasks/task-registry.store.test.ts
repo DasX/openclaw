@@ -12,6 +12,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { SessionDeliveryDeferredError } from "../infra/session-delivery-queue-storage.js";
 import { readSqliteNumberPragma } from "../infra/sqlite-pragma.test-support.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { loggingState } from "../logging/state.js";
@@ -30,6 +31,7 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { createManagedTaskFlow as createManagedTaskFlowOrNull } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
+import { getTaskDeliveryState, upsertTaskDeliveryState } from "./task-registry-mutation.js";
 import {
   createTaskRecord as createTaskRecordOrNull,
   deleteTaskRecordById,
@@ -68,6 +70,8 @@ import {
 import {
   maybeDeliverTaskStateChangeUpdate,
   resetTaskFlowRegistryForTests,
+  resetTaskRegistryDeliveryRuntimeForTests,
+  setTaskRegistryDeliveryRuntimeForTests,
   resetTaskRegistryForTests,
 } from "./task-runtime.test-helpers.js";
 
@@ -192,6 +196,7 @@ describe("task-registry store runtime", () => {
 
   afterEach(() => {
     testState.applyEnv();
+    resetTaskRegistryDeliveryRuntimeForTests();
     resetTaskRegistryForTests({ persist: false });
     resetTaskFlowRegistryForTests({ persist: false });
     resetTaskRegistryMaintenanceRuntimeForTests();
@@ -867,7 +872,17 @@ describe("task-registry store runtime", () => {
       },
     });
 
+    setTaskRegistryDeliveryRuntimeForTests({
+      sendMessage: async () => {
+        throw new Error("Unexpected direct message delivery in task store test");
+      },
+      deliverTaskSessionEvent: async () => {
+        throw new SessionDeliveryDeferredError("Session busy");
+      },
+    });
     const created = createTaskRecord({
+      requesterAgentId: "main",
+      requesterTarget: { agentId: "main", sessionKey: "agent:main:main", sessionId: "" },
       runtime: "acp",
       ownerKey: "agent:main:main",
       scopeKind: "session",
@@ -1170,6 +1185,91 @@ describe("task-registry store runtime", () => {
           channel: "test-channel",
           to: "C1234567890",
         });
+      },
+    );
+  });
+
+  it("preserves the admission-captured requester generation across delivery updates and reload", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-task-original-target-" },
+      async () => {
+        const target = {
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          sessionId: "original-session",
+          lifecycleRevision: "original-revision",
+          storePath: "/captured/store",
+          deliveryContext: {
+            channel: "telegram",
+            to: "owner",
+            accountId: "account",
+            threadId: "thread",
+          },
+          toolsAllow: ["read"],
+        };
+        const expectedTarget = structuredClone(target);
+        const created = createTaskRecord({
+          runtime: "acp",
+          requesterSessionKey: target.sessionKey,
+          requesterAgentId: "main",
+          runId: "original-target",
+          task: "Deferred result",
+          status: "running",
+          deliveryStatus: "pending",
+          notifyPolicy: "done_only",
+          requesterTarget: target,
+        });
+        target.sessionId = "mutated-caller-copy";
+        expect(getTaskDeliveryState(created.taskId)?.requesterTarget).toEqual(expectedTarget);
+        upsertTaskDeliveryState({
+          taskId: created.taskId,
+          requesterTarget: { ...target, sessionId: "successor" },
+          lastNotifiedEventAt: 123,
+        });
+        resetTaskRegistryForTests({ persist: false });
+        reloadTaskRegistryFromStore();
+        expect(loadTaskRegistryStateFromSqlite().deliveryStates.get(created.taskId)).toEqual({
+          taskId: created.taskId,
+          requesterTarget: expectedTarget,
+          lastNotifiedEventAt: 123,
+        });
+      },
+    );
+  });
+
+  it.each([
+    { toolsAllow: [42] },
+    { settings: { permissionMode: "unrecognized" } },
+    { settings: { toolOverrides: { webSearch: "allow" } } },
+    { deliveryContext: { to: 42 } },
+    { lifecycleRevision: 42 },
+  ])("rejects malformed persisted requester constraints: %j", async (invalid) => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-task-invalid-target-" },
+      async () => {
+        const task = createStoredTask();
+        saveTaskRegistryStateToSqlite({
+          tasks: new Map([[task.taskId, task]]),
+          deliveryStates: new Map([[task.taskId, { taskId: task.taskId }]]),
+        });
+        const { db } = openOpenClawStateDatabase();
+        executeSqliteQuerySync(
+          db,
+          getNodeSqliteKysely<TaskRegistryTestDatabase>(db)
+            .updateTable("task_delivery_state")
+            .set({
+              requester_origin_json: JSON.stringify({
+                requesterTarget: {
+                  agentId: "main",
+                  sessionKey: "agent:main:main",
+                  sessionId: "original-session",
+                  ...invalid,
+                },
+              }),
+            })
+            .where("task_id", "=", task.taskId),
+        );
+        expect(() => loadTaskRegistryStateFromSqlite()).toThrow("Invalid task requester target");
       },
     );
   });

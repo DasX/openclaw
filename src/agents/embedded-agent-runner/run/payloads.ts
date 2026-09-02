@@ -5,10 +5,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { buildCodexLoginRecovery } from "../../../auto-reply/codex-login-recovery.js";
 import type { SourceReplyDeliveryMode } from "../../../auto-reply/get-reply-options.types.js";
 import {
-  createHeartbeatToolResponsePayload,
-  type HeartbeatToolResponse,
-} from "../../../auto-reply/heartbeat-tool-response.js";
-import {
   copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
   markReplyPayloadForSourceSuppressionDelivery,
@@ -18,11 +14,7 @@ import {
 } from "../../../auto-reply/reply-payload.js";
 import { parseReplyDirectives } from "../../../auto-reply/reply/reply-directives.js";
 import type { ReasoningLevel, ThinkLevel, VerboseLevel } from "../../../auto-reply/thinking.js";
-import {
-  HEARTBEAT_TOKEN,
-  isSilentReplyPayloadText,
-  SILENT_REPLY_TOKEN,
-} from "../../../auto-reply/tokens.js";
+import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { hasReplyPayloadContent } from "../../../interactive/payload.js";
 import type { AssistantMessage } from "../../../llm/types.js";
@@ -132,7 +124,6 @@ export function buildEmbeddedRunPayloads(params: {
   lastToolError?: ToolErrorSummary;
   config?: OpenClawConfig;
   isCronTrigger?: boolean;
-  isHeartbeatTrigger?: boolean;
   sessionKey: string;
   provider?: string;
   providerOwner?: PreparedProviderFailoverOwner;
@@ -155,17 +146,7 @@ export function buildEmbeddedRunPayloads(params: {
   runStopReason?: string;
   deferAssistantTimeoutError?: boolean;
   didSendDeterministicApprovalPrompt?: boolean;
-  heartbeatToolResponse?: HeartbeatToolResponse;
 }): ReplyPayload[] {
-  const heartbeatTerminalToolFailure =
-    params.isHeartbeatTrigger === true &&
-    params.lastToolError &&
-    params.lastToolError.mutatingAction === true
-      ? { toolName: params.lastToolError.toolName }
-      : undefined;
-  if (params.heartbeatToolResponse && !heartbeatTerminalToolFailure) {
-    return [createHeartbeatToolResponsePayload(params.heartbeatToolResponse)];
-  }
   // Internal source replies always need transcript/UI mirrors. Only a
   // message_tool_only run suppresses the separate automatic final answer.
   const {
@@ -181,16 +162,8 @@ export function buildEmbeddedRunPayloads(params: {
     didDeliverSourceReplyViaMessageTool: params.didDeliverSourceReplyViaMessageTool,
     runId: params.runId,
   });
-  if (params.heartbeatToolResponse) {
-    const heartbeatPayload = createHeartbeatToolResponsePayload(params.heartbeatToolResponse);
-    replyItems.push({
-      text: heartbeatPayload.text ?? "",
-      ...(heartbeatPayload.channelData ? { channelData: heartbeatPayload.channelData } : {}),
-    });
-  }
   const useMarkdown = params.toolResultFormat === "markdown";
   const suppressAssistantArtifacts =
-    params.heartbeatToolResponse !== undefined ||
     params.didSendDeterministicApprovalPrompt === true ||
     (params.sourceReplyDeliveryMode === "message_tool_only" && hasSourceReplyPayload) ||
     deliveredSourceReplyViaMessageTool;
@@ -323,10 +296,7 @@ export function buildEmbeddedRunPayloads(params: {
     shouldUseCanonicalFinalAnswer || shouldPreferRawAnswerText || !hasAssistantTextPayload
       ? fallbackAnswerDirectiveState
       : null;
-  let hasUserFacingReply =
-    Boolean(errorText) ||
-    completedSourceReplyViaMessageTool ||
-    params.heartbeatToolResponse?.notify === true;
+  let hasUserFacingReply = Boolean(errorText) || completedSourceReplyViaMessageTool;
   for (const text of answerTexts) {
     const {
       text: cleanedText,
@@ -402,9 +372,6 @@ export function buildEmbeddedRunPayloads(params: {
       }
     }
   }
-  if (heartbeatTerminalToolFailure && !replyItems.some((item) => item.isReasoning !== true)) {
-    replyItems.push({ text: HEARTBEAT_TOKEN });
-  }
   const hasAudioAsVoiceTag = replyItems.some((item) => item.audioAsVoice);
   return replyItems
     .map((item) => {
@@ -440,11 +407,6 @@ export function buildEmbeddedRunPayloads(params: {
       if (item.nonTerminalToolErrorWarning) {
         setReplyPayloadMetadata(payload, {
           nonTerminalToolErrorWarning: true,
-        });
-      }
-      if (heartbeatTerminalToolFailure) {
-        setReplyPayloadMetadata(payload, {
-          heartbeatTerminalToolFailure,
         });
       }
       if (

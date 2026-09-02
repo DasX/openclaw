@@ -1,6 +1,7 @@
 /** Session identity and context preparation for isolated cron runs. */
 import { isDeepStrictEqual } from "node:util";
 import { tryResolveAmbientOwnerAgentId } from "../../agents/agent-scope.js";
+import { sliceToolResultTextToBudget } from "../../agents/embedded-agent-runner/tool-result-text-budget.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -9,9 +10,13 @@ import {
   type PreparedModelRuntimeLease,
 } from "../../agents/prepared-model-runtime.js";
 import { preparedModelRuntimeConfigsMatch } from "../../agents/prepared-model-runtime.owner.js";
+import {
+  captureSessionEventTargetForHost as captureSessionEventTarget,
+  type SessionEventTarget,
+} from "../../auto-reply/reply/session-event-handoff.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
-import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionWorkStartError } from "../../config/sessions/lifecycle.js";
+import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
@@ -32,8 +37,11 @@ import type { SkillSnapshot } from "../../skills/types.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
 import type { CronDeliveryPlan } from "../delivery-plan.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
+import { appendCronUnattendedRunPreamble } from "../run-prompt.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
-import { isDetachedCronSessionTarget } from "../session-target.js";
+import { readCronJobScratchState } from "../scratch-store.js";
+import { isDetachedCronSessionTarget, resolveCronDeliverySessionKey } from "../session-target.js";
+import { resolveCronJobsStorePathFromConfig } from "../store.js";
 import type { CronJob, CronRunDiagnostics } from "../types.js";
 import {
   resolveCronModelSelection,
@@ -50,10 +58,9 @@ import {
 } from "./run-delivery-trace.js";
 import { resolveCronPreflight } from "./run-fallback-policy.js";
 import {
-  appendCronUnattendedRunPreamble,
   resolveCronAuthSelection,
   loadCronExternalContentRuntime,
-  loadSessionAccessorRuntime,
+  createCronSessionRowPersister,
   resolveCronAgentTurnMessage,
   retireRolledCronSessionMcpRuntime,
   type RunCronAgentTurnParams,
@@ -103,6 +110,7 @@ export type PreparedCronRunContext = {
   agentDir: string;
   agentSessionKey: string;
   sourceSessionKey?: string;
+  resultContext: { agentId: string; sessionKey: string; target: SessionEventTarget };
   sourceSessionGeneration?: { sessionId: string; lifecycleRevision: string | undefined };
   runSessionId: string;
   currentRunSessionId: () => string;
@@ -150,6 +158,7 @@ export async function prepareCronRunContext(params: {
   onLifecycleInterrupt: () => void;
 }): Promise<CronPreparationResult> {
   const { input } = params;
+  input.assertCurrent?.();
   const commandPromptPreflight = resolveCronCommandPromptPreflight(input.job);
   if (commandPromptPreflight) {
     return { ok: false, result: commandPromptPreflight };
@@ -163,6 +172,18 @@ export async function prepareCronRunContext(params: {
     { agentId: requiredAgentId },
     tryResolveAmbientOwnerAgentId(requestedRuntimeCfg),
   );
+  // Pin the reader's conversation before model/plugin preparation can await a reset.
+  // Detached run sessions are disposable; useful results belong to their original reader.
+  const resultSessionKey =
+    resolveCronDeliverySessionKey(input.job) ??
+    resolveAgentMainSessionKey({ cfg: requestedRuntimeCfg, agentId: initialAgentId });
+  const resultTarget = captureSessionEventTarget(initialAgentId, resultSessionKey);
+  resultTarget.assertCurrent = input.assertCurrent;
+  const resultContext = {
+    agentId: initialAgentId,
+    sessionKey: resultTarget.sessionKey!,
+    target: resultTarget,
+  };
   const modelOwner = await resolveCronModelSelectionOwner({
     cfg: requestedRuntimeCfg,
     ...(requiredAgentId
@@ -282,6 +303,7 @@ export async function prepareCronRunContext(params: {
     signal: input.abortSignal ?? input.signal,
     onInterrupt: params.onLifecycleInterrupt,
     assertAllowed: () => {
+      input.assertCurrent?.();
       const currentEntry = loadCronSessionEntryLatest(cronSession.storePath, agentSessionKey);
       const changed = initialSessionEntry
         ? !currentEntry ||
@@ -302,44 +324,7 @@ export async function prepareCronRunContext(params: {
 
   let preparedModelRuntimeLease: PreparedModelRuntimeLease | undefined;
   try {
-    const persistCronSessionRow = async ({
-      storePath,
-      sessionKey,
-      fallbackEntry,
-      resetBoundaryReason,
-      update,
-    }: {
-      storePath: string;
-      sessionKey: string;
-      fallbackEntry: SessionEntry;
-      resetBoundaryReason?: "cron-stale";
-      update: (entry: SessionEntry | undefined) => SessionEntry;
-    }) => {
-      const { applySessionEntryLifecycleMutation, patchSessionEntryCore } =
-        await loadSessionAccessorRuntime();
-      if (resetBoundaryReason) {
-        await applySessionEntryLifecycleMutation({
-          activeSessionKey: sessionKey,
-          agentId,
-          storePath,
-          upserts: [
-            {
-              sessionKey,
-              resetBoundary: { context: "preserve-tail", reason: resetBoundaryReason },
-              buildEntry: ({ currentEntry }) => update(currentEntry),
-            },
-          ],
-          skipMaintenance: true,
-        });
-        return;
-      }
-      // Guarded replace reads the freshest row so lifecycle claims reject stale owners.
-      await patchSessionEntryCore(
-        { storePath, sessionKey, agentId },
-        (_entry, context) => update(context.existingEntry),
-        { fallbackEntry, replaceEntry: true },
-      );
-    };
+    const persistCronSessionRow = createCronSessionRowPersister(agentId, input.assertCurrent);
     const persistSessionEntry = createPersistCronSessionEntry({
       cronSession,
       agentSessionKey,
@@ -529,7 +514,6 @@ export async function prepareCronRunContext(params: {
     const allowUnsafeExternalContent =
       agentPayload?.allowUnsafeExternalContent === true ||
       (isGmailHook && input.cfg.hooks?.gmail?.allowUnsafeExternalContent === true);
-    const shouldWrapExternal = isExternalHook && !allowUnsafeExternalContent;
     let commandBody: string;
 
     if (isExternalHook) {
@@ -543,7 +527,7 @@ export async function prepareCronRunContext(params: {
       }
     }
 
-    if (shouldWrapExternal) {
+    if (isExternalHook && !allowUnsafeExternalContent) {
       const { buildSafeExternalPrompt } = await loadCronExternalContentRuntime();
       const hookType = mapHookExternalContentSource(hookExternalContentSource ?? "webhook");
       const safeContent = buildSafeExternalPrompt({
@@ -557,7 +541,33 @@ export async function prepareCronRunContext(params: {
     } else {
       commandBody = `${base}\n${timeLine}`.trim();
     }
+    const { applyLegacyHeartbeatPromptContribution } =
+      await import("../../infra/heartbeat-compat.js");
+    commandBody = await applyLegacyHeartbeatPromptContribution({
+      cfg: runtimeCfg,
+      jobId: input.job.id,
+      name: input.job.name,
+      agentId,
+      sessionKey: agentSessionKey,
+      prompt: commandBody,
+      assertCurrent: () => {
+        input.abortSignal?.throwIfAborted();
+        input.assertCurrent?.();
+      },
+    });
     commandBody = appendCronUnattendedRunPreamble(commandBody, { externalHook: isExternalHook });
+    const scratch = readCronJobScratchState(
+      resolveCronJobsStorePathFromConfig(runtimeCfg),
+      input.job.id,
+    ).scratch;
+    if (scratch) {
+      const bounded = sliceToolResultTextToBudget(scratch.content, 2000);
+      commandBody += `\n\nAutomation scratch (revision ${scratch.revision}):\n${bounded}`;
+      if (bounded !== scratch.content) {
+        commandBody +=
+          "\n[Scratch shortened for this prompt; reread the complete scratch before replacing it.]";
+      }
+    }
 
     const skillsSnapshot = await resolveCronSkillsSnapshot({
       workspaceDir,
@@ -679,6 +689,7 @@ export async function prepareCronRunContext(params: {
         agentDir,
         agentSessionKey,
         sourceSessionKey,
+        resultContext,
         sourceSessionGeneration,
         runSessionId,
         currentRunSessionId,

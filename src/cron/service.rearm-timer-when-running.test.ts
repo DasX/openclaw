@@ -62,12 +62,13 @@ describe("CronService - timer re-arm when running (#12025)", () => {
     const runIsolatedAgentJob = vi.fn(async () => await deferredRun.promise);
 
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
 

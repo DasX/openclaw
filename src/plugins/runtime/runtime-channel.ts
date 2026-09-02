@@ -55,6 +55,10 @@ import {
   dispatchRoutedChannelTurn,
 } from "../../channels/turn/lifecycle.js";
 import { runChannelTurn } from "../../channels/turn/run-channel-turn.js";
+import type {
+  ChannelTurnDeliveryAdapter,
+  RunChannelTurnParams,
+} from "../../channels/turn/types.js";
 import {
   resolveChannelGroupPolicy,
   resolveChannelGroupRequireMention,
@@ -76,6 +80,7 @@ import {
   removeChannelAllowFromStoreEntry,
   upsertChannelPairingRequest,
 } from "../../pairing/pairing-store.js";
+import { publicReplyOptions, publicChannelTurnParams } from "../../plugin-sdk/reply-options.js";
 import { buildAgentSessionKey, resolveAgentRoute } from "../../routing/resolve-route.js";
 import { createChannelRuntimeContextRegistry } from "./channel-runtime-contexts.js";
 import type { PluginRuntime } from "./types.js";
@@ -86,6 +91,7 @@ export function createRuntimeChannel(options?: {
   const dispatchInbound: typeof dispatchRoutedChannelTurn = (params) =>
     dispatchRoutedChannelTurn({
       ...params,
+      replyOptions: publicReplyOptions(params.replyOptions),
       ...(options?.dispatchReplyFromConfig
         ? { dispatchReplyFromConfig: options.dispatchReplyFromConfig }
         : {}),
@@ -114,12 +120,19 @@ export function createRuntimeChannel(options?: {
       convertMarkdownTables,
     },
     reply: {
-      dispatchReplyWithBufferedBlockDispatcher: dispatchReplyWithBufferedBlockDispatcherCore,
+      dispatchReplyWithBufferedBlockDispatcher: (params) =>
+        dispatchReplyWithBufferedBlockDispatcherCore({
+          ...params,
+          replyOptions: publicReplyOptions(params.replyOptions),
+        }),
       createReplyDispatcherWithTyping,
       resolveEffectiveMessagesConfig,
       resolveHumanDelayConfig,
-      dispatchReplyFromConfig:
-        options?.dispatchReplyFromConfig ?? dispatchLowLevelChannelReplyFromConfig,
+      dispatchReplyFromConfig: (params) =>
+        (options?.dispatchReplyFromConfig ?? dispatchLowLevelChannelReplyFromConfig)({
+          ...params,
+          replyOptions: publicReplyOptions(params.replyOptions),
+        }),
       withReplyDispatcher,
       settleReplyDispatcher,
       finalizeInboundContext,
@@ -196,10 +209,16 @@ export function createRuntimeChannel(options?: {
     },
     inbound: {
       buildContext: buildChannelInboundEventContext,
-      run: runChannelTurn,
+      run: <TRaw, TDispatchResult>(
+        params: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
+      ) => runChannelTurn(publicChannelTurnParams(params)),
       runPreparedReply: runPreparedChannelTurn,
       dispatch: dispatchInbound,
-      dispatchReply: dispatchAssembledChannelTurn,
+      dispatchReply: (params) =>
+        dispatchAssembledChannelTurn({
+          ...params,
+          replyOptions: publicReplyOptions(params.replyOptions),
+        }),
     },
     threadBindings: {
       setIdleTimeoutBySessionKey: ({ channelId, targetSessionKey, accountId, idleTimeoutMs }) =>

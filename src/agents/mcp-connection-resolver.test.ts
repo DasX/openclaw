@@ -320,9 +320,9 @@ describe("mcp connection resolver helpers", () => {
         Parameters<typeof createGatewayReloadHandlers>[0]["getState"]
       >;
       let gatewayState: GatewayReloadProofState = {
+        sessionServices: { stop() {} },
         hooksConfig: null,
         hookClientIpConfig: { trustedProxies: undefined, allowRealIpFallback: false },
-        heartbeatRunner: { stop() {}, updateConfig() {} },
         cronState: {
           cron: {
             async start() {},
@@ -333,7 +333,7 @@ describe("mcp connection resolver helpers", () => {
           reconcileExitWatchers: async () => {},
           reconcileStreamWatchers: async () => {},
           stopStreamWatchers: async () => {},
-          reconcileHeartbeatJobs: async () => "converged" as const,
+          reconcileSkillReviewJobs: async () => "converged" as const,
         },
         channelHealthMonitor: null,
       };

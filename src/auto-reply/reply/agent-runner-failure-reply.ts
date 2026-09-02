@@ -21,7 +21,6 @@ import { renderAssistantRequestFailureCopy } from "../../agents/failover/assista
 import { classifyProviderRequestFacets } from "../../agents/failover/request-error-facets.js";
 import {
   GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
-  HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
   renderAuthProfileFailoverCopy,
   renderBillingReplyCopy,
   renderCliTimeoutReplyCopy,
@@ -221,7 +220,7 @@ export function buildExternalRunFailureReply(
   options?: {
     includeAuthProfileId?: boolean;
     includeDetails?: boolean;
-    isHeartbeat?: boolean;
+
     replayPrevented?: boolean;
     failoverFacts?: ReplyFailoverFacts;
   },
@@ -310,9 +309,7 @@ export function buildExternalRunFailureReply(
   if (missingApiKeyFailure) {
     return { text: missingApiKeyFailure, isGenericRunnerFailure: false };
   }
-  if (options?.isHeartbeat) {
-    return { text: HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT, isGenericRunnerFailure: false };
-  }
+
   const codexAppServerFailure = buildCodexAppServerFailureText(normalizedMessage);
   if (codexAppServerFailure) {
     return { text: codexAppServerFailure, isGenericRunnerFailure: false };
@@ -362,14 +359,11 @@ export function renderPostCompactionModelFailurePayload(payload: ReplyPayload): 
 }
 
 export function buildTerminalAgentRunFailureReplyPayload(params: {
-  isHeartbeat?: boolean;
   visibleReplyDelivered: boolean;
   sessionCtx: ExternalFailureConversationContext;
   cfg?: OpenClawConfig;
 }): ReplyPayload {
-  const text = params.isHeartbeat
-    ? HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT
-    : GENERIC_EXTERNAL_RUN_FAILURE_TEXT;
+  const text = GENERIC_EXTERNAL_RUN_FAILURE_TEXT;
   return markAgentRunFailureReplyPayload({
     text: resolveExternalRunFailureTextForConversation({
       ...params,
@@ -381,7 +375,7 @@ export function buildTerminalAgentRunFailureReplyPayload(params: {
 
 export function buildEmptyInteractiveReplyPayload(params: {
   isInteractive: boolean;
-  isHeartbeat?: boolean;
+
   silentExpected?: boolean;
   allowEmptyAssistantReplyAsSilent?: boolean;
   hasPendingContinuation: boolean;
@@ -393,7 +387,6 @@ export function buildEmptyInteractiveReplyPayload(params: {
 }): ReplyPayload | undefined {
   if (
     !params.isInteractive ||
-    params.isHeartbeat === true ||
     params.silentExpected === true ||
     params.allowEmptyAssistantReplyAsSilent === true ||
     params.hasPendingContinuation ||

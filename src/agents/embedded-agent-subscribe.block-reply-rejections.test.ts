@@ -1,7 +1,6 @@
 // Block-reply rejection tests ensure async callback failures are contained and
 // do not escape as process-level unhandled rejections.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import {
   createSubscribedSessionHarness,
   emitAssistantTextDelta,
@@ -310,33 +309,6 @@ describe("subscribeEmbeddedAgentSession block reply rejections", () => {
     await waitForAsyncCallbacks();
 
     expect(onToolResult).toHaveBeenCalled();
-    expect(unhandledRejections).toHaveLength(0);
-  });
-
-  it("contains rejected heartbeat response callbacks", async () => {
-    process.on("unhandledRejection", onUnhandledRejection);
-    const onHeartbeatToolResponse = vi.fn().mockRejectedValue(new Error("heartbeat failed"));
-    const { emit } = createSubscribedSessionHarness({
-      runId: "run",
-      onHeartbeatToolResponse,
-    });
-
-    emitToolRun({
-      emit,
-      toolName: HEARTBEAT_RESPONSE_TOOL_NAME,
-      toolCallId: "heartbeat-1",
-      result: {
-        details: {
-          status: "accepted",
-          outcome: "no_change",
-          notify: false,
-          summary: "Nothing needs attention.",
-        },
-      },
-    });
-    await waitForAsyncCallbacks();
-
-    expect(onHeartbeatToolResponse).toHaveBeenCalledTimes(1);
     expect(unhandledRejections).toHaveLength(0);
   });
 });

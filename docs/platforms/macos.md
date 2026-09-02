@@ -76,9 +76,10 @@ A failed coordinated update stays in its setup-style window with retry,
 downgrades a newer Gateway or overrides an `extended-stable` channel pin.
 
 After a successful update, the app finds the most recently human-used,
-top-level direct session and gives that agent a one-time update event. Heartbeat
-and cron activity do not affect this choice. The agent can then welcome you back
-from the conversation you were most likely using. In remote mode, a separately
+top-level direct session and gives that agent a one-time update event. Scheduled
+jobs and background-only session updates do not affect this choice. The update
+event uses ordinary session admission even when cron is disabled. The agent can
+then welcome you back from the conversation you were most likely using. In remote mode, a separately
 installed, app-managed node service retains its own runtime update and recovery
 flow; the app skips the notification when the remote Gateway is older than the
 app. The app's private node worker updates with the app bundle itself.

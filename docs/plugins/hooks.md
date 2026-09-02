@@ -127,8 +127,9 @@ apply. Restart the Gateway after changing plugin code or hook configuration.
   `agent_end`, and `before_agent_run`. Bundled plugins are allowed unless this
   option is explicitly `false`.
 - `allowPromptInjection: false` blocks `agent_turn_prepare`,
-  `before_prompt_build`, `heartbeat_prompt_contribution`, and durable next-turn
-  injections. It defaults to allowed, but does not grant conversation access.
+  `before_prompt_build`, the deprecated `heartbeat_prompt_contribution`
+  boundary hook, and durable next-turn injections. It defaults to allowed, but
+  does not grant conversation access.
   The first two hooks therefore need both permissions.
 - These are specific registration gates, not a sandbox or a universal filter
   for every hook that can see message data. Install only plugins you trust.
@@ -193,15 +194,19 @@ modifications explicitly instead of relying on in-place mutation.
 | `priority`              | Ordering; higher runs first.                                                                                                                                                                                                                           |
 | `registrationId`        | Stable identity for one registration inside a plugin. Skill evaluators use it as `evaluatorId`; otherwise the plugin id is used.                                                                                                                       |
 | `timeoutMs`             | Per-handler asynchronous await budget. Expiry applies the hook's failure policy below; it does not cancel the handler or its side effects. Omit to use the runner's default, if any.                                                                   |
-| `eligibleTriggers`      | For `before_agent_reply` only, limits host dispatch to one or more of `cron`, `heartbeat`, or `user`.                                                                                                                                                  |
+| `eligibleTriggers`      | For `before_agent_reply` only, limits host dispatch to `cron`, `user`, or the deprecated `heartbeat` boundary trigger.                                                                                                                                 |
 | `eligibleDispatchKinds` | For `reply_dispatch` only, limits host dispatch to `agent`, `acp`, or both. Omit to handle all dispatch kinds.                                                                                                                                         |
 | `requiresToolAuthority` | For `before_prompt_build` only, runs the handler after the host finalizes the current turn's tool surface and supplies ephemeral `ctx.toolAuthority`. Use this for context retrieval that must follow tool policy.                                     |
 
 Trigger eligibility is enforced by the host before it invokes the handler. A
-hook registered with `eligibleTriggers: ["heartbeat", "cron"]` is therefore
+hook registered with `eligibleTriggers: ["cron"]` is therefore
 inactive for user turns, including a recovered user turn. Omitted, empty,
 malformed, or partly unknown lists remain unrestricted, so the hook runs for
 those turns. Other hook kinds do not accept this option.
+
+Use `cron` for ordinary scheduled jobs, including converted monitors.
+`heartbeat` remains accepted for external compatibility; it is not an alias
+that broadens a legacy handler to every cron job.
 
 Operators can set hook budgets without patching plugin code:
 
@@ -280,7 +285,7 @@ contracts above; a modifying hook is not an observation hook.
 | `before_agent_reply`            | Claim   | Short-circuit the model turn with a synthetic reply or silence                                              |
 | `before_agent_finalize`         | Modify  | Inspect the natural final answer and request one more model pass                                            |
 | `agent_end`                     | Observe | Observe final messages, success state, and run duration                                                     |
-| `heartbeat_prompt_contribution` | Modify  | Add heartbeat-only context for background monitor and lifecycle plugins                                     |
+| `heartbeat_prompt_contribution` | Modify  | Deprecated heartbeat-boundary context adapter; not a hook for all scheduled jobs                            |
 
 **Conversation observation**
 
@@ -765,15 +770,19 @@ Use the phase-specific hooks for new plugins:
   second, post-policy phase. Use it when prompt enrichment reads data through
   a tool-backed capability and the same turn must be allowed to call that
   tool. See [Authorized prompt enrichment](/plugins/hooks#authorized-prompt-enrichment).
-- `heartbeat_prompt_contribution`: runs only for heartbeat turns and returns
-  `prependContext` or `appendContext`. Intended for background monitors that
-  need to summarize current state without changing user-initiated turns.
 
 On the embedded and CLI prompt-preparation paths, ordering is: drain queued
-injections → `agent_turn_prepare` → heartbeat contribution (if applicable) →
-ordinary `before_prompt_build` → finalized tool policy → authorized prompt
-enrichment. `agent_turn_prepare` and queued-injection draining are not currently
+injections → `agent_turn_prepare` → ordinary `before_prompt_build` → finalized
+tool policy → authorized prompt enrichment. `agent_turn_prepare` and
+queued-injection draining are not currently
 wired into the Codex or Copilot prompt paths.
+
+`heartbeat_prompt_contribution` remains a deprecated external boundary hook
+returning `prependContext` or `appendContext`. It does not run for every cron
+job. New monitoring integrations use ordinary jobs and scope normal prompt
+hooks to the relevant host-provided job or session context. See
+[Heartbeat SDK migration](/plugins/sdk-migration#heartbeat-retirement) for the
+deprecation window and canonical ownership.
 
 For multiple registrations, the first defined provider/model override and
 `systemPrompt` win. Context additions concatenate in priority order, and tool
@@ -905,8 +914,8 @@ buildChannelInboundEventContext({
 });
 ```
 
-These fields are optional and absent for system-originated runs (heartbeat,
-cron, exec-event).
+These fields are optional and absent for system-originated runs (scheduled
+jobs and exec-event follow-ups).
 
 `ctx.senderExternalId` remains as a deprecated source-compatibility field for
 older plugins. Core does not populate it; new channel-specific sender

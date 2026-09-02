@@ -1,3 +1,6 @@
+vi.mock("../gateway/cron-lifecycle-publication.js", () => ({
+  publishProvisionedCronJob: vi.fn(async () => {}),
+}));
 // Setup command tests cover local setup initialization and next-step messaging.
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +10,7 @@ import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { createConfigIO } from "../config/io.js";
 import { replaceConfigFile } from "../config/mutate.js";
 import type { OpenClawConfig } from "../config/types.js";
+import { publishProvisionedCronJob } from "../gateway/cron-lifecycle-publication.js";
 import { setupCommand } from "./setup.js";
 
 function createSetupDeps(home: string) {
@@ -70,6 +74,13 @@ describe("setupCommand", () => {
 
       await setupCommand({ workspace }, runtime, deps);
 
+      expect(publishProvisionedCronJob).toHaveBeenCalledWith(
+        expect.objectContaining({ agents: expect.any(Object) }),
+        expect.objectContaining({
+          agentId: "main",
+          payload: expect.objectContaining({ kind: "agentTurn" }),
+        }),
+      );
       const configPath = path.join(home, ".openclaw", "openclaw.json");
       const raw = JSON.parse(await fs.readFile(configPath, "utf-8")) as unknown;
 

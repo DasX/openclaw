@@ -19,6 +19,7 @@ import {
   resolveStatusGatewayHealth,
   resolveStatusSecurityAudit,
   resolveStatusRuntimeSnapshot,
+  resolveStatusAutomations,
   resolveStatusUsageSummary,
 } from "./status-runtime-shared.ts";
 import { formatUpdateRestartStatusValue } from "./status-update-restart.ts";
@@ -184,7 +185,6 @@ export async function statusCommand(
     securityAudit,
     usage,
     health,
-    lastHeartbeat,
     gatewayService: daemon,
     nodeService: nodeDaemon,
   } = await resolveStatusRuntimeSnapshot({
@@ -334,6 +334,11 @@ export async function statusCommand(
       formatTimeAgo,
     },
   );
+  const automations = await resolveStatusAutomations({
+    config: scan.cfg,
+    timeoutMs: opts.timeoutMs,
+    gatewayReachable,
+  });
   const lines = await buildStatusCommandReportLines(
     await buildStatusCommandReportData({
       env: env ?? {},
@@ -344,7 +349,7 @@ export async function statusCommand(
       securityAudit,
       health,
       usageLines,
-      lastHeartbeat,
+      automations,
       agentStatus,
       channels,
       channelIssues,

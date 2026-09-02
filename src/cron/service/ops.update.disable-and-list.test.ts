@@ -13,11 +13,12 @@ describe("cron service ops: disable + list round-trip", () => {
   it("keeps a disabled job available to --all and restores it after enable", async () => {
     const { storePath } = fixtures.makeStorePath();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath,
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
 

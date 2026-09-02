@@ -83,7 +83,7 @@ vi.mock("../../agents/workspace.js", () => ({
 }));
 registerGetReplyRuntimeOverrides(mocks);
 
-let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
+let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfigCore;
 let resolveAgentWorkspaceDirMock: typeof import("../../agents/agent-scope.js").resolveAgentWorkspaceDir;
 let resolveDefaultModelMock: typeof import("./directive-handling.defaults.js").resolveDefaultModel;
 let resolveModelRefFromStringMock: typeof import("../../agents/model-selection.js").resolveModelRefFromString;
@@ -91,7 +91,9 @@ let loadConfigMock: typeof import("../../config/config.js").getRuntimeConfig;
 let runPreparedReplyMock: typeof import("./get-reply-run.js").runPreparedReply;
 
 async function loadGetReplyRuntimeForTest() {
-  ({ getReplyFromConfig } = await loadGetReplyModuleForTest({ cacheKey: import.meta.url }));
+  ({ getReplyFromConfigCore: getReplyFromConfig } = await loadGetReplyModuleForTest({
+    cacheKey: import.meta.url,
+  }));
   ({ resolveAgentWorkspaceDir: resolveAgentWorkspaceDirMock } =
     await import("../../agents/agent-scope.js"));
   ({ resolveDefaultModel: resolveDefaultModelMock } =
@@ -351,74 +353,7 @@ describe("getReplyFromConfig fast test bootstrap", () => {
     expect(vi.mocked(runPreparedReplyMock)).toHaveBeenCalledOnce();
   });
 
-  it("clears stale ack-only heartbeat pending delivery before running heartbeat", async () => {
-    const storePath = isolatedStorePath;
-    const sessionKey = "agent:main:telegram:123";
-    await seedFastPathSessionStore(storePath, {
-      [sessionKey]: {
-        sessionId: "pending-ack",
-        updatedAt: Date.now(),
-        pendingFinalDelivery: {
-          kind: "replayable",
-          text: "HEARTBEAT_OK",
-          createdAt: 1,
-          intentId: "stale-heartbeat-intent",
-        },
-      },
-    });
-    const cfg = withFastReplyConfig({
-      agents: {
-        defaults: {
-          model: "openai/gpt-5.5",
-          workspace: state.workspaceDir,
-          heartbeat: {},
-        },
-      },
-      session: { store: storePath },
-    } as OpenClawConfig);
-
-    await expect(
-      getReplyFromConfig(buildGetReplyCtx(), { isHeartbeat: true }, cfg),
-    ).resolves.toEqual({ text: "ok" });
-
-    const stored = readFastPathSessionEntry(storePath, sessionKey);
-    expect(stored.pendingFinalDelivery).toBeUndefined();
-  });
-
-  it("clears short heartbeat pending delivery under the fixed ack policy", async () => {
-    const storePath = isolatedStorePath;
-    const sessionKey = "agent:main:telegram:123";
-    await seedFastPathSessionStore(storePath, {
-      [sessionKey]: {
-        sessionId: "pending-ack-with-remainder",
-        updatedAt: Date.now(),
-        pendingFinalDelivery: {
-          kind: "replayable",
-          text: "HEARTBEAT_OK short",
-          createdAt: 1,
-        },
-      },
-    });
-    const cfg = withFastReplyConfig({
-      agents: {
-        defaults: {
-          model: "openai/gpt-5.5",
-          workspace: state.workspaceDir,
-          heartbeat: {},
-        },
-      },
-      session: { store: storePath },
-    } as OpenClawConfig);
-
-    await expect(
-      getReplyFromConfig(buildGetReplyCtx(), { isHeartbeat: true }, cfg),
-    ).resolves.toEqual({ text: "ok" });
-
-    const stored = readFastPathSessionEntry(storePath, sessionKey);
-    expect(stored.pendingFinalDelivery).toBeUndefined();
-  });
-
-  it("does not replay stale heartbeat pending delivery", async () => {
+  it("does not replay an earlier user final into an internal event", async () => {
     const storePath = isolatedStorePath;
     const sessionKey = "agent:main:telegram:123";
     await seedFastPathSessionStore(storePath, {
@@ -437,14 +372,21 @@ describe("getReplyFromConfig fast test bootstrap", () => {
         defaults: {
           model: "openai/gpt-5.5",
           workspace: state.workspaceDir,
-          heartbeat: {},
         },
       },
       session: { store: storePath },
     } as OpenClawConfig);
 
     await expect(
-      getReplyFromConfig(buildGetReplyCtx(), { isHeartbeat: true }, cfg),
+      getReplyFromConfig(
+        {
+          ...buildGetReplyCtx(),
+          InputProvenance: { kind: "internal_system", sourceTool: "session-event" },
+          InternalTurnSource: "event",
+        },
+        undefined,
+        cfg,
+      ),
     ).resolves.toEqual({
       text: "ok",
     });

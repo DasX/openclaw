@@ -286,6 +286,31 @@ After explicit repair (`--fix`, `--repair`, or `--yes`), Doctor verifies runtime
 
 Doctor also checks every configured agent workspace and active sandbox workspace for retired setup state and interrupted migration claims. Repair exits nonzero while any of these files still block agent turns, even if their data already reached SQLite. Gateway startup checks the same workspace readiness before starting channels. Keep the retained files in place and rerun `openclaw doctor --fix` to finish verified cleanup; neither check imports or deletes legacy state.
 
+## Heartbeat retirement
+
+Run `openclaw doctor --fix` to convert legacy monitors, `heartbeat-task:*` rows,
+checklists, and heartbeat config into ordinary editable cron jobs. Existing job
+IDs, run history, scratch content/revisions/tombstones, disabled state, schedule
+anchors, and pending scheduling slots are preserved. Doctor removes retired
+agent and channel visibility settings only after verifying the converted data.
+
+If repair is interrupted or cannot resolve a legacy policy safely, retain its
+recoverable input, resolve the reported blocker, and rerun the same repair.
+A one-time provisioning receipt ensures that deleting a converted/default
+monitor stays deleted through restart, config reload, and repeated Doctor runs.
+
+Shared-state schema advances from 15 to 16; agent schema stays at 19 and the old
+`heartbeat_outcomes` table is inert. Back up state before upgrading. An older
+Gateway cannot safely read the new job policies; rollback requires a compatible
+backup, not editing the schema version. See
+[Heartbeat migration](/gateway/heartbeat) for the full conversion map and
+[Database schemas](/reference/database-schemas) for recovery guidance.
+
+After repair, edit or disable the specific job with [the cron CLI](/cli/cron) or
+automation UI. Deprecated heartbeat client controls affect only converted/default
+monitor jobs, never all cron jobs. Immediate completion and restart follow-ups
+use normal session admission even when monitoring or cron is disabled.
+
 ## Shared state SQLite compaction
 
 See [Database schemas](/reference/database-schemas) for schema versioning, integrity checks, and downgrade recovery.
@@ -553,10 +578,10 @@ compare restored legacy artifacts with the SQLite rows before importing.
 - On Linux, doctor warns when the user's crontab still runs the unmaintained legacy `~/.openclaw/bin/ensure-whatsapp.sh`, which can misreport `Gateway inactive` when cron lacks the systemd user-bus environment.
 - When WhatsApp is enabled, doctor checks for a degraded Gateway event loop with local `openclaw-tui` clients still running. `doctor --fix` stops only verified local TUI clients so WhatsApp replies are not queued behind stale TUI refresh loops.
 - When HTTP(S) proxy environment variables are present but `tools.web.fetch.useTrustedEnvProxy` is disabled, doctor explains that `web_fetch` still uses direct routing, runs a short direct TLS connectivity probe, and names the explicit opt-in. It never enables proxy trust automatically.
-- Doctor rewrites legacy `codex/*` and `openai-codex/*` model refs to canonical `openai/*` refs across primary models, fallbacks, model allowlists, image/video generation models, heartbeat/subagent/compaction overrides, hooks, channel model overrides, cron payloads, and stale session/transcript route pins. `--fix` also merges legacy `models.providers.codex` and `models.providers.openai-codex` config when safe, migrates legacy `openai-codex:*` auth profiles and `auth.order.openai-codex` entries to `openai:*`, moves Codex intent onto provider/model-scoped `agentRuntime.id: "codex"` entries, removes stale whole-agent/session runtime pins, and keeps repaired OpenAI agent refs on Codex auth routing instead of direct OpenAI API-key auth.
+- Doctor rewrites legacy `codex/*` and `openai-codex/*` model refs to canonical `openai/*` refs across primary models, fallbacks, model allowlists, image/video generation models, subagent/compaction overrides, legacy heartbeat model inputs, hooks, channel model overrides, cron payloads, and stale session/transcript route pins. `--fix` also merges legacy `models.providers.codex` and `models.providers.openai-codex` config when safe, migrates legacy `openai-codex:*` auth profiles and `auth.order.openai-codex` entries to `openai:*`, moves Codex intent onto provider/model-scoped `agentRuntime.id: "codex"` entries, removes stale whole-agent/session runtime pins, and keeps repaired OpenAI agent refs on Codex auth routing instead of direct OpenAI API-key auth.
 - Doctor reports nonempty `auth.order.<provider>` lists whose referenced profiles are all gone while compatible stored credentials exist. `doctor --fix` deletes only those stale overrides, restoring automatic per-agent credential selection; explicit empty orders, partially live lists, and orders without a compatible stored credential stay unchanged. If an active SQLite auth store is unreadable or malformed, doctor explains why it skipped this repair. Restart a running Gateway before rechecking auth status if its config reload mode does not apply the write automatically.
 - Doctor cleans legacy plugin dependency staging state from older OpenClaw versions and relinks the host `openclaw` package for managed npm plugins that declare it as a peer dependency. It also repairs missing downloadable plugins referenced by config (`plugins.entries`, configured channels, configured provider/search settings, configured agent runtimes). During package updates, doctor skips package-manager plugin repair until the package swap completes; rerun `openclaw doctor --fix` afterward if a configured plugin still needs recovery. If a download fails, doctor reports the install error and preserves the configured plugin entry for the next repair attempt.
-- Doctor repairs stale plugin config by removing missing plugin ids from `plugins.allow`/`plugins.deny`/`plugins.entries`, plus matching dangling channel config, heartbeat targets, and channel model overrides, when plugin discovery is healthy.
+- Doctor repairs stale plugin config by removing missing plugin ids from `plugins.allow`/`plugins.deny`/`plugins.entries`, plus matching dangling channel config, legacy heartbeat targets, and channel model overrides, when plugin discovery is healthy.
 - Doctor quarantines invalid plugin config by disabling the affected `plugins.entries.<id>` entry and removing its invalid `config` payload. Gateway startup already skips only that bad plugin so other plugins and channels keep running.
 - Doctor removes the retired `plugins.entries.codex.config.codexDynamicToolsProfile`; the Codex app-server always keeps Codex-native workspace tools native.
 - Doctor auto-migrates legacy flat Talk config (`talk.voiceId`, `talk.modelId`, and friends) into `talk.provider` + `talk.providers.<provider>`. Repeat `doctor --fix` runs no longer report/apply Talk normalization when the only difference is object key order.

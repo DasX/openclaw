@@ -1,9 +1,9 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
+import { enqueueSessionEventForHost as enqueueSessionEvent } from "../auto-reply/reply/session-event-handoff.js";
 import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
 import {
   enqueueSystemEvent,
   peekSystemEventEntries,
@@ -41,7 +41,19 @@ const nestedWatcher = "agent:main:subagent:parent";
 const child = "agent:main:subagent:child";
 const group = "agent:main:telegram:group:room-1";
 const cfg = {} as OpenClawConfig;
-let disposeHeartbeatWakeHandler: (() => void) | undefined;
+vi.mock("../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: (agentId: string, sessionKey: string) => ({
+    agentId,
+    sessionKey,
+    sessionId: "original",
+    generation: "process",
+  }),
+  enqueueSessionEventForHost: vi.fn(() => ({
+    id: "notice",
+    cancel: () => true,
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
+  })),
+}));
 
 function createDatabaseOptions() {
   const stateDir = makeTempDir(tempDirs, "openclaw-session-state-");
@@ -111,8 +123,7 @@ async function createWatcherSession(
 }
 
 afterEach(() => {
-  disposeHeartbeatWakeHandler?.();
-  disposeHeartbeatWakeHandler = undefined;
+  vi.mocked(enqueueSessionEvent).mockClear();
   closeOpenClawStateDatabaseForTest();
   resetSystemEventsForTest();
   vi.unstubAllEnvs();
@@ -197,8 +208,7 @@ describe("session state events", () => {
 
   it("wakes main watchers but only queues notices for nested watchers", async () => {
     vi.useFakeTimers();
-    const wakes = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
-    disposeHeartbeatWakeHandler = setHeartbeatWakeHandler(wakes);
+    const wakes = vi.mocked(enqueueSessionEvent);
     // Drain notices queued by earlier tests before checking this watcher's routing.
     await vi.advanceTimersByTimeAsync(21_000);
     wakes.mockClear();
@@ -214,14 +224,11 @@ describe("session state events", () => {
     recordSessionStateEvent(eventInput(), database);
     await vi.advanceTimersByTimeAsync(21_000);
     expect(wakes).toHaveBeenCalledWith(
-      // intent "immediate" is load-bearing: event-intent wakes defer on heartbeat
-      // dueness and would sit on the notice until the next scheduled tick. The
-      // wake itself coalesces for SESSION_STATE_WAKE_COALESCE_MS (20s), hence
-      // the 21s timer advances in these tests.
+      expect.any(String),
       expect.objectContaining({
-        source: "session-state",
+        source: "session",
         sessionKey: watcher,
-        intent: "immediate",
+        expectedTarget: expect.objectContaining({ sessionId: "original" }),
       }),
     );
   });
@@ -595,8 +602,7 @@ describe("session state events", () => {
 
   it("records and coalesces group activity without an immediate wake", async () => {
     vi.useFakeTimers();
-    const wakes = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
-    disposeHeartbeatWakeHandler = setHeartbeatWakeHandler(wakes);
+    const wakes = vi.mocked(enqueueSessionEvent);
     await vi.advanceTimersByTimeAsync(21_000);
     wakes.mockClear();
     const database = createDatabaseOptions();
@@ -659,8 +665,7 @@ describe("session state events", () => {
 
   it("keeps explicit A2A group watches on the immediate wake path", async () => {
     vi.useFakeTimers();
-    const wakes = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
-    disposeHeartbeatWakeHandler = setHeartbeatWakeHandler(wakes);
+    const wakes = vi.mocked(enqueueSessionEvent);
     await vi.advanceTimersByTimeAsync(21_000);
     wakes.mockClear();
     const database = createDatabaseOptions();
@@ -688,8 +693,7 @@ describe("session state events", () => {
 
   it("promotes an ambient main-to-group watch to explicit immediate delivery", async () => {
     vi.useFakeTimers();
-    const wakes = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
-    disposeHeartbeatWakeHandler = setHeartbeatWakeHandler(wakes);
+    const wakes = vi.mocked(enqueueSessionEvent);
     await vi.advanceTimersByTimeAsync(21_000);
     wakes.mockClear();
     const database = createDatabaseOptions();

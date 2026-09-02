@@ -184,7 +184,6 @@ function createSubscriptionMock(): SubscriptionMock {
     getMessagingToolSentMediaUrls: () => [] as string[],
     getMessagingToolSentTargets: () => [] as MessagingToolSend[],
     getMessagingToolSourceReplyPayloads: () => [] as MessagingToolSourceReplyPayload[],
-    getHeartbeatToolResponse: () => undefined,
     getPendingToolMediaReply: () => null,
     getToolAutoDeliveryMediaUrls: () => [] as string[],
     hasToolMediaBlockReply: () => false,

@@ -222,7 +222,6 @@ export function completeEmbeddedAttemptResult(
     getAcceptedSessionSpawns,
     getAssistantTurnCount,
     getCompactionCount,
-    getHeartbeatToolResponse,
     getItemLifecycle,
     getLastAssistantTextMessageIndex,
     getLastCompactionTokensAfter,
@@ -378,14 +377,12 @@ export function completeEmbeddedAttemptResult(
     completedClientToolCalls.length > 0 ? completedClientToolCalls : undefined;
   const didSendDeterministicApprovalPromptNow = didSendDeterministicApprovalPrompt();
   const lastToolError = getLastToolError();
-  const heartbeatToolResponse = getHeartbeatToolResponse();
   const messagingToolSourceReplyPayloads = getMessagingToolSourceReplyPayloads();
   const hasToolMediaBlockReplyNow = hasToolMediaBlockReply();
   const hasTerminalOutput = hasAttemptTerminalState({
     clientToolCalls,
     yieldDetected: state.yieldDetected,
     didSendDeterministicApprovalPrompt: didSendDeterministicApprovalPromptNow,
-    heartbeatToolResponse,
     lastToolError,
     toolMediaUrls: pendingToolMediaReply?.mediaUrls,
     toolAudioAsVoice: pendingToolMediaReply?.audioAsVoice,
@@ -479,7 +476,6 @@ export function completeEmbeddedAttemptResult(
     messagingToolSentMediaUrls,
     messagingToolSentTargets: getMessagingToolSentTargets(),
     messagingToolSourceReplyPayloads,
-    heartbeatToolResponse,
     toolMediaUrls: pendingToolMediaReply?.mediaUrls,
     toolAudioAsVoice: pendingToolMediaReply?.audioAsVoice,
     toolTrustedLocalMedia: pendingToolMediaReply?.trustedLocalMedia,

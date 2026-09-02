@@ -23,6 +23,7 @@ import {
 } from "../../sessions/session-lifecycle-admission.js";
 import {
   createReplyOperation,
+  markReplyOperationExecutionStarted,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
@@ -371,7 +372,7 @@ describe("reply turn admission", () => {
     expect(mutationRan).toBe(true);
   });
 
-  it.each(["visible", "heartbeat", "queued_followup"] as const)(
+  it.each(["visible", "background", "queued_followup"] as const)(
     "fences restart recovery from %s reply admission until the operation clears",
     async (kind) => {
       const sessionKey = `agent:main:telegram:topic:recovery-race:${kind}`;
@@ -477,7 +478,7 @@ describe("reply turn admission", () => {
           sessionId,
           expectedSessionId: sessionId,
           storePath,
-          kind: "heartbeat",
+          kind: "background",
         }),
       ).resolves.toEqual({ status: "skipped", reason: "active-run" });
 
@@ -642,7 +643,7 @@ describe("reply turn admission", () => {
     });
   });
 
-  it.each(["visible", "heartbeat"] as const)(
+  it.each(["visible", "background"] as const)(
     "rejects %s reply admission for a tombstoned recovery session",
     async (kind) => {
       const sessionKey = `agent:main:telegram:topic:recovery-tombstone:${kind}`;
@@ -1149,7 +1150,7 @@ describe("reply turn admission", () => {
     await barrier;
   });
 
-  it("skips heartbeat turns while delivery settles", async () => {
+  it("skips background turns while delivery settles", async () => {
     const active = createTestReplyOperation({
       sessionKey: "agent:main:discord:channel:42",
       sessionId: "active-session",
@@ -1163,7 +1164,7 @@ describe("reply turn admission", () => {
     const result = await admitTestReplyTurn({
       sessionKey: "agent:main:discord:channel:42",
       sessionId: "heartbeat-session",
-      kind: "heartbeat",
+      kind: "background",
     });
 
     expect(result).toEqual({ status: "skipped", reason: "active-run" });
@@ -1406,7 +1407,7 @@ describe("reply turn admission", () => {
     }
   });
 
-  it("skips heartbeat turns while a visible turn owns the lane", async () => {
+  it("skips background turns while a visible turn owns the lane", async () => {
     const active = createTestReplyOperation({
       sessionKey: "agent:main:telegram:topic:42",
       sessionId: "visible-session",
@@ -1415,7 +1416,7 @@ describe("reply turn admission", () => {
     const result = await admitTestReplyTurn({
       sessionKey: "agent:main:telegram:topic:42",
       sessionId: "heartbeat-session",
-      kind: "heartbeat",
+      kind: "background",
     });
 
     expect(result).toMatchObject({
@@ -1425,6 +1426,39 @@ describe("reply turn admission", () => {
     });
     active.complete();
   });
+
+  it.each([false, true])(
+    "foreground supersedes only unstarted background work (started=%s)",
+    async (started) => {
+      const key = "agent:main:background-race";
+      const background = createTestReplyOperation({
+        sessionKey: key,
+        sessionId: "session",
+        turnKind: "background",
+      });
+      if (started) {
+        markReplyOperationExecutionStarted(background);
+      }
+      const result = await admitTestReplyTurn({
+        sessionKey: key,
+        sessionId: "session",
+        waitForActive: false,
+      });
+      if (started) {
+        expect(result).toMatchObject({ status: "skipped", reason: "active-run" });
+        expect(background.abortSignal.aborted).toBe(false);
+      } else {
+        expect(background.result).toMatchObject({
+          kind: "aborted",
+          code: "aborted_for_supersession",
+        });
+      }
+      background.complete();
+      if (result.status === "owned") {
+        result.operation.complete();
+      }
+    },
+  );
 
   it("lets visible turns reclaim a stale active operation", async () => {
     vi.useFakeTimers();
@@ -1558,7 +1592,7 @@ describe("reply turn admission", () => {
     }
   });
 
-  it.each(["heartbeat", "queued_followup"] as const)(
+  it.each(["background", "queued_followup"] as const)(
     "does not let %s turns reclaim a stale active operation",
     async (kind) => {
       vi.useFakeTimers();

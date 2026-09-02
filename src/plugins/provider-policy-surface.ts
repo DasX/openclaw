@@ -54,6 +54,8 @@ export type ProviderPolicySurface = {
   applyConfigDefaults?: (
     ctx: ProviderApplyConfigDefaultsContext,
   ) => OpenClawConfig | null | undefined;
+  /** Fresh default automation cadence; provisioning calls this once. */
+  resolveProactiveCadenceMs?: (ctx: ProviderApplyConfigDefaultsContext) => number | undefined;
   resolveConfigApiKey?: (ctx: ProviderResolveConfigApiKeyContext) => string | null | undefined;
   resolveThinkingProfile?: (
     ctx: ProviderDefaultThinkingPolicyContext,
@@ -80,6 +82,7 @@ export type BundledProviderPolicySurface = ProviderPolicySurface & {
 const PROVIDER_POLICY_HOOK_KEYS = [
   "normalizeConfig",
   "applyConfigDefaults",
+  "resolveProactiveCadenceMs",
   "resolveConfigApiKey",
   "resolveThinkingProfile",
   "resolveModelRoutes",

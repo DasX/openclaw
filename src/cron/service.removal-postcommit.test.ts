@@ -57,12 +57,13 @@ function createState(params: {
   onEvent: (event: CronEvent) => void;
 }): CronServiceState {
   return createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: params.storePath,
     cronEnabled: true,
     log: logger,
     nowMs: () => params.nowMs,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({
       status: "ok" as const,
       summary: "done",

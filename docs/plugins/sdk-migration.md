@@ -21,7 +21,7 @@ from a single entry point:
   dozens of helpers while the focused SDK was being built. Both roots are now
   removed; import a documented subpath instead.
 - **`openclaw/plugin-sdk/infra-runtime`** - a broad barrel mixing system
-  events, heartbeat state, delivery queues, fetch/proxy helpers, file helpers,
+  events, legacy heartbeat adapters, delivery queues, fetch/proxy helpers, file helpers,
   approval types, and unrelated utilities.
 - **`openclaw/plugin-sdk/config-runtime`** - a broad config barrel retained
   only for its later compatibility window; direct runtime load/write helpers
@@ -89,6 +89,43 @@ Retained compatibility entrypoints keep their shipped caller names:
 `inbound-envelope` uses `resolveStorePath`, `provider-catalog-runtime` exports
 `resolvePluginProviders`, and `agent-runtime`'s
 `resolveThinkingDefaultWithRuntimeCatalog` accepts `loadModelCatalog`.
+
+### Heartbeat retirement
+
+Recurring monitoring now belongs to ordinary editable [cron jobs](/automation/cron-jobs),
+not a separate heartbeat engine. Jobs own their schedule, prompt, model,
+session, scratch, and delivery policy. Immediate exec, task, hook, and restart
+follow-ups use ordinary session admission, even when cron or monitoring is
+disabled.
+
+The stable external SDK contracts `api.runtime.system.requestHeartbeat(...)`,
+`requestHeartbeatNow(...)`, and `runHeartbeatOnce(...)`, together with retained
+heartbeat-related exports and hooks, are deprecated boundary adapters. They
+preserve supported external calls through canonical job/session ownership;
+they do not preserve the retired engine, legacy config readers, or a runtime
+fallback. Keep these adapters for at least one stable release containing their
+replacement. Removal requires a separately approved breaking SDK release,
+tracked in the [heartbeat retirement design](https://github.com/openclaw/openclaw/issues/134994).
+
+For new integrations:
+
+- Use ordinary cron jobs for scheduled checks. Bundled plugins can use
+  `api.session.workflow.scheduleSessionTurn(...)` for session-scoped future
+  turns; its bundled-only authorization boundary is unchanged.
+- Use `api.runtime.system.captureSessionEventTarget(...)` before asynchronous
+  work and `api.runtime.system.enqueueSessionEvent(...)` for immediate follow-ups.
+  Observe the returned receipt, not just enqueue acceptance; see the complete
+  [runtime example](/plugins/sdk-runtime#api-runtime-system). A next-turn context
+  injection stores context but does not itself schedule or execute a turn.
+- Use scoped `before_prompt_build` or `agent_turn_prepare` context on supported
+  runtimes instead of `heartbeat_prompt_contribution`. The deprecated hook and
+  `heartbeat` trigger remain legacy boundaries, not hooks for every cron job.
+
+Doctor converts existing monitors and their content in place. Plugins must not
+recreate deleted monitor jobs, restore retired `agents.*.heartbeat` config, or
+treat deprecated heartbeat controls as controls for all cron jobs. See the
+[operator migration guide](/gateway/heartbeat) for data preservation and
+retained protocol-v4 compatibility.
 
 ### Harness attempt result migration
 
@@ -528,7 +565,7 @@ For local media read policy, import `getAgentScopedMediaLocalRoots(...)` or
     | Need | Replacement |
     | --- | --- |
     | New system event producers | `api.runtime.system.enqueueSystemEvent` |
-    | Heartbeat wake, event, and visibility helpers | `openclaw/plugin-sdk/heartbeat-runtime` |
+    | Scheduled monitoring or immediate event follow-ups | Ordinary cron jobs or session admission; see [Heartbeat retirement](/plugins/sdk-migration#heartbeat-retirement). Do not adopt the private-local `heartbeat-runtime` adapter. |
     | Pending delivery queue drain | `openclaw/plugin-sdk/delivery-queue-runtime` |
     | Channel activity telemetry | `openclaw/plugin-sdk/channel-activity-runtime` |
     | In-memory and persistent-backed dedupe caches | `openclaw/plugin-sdk/dedupe-runtime` |
@@ -1118,12 +1155,12 @@ apps own device capture/playback UX.
 
 ## Removal timeline
 
-| When                                        | What happens                                                                                                                              |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| **Now**                                     | Warning-capable deprecated surfaces emit runtime warnings; repository guards reject deprecated SDK imports from core and bundled plugins. |
-| **Pending owner decision**                  | Records without `removeAfter` or `removalGate` remain deprecated and ineligible until their owner publishes a gate.                       |
-| **Each compat record's `removeAfter` date** | That dated surface becomes eligible for removal; `pnpm plugins:boundary-report --fail-on-eligible-compat` fails CI on or after that date. |
-| **Next Plugin SDK major**                   | `inbound-reply-dispatch` reaches its explicit `next-plugin-sdk-major` gate; it is not date-eligible before that version boundary.         |
+| When                                               | What happens                                                                                                                                                                         |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Now**                                            | Warning-capable deprecated surfaces emit runtime warnings; repository guards reject deprecated SDK imports from core and bundled plugins.                                            |
+| **Pending owner decision**                         | Records without `removeAfter` or `removalGate` remain deprecated and ineligible until their owner publishes a gate.                                                                  |
+| **After a deprecated record's `removeAfter` date** | The date is its final compatibility day. Starting the next UTC day, `pnpm plugins:boundary-report --fail-on-eligible-compat` fails CI. `removal-pending` records remain review-only. |
+| **Next Plugin SDK major**                          | `inbound-reply-dispatch` reaches its explicit `next-plugin-sdk-major` gate; it is not date-eligible before that version boundary.                                                    |
 
 The remaining public SDK subpaths below have registry-backed removal windows.
 The July 30 rows were removed after their early maintainer-authorized sweep:
@@ -1143,6 +1180,15 @@ until the next Plugin SDK major.
 | `2026-09-01`            | Earlier compatibility deprecations | `channel-lifecycle`, `channel-message`, `channel-reply-pipeline`, `config-runtime`, `infra-runtime`                                                                                 |
 | `next-plugin-sdk-major` | Major-version compatibility gate   | `inbound-reply-dispatch`                                                                                                                                                            |
 | `2026-10-01`            | Media legacy projection            | `agent-media-payload`, plus the non-subpath `MsgContext Media*` fields, channel inbound media payload builders, `buildMediaPayload`, hook media aliases, and `{{Media*}}` templates |
+
+The five September 1 subpaths remain available in 2026.8.2 under an approved
+retention exception; that release’s registry still labels them `deprecated`.
+The post-release registry marks them `removal-pending`, preserving their original
+`2026-09-01` removal target and replacement mappings. Removal awaits verification
+that supported external plugins have migrated. `infra-runtime` additionally retains
+system-event snapshot inspection and consumption until a modern public replacement
+exists. This changes compatibility tracking only, not the exported SDK or runtime
+behavior.
 
 All core plugins have already migrated. External plugins should migrate
 before the next major release. Run `pnpm plugins:boundary-report` to see which

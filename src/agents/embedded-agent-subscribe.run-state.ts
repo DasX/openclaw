@@ -80,7 +80,6 @@ export function createEmbeddedAgentSubscribeState(
     currentSourceMessagingToolSentTextsNormalized: [],
     currentSourceMessagingToolHeldPartial: undefined,
     messagingToolSentTargets: [],
-    heartbeatToolResponse: undefined,
     messagingToolSentMediaUrls: [],
     messagingToolSourceReplyPayloads: [],
     messageToolOnlySourceReplyDelivered: false,

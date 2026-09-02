@@ -32,7 +32,7 @@ export function resolveStrandedReplyRecovery(params: {
   sourceReplyDeliveryMode: SourceReplyDeliveryMode | undefined;
   sendPolicyDenied: boolean;
   successfulSourceReplyDelivery: boolean;
-  isHeartbeat: boolean;
+
   isRoomEvent: boolean;
 }): StrandedReplyRecovery {
   if (!shouldClassifyPrivateMessageToolFinal(params)) {

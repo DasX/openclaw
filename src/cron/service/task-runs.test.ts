@@ -122,11 +122,12 @@ describe("cron task run terminal records", () => {
           };
         });
         const state = createCronServiceState({
+          runSessionEvent: runIsolatedAgentJob,
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob,
         });
 
@@ -179,12 +180,13 @@ describe("cron task run terminal records", () => {
           state: {},
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => 1_100,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
 
@@ -229,12 +231,13 @@ describe("cron task run terminal records", () => {
       state: {},
     };
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/jobs.json",
       cronEnabled: true,
       log: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
       nowMs: () => startedAt + 100,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     vi.spyOn(taskRegistry, "findTaskByRunId").mockImplementation(() => {
@@ -281,12 +284,13 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
 
@@ -360,12 +364,13 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt + 100,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         const publicRunIds = [
@@ -431,12 +436,13 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt + 100,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         const taskRunId = tryCreateCronTaskRun({ state, job, startedAt });
@@ -525,12 +531,13 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt + 100,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         const taskRunId = tryCreateCronTaskRun({ state, job, startedAt });
@@ -593,12 +600,13 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt + 100,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         const taskRunId = tryCreateCronTaskRun({ state, job, startedAt });
@@ -686,12 +694,13 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt + 100,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         const taskRunId = tryCreateCronTaskRun({ state, job, startedAt });
@@ -741,12 +750,13 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt + 200,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         const taskRunId = tryCreateCronTaskRun({ state, job, startedAt });
@@ -795,12 +805,13 @@ describe("cron task run terminal records", () => {
         resetTaskRegistryForTests();
         const startedAt = 7_000;
         const state = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => startedAt + 100,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         const legacyRunId = `cron:legacy-job:${startedAt}`;
@@ -879,12 +890,13 @@ describe("cron task run terminal records", () => {
         };
         const createState = (storePath: string) =>
           createCronServiceState({
+            runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
             storePath,
             cronEnabled: true,
             log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
             nowMs: () => startedAt,
             enqueueSystemEvent: vi.fn(),
-            requestHeartbeat: vi.fn(),
+            enqueueSessionEvent: vi.fn(),
             runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
           });
         const stateA = createState(fixture.path("cron-a", "jobs.json"));

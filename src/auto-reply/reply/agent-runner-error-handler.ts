@@ -11,7 +11,6 @@ import { sanitizeUserFacingText } from "../../agents/embedded-agent-helpers/sani
 import { findCliTimeoutError, isFailoverError } from "../../agents/failover-error.js";
 import {
   GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
-  HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
   renderBillingReplyCopy,
   renderControlUiAgentFailureCopy,
   renderFailoverCodeUserCopy,
@@ -259,7 +258,7 @@ export async function handleAgentExecutionError(params: {
           {
             includeAuthProfileId: !isNonDirectConversationContext(turn.sessionCtx),
             includeDetails: isVerboseFailureDetailEnabled(turn.resolvedVerboseLevel),
-            isHeartbeat: turn.isHeartbeat,
+
             replayPrevented,
             failoverFacts,
           },
@@ -294,9 +293,7 @@ export async function handleAgentExecutionError(params: {
           : (externalRunFailureReply?.text ??
             (params.shouldSurfaceToControlUi
               ? renderControlUiAgentFailureCopy(userFacingMessage)
-              : turn.isHeartbeat
-                ? HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT
-                : GENERIC_EXTERNAL_RUN_FAILURE_TEXT));
+              : GENERIC_EXTERNAL_RUN_FAILURE_TEXT));
   const userVisibleFallbackText = resolveExternalRunFailureTextForConversation({
     text: fallbackText,
     visibleReplyDelivered: await turn.resolveVisibleReplyDelivery?.(),

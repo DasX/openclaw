@@ -7,7 +7,6 @@ import type {
   SourceReplyDeliveryMode,
   TaskSuggestionDeliveryMode,
 } from "../auto-reply/get-reply-options.types.js";
-import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import { messageToolOwnsVisibleReply } from "../auto-reply/source-reply-delivery-mode.js";
 import type { ChatType } from "../channels/chat-type.js";
 import type { InboundEventKind } from "../channels/inbound-event/kind.js";
@@ -346,10 +345,6 @@ type OpenClawCodingToolsOptions = {
   swarmOutputSchema?: Record<string, unknown>;
   /** Keep the message tool available even when the selected profile omits it. */
   forceMessageTool?: boolean;
-  /** Include the heartbeat response tool for structured heartbeat outcomes. */
-  enableHeartbeatTool?: boolean;
-  /** Keep the heartbeat response tool available even when the selected profile omits it. */
-  forceHeartbeatTool?: boolean;
   /** If false, build plugin tools only while preserving the shared policy pipeline. */
   includeCoreTools?: boolean;
   /** Include Tool Search control tools when enabled for this run. */
@@ -463,11 +458,6 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
       : agentId);
   const executionSessionKey = options?.runSessionKey ?? options?.sessionKey;
 
-  const enableHeartbeatTool =
-    options?.enableHeartbeatTool === true ||
-    (options?.trigger === "heartbeat" &&
-      options?.config?.messages?.visibleReplies === "message_tool");
-  const forceHeartbeatTool = options?.forceHeartbeatTool === true || enableHeartbeatTool;
   const toolSearchConfig = resolveToolSearchConfig(options?.config);
   const toolSearchControlsEnabled =
     options?.includeToolSearchControls === true && toolSearchConfig.enabled;
@@ -498,7 +488,6 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
   const runtimeProfileAlsoAllow = [
     ...(options && messageToolOwnsVisibleReply(options) ? ["message"] : []),
     ...(runtimeToolAllowlistIncludesMessage ? ["message"] : []),
-    ...(forceHeartbeatTool ? [HEARTBEAT_RESPONSE_TOOL_NAME] : []),
     ...toolSearchControlAllowlist,
   ];
   const conversationToolPolicies = resolveConversationToolPolicies({
@@ -900,7 +889,6 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             disableMessageTool: options?.disableMessageTool || options?.swarmCollector,
             swarmCollector: options?.swarmCollector,
             swarmOutputSchema: options?.swarmOutputSchema,
-            enableHeartbeatTool,
             disablePluginTools: !includePluginTools,
             wrapBeforeToolCallHook: false,
             ...(cronSelfRemoveOnlyJobId ? { cronSelfRemoveOnlyJobId } : {}),
@@ -1077,7 +1065,17 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     abortSignal: options?.abortSignal,
     agentId: executionAgentId,
     recordToolPrepStage: options?.recordToolPrepStage,
-  }).map((tool) => wrapToolWithGatewayCallerIdentity(tool, toolCallerIdentity));
+  }).map((tool) =>
+    wrapToolWithGatewayCallerIdentity(
+      tool,
+      toolCallerIdentity
+        ? {
+            ...toolCallerIdentity,
+            sessionEventToolsAllow: authorizedTools.map((authorizedTool) => authorizedTool.name),
+          }
+        : undefined,
+    ),
+  );
 }
 
 /** Build the runtime tool list exposed through the public agent harness SDK. */

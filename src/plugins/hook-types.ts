@@ -242,7 +242,7 @@ const conversationHookNameSet = new Set<PluginHookName>(CONVERSATION_HOOK_NAMES)
 export const isConversationHookName = (hookName: PluginHookName): boolean =>
   conversationHookNameSet.has(hookName);
 
-const PLUGIN_HOOK_AGENT_TRIGGERS = ["cron", "heartbeat", "user"] as const;
+const PLUGIN_HOOK_AGENT_TRIGGERS = ["cron", "event", "heartbeat", "user"] as const;
 
 export type PluginHookAgentTrigger = (typeof PLUGIN_HOOK_AGENT_TRIGGERS)[number];
 

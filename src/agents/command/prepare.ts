@@ -305,7 +305,6 @@ export async function prepareAgentCommandExecution(
     commandOpts.cliSessionBindingFacts === undefined &&
     isSyntheticSourceReplyTurn({
       inputProvenance: commandOpts.inputProvenance,
-      isHeartbeat: commandOpts.bootstrapContextRunKind === "heartbeat",
     })
   ) {
     commandOpts = {

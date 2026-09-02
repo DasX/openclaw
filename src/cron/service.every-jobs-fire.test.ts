@@ -43,27 +43,26 @@ describe("CronService interval/cron jobs fire on time", () => {
   };
 
   const expectMainSystemEvent = (
-    enqueueSystemEvent: ReturnType<typeof vi.fn>,
+    runSessionEvent: ReturnType<typeof vi.fn>,
     expectedText: string,
   ) => {
-    const matchingCall = enqueueSystemEvent.mock.calls.find(([text]) => text === expectedText);
+    const matchingCall = runSessionEvent.mock.calls.find(
+      ([params]) => params.text === expectedText,
+    );
     if (!matchingCall) {
       throw new Error(`missing system event ${expectedText}`);
     }
-    const options = matchingCall[1] as Record<string, unknown>;
-    expect(options.agentId).toBe("main");
-    expect(options.sessionKey).toBeUndefined();
-    expect(typeof options.contextKey).toBe("string");
-    expect(String(options.contextKey).startsWith("cron:")).toBe(true);
+    const options = matchingCall[0] as { job: { agentId?: string; sessionTarget: string } };
+    expect(options.job.sessionTarget).toBe("main");
   };
 
   const countMainSystemEvents = (
-    enqueueSystemEvent: ReturnType<typeof vi.fn>,
+    runSessionEvent: ReturnType<typeof vi.fn>,
     expectedText: string,
   ): number => {
     let count = 0;
-    for (const [text] of enqueueSystemEvent.mock.calls) {
-      if (text === expectedText) {
+    for (const [params] of runSessionEvent.mock.calls) {
+      if (params.text === expectedText) {
         count++;
       }
     }
@@ -72,7 +71,7 @@ describe("CronService interval/cron jobs fire on time", () => {
 
   it("fires an every-type main job when the timer fires a few ms late", async () => {
     const store = await makeStorePath();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -96,7 +95,7 @@ describe("CronService interval/cron jobs fire on time", () => {
       jobId: job.id,
       firstDueAt,
     });
-    expectMainSystemEvent(enqueueSystemEvent, "tick");
+    expectMainSystemEvent(runSessionEvent, "tick");
     expect(updated?.state.lastStatus).toBe("ok");
     // nextRunAtMs must advance by at least one full interval past the due time.
     expect(updated?.state.nextRunAtMs).toBeGreaterThanOrEqual(firstDueAt + 10_000);
@@ -107,7 +106,7 @@ describe("CronService interval/cron jobs fire on time", () => {
 
   it("keeps a due timer frozen while scheduling is paused and fires it after resume", async () => {
     const store = await makeStorePath();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -124,13 +123,13 @@ describe("CronService interval/cron jobs fire on time", () => {
 
     cron.pauseScheduling();
     await vi.advanceTimersByTimeAsync(10_005);
-    expect(enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(runSessionEvent).not.toHaveBeenCalled();
 
     const finishedRun = finished.waitForOk(job.id);
     cron.resumeScheduling();
     await vi.runOnlyPendingTimersAsync();
     await finishedRun;
-    expectMainSystemEvent(enqueueSystemEvent, "resumed-tick");
+    expectMainSystemEvent(runSessionEvent, "resumed-tick");
 
     cron.stop();
     await store.cleanup();
@@ -140,11 +139,12 @@ describe("CronService interval/cron jobs fire on time", () => {
     const store = await makeStorePath();
     const logger = createNoopLogger();
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -174,7 +174,7 @@ describe("CronService interval/cron jobs fire on time", () => {
   it("keeps admission closed until a real cron scheduler resume retry succeeds", async () => {
     const store = await makeStorePath();
     const logger = createNoopLogger();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger,
     });
@@ -211,7 +211,7 @@ describe("CronService interval/cron jobs fire on time", () => {
       const finishedRun = finished.waitForOk(job.id);
       await vi.advanceTimersByTimeAsync(9_005);
       await finishedRun;
-      expectMainSystemEvent(enqueueSystemEvent, "recovered-tick");
+      expectMainSystemEvent(runSessionEvent, "recovered-tick");
     } finally {
       cron.stop();
       resetGatewayWorkAdmission();
@@ -221,7 +221,7 @@ describe("CronService interval/cron jobs fire on time", () => {
 
   it("keeps a due timer pending when restart signal admission rolls back", async () => {
     const store = await makeStorePath();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -242,11 +242,11 @@ describe("CronService interval/cron jobs fire on time", () => {
       expect(pendingSignal).not.toBeNull();
       const finishedRun = finished.waitForOk(job.id);
       await vi.advanceTimersByTimeAsync(10_005);
-      expect(enqueueSystemEvent).not.toHaveBeenCalled();
+      expect(runSessionEvent).not.toHaveBeenCalled();
 
       expect(pendingSignal?.rollback()).toBe(true);
       await finishedRun;
-      expectMainSystemEvent(enqueueSystemEvent, "rollback-tick");
+      expectMainSystemEvent(runSessionEvent, "rollback-tick");
     } finally {
       cron.stop();
       resetGatewayWorkAdmission();
@@ -256,7 +256,7 @@ describe("CronService interval/cron jobs fire on time", () => {
 
   it("fires a cron-expression job when the timer fires a few ms late", async () => {
     const store = await makeStorePath();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -282,7 +282,7 @@ describe("CronService interval/cron jobs fire on time", () => {
       jobId: job.id,
       firstDueAt,
     });
-    expectMainSystemEvent(enqueueSystemEvent, "cron-tick");
+    expectMainSystemEvent(runSessionEvent, "cron-tick");
     expect(updated?.state.lastStatus).toBe("ok");
     // nextRunAtMs should be the next whole-minute boundary (60s later).
     expect(updated?.state.nextRunAtMs).toBe(firstDueAt + 60_000);
@@ -293,8 +293,8 @@ describe("CronService interval/cron jobs fire on time", () => {
 
   it("keeps every jobs due while minute cron jobs recompute schedules", async () => {
     const store = await makeStorePath();
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const runSessionEvent = vi.fn(async () => ({ status: "ok" as const, executionStarted: true }));
+    const enqueueSessionEvent = vi.fn();
     const nowMs = Date.parse("2025-12-13T00:00:00.000Z");
 
     await writeCronStoreSnapshot({
@@ -331,8 +331,9 @@ describe("CronService interval/cron jobs fire on time", () => {
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
-      enqueueSystemEvent,
-      requestHeartbeat,
+      runSessionEvent,
+      enqueueSystemEvent: vi.fn(),
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -349,8 +350,8 @@ describe("CronService interval/cron jobs fire on time", () => {
     const sfRun = await cron.run("loaded-every", "due");
     expect(sfRun).toEqual({ ok: true, ran: true });
 
-    const sfRuns = countMainSystemEvents(enqueueSystemEvent, "sf-tick");
-    const minuteRuns = countMainSystemEvents(enqueueSystemEvent, "minute-tick");
+    const sfRuns = countMainSystemEvents(runSessionEvent, "sf-tick");
+    const minuteRuns = countMainSystemEvents(runSessionEvent, "minute-tick");
     expect(minuteRuns).toBeGreaterThan(0);
     expect(sfRuns).toBeGreaterThan(0);
 

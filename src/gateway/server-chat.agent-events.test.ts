@@ -1,4 +1,4 @@
-// Server chat agent-event tests protect event fanout, heartbeat visibility,
+// Server chat agent-event tests protect event fanout, visibility,
 // session lifecycle persistence, and subscriber registry behavior.
 
 import { expectDefined } from "@openclaw/normalization-core";
@@ -54,14 +54,6 @@ vi.mock("../config/io.js", () => ({
   getRuntimeConfig: vi.fn(() => ({})),
 }));
 
-vi.mock("../infra/heartbeat-visibility.js", () => ({
-  resolveHeartbeatVisibility: vi.fn(() => ({
-    showOk: false,
-    showAlerts: true,
-    useIndicator: true,
-  })),
-}));
-
 vi.mock("./session-utils.js", () => {
   const loadSessionEntry = vi.fn(() => ({
     cfg: {},
@@ -81,7 +73,6 @@ vi.mock("./session-utils.js", () => {
 });
 
 import { getRuntimeConfig } from "../config/io.js";
-import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import {
   emitAgentEvent,
@@ -112,11 +103,7 @@ describe("agent event handler", () => {
   beforeEach(() => {
     resetAgentEventsForTest({ preserveListeners: true });
     vi.mocked(getRuntimeConfig).mockReturnValue({});
-    vi.mocked(resolveHeartbeatVisibility).mockReturnValue({
-      showOk: false,
-      showAlerts: true,
-      useIndicator: true,
-    });
+
     vi.mocked(loadSessionEntry)
       .mockReset()
       .mockReturnValue({
@@ -581,63 +568,15 @@ describe("agent event handler", () => {
     return payload;
   }
 
-  it("injects isHeartbeat into agent broadcast payloads when present in run context", () => {
+  it("does not label ordinary runtime events with the retired heartbeat flag", () => {
     const harness = createHarness();
-    for (const { runId, sessionKey, isHeartbeat, ts, needsUnlinkedEvent } of [
-      {
-        runId: "run-heartbeat-true",
-        sessionKey: "session-1",
-        isHeartbeat: true,
-        ts: 100,
-        needsUnlinkedEvent: true,
-      },
-      {
-        runId: "run-heartbeat-false",
-        sessionKey: "session-2",
-        isHeartbeat: false,
-        ts: 101,
-        needsUnlinkedEvent: false,
-      },
-      {
-        runId: "run-normal",
-        sessionKey: "session-3",
-        isHeartbeat: undefined,
-        ts: 102,
-        needsUnlinkedEvent: false,
-      },
-    ] as const) {
-      if (isHeartbeat !== undefined) {
-        registerAgentRunContext(runId, { sessionKey, isHeartbeat });
-      }
-      if (needsUnlinkedEvent) {
-        emitAgentEvent(harness.handler, runId, "assistant", { text: "hello" }, { ts });
-      }
-      registerChatRun(harness.chatRunState, runId, sessionKey, runId);
-      emitAgentEvent(
-        harness.handler,
-        runId,
-        "assistant",
-        { text: "hello" },
-        {
-          seq: needsUnlinkedEvent ? 2 : 1,
-          ts,
-        },
-      );
-
-      for (const payload of [
-        harness.broadcast.mock.calls.find(([event]) => event === "agent")?.[1],
-        harness.nodeSendToSession.mock.calls.find(([, event]) => event === "agent")?.[2],
-      ]) {
-        const record = requireRecord(requireCall(payload, "agent payload"), "agent payload");
-        if (isHeartbeat === undefined) {
-          expect(record).not.toHaveProperty("isHeartbeat");
-        } else {
-          expect(record.isHeartbeat).toBe(isHeartbeat);
-        }
-      }
-      harness.broadcast.mockClear();
-      harness.nodeSendToSession.mockClear();
-    }
+    registerAgentRunContext("run-normal", { sessionKey: "session-1" });
+    registerChatRun(harness.chatRunState, "run-normal", "session-1", "run-normal");
+    emitAgentEvent(harness.handler, "run-normal", "assistant", { text: "hello" }, { ts: 100 });
+    const payload = harness.broadcast.mock.calls.find(([event]) => event === "agent")?.[1];
+    expect(
+      requireRecord(requireCall(payload, "agent payload"), "agent payload"),
+    ).not.toHaveProperty("isHeartbeat");
   });
 
   it.each(["text", "delta"] as const)("emits chat delta for assistant %s-only events", (field) => {
@@ -2222,43 +2161,6 @@ describe("agent event handler", () => {
     expect(requireMockArg(broadcastToConnIds, 1, 2, "session tool recipients")).toEqual(
       new Set(["conn-session-only"]),
     );
-  });
-
-  it("suppresses heartbeat tool events for Control UI and verbose node subscribers", () => {
-    const {
-      broadcastToConnIds,
-      nodeSendToSession,
-      sessionEventSubscribers,
-      toolEventRecipients,
-      handler,
-    } = createHarness({
-      resolveSessionKeyForRun: () => "session-heartbeat",
-    });
-
-    registerAgentRunContext("run-heartbeat-tool", {
-      sessionKey: "session-heartbeat",
-      isHeartbeat: true,
-      verboseLevel: "on",
-    });
-    toolEventRecipients.add("run-heartbeat-tool", "conn-run");
-    sessionEventSubscribers.subscribe("conn-session");
-
-    emitAgentEvent(
-      handler,
-      "run-heartbeat-tool",
-      "tool",
-      {
-        phase: "start",
-        name: "read",
-        toolCallId: "tool-heartbeat-1",
-        args: { path: "HEARTBEAT.md" },
-      },
-      { ts: 1_234 },
-    );
-
-    expect(broadcastToConnIds).not.toHaveBeenCalled();
-    const nodeToolCalls = nodeSendToSession.mock.calls.filter(([, event]) => event === "agent");
-    expect(nodeToolCalls).toHaveLength(0);
   });
 
   it("hydrates run-scoped tool events with session ownership metadata", () => {
@@ -5132,57 +5034,6 @@ describe("agent event handler", () => {
       runId?: string;
     };
     expect(payload.runId).toBe("run-tool-client");
-  });
-
-  it("suppresses heartbeat ack-like chat output when showOk is false", () => {
-    const { broadcast, nodeSendToSession, chatRunState, handler } = createHarness({
-      now: 2_000,
-    });
-    registerNamedChatRun(chatRunState, "heartbeat");
-    registerAgentRunContext("run-heartbeat", {
-      sessionKey: "session-heartbeat",
-      isHeartbeat: true,
-      verboseLevel: "off",
-    });
-
-    emitAgentEvent(handler, "run-heartbeat", "assistant", {
-      text: "HEARTBEAT_OK Read HEARTBEAT.md if it exists (workspace context). Follow it strictly.",
-    });
-
-    expect(chatBroadcastCalls(broadcast)).toHaveLength(0);
-    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(0);
-
-    emitLifecycleEnd(handler, "run-heartbeat");
-
-    const finalPayload = expectSingleFinalChatPayload(broadcast) as { message?: unknown };
-    expect(finalPayload.message).toBeUndefined();
-    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
-  });
-
-  it("keeps heartbeat alert text in final chat output when remainder exceeds ackMaxChars", () => {
-    vi.mocked(getRuntimeConfig).mockReturnValue({
-      agents: { defaults: { heartbeat: {} } },
-    });
-
-    const { broadcast, chatRunState, handler } = createHarness({ now: 3_000 });
-    registerNamedChatRun(chatRunState, "heartbeat-alert");
-    registerAgentRunContext("run-heartbeat-alert", {
-      sessionKey: "session-heartbeat-alert",
-      isHeartbeat: true,
-      verboseLevel: "off",
-    });
-
-    const alert = `Disk usage crossed 95 percent on /data. ${"Cleanup required. ".repeat(20)}`;
-    emitAgentEvent(handler, "run-heartbeat-alert", "assistant", {
-      text: `HEARTBEAT_OK ${alert}`,
-    });
-
-    emitLifecycleEnd(handler, "run-heartbeat-alert");
-
-    const payload = expectSingleFinalChatPayload(broadcast) as {
-      message?: { content?: Array<{ text?: string }> };
-    };
-    expect(payload.message?.content?.[0]?.text).toBe(alert.trim());
   });
 
   describe("spawnedBy enrichment in chat and agent broadcasts", () => {

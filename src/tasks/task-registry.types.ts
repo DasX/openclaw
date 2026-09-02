@@ -128,6 +128,11 @@ export type TaskEventRecord = {
 };
 
 export type TaskDeliveryState = {
+  /** Original requester binding. Process generations are renewed only by durable delivery recovery. */
+  requesterTarget?: Omit<
+    import("../auto-reply/reply/session-event-handoff.js").SessionEventTarget,
+    "generation"
+  >;
   taskId: string;
   requesterOrigin?: DeliveryContext;
   lastNotifiedEventAt?: number;

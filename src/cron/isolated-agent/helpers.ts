@@ -1,7 +1,6 @@
 /** Normalizes isolated cron run output into summaries, delivery payloads, and error state. */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
-import { isHeartbeatAcknowledgementText } from "../../auto-reply/heartbeat.js";
 import {
   getReplyPayloadMetadata,
   setReplyPayloadMetadata,
@@ -24,7 +23,7 @@ type CronPayloadOutcome = {
   deliveryPayloads: DeliveryPayload[];
   deliveryDisposition:
     | { kind: "visible" }
-    | { kind: "heartbeat"; controlOnly: boolean }
+    | { kind: "silent"; controlOnly: boolean }
     | { kind: "empty" };
   deliveryPayloadHasStructuredContent: boolean;
   hasFatalErrorPayload: boolean;
@@ -147,8 +146,8 @@ function payloadHasNonTextDeliveryContent(payload: DeliveryPayload): boolean {
   return hasOutboundReplyContent({ ...payload, text: undefined }, { trimText: true });
 }
 
-function isHeartbeatAcknowledgementPayload(payload: DeliveryPayload): boolean {
-  return !payloadHasNonTextDeliveryContent(payload) && isHeartbeatAcknowledgementText(payload.text);
+function isSilentControlPayload(payload: DeliveryPayload): boolean {
+  return !payloadHasNonTextDeliveryContent(payload) && isSilentReplyPayloadText(payload.text);
 }
 
 function resolveCronDeliveryPayloads(params: {
@@ -162,21 +161,17 @@ function resolveCronDeliveryPayloads(params: {
   // an acknowledgement. Only the payload owner can safely preserve that batch.
   const hasNonTextContent = params.payloads.some(payloadHasNonTextDeliveryContent);
   const terminalText = params.finalAssistantVisibleText ?? params.payloads.at(-1)?.text;
-  if (!hasNonTextContent && isHeartbeatAcknowledgementText(terminalText)) {
-    const controlOnly = params.payloads.every((payload) =>
-      isHeartbeatAcknowledgementText(payload.text, 0),
-    );
+  if (!hasNonTextContent && isSilentReplyPayloadText(terminalText)) {
+    const controlOnly = params.payloads.every((payload) => isSilentReplyPayloadText(payload.text));
     return {
       deliveryPayloads: params.payloads,
-      deliveryDisposition: { kind: "heartbeat", controlOnly },
+      deliveryDisposition: { kind: "silent", controlOnly },
     };
   }
   return {
     // Earlier control acknowledgements cannot become visible siblings of a
     // later result or fail before that result reaches recipient custody.
-    deliveryPayloads: params.payloads.filter(
-      (payload) => !isHeartbeatAcknowledgementPayload(payload),
-    ),
+    deliveryPayloads: params.payloads.filter((payload) => !isSilentControlPayload(payload)),
     deliveryDisposition: { kind: "visible" },
   };
 }

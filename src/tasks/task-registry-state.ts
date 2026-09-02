@@ -56,6 +56,7 @@ type TaskRegistryRestoreState =
 let taskRegistryRestoreState: TaskRegistryRestoreState = { status: "uninitialized" };
 export const taskFlowSyncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 export type TaskRegistryDeliveryRuntime = {
+  deliverTaskSessionEvent: (typeof import("./task-registry-delivery-runtime.js"))["deliverTaskSessionEvent"];
   sendMessage: (typeof import("./task-registry-delivery-runtime.js"))["sendMessage"];
   // Optional so existing test overrides that stub only sendMessage stay valid;
   // delivery treats a missing resolver as "no Control UI link".

@@ -2733,7 +2733,6 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
     summaryLine?: string;
     strandedReplyRetry?: boolean;
     sendPolicyDenied?: boolean;
-    isHeartbeat?: boolean;
     pendingContinuation?: boolean;
     onDeliberateSilentTerminalReply?: () => void;
     onObservedReplyDelivery?: () => Promise<void> | void;
@@ -2862,7 +2861,6 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
         typingMode: "instant",
         opts: {
           runId,
-          ...(params.isHeartbeat ? { isHeartbeat: true } : {}),
           ...(params.onDeliberateSilentTerminalReply
             ? { onDeliberateSilentTerminalReply: params.onDeliberateSilentTerminalReply }
             : {}),
@@ -3093,17 +3091,6 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
     );
     expect(warnPrivateFinalSpy).not.toHaveBeenCalled();
     expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
-  });
-
-  it("does not warn, enqueue retry, or emit diagnostic for heartbeat runs", async () => {
-    const { result, terminalEvent } = await runPrivateFinalCase({ isHeartbeat: true });
-    expect((terminalEvent?.data.terminalReply as { code?: unknown } | undefined)?.code).not.toBe(
-      "message-tool-not-called",
-    );
-    expect(warnPrivateFinalSpy).not.toHaveBeenCalled();
-    expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
-    const payloads = result === undefined ? [] : normalizeReplyPayloads(result);
-    expect(payloads.some((payload) => payload.text === strandedDiagnosticText)).toBe(false);
   });
 
   it("does not warn or enqueue retry when send policy denied source delivery", async () => {

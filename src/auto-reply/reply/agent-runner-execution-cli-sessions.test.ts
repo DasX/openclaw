@@ -423,7 +423,6 @@ describe("executeAgentTurn: CLI session routing", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",

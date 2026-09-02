@@ -5,7 +5,6 @@ const BASE = {
   senderIsOwner: true,
   messageProvider: "telegram",
   senderId: "owner-1",
-  isHeartbeat: false,
   isRoomEvent: false,
 };
 
@@ -21,7 +20,7 @@ describe("fresh channel owner cron authority admission", () => {
     { name: "non-owner", overrides: { senderIsOwner: false } },
     { name: "missing provider", overrides: { messageProvider: undefined } },
     { name: "missing sender", overrides: { senderId: undefined } },
-    { name: "heartbeat", overrides: { isHeartbeat: true } },
+    { name: "session event", overrides: { inputProvenance: { kind: "internal_system" } } },
     { name: "room event", overrides: { isRoomEvent: true } },
     { name: "continuation provenance", overrides: { inputProvenance: { kind: "continuation" } } },
     { name: "spawned session", overrides: { spawnedBy: "agent:parent" } },

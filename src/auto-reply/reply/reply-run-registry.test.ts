@@ -1420,7 +1420,7 @@ describe("reply run registry", () => {
     const operation = createTestReplyOperation({
       sessionKey: "agent:main:heartbeat-preemption",
       sessionId: "heartbeat-preemption-session",
-      turnKind: "heartbeat",
+      turnKind: "background",
     });
     const order: string[] = [];
     const cancel = vi.fn((reason) => {
@@ -1452,7 +1452,7 @@ describe("reply run registry", () => {
     const operation = createTestReplyOperation({
       sessionKey: "agent:main:heartbeat-frozen",
       sessionId: "heartbeat-frozen-session",
-      turnKind: "heartbeat",
+      turnKind: "background",
     });
     operation.attachBackend({
       kind: "embedded",

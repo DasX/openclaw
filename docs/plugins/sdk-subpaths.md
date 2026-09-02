@@ -275,7 +275,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/message-tool-delivery-hints` | Private-local after July 2026; Shared message-tool delivery metadata hint strings |
     | `plugin-sdk/runtime-config-snapshot` | Current process config snapshot helpers such as `getRuntimeConfig`, `getRuntimeConfigSnapshot`, and test snapshot setters |
     | `plugin-sdk/text-autolink-runtime` | Private-local after July 2026; File-reference autolink detection without the broad text barrel |
-    | `plugin-sdk/reply-runtime` | Shared inbound/reply runtime helpers, chunking, dispatch, heartbeat, reply planner |
+    | `plugin-sdk/reply-runtime` | Shared inbound/reply runtime helpers, chunking, dispatch, reply planner, and deprecated heartbeat compatibility exports |
     | `plugin-sdk/reply-dispatch-runtime` | Narrow reply dispatch/finalize and conversation-label helpers |
     | `plugin-sdk/reply-history` | Shared short-window reply-history helpers. New message-turn code should use `createChannelHistoryWindow`; lower-level map helpers remain deprecated compatibility exports only |
     | `plugin-sdk/reply-reference` | Private-local after July 2026; `createReplyReferencePlanner` |
@@ -328,7 +328,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/dedupe-runtime` | In-memory and persistent-backed dedupe cache helpers |
     | `plugin-sdk/delivery-queue-runtime` | Private-local after July 2026; Outbound pending-delivery drain helper |
     | `plugin-sdk/file-access-runtime` | Private-local after July 2026; Safe local-file, path-containment, temp-root, media-source path, and directory-durability helpers |
-    | `plugin-sdk/heartbeat-runtime` | Private-local after July 2026; Heartbeat wake, event, and visibility helpers |
+    | `plugin-sdk/heartbeat-runtime` | Private-local after July 2026; legacy heartbeat wake adapter, not a new plugin authoring API. Monitoring uses ordinary cron jobs and immediate follow-ups use session admission; see [Heartbeat SDK migration](/plugins/sdk-migration#heartbeat-retirement). |
     | `plugin-sdk/expect-runtime` | Private-local after July 2026; Required-value assertion helper for provable runtime invariants |
     | `plugin-sdk/number-runtime` | Private-local after July 2026; Numeric coercion helper |
     | `plugin-sdk/secure-random-runtime` | Private-local after July 2026; Secure token/UUID helpers |

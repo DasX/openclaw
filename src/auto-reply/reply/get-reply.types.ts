@@ -13,6 +13,10 @@ import type { FollowupQueueDisposition, QueuedFollowupReplyBatch } from "./queue
 import type { ReplyOptionsWithAdmissionTicket } from "./reply-admission-ticket.js";
 import type { ReplyOptionsWithOperationRunState } from "./reply-operation-run-state.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
+import type {
+  ScheduledSessionAutomation,
+  SessionEventExecution,
+} from "./session-event-contract.js";
 
 export type ReplySessionBinding = {
   sessionKey?: string;
@@ -26,6 +30,12 @@ export type PendingContinuationSettlement = {
 };
 
 type InternalReplySessionOptions = {
+  /** Cron-owned snapshot and live occurrence fence; never accepted from plugin reply options. */
+  scheduledAutomation?: ScheduledSessionAutomation;
+  /** Internal per-turn model selection; never persisted as a user preference. */
+  modelOverride?: string;
+  /** Producer callbacks follow the queued occurrence, never the latest channel dispatcher. */
+  internalEventExecution?: SessionEventExecution;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   /** Exact authority-bearing settings captured by Gateway chat admission. */
   admittedSessionSettings?: Readonly<Pick<SessionEntry, "permissionMode" | "toolOverrides">>;

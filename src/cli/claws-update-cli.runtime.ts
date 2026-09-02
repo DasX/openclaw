@@ -18,6 +18,7 @@ import {
   logClawUpdatePlanSummary,
 } from "./claws-cli-output.js";
 import type { ClawsUpdateOptions } from "./claws-cli.js";
+import { listCronJobsFromGateway } from "./cron-cli/list-jobs.js";
 import { callGatewayFromCli } from "./gateway-rpc.js";
 
 export async function runClawsUpdateCommand(
@@ -202,6 +203,8 @@ export async function runClawsUpdateCommand(
         runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
         cronGateway: {
           add: async (input) => await callGatewayFromCli("cron.add", {}, input),
+          list: async (agentId) =>
+            await listCronJobsFromGateway({}, { agentId, includeDisabled: true }),
           get: async (id) => await callGatewayFromCli("cron.get", {}, { id }),
           remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),
         },

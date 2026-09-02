@@ -27,7 +27,7 @@ async function withCronService(
   run: (context: {
     cron: CronService;
     enqueueSystemEvent: ReturnType<typeof vi.fn>;
-    requestHeartbeat: ReturnType<typeof vi.fn>;
+    enqueueSessionEvent: ReturnType<typeof vi.fn>;
   }) => Promise<void>,
 ) {
   await withCronServiceForTest(
@@ -110,7 +110,7 @@ describe("CronService delivery plan consistency", () => {
           delivered: true,
         })),
       },
-      async ({ cron, enqueueSystemEvent, requestHeartbeat }) => {
+      async ({ cron, enqueueSystemEvent, enqueueSessionEvent }) => {
         const job = await addIsolatedAgentTurnJob(cron, {
           name: "announce-delivered",
           wakeMode: "now",
@@ -120,7 +120,7 @@ describe("CronService delivery plan consistency", () => {
         const result = await cron.run(job.id, "force");
         expect(result).toEqual({ ok: true, ran: true });
         expect(enqueueSystemEvent).not.toHaveBeenCalled();
-        expect(requestHeartbeat).not.toHaveBeenCalled();
+        expect(enqueueSessionEvent).not.toHaveBeenCalled();
       },
     );
   });

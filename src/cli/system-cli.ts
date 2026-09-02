@@ -1,4 +1,4 @@
-// System CLI commands that call Gateway RPC methods for events, heartbeats, and presence.
+// System CLI: session events, presence, and deprecated protocol-v4 monitor controls.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { Command } from "commander";
 import { formatDocsLink } from "../../packages/terminal-core/src/links.js";
@@ -57,11 +57,11 @@ async function runSystemGatewayCommand(
   }
 }
 
-/** Register Gateway-backed system event, heartbeat, and presence commands. */
+/** Register Gateway-backed session events, presence, and legacy monitor controls. */
 export function registerSystemCli(program: Command) {
   const system = program
     .command("system")
-    .description("System tools (events, heartbeat, presence)")
+    .description("System tools (session events, presence)")
     .addHelpText(
       "after",
       () =>
@@ -72,12 +72,20 @@ export function registerSystemCli(program: Command) {
   addGatewayClientOptions(
     system
       .command("event")
-      .description("Enqueue a system event and optionally trigger a heartbeat")
+      .description("Submit a session event (use --mode now for immediate processing)")
       .requiredOption("--text <text>", "System event text")
-      .option("--mode <mode>", "Wake mode (now|next-heartbeat)", "next-heartbeat")
+      .option(
+        "--mode <mode>",
+        "now: process immediately; next-heartbeat: deprecated scheduled-job deferral",
+        "next-heartbeat",
+      )
       .option(
         "--session-key <sessionKey>",
         "Target a specific session for the event (defaults to the agent's main session)",
+      )
+      .addHelpText(
+        "after",
+        "\nPrefer --mode now for new calls. The legacy next-heartbeat mode requires a scheduled target unless --session-key is explicit (immediate). Use openclaw automations for delayed work.\n",
       )
       .option("--json", "Output JSON", false),
   ).action(async (opts: SystemEventOpts) => {
@@ -111,12 +119,18 @@ export function registerSystemCli(program: Command) {
     );
   });
 
-  const heartbeat = system.command("heartbeat").description("Heartbeat controls");
+  const heartbeat = system
+    .command("heartbeat")
+    .description("Deprecated monitor-job controls; use openclaw automations")
+    .addHelpText(
+      "after",
+      "\nThese protocol-v4 adapters address converted/default monitor jobs only. Use openclaw automations show|enable|disable <job-id> for ordinary job management.\n",
+    );
 
   addGatewayClientOptions(
     heartbeat
       .command("last")
-      .description("Show the last heartbeat event")
+      .description("Show the deprecated last-heartbeat projection from automation/session state")
       .option("--json", "Output JSON", false),
   ).action(async (opts: SystemGatewayOpts) => {
     await runSystemGatewayCommand(opts, async () => {
@@ -133,7 +147,9 @@ export function registerSystemCli(program: Command) {
     addGatewayClientOptions(
       heartbeat
         .command(name)
-        .description(`${enabled ? "Enable" : "Disable"} heartbeats`)
+        .description(
+          `${enabled ? "Enable" : "Disable"} converted/default monitor jobs (deprecated)`,
+        )
         .option("--json", "Output JSON", false),
     ).action(async (opts: SystemGatewayOpts) => {
       await runSystemGatewayCommand(opts, async () => {

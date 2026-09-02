@@ -81,7 +81,7 @@ export function formatCronPayload(job: CronJob) {
     return `Script: ${p.script}`;
   }
   if (p.kind === "heartbeat") {
-    return "Heartbeat monitor";
+    return t("cron.retiredMonitorHelp");
   }
   if (p.kind === "skillCollectionReview") {
     return "Skill collection review";
@@ -94,9 +94,11 @@ export function formatCronPayload(job: CronJob) {
         ? delivery.to
           ? ` (${delivery.to})`
           : ""
-        : delivery.channel || delivery.to
-          ? ` (${delivery.channel ?? "last"}${delivery.to ? ` -> ${delivery.to}` : ""})`
-          : "";
+        : delivery.target === "owner"
+          ? ` (${t("cron.form.ownerTarget")})`
+          : delivery.channel || delivery.to
+            ? ` (${delivery.channel ?? "last"}${delivery.to ? ` -> ${delivery.to}` : ""})`
+            : "";
     return `${base} · ${delivery.mode}${target}`;
   }
   return base;

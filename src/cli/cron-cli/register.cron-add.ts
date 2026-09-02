@@ -14,7 +14,11 @@ import type { GatewayRpcOpts } from "../gateway-rpc.js";
 import { addGatewayClientOptions, callGatewayFromCli } from "../gateway-rpc.js";
 import { listCronJobsFromGateway } from "./list-jobs.js";
 import { createCronOutputCommand } from "./output-mode.js";
-import { registerCronMutationOptions } from "./register.cron-options.js";
+import {
+  parseCronDeliveryPolicyOptions,
+  registerCronMutationOptions,
+  resolveCronExecutionPolicyOptions,
+} from "./register.cron-options.js";
 import { resolveCronCreateScheduleFromArgs } from "./schedule-options.js";
 import {
   coerceCronDeliveryPreviews,
@@ -100,6 +104,8 @@ export function registerCronAddCommand(cron: Command) {
           cmd: Command,
         ) => {
           try {
+            const executionPolicy = await resolveCronExecutionPolicyOptions(opts);
+            const deliveryPolicy = parseCronDeliveryPolicyOptions(opts);
             const hasScheduleFlag =
               typeof opts.at === "string" ||
               typeof opts.cron === "string" ||
@@ -161,6 +167,11 @@ export function registerCronAddCommand(cron: Command) {
               if (chosen !== 1) {
                 throw new Error(
                   "Choose exactly one payload: --system-event, --message, --command, or --script",
+                );
+              }
+              if (typeof opts.skipIfScratchEmpty === "boolean" && !message) {
+                throw new Error(
+                  "--skip-if-scratch-empty/--no-skip-if-scratch-empty require --message",
                 );
               }
               if (systemEvent) {
@@ -237,6 +248,9 @@ export function registerCronAddCommand(cron: Command) {
                 thinking: normalizeOptionalString(opts.thinking),
                 timeoutSeconds,
                 lightContext: opts.lightContext === true ? true : undefined,
+                ...(typeof opts.skipIfScratchEmpty === "boolean"
+                  ? { skipIfScratchEmpty: opts.skipIfScratchEmpty }
+                  : {}),
                 toolsAllow,
               };
             })();
@@ -314,6 +328,8 @@ export function registerCronAddCommand(cron: Command) {
             const threadId = parseCronThreadIdOption(opts.threadId);
             const hasThreadId = typeof threadId === "number";
             const hasChatDeliveryTarget =
+              deliveryPolicy.target !== undefined ||
+              deliveryPolicy.directPolicy !== undefined ||
               cmd.getOptionValueSource("channel") === "cli" ||
               typeof opts.to === "string" ||
               Boolean(accountId) ||
@@ -413,6 +429,7 @@ export function registerCronAddCommand(cron: Command) {
               agentId,
               sessionKey,
               schedule,
+              ...executionPolicy,
               ...(pacingMin || pacingMax
                 ? {
                     pacing: {
@@ -428,7 +445,13 @@ export function registerCronAddCommand(cron: Command) {
               delivery: deliveryMode
                 ? {
                     mode: deliveryMode,
-                    channel: hasWebhook ? undefined : normalizeOptionalString(opts.channel),
+                    ...deliveryPolicy,
+                    channel:
+                      hasWebhook ||
+                      (deliveryPolicy.target === "owner" &&
+                        cmd.getOptionValueSource("channel") !== "cli")
+                        ? undefined
+                        : normalizeOptionalString(opts.channel),
                     to: hasWebhook ? webhookUrl : normalizeOptionalString(opts.to),
                     threadId: hasWebhook ? undefined : threadId,
                     accountId: hasWebhook ? undefined : accountId,

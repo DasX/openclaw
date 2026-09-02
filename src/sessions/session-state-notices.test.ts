@@ -1,21 +1,43 @@
 // Session-state notice context key decoding: strict UTF-8 after hex validation.
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { requestHeartbeat } from "../infra/heartbeat-wake.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  captureSessionEventTargetForHost as captureSessionEventTarget,
+  enqueueSessionEventForHost as enqueueSessionEvent,
+} from "../auto-reply/reply/session-event-handoff.js";
+import {
+  drainSystemEventEntries,
+  peekSystemEventEntries,
+  resetSystemEventsForTest,
+} from "../infra/system-events.js";
 import {
   decodeSessionStateNoticeContextKey,
   enqueueSessionStateNotice,
 } from "./session-state-notices.js";
 
-vi.mock("../infra/heartbeat-wake.js", () => ({
-  requestHeartbeat: vi.fn(),
-}));
-
-vi.mock("../infra/system-events.js", () => ({
-  enqueueSystemEvent: vi.fn(),
+vi.mock("../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: vi.fn(() => ({
+    sessionId: "original",
+    generation: "process",
+    agentId: "main",
+    sessionKey: "agent:main:main",
+  })),
+  enqueueSessionEventForHost: vi.fn(() => ({
+    id: "occurrence",
+    cancel: vi.fn(),
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
+  })),
 }));
 
 beforeEach(() => {
-  vi.mocked(requestHeartbeat).mockClear();
+  vi.useFakeTimers();
+  vi.mocked(enqueueSessionEvent).mockClear();
+  vi.mocked(captureSessionEventTarget).mockClear();
+  resetSystemEventsForTest();
+});
+afterEach(async () => {
+  resetSystemEventsForTest();
+  await vi.runAllTimersAsync();
+  vi.useRealTimers();
 });
 
 function encodeTarget(sessionKey: string): string {
@@ -48,24 +70,46 @@ describe("decodeSessionStateNoticeContextKey", () => {
 });
 
 describe("enqueueSessionStateNotice", () => {
-  it("coalesces active wakes for 20 seconds and leaves queue-only notices asleep", () => {
-    const notice = {
-      watcherSessionKey: "agent:main:main",
-      targetSessionKey: "agent:main:slack:channel:C01234567",
-      lastSeenSequence: 42,
-    };
-
+  const notice = {
+    watcherSessionKey: "agent:main:main",
+    targetSessionKey: "agent:main:slack:channel:C01234567",
+    lastSeenSequence: 42,
+  };
+  it("coalesces repeated changes for 20 seconds and transfers the original occurrence", async () => {
     enqueueSessionStateNotice(notice);
-    expect(requestHeartbeat).toHaveBeenCalledWith({
-      source: "session-state",
-      intent: "immediate",
-      reason: `session-state:${notice.targetSessionKey}`,
-      sessionKey: notice.watcherSessionKey,
-      coalesceMs: 20_000,
-    });
-
-    vi.mocked(requestHeartbeat).mockClear();
+    enqueueSessionStateNotice(notice);
+    const [occurrence] = peekSystemEventEntries(notice.watcherSessionKey);
+    if (!occurrence) {
+      throw new Error("Expected queued notice");
+    }
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith(
+      occurrence.text,
+      expect.objectContaining({
+        agentId: "main",
+        sessionKey: notice.watcherSessionKey,
+        source: "session",
+        occurrence,
+        expectedTarget: expect.objectContaining({ sessionId: "original" }),
+      }),
+    );
+  });
+  it("does not revive a notice polled before its debounce expires", async () => {
+    enqueueSessionStateNotice(notice);
+    expect(drainSystemEventEntries(notice.watcherSessionKey)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
+  });
+  it("keeps group notices queue-only and replaces their watermark without duplicating context", async () => {
     enqueueSessionStateNotice({ ...notice, queueOnly: true });
-    expect(requestHeartbeat).not.toHaveBeenCalled();
+    enqueueSessionStateNotice({ ...notice, queueOnly: true, lastSeenSequence: 43 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
+    expect(captureSessionEventTarget).not.toHaveBeenCalled();
+    const pending = peekSystemEventEntries(notice.watcherSessionKey);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.text).toContain("changesSince 43");
   });
 });

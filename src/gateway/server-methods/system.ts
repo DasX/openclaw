@@ -21,6 +21,7 @@ import {
   readUtilityModelSetting,
   resolveUtilityModelRefForAgent,
 } from "../../agents/utility-model.js";
+import { enqueueSessionEventForHost as enqueueSessionEvent } from "../../auto-reply/reply/session-event-handoff.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { resolveGatewayPort, resolveStateDir } from "../../config/paths.js";
 import { resolveSystemMainSessionTarget } from "../../config/sessions.js";
@@ -30,8 +31,8 @@ import {
   publicKeyRawBase64UrlFromPem,
 } from "../../infra/device-identity.js";
 import { tryReadDiskSpace } from "../../infra/disk-space.js";
+import { setLegacyHeartbeatsEnabled } from "../../infra/heartbeat-compat.js";
 import { getLastHeartbeatEvent } from "../../infra/heartbeat-events.js";
-import { requestHeartbeat, setHeartbeatsEnabled } from "../../infra/heartbeat-wake.js";
 import { getMachineDisplayName } from "../../infra/machine-name.js";
 import { resolveRuntimeOsLabel } from "../../infra/os-summary.js";
 import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
@@ -125,7 +126,7 @@ export const systemHandlers: GatewayRequestHandlers = {
   "last-heartbeat": ({ respond }) => {
     respond(true, getLastHeartbeatEvent(), undefined);
   },
-  "set-heartbeats": ({ params, respond }) => {
+  "set-heartbeats": async ({ params, respond, context }) => {
     const enabled = params.enabled;
     if (typeof enabled !== "boolean") {
       respond(
@@ -138,8 +139,12 @@ export const systemHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    setHeartbeatsEnabled(enabled);
-    respond(true, { ok: true, enabled }, undefined);
+    try {
+      await setLegacyHeartbeatsEnabled(context.getRuntimeConfig(), context.cron, enabled);
+      respond(true, { ok: true, enabled }, undefined);
+    } catch (error) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, String(error)));
+    }
   },
   "system-presence": ({ respond, client, context }) => {
     const presence = createPresenceRecipientProjection({
@@ -314,26 +319,30 @@ export const systemHandlers: GatewayRequestHandlers = {
           );
         }
       }
+    } else if (wake) {
+      if (!eventOwnerAgentId) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "Select a configured agent for this session event",
+          ),
+        );
+        return;
+      }
+      try {
+        enqueueSessionEvent(text, { agentId: eventOwnerAgentId, sessionKey, source: "device" });
+      } catch (error) {
+        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, String(error)));
+        return;
+      }
     } else {
       const eventOptions = { sessionKey };
       enqueueSystemEvent(
         text,
         eventOwnerAgentId ? withSystemEventOwner(eventOptions, eventOwnerAgentId) : eventOptions,
       );
-      if (wake) {
-        // Targeted admin events may need a proactive response. Carry the exact
-        // session through the wake so its delivery context, not main, wins.
-        requestHeartbeat({
-          source: "notifications-event",
-          intent: "immediate",
-          // The dispatcher recognizes "wake" as a payload-bearing run, so an
-          // empty monitor scratch cannot suppress this queued system event.
-          reason: "wake",
-          ...(!requestedSessionKey && eventOwnerAgentId ? { agentId: eventOwnerAgentId } : {}),
-          sessionKey,
-          heartbeat: { target: "last" },
-        });
-      }
     }
     // Presence changes are observable even when noisy node heartbeat text is
     // suppressed from the transcript-style system event queue.

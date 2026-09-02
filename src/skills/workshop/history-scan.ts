@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { resolveAgentConfig, resolveAgentDir } from "../../agents/agent-scope.js";
+import { resolveAgentDir } from "../../agents/agent-scope.js";
 import { resolveModelAsync } from "../../agents/embedded-agent-runner/model.js";
 import { isEmbeddedAgentRunActive } from "../../agents/embedded-agent-runner/runs.js";
 import { resolveDefaultModelForAgent } from "../../agents/model-selection-config.js";
@@ -232,11 +232,7 @@ async function runSkillHistoryScanCore(
     HISTORY_SCAN_MAX_SESSION_CHARS,
     Math.max(1, maxTranscriptChars - HISTORY_SCAN_SESSION_OVERHEAD_CHARS),
   );
-  // The configured prompt is only an extra legacy match; the stable marker is authoritative.
-  const heartbeatPrompt = resolveHeartbeatPromptCore(
-    resolveAgentConfig(params.config, params.agentId)?.heartbeat?.prompt ??
-      params.config.agents?.defaults?.heartbeat?.prompt,
-  );
+  const heartbeatPrompt = resolveHeartbeatPromptCore();
   const batch = await collectSkillHistoryScanBatch({
     candidates: eligible,
     isSessionActive: (candidate) => isEmbeddedAgentRunActive(candidate.entry.sessionId),

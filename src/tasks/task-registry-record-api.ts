@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { captureSessionEventTargetForHost as captureSessionEventTarget } from "../auto-reply/reply/session-event-handoff.js";
+import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
 import { hasAuthoritativeTaskBacking } from "./task-backing-authority.js";
 import { isTerminalTaskStatus } from "./task-executor-policy.js";
@@ -157,6 +159,7 @@ export function createTaskRecord(params: {
   ownerKey?: string;
   scopeKind?: TaskScopeKind;
   requesterOrigin?: TaskDeliveryState["requesterOrigin"];
+  requesterTarget?: TaskDeliveryState["requesterTarget"];
   childSessionKey?: string;
   parentFlowId?: string;
   parentTaskId?: string;
@@ -271,19 +274,30 @@ export function createTaskRecord(params: {
     record.cleanupAfter = resolveTaskCleanupAfter(record);
   }
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
-  const deliveryState = requesterOrigin
-    ? {
-        taskId,
-        requesterOrigin,
-      }
+  let requesterTarget = params.requesterTarget
+    ? structuredClone(params.requesterTarget)
     : undefined;
+  if (
+    !requesterTarget &&
+    scopeKind === "session" &&
+    requesterAgentId &&
+    getRuntimeConfigSnapshot()
+  ) {
+    const { generation: _generation, ...target } = captureSessionEventTarget(
+      requesterAgentId,
+      ownerKey,
+    );
+    requesterTarget = target;
+  }
+  const deliveryState =
+    requesterOrigin || requesterTarget ? { taskId, requesterOrigin, requesterTarget } : undefined;
   if (!tryPersistTaskUpsert(record, "create", deliveryState)) {
     return null;
   }
   tasks.set(taskId, record);
   bumpTaskRegistryRevision();
-  if (requesterOrigin) {
-    taskDeliveryStates.set(taskId, deliveryState!);
+  if (deliveryState) {
+    taskDeliveryStates.set(taskId, deliveryState);
   }
   addRunIdIndex(taskId, record.runId);
   addOwnerKeyIndex(taskId, record);

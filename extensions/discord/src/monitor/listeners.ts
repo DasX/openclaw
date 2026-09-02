@@ -1,10 +1,9 @@
+import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 // Discord plugin module implements listeners behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { requestHeartbeat } from "openclaw/plugin-sdk/heartbeat-runtime";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
-import { enqueueRoutedSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import {
   type Client,
   type DiscordMessageDispatchData,
@@ -17,6 +16,7 @@ import {
   ThreadDeleteListener,
   ThreadUpdateListener,
 } from "../internal/discord.js";
+import { getDiscordRuntime } from "../runtime.js";
 import { canViewDiscordGuildChannel } from "../send.permissions.js";
 import { type DiscordGuildEntryResolved, resolveDiscordGuildEntry } from "./allow-list.js";
 import { discordEventQueueLog, runDiscordListenerWithSlowLog } from "./listeners.queue.js";
@@ -321,6 +321,15 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
     let burstCommitted = false;
     let cooldownReserved = false;
     try {
+      const route = resolveAgentRoute({
+        cfg: this.params.cfg,
+        channel: "discord",
+        accountId: this.params.accountId,
+        guildId: data.guild_id,
+        peer: { kind: "channel", id: presenceEvent.channelId },
+      });
+      const system = getDiscordRuntime().system;
+      const expectedTarget = system.captureSessionEventTarget(route.agentId, route.sessionKey);
       const fetchedUserIsBot =
         data.user.bot === undefined && (await client.fetchUser(userId)).bot === true;
       if (!this.isCurrentGeneration(data.guild_id, gatewayGeneration, guildGeneration)) {
@@ -349,13 +358,6 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
         this.recordPresenceBaseline(data.guild_id, presenceKey, "online");
         return;
       }
-      const route = resolveAgentRoute({
-        cfg: this.params.cfg,
-        channel: "discord",
-        accountId: this.params.accountId,
-        guildId: data.guild_id,
-        peer: { kind: "channel", id: presenceEvent.channelId },
-      });
 
       try {
         cooldownReserved = this.cooldownStore.registerIfAbsent(presenceKey, nowMs, {
@@ -373,15 +375,23 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
         return;
       }
 
-      const queued = enqueueRoutedSystemEvent(presenceEvent.text, route, {
-        contextKey: `discord:presence-online:${this.params.accountId}:${data.guild_id}:${userId}`,
-        deliveryContext: {
-          channel: "discord",
-          to: `channel:${presenceEvent.channelId}`,
-          accountId: this.params.accountId,
-        },
-      });
-      if (!queued) {
+      let receipt: ReturnType<PluginRuntime["system"]["enqueueSessionEvent"]>;
+      try {
+        receipt = system.enqueueSessionEvent(presenceEvent.text, {
+          expectedTarget,
+          agentId: route.agentId,
+          sessionKey: route.sessionKey,
+          contextKey: `discord:presence-online:${this.params.accountId}:${data.guild_id}:${userId}`,
+          deliveryContext: {
+            channel: "discord",
+            to: `channel:${presenceEvent.channelId}`,
+            accountId: this.params.accountId,
+          },
+        });
+      } catch (error) {
+        (this.params.logger ?? discordEventQueueLog).warn(
+          danger(`discord presence admission failed: ${String(error)}`),
+        );
         return;
       }
       this.emissionGate.commitBurst(
@@ -391,17 +401,12 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
       );
       burstCommitted = true;
       this.recordPresenceBaseline(data.guild_id, presenceKey, "online");
-      requestHeartbeat({
-        source: "notifications-event",
-        intent: "immediate",
-        reason: "wake",
-        agentId: route.agentId,
-        sessionKey: route.sessionKey,
-        heartbeat: {
-          target: "discord",
-          to: `channel:${presenceEvent.channelId}`,
-          accountId: this.params.accountId,
-        },
+      void receipt.settled.then((outcome) => {
+        if (outcome.status !== "completed") {
+          (this.params.logger ?? discordEventQueueLog).warn(
+            danger(`discord presence follow-up ${outcome.status}: ${outcome.error ?? "cancelled"}`),
+          );
+        }
       });
     } finally {
       if (!burstCommitted) {

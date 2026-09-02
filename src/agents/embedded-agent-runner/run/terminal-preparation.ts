@@ -197,7 +197,6 @@ export function prepareEmbeddedRunTerminal(input: {
     lastToolError: attempt.lastToolError,
     config: runParams.config,
     isCronTrigger: runParams.trigger === "cron",
-    isHeartbeatTrigger: runParams.trigger === "heartbeat",
     sessionKey: runParams.sessionKey ?? runParams.sessionId,
     provider: input.activeErrorContext.provider,
     providerOwner: input.providerOwner,
@@ -224,7 +223,6 @@ export function prepareEmbeddedRunTerminal(input: {
       (!hasMessagingToolDeliveryEvidence(attempt) ||
         attempt.codexAppServerFailure?.kind === "turn_completion_idle_timeout"),
     didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
-    heartbeatToolResponse: attempt.heartbeatToolResponse,
   });
   const payloadsWithToolMedia = mergeAttemptToolMediaPayloads({
     payloads,

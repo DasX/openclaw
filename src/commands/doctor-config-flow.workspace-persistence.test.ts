@@ -156,7 +156,7 @@ describe("Doctor workspace persistence", () => {
   );
 
   it.each(["entries", "list", "noncanonical list"])(
-    "repairs workspace and heartbeat values from %s through snapshot, doctor, and write",
+    "retains the original %s config when heartbeat conversion cannot preserve its window",
     async (shape) => {
       await withTempHome(async (home) => {
         await withEnvOverride({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
@@ -181,18 +181,9 @@ describe("Doctor workspace persistence", () => {
             expect(before.sourceConfig.agents).not.toHaveProperty("list");
           }
 
-          const ctx = await prepareDoctorContext(configPath);
-          expect(ctx.configResult.shouldWriteConfig).toBe(true);
-          expect(ctx.cfg.agents?.entries?.ops).toEqual({ heartbeat: { every: "30m" } });
-          await runInitialConfigWriteHealth(ctx);
-
-          const saved = JSON.parse(await fs.readFile(configPath, "utf-8"));
-          expect(saved.agents.entries.ops).toEqual({ heartbeat: { every: "30m" } });
-          expect(saved.agents).not.toHaveProperty("list");
-          expect((await readConfigFileSnapshot()).valid).toBe(true);
-          expect((await prepareDoctorContext(configPath)).configResult.shouldWriteConfig).toBe(
-            false,
-          );
+          const original = await fs.readFile(configPath, "utf8");
+          await expect(prepareDoctorContext(configPath)).rejects.toThrow("invalid time");
+          expect(await fs.readFile(configPath, "utf8")).toBe(original);
         });
       });
     },
@@ -203,9 +194,7 @@ describe("Doctor workspace persistence", () => {
       await withEnvOverride({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
         const configPath = await writeOpenClawConfig(home, {
           agents: {
-            list: [
-              { id: " Ops ", workspace: null, heartbeat: { activeHours: { start: "99:99" } } },
-            ],
+            list: [{ id: " Ops ", workspace: null }],
           },
           diagnostics: { otel: { $include: "otel.json" } },
           gateway: { mode: "local" },
@@ -217,7 +206,7 @@ describe("Doctor workspace persistence", () => {
         const before = await readConfigFileSnapshot();
         expect(before.sourceConfig.agents?.list).toHaveLength(1);
         expect(normalizeCompatibilityConfigValues(before.sourceConfig).config.agents?.list).toEqual(
-          [{ id: " Ops ", heartbeat: {} }],
+          [{ id: " Ops " }],
         );
 
         const ctx = await prepareDoctorContext(configPath);

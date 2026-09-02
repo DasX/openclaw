@@ -8,7 +8,6 @@ const payloadCases = [
   { kind: "agentTurn", payload: { kind: "agentTurn", message: "Summarize updates" } },
   { kind: "command", payload: { kind: "command", argv: ["echo", "ready"] } },
   { kind: "script", payload: { kind: "script", script: "return 'ready'" } },
-  { kind: "heartbeat", payload: { kind: "heartbeat" } },
 ] satisfies Array<{ kind: CronJob["payload"]["kind"]; payload: CronJob["payload"] }>;
 
 describe("cron view saved descriptions", () => {

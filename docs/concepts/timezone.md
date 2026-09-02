@@ -33,7 +33,7 @@ The date and zone live below the system-prompt cache boundary, so day rollover d
 If `userTimezone` is unset, OpenClaw resolves the host timezone at runtime via
 `Intl.DateTimeFormat().resolvedOptions().timeZone` without writing config. The same
 resolved zone is used for message envelopes, queued system events, the prompt's local
-date, and heartbeat active hours.
+date, and a cron job's `activeHours` when its timezone is omitted or set to `"user"`.
 
 Clock rendering follows the host operating-system and locale preference. There is no
 separate 12-hour or 24-hour config setting.
@@ -43,5 +43,4 @@ For provider examples and elapsed-time formatting, see [Date & Time](/date-time)
 ## Related
 
 - [Date & Time](/date-time) - full envelope/tool/prompt behavior and examples.
-- [Heartbeat](/gateway/heartbeat) - active hours use timezone for scheduling.
-- [Cron Jobs](/automation/cron-jobs) - cron expressions use timezone for scheduling.
+- [Cron Jobs](/automation/cron-jobs) - cron expressions and per-job active hours use timezones for scheduling.

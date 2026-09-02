@@ -75,12 +75,13 @@ describe("cron service run admission cleanup", () => {
     const releaseRun = createDeferred<{ status: "ok"; summary: string }>();
     let ownerAvailable = true;
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => startedAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       isAgentAvailable: () => ownerAvailable,
       runIsolatedAgentJob: vi.fn(async () => {
         runnerStarted.resolve();
@@ -118,12 +119,13 @@ describe("cron service run admission cleanup", () => {
     const releaseRun = createDeferred<{ status: "error"; error: string }>();
     let ownerAvailable = true;
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => startedAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       isAgentAvailable: () => ownerAvailable,
       runIsolatedAgentJob: vi.fn(async () => {
         runnerStarted.resolve();
@@ -171,12 +173,13 @@ describe("cron service run admission cleanup", () => {
     let authorityActive = true;
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => dueAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
 
@@ -223,12 +226,13 @@ describe("cron service run admission cleanup", () => {
         triggerEval?: { fired: false; stateChanged: false };
       }>();
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => startedAt,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => {
           runnerStarted.resolve();
           return await releaseRun.promise;
@@ -271,12 +275,13 @@ describe("cron service run admission cleanup", () => {
     const runnerStarted = createDeferred();
     const releaseRun = createDeferred<{ status: "ok"; summary: string }>();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => startedAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => {
         runnerStarted.resolve();
         return await releaseRun.promise;
@@ -357,12 +362,13 @@ describe("cron service run admission cleanup", () => {
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => dueAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
 
@@ -409,12 +415,13 @@ describe("cron service run admission cleanup", () => {
     const releaseFirst = createDeferred();
     const executionOrder: string[] = [];
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => 0,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1;
@@ -463,12 +470,13 @@ describe("cron service run admission cleanup", () => {
       let now = dueAt;
       const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob,
       });
       let reservationPersisted = false;
@@ -528,12 +536,13 @@ describe("cron service run admission cleanup", () => {
     let restart: Promise<void> | undefined;
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     const stopObserving = observeCronJobWrites(job.id, ({ queuedAtMs, runningAtMs }) => {
@@ -586,12 +595,13 @@ describe("cron service run admission cleanup", () => {
     let restart: Promise<void> | undefined;
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => dueAt,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
       onEvent: (event) => {
         if (event.action === "started" && !restart) {
@@ -632,12 +642,13 @@ describe("cron service run admission cleanup", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => dueAt,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
       let reservationPersisted = false;
@@ -693,12 +704,13 @@ describe("cron service run admission cleanup", () => {
       let now = dueAt;
       const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob,
       });
       let reservationPersisted = false;
@@ -752,12 +764,13 @@ describe("cron service run admission cleanup", () => {
       let now = dueAt;
       const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob,
       });
       let reservationPersisted = false;
@@ -818,12 +831,13 @@ describe("cron service run admission cleanup", () => {
 
       let now = dueAt;
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
       let reservationPersisted = false;

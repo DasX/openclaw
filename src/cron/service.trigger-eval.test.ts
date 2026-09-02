@@ -39,16 +39,17 @@ async function createHarness(params: {
   const { storePath } = await makeStorePath();
   const events: CronEvent[] = [];
   const eventContexts: Array<CronEventContext | undefined> = [];
-  const enqueueSystemEvent = vi.fn();
+  const runSessionEvent = vi.fn(async () => ({ status: "ok" as const, executionStarted: true }));
   const runIsolatedAgentJob =
     params.runIsolatedAgentJob ?? vi.fn(async () => ({ status: "ok" as const }));
   const cron = new CronService({
+    runSessionEvent,
     storePath,
     cronEnabled: true,
     cronConfig: { triggers: { enabled: true } },
     log: logger,
-    enqueueSystemEvent,
-    requestHeartbeat: vi.fn(),
+    enqueueSystemEvent: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob,
     ...(params.evaluateCronTrigger ? { evaluateCronTrigger: params.evaluateCronTrigger } : {}),
     ...(params.runScriptJob ? { runScriptJob: params.runScriptJob } : {}),
@@ -59,7 +60,14 @@ async function createHarness(params: {
     },
   });
   await cron.start();
-  return { cron, enqueueSystemEvent, eventContexts, events, runIsolatedAgentJob, storePath };
+  return {
+    runSessionEvent,
+    cron,
+    eventContexts,
+    events,
+    runIsolatedAgentJob,
+    storePath,
+  };
 }
 
 async function runWhenDue(cron: CronService, jobId: string) {
@@ -184,9 +192,8 @@ describe("cron trigger evaluation", () => {
         status: "ok",
         triggerFired: true,
       });
-      expect(harness.enqueueSystemEvent).toHaveBeenCalledWith(
-        "base event\n\ndeploy completed",
-        expect.any(Object),
+      expect(harness.runSessionEvent).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ text: "base event\n\ndeploy completed" }),
       );
     } finally {
       harness.cron.stop();

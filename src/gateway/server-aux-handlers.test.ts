@@ -72,7 +72,6 @@ function createReloadPlan(overrides?: Partial<GatewayReloadPlan>): GatewayReload
     reloadHooks: overrides?.reloadHooks ?? false,
     restartGmailWatcher: overrides?.restartGmailWatcher ?? false,
     restartCron: overrides?.restartCron ?? false,
-    restartHeartbeat: overrides?.restartHeartbeat ?? false,
     restartHealthMonitor: overrides?.restartHealthMonitor ?? false,
     reloadPlugins: overrides?.reloadPlugins ?? false,
     restartChannels: overrides?.restartChannels ?? new Set(),

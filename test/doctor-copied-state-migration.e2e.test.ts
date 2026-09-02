@@ -1,7 +1,7 @@
 // Regression for the copied shared-state upgrade reported from 2026.6.1-beta.1.
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { backup, DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../src/state/openclaw-state-schema.js";
 import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
@@ -172,6 +172,82 @@ function writeHistoricalCopiedStateFixture(stateDir: string): void {
   }
 }
 
+// Schema 15 and 16 deliberately share the physical layout. This fixture proves
+// the fence/copy mechanics; the separate release lane supplies a real stable DB.
+async function writeHeartbeatCopiedStateFixture(stateDir: string) {
+  const sourcePath = path.join(stateDir, "heartbeat-source.sqlite");
+  const candidatePath = path.join(stateDir, "state", "openclaw.sqlite");
+  fs.mkdirSync(path.dirname(candidatePath), { recursive: true });
+  const storeKey = path.join(stateDir, "cron", "jobs.json");
+  const job = {
+    id: "copied-monitor",
+    name: "Copied monitor",
+    agentId: "main",
+    declarationKey: "heartbeat:main",
+    enabled: false,
+    createdAtMs: 10,
+    updatedAtMs: 20,
+    schedule: { kind: "every", everyMs: 900000, anchorMs: 37 },
+    sessionTarget: "main",
+    wakeMode: "next-heartbeat",
+    payload: { kind: "heartbeat" },
+  };
+  const state = {
+    nextRunAtMs: 123456,
+    queuedAtMs: 123456,
+    lastRunAtMs: 100000,
+    lastRunStatus: "ok",
+  };
+  const writer = new DatabaseSync(sourcePath);
+  try {
+    writer.exec("PRAGMA journal_mode = WAL;");
+    writer.exec(OPENCLAW_STATE_SCHEMA_SQL);
+    writer.exec("PRAGMA user_version = 15;");
+    writer
+      .prepare(
+        "INSERT INTO schema_meta (meta_key,role,schema_version,created_at,updated_at) VALUES ('primary','global',15,0,0)",
+      )
+      .run();
+    writer
+      .prepare(
+        "INSERT INTO cron_jobs (store_key,job_id,declaration_key,name,enabled,agent_id,payload_kind,job_json,state_json,runtime_updated_at_ms,sort_order,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        storeKey,
+        job.id,
+        job.declarationKey,
+        job.name,
+        0,
+        "main",
+        "heartbeat",
+        JSON.stringify(job),
+        JSON.stringify(state),
+        20,
+        0,
+        20,
+      );
+    writer
+      .prepare(
+        "INSERT INTO cron_job_scratch (store_key,job_id,content,revision,updated_at_ms) VALUES (?,?,?,?,?)",
+      )
+      .run(storeKey, job.id, "Keep these bytes.\r\n", 7, 20);
+    writer
+      .prepare(
+        "INSERT INTO cron_run_receipts (receipt_id,store_key,job_id,config_revision,agent_id,status,owner_pid,started_at_ms,finished_at_ms) VALUES ('copied-run',?,?, 'old-revision','main','ok',1,10,20)",
+      )
+      .run(storeKey, job.id);
+  } finally {
+    writer.close(); // Stop the only old writer before taking a WAL-aware snapshot.
+  }
+  const source = new DatabaseSync(sourcePath, { readOnly: true });
+  try {
+    await backup(source, candidatePath);
+  } finally {
+    source.close();
+  }
+  return { sourcePath, candidatePath, storeKey, job, state };
+}
+
 describe("doctor copied-state migration", () => {
   it(
     "repairs the retained 2026.6.1-beta.1 shared state before gateway readiness",
@@ -191,6 +267,87 @@ describe("doctor copied-state migration", () => {
           "Failed migrating shared state database schema",
         );
         await instance.startGateway();
+      } finally {
+        await instance.cleanup();
+      }
+    },
+  );
+  it(
+    "cuts over copied schema-15 automations once and preserves a separate rollback snapshot",
+    { timeout: 240_000 },
+    async () => {
+      const instance = await createOpenClawTestInstance({ name: "heartbeat-copied-state" });
+      try {
+        const fixture = await writeHeartbeatCopiedStateFixture(instance.stateDir);
+        const config = JSON.parse(fs.readFileSync(instance.configPath, "utf8"));
+        config.agents = {
+          ...config.agents,
+          defaults: { ...config.agents?.defaults, heartbeat: { every: "15m" } },
+          entries: { main: {} },
+        };
+        config.cron = { store: fixture.storeKey };
+        fs.writeFileSync(instance.configPath, JSON.stringify(config));
+        const runDoctor = async () => {
+          const result = await instance.cli(
+            ["doctor", "--fix", "--non-interactive", "--yes", "--no-workspace-suggestions"],
+            { timeoutMs: 120_000 },
+          );
+          expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+        };
+        await runDoctor();
+        let candidate = new DatabaseSync(fixture.candidatePath);
+        try {
+          expect(candidate.prepare("PRAGMA user_version").get()).toEqual({ user_version: 16 });
+          const row = candidate
+            .prepare("SELECT job_json,state_json FROM cron_jobs WHERE job_id = ?")
+            .get(fixture.job.id) as { job_json: string; state_json: string };
+          expect(JSON.parse(row.job_json)).toMatchObject({
+            id: fixture.job.id,
+            enabled: false,
+            schedule: fixture.job.schedule,
+            payload: { kind: "agentTurn" },
+          });
+          expect(JSON.parse(row.state_json)).toEqual(fixture.state);
+          expect(
+            candidate
+              .prepare("SELECT content,revision FROM cron_job_scratch WHERE job_id = ?")
+              .get(fixture.job.id),
+          ).toEqual({ content: "Keep these bytes.\r\n", revision: 7 });
+          expect(
+            candidate
+              .prepare("SELECT receipt_id FROM cron_run_receipts WHERE job_id = ?")
+              .all(fixture.job.id),
+          ).toEqual([{ receipt_id: "copied-run" }]);
+          candidate.prepare("DELETE FROM cron_jobs WHERE job_id = ?").run(fixture.job.id);
+          candidate.prepare("DELETE FROM cron_job_scratch WHERE job_id = ?").run(fixture.job.id);
+        } finally {
+          candidate.close();
+        }
+        await runDoctor();
+        candidate = new DatabaseSync(fixture.candidatePath, { readOnly: true });
+        try {
+          expect(candidate.prepare("SELECT job_id FROM cron_jobs").all()).toEqual([]);
+        } finally {
+          candidate.close();
+        }
+        const restorePath = path.join(instance.stateDir, "rollback-separate.sqlite");
+        const source = new DatabaseSync(fixture.sourcePath, { readOnly: true });
+        try {
+          await backup(source, restorePath);
+        } finally {
+          source.close();
+        }
+        const restored = new DatabaseSync(restorePath, { readOnly: true });
+        try {
+          expect(restored.prepare("PRAGMA user_version").get()).toEqual({ user_version: 15 });
+          expect(
+            restored
+              .prepare("SELECT payload_kind FROM cron_jobs WHERE job_id = ?")
+              .get(fixture.job.id),
+          ).toEqual({ payload_kind: "heartbeat" });
+        } finally {
+          restored.close();
+        }
       } finally {
         await instance.cleanup();
       }

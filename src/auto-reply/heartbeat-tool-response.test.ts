@@ -1,23 +1,18 @@
 import { describe, expect, it } from "vitest";
-import {
-  createHeartbeatToolResponsePayload,
-  resolveHeartbeatScratchProposalFromReplyResult,
-} from "./heartbeat-tool-response.js";
+import { normalizeHeartbeatToolResponse } from "./heartbeat-tool-response.js";
 
-describe("heartbeat scratch proposal resolution", () => {
-  it("lets a later heartbeat response clear an earlier scratch proposal", () => {
-    const first = createHeartbeatToolResponsePayload({
-      outcome: "progress",
-      notify: false,
-      summary: "first",
-      scratch: "stale scratch",
-    });
-    const corrected = createHeartbeatToolResponsePayload({
-      outcome: "no_change",
-      notify: false,
-      summary: "corrected",
-    });
-
-    expect(resolveHeartbeatScratchProposalFromReplyResult([first, corrected])).toBeUndefined();
+describe("historical SDK heartbeat response parser", () => {
+  it("preserves the shipped report shape without creating runtime outcomes", () => {
+    expect(
+      normalizeHeartbeatToolResponse({
+        outcome: "progress",
+        notify: false,
+        summary: "checked",
+        next_check: "15m",
+      }),
+    ).toEqual({ outcome: "progress", notify: false, summary: "checked", nextCheck: "15m" });
+    expect(
+      normalizeHeartbeatToolResponse({ outcome: "made-up", notify: true, summary: "bad" }),
+    ).toBeUndefined();
   });
 });

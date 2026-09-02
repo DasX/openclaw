@@ -1,12 +1,17 @@
 import crypto from "node:crypto";
+import {
+  captureSessionEventTargetForHost as captureSessionEventTarget,
+  enqueueSessionEventForHost as enqueueSessionEvent,
+  type SessionEventTarget,
+} from "../../auto-reply/reply/session-event-handoff.js";
 import { shouldLogVerbose } from "../../globals.js";
 import {
   resolveEventSessionKeyForPolicy,
   resolveEventSessionRoutingPolicy,
-  scopedHeartbeatWakeOptionsForPolicy,
 } from "../../infra/event-session-routing.js";
 import type { CliBackendConfig } from "../../plugins/cli-backend.types.js";
 import type { RunExit } from "../../process/supervisor/types.js";
+import { resolveSessionAgentIds } from "../agent-scope.js";
 import type { CliOutput, CliTerminalInterruption } from "../cli-output-contracts.js";
 import { createCliJsonlStreamingParser } from "../cli-output-stream.js";
 import { parseCliOutput } from "../cli-output.js";
@@ -97,6 +102,32 @@ export async function executeCliProcess(params: {
 }): Promise<CliOutput> {
   const context = params.context;
   const runParams = context.params;
+  const noticeSessionKey = runParams.sessionKey
+    ? resolveEventSessionKeyForPolicy(
+        runParams.sessionKey,
+        resolveEventSessionRoutingPolicy({
+          cfg: runParams.config,
+          sessionKey: runParams.sessionKey,
+          channel: runParams.messageProvider,
+          accountId: runParams.agentAccountId,
+        }),
+      )
+    : undefined;
+  let noticeAgentId: string | undefined;
+  let noticeTarget: SessionEventTarget | undefined;
+  if (noticeSessionKey && params.events.emitLiveEvents) {
+    try {
+      noticeAgentId = resolveSessionAgentIds({
+        config: runParams.config,
+        agentId: runParams.agentId,
+        sessionKey: runParams.sessionKey,
+      }).sessionAgentId;
+      noticeTarget = captureSessionEventTarget(noticeAgentId, noticeSessionKey);
+    } catch (error) {
+      // A missing notification destination must not prevent the CLI run or replace its error.
+      cliBackendLog.warn(`CLI watchdog follow-up unavailable: ${String(error)}`);
+    }
+  }
   const failoverContext = {
     provider: runParams.provider,
     model: context.modelId,
@@ -428,22 +459,27 @@ export async function executeCliProcess(params: {
           "It may have been waiting for interactive input or an approval prompt.",
           "Check CLI permission settings and OpenClaw approval prompts.",
         ].join(" ");
-        const routing = resolveEventSessionRoutingPolicy({
-          cfg: runParams.config,
-          sessionKey: runParams.sessionKey,
-          channel: runParams.messageProvider,
-          accountId: runParams.agentAccountId,
-        });
-        params.deps.enqueueSystemEvent(stallNotice, {
-          sessionKey: resolveEventSessionKeyForPolicy(runParams.sessionKey, routing),
-        });
-        params.deps.requestHeartbeat(
-          scopedHeartbeatWakeOptionsForPolicy(
-            runParams.sessionKey,
-            { source: "cli-watchdog", intent: "event", reason: "cli:watchdog:stall" },
-            routing,
-          ),
-        );
+        if (noticeTarget && noticeSessionKey && noticeAgentId) {
+          try {
+            const receipt = enqueueSessionEvent(stallNotice, {
+              agentId: noticeAgentId,
+              sessionKey: noticeSessionKey,
+              source: "exec",
+              contextKey: `cli-watchdog:${runParams.runId}`,
+              expectedTarget: noticeTarget,
+              abortSignal: runParams.abortSignal,
+            });
+            void receipt.settled.then((outcome) => {
+              if (outcome.status !== "completed") {
+                cliBackendLog.warn(
+                  `CLI watchdog follow-up ${outcome.status}: ${outcome.error ?? "cancelled"}`,
+                );
+              }
+            });
+          } catch (error) {
+            cliBackendLog.warn(`CLI watchdog follow-up rejected: ${String(error)}`);
+          }
+        }
       }
       throw timeoutDecision.error;
     }

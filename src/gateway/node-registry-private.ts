@@ -19,7 +19,11 @@ import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolut
 import { sameWorkerProtocolFeatures } from "../worker/worker-build-identity.js";
 import { buildNodeInvokeRequest, serializeNodeEvent } from "./node-invoke-request.js";
 import { NODE_INVOKE_PAIRING_CHANGED_ABORT } from "./node-registry-private-token.js";
-import type { NodeInvokeStreamController, PendingInvoke } from "./node-registry.invoke-stream.js";
+import type {
+  NodeInvokeStreamController,
+  PendingInvoke,
+  PendingSystemRunEvent,
+} from "./node-registry.invoke-stream.js";
 import {
   normalizeSystemRunInvokeParams,
   resolvePendingSystemRunEvent,
@@ -118,13 +122,16 @@ type NodeRegistryPrivateContext = {
     event: string,
     payload: unknown,
   ) => boolean;
-  rememberAuthorizedSystemRunEvent: (event: {
-    nodeId: string;
-    connId: string;
-    runId: string;
-    sessionKey?: string;
-    timeoutMs?: number | null;
-  }) => void;
+  captureSystemRunEventTarget?: (sessionKey?: string) => PendingSystemRunEvent["expectedTarget"];
+  rememberAuthorizedSystemRunEvent: (
+    event: PendingSystemRunEvent & {
+      nodeId: string;
+      connId: string;
+      runId: string;
+      sessionKey?: string;
+      timeoutMs?: number | null;
+    },
+  ) => void;
   publishActiveNodeContext: () => void;
 };
 
@@ -257,6 +264,20 @@ async function invokeNodeRegistryCore(
   isCompletionAuthorized?: () => boolean,
 ): Promise<NodeInvokeResult> {
   let timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 30_000, 0);
+  const requestId = randomUUID();
+  const invokeParams = normalizeSystemRunInvokeParams({
+    command: params.command,
+    params: params.params,
+  });
+  const systemRunEvent = resolvePendingSystemRunEvent({
+    command: params.command,
+    params: invokeParams,
+  });
+  if (systemRunEvent && state.context.captureSystemRunEventTarget) {
+    systemRunEvent.expectedTarget = state.context.captureSystemRunEventTarget(
+      systemRunEvent.sessionKey ?? params.sessionKey,
+    );
+  }
   // Explicit budgets include pairing and serialization; omitted budgets retain
   // the post-dispatch default, and zero keeps long-lived invokes unbounded.
   const deadlineAtMs =
@@ -328,11 +349,6 @@ async function invokeNodeRegistryCore(
       };
     }
   }
-  const requestId = randomUUID();
-  const invokeParams = normalizeSystemRunInvokeParams({
-    command: params.command,
-    params: params.params,
-  });
   const payload = buildNodeInvokeRequest({
     id: requestId,
     nodeId: params.nodeId,
@@ -352,10 +368,6 @@ async function invokeNodeRegistryCore(
       error: { code: "INVALID_REQUEST", message: "worker launch exceeds the node payload limit" },
     };
   }
-  const systemRunEvent = resolvePendingSystemRunEvent({
-    command: params.command,
-    params: invokeParams,
-  });
   // Serialization can consume the budget or close caller-owned authority.
   // Revalidate both before arming pending state and handing off to transport.
   if (params.signal?.aborted) {

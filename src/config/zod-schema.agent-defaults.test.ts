@@ -507,35 +507,13 @@ describe("agent defaults schema", () => {
     expect(agent.contextLimits?.memoryGetMaxChars).toBe(18_000);
   });
 
-  it("accepts positive heartbeat timeoutSeconds on defaults and agent entries", () => {
-    const defaults = AgentDefaultsSchema.parse({
-      heartbeat: { timeoutSeconds: 45 },
-    })!;
-    const agent = AgentEntrySchema.parse({
-      id: "ops",
-      heartbeat: { timeoutSeconds: 45 },
-    });
-
-    expect(defaults.heartbeat?.timeoutSeconds).toBe(45);
-    expect(defaults.heartbeat?.timeoutSeconds).toBe(45);
-    expect(agent.heartbeat?.timeoutSeconds).toBe(45);
-    expect(agent.heartbeat?.timeoutSeconds).toBe(45);
-  });
-
-  it("rejects invalid heartbeat activeHours without an explicit cadence", () => {
-    expectSchemaFailurePath(
-      AgentDefaultsSchema.safeParse({
-        heartbeat: { activeHours: { start: "99:99", end: "17:00" } },
-      }),
-      "heartbeat.activeHours.start",
-    );
-    expectSchemaFailurePath(
-      AgentEntrySchema.safeParse({
-        id: "ops",
-        heartbeat: { activeHours: { start: "09:00", end: "not-a-time" } },
-      }),
-      "heartbeat.activeHours.end",
-    );
+  it.each([
+    { every: "30m" },
+    { timeoutSeconds: 45 },
+    { activeHours: { start: "09:00", end: "17:00" } },
+  ])("rejects retired heartbeat config at both runtime agent scopes (%j)", (heartbeat) => {
+    expect(AgentDefaultsSchema.safeParse({ heartbeat }).success).toBe(false);
+    expect(AgentEntrySchema.safeParse({ id: "ops", heartbeat }).success).toBe(false);
   });
 
   it("accepts per-agent TTS overrides", () => {
@@ -555,17 +533,6 @@ describe("agent defaults schema", () => {
 
     expect(agent.tts?.provider).toBe("openai");
     expect(agent.tts?.providers?.openai?.voice).toBe("nova");
-  });
-
-  it("rejects zero heartbeat timeoutSeconds", () => {
-    expectSchemaFailurePath(
-      AgentDefaultsSchema.safeParse({ heartbeat: { timeoutSeconds: 0 } }),
-      "heartbeat.timeoutSeconds",
-    );
-    expectSchemaFailurePath(
-      AgentEntrySchema.safeParse({ id: "ops", heartbeat: { timeoutSeconds: 0 } }),
-      "heartbeat.timeoutSeconds",
-    );
   });
 
   it("accepts per-agent tools.codeMode config", () => {

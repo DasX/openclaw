@@ -143,7 +143,7 @@ describe("runCronIsolatedAgentTurn — interim ack retry", () => {
     await runTurnAndExpectOk(1, 1);
   });
 
-  it("delivers only the final result after an earlier heartbeat acknowledgement", async () => {
+  it("delivers only the final result after an earlier silent acknowledgement", async () => {
     const finalResult = "Critical deployment failure: database unavailable.";
     const { resolveCronPayloadOutcome } =
       await vi.importActual<typeof import("./helpers.js")>("./helpers.js");
@@ -156,7 +156,7 @@ describe("runCronIsolatedAgentTurn — interim ack retry", () => {
       to: "123",
     });
     runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "HEARTBEAT_OK" }, { text: finalResult }],
+      payloads: [{ text: "NO_REPLY" }, { text: finalResult }],
       meta: {
         finalAssistantVisibleText: finalResult,
         agentMeta: { usage: { input: 10, output: 20 } },

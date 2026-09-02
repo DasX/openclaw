@@ -46,10 +46,7 @@ import {
   normalizeRuntimeRef,
   resolveRuntimeNormalization,
 } from "./model-runtime-normalization.js";
-import {
-  isStaleHeartbeatAutoFallbackOverride,
-  normalizeStoredRuntimeModelRef,
-} from "./stored-model-override.js";
+import { normalizeStoredRuntimeModelRef } from "./stored-model-override.js";
 export {
   resolveModelDirectiveSelection,
   type ModelDirectiveSelection,
@@ -164,10 +161,9 @@ export async function createModelSelectionState(params: {
   hasModelDirective: boolean;
   hasOneTurnModelOverride?: boolean;
   skipStoredModelOverride?: boolean;
-  /** True when heartbeat.model was explicitly resolved for this run.
-   *  In that case, skip session-stored overrides so the heartbeat selection wins. */
-  hasResolvedHeartbeatModelOverride?: boolean;
-  isHeartbeat?: boolean;
+  /** A scheduled model choice applies to this turn only, never user preferences. */
+  hasResolvedTurnModelOverride?: boolean;
+
   preparedModelCatalog?: ModelCatalogSnapshot;
 }): Promise<ModelSelectionState> {
   const timingEnabled = isDiagnosticFlagEnabled("ingress.timing", params.cfg);
@@ -249,16 +245,6 @@ export async function createModelSelectionState(params: {
     sessionEntry,
     defaultProvider,
   });
-  const staleHeartbeatAutoFallbackOverride = isStaleHeartbeatAutoFallbackOverride({
-    isHeartbeat: params.isHeartbeat,
-    hasResolvedHeartbeatModelOverride: params.hasResolvedHeartbeatModelOverride,
-    sessionEntry,
-    storedOverride: directStoredModelOverride,
-    defaultProvider,
-    defaultModel,
-    primaryProvider: params.primaryProvider,
-    primaryModel: params.primaryModel,
-  });
   const primaryHarnessPolicy = resolveAgentHarnessPolicy({
     provider: primaryProvider,
     modelId: primaryModel,
@@ -299,9 +285,7 @@ export async function createModelSelectionState(params: {
     modelKey(normalizedCurrentSelection.provider, normalizedCurrentSelection.model) !==
       modelKey(normalizedDirectOverride.provider, normalizedDirectOverride.model);
   const staleDirectStoredOverride =
-    staleHeartbeatAutoFallbackOverride ||
-    staleLegacyOpenAICodexAutoOverride ||
-    staleLegacyAutoFallbackWithoutOrigin;
+    staleLegacyOpenAICodexAutoOverride || staleLegacyAutoFallbackWithoutOrigin;
 
   if (needsModelCatalog) {
     const catalogSnapshot = await loadRuntimeCatalogSnapshot();
@@ -432,14 +416,11 @@ export async function createModelSelectionState(params: {
     parentSessionKey,
     defaultProvider,
   });
-  // Skip stored session model override only when an explicit heartbeat.model
-  // was resolved. Heartbeats without heartbeat.model still inherit normal
-  // overrides unless a direct auto fallback override is stale for the current
-  // configured default.
+  // Explicit per-turn choices take precedence without changing persisted preferences.
   const skipStoredOverride =
     params.skipStoredModelOverride === true ||
     hasOneTurnModelOverride ||
-    params.hasResolvedHeartbeatModelOverride === true ||
+    params.hasResolvedTurnModelOverride === true ||
     (resetModelOverride && staleDirectStoredOverride && storedOverride?.source === "session");
 
   if (storedOverride?.model && !skipStoredOverride) {

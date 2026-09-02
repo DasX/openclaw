@@ -159,6 +159,12 @@ export async function runChannelTurn<
   TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
 >(
   params: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
+): Promise<ChannelTurnResult<TDispatchResult>>;
+export async function runChannelTurn<
+  TRaw,
+  TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
+>(
+  params: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
 ): Promise<ChannelTurnResult<TDispatchResult>> {
   emit({
     ...params,

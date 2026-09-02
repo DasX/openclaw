@@ -13,8 +13,13 @@ import {
   tasksShowCommand,
 } from "../commands/tasks.js";
 import { resetConfigRuntimeState } from "../config/config.js";
-import { setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
-import { peekSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+import { loadDeliveryQueueEntries } from "../infra/delivery-queue-sqlite.js";
+import {
+  SessionDeliveryDeferredError,
+  type QueuedSessionDelivery,
+} from "../infra/session-delivery-queue-storage.js";
+import { resetSystemEventsForTest } from "../infra/system-events.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -30,6 +35,7 @@ import {
   resetTaskFlowRegistryForTests,
   resetTaskRegistryControlRuntimeForTests,
   resetTaskRegistryDeliveryRuntimeForTests,
+  setTaskRegistryDeliveryRuntimeForTests,
   resetTaskRegistryForTests,
 } from "./task-runtime.test-helpers.js";
 
@@ -103,10 +109,15 @@ describe("task operations product boundary", () => {
       },
       async () => {
         resetTaskOperationsRuntime();
-        const clearHeartbeat = setHeartbeatWakeHandler(async () => ({
-          status: "ran",
-          durationMs: 0,
-        }));
+        setRuntimeConfigSnapshot(baseCommandTestConfig);
+        setTaskRegistryDeliveryRuntimeForTests({
+          sendMessage: async () => {
+            throw new Error("Unexpected direct message delivery in task operations test");
+          },
+          deliverTaskSessionEvent: async () => {
+            throw new SessionDeliveryDeferredError("Session busy");
+          },
+        });
 
         try {
           const now = Date.now();
@@ -203,9 +214,11 @@ describe("task operations product boundary", () => {
             eventSummary: "Indexed 3 records",
           });
           await vi.waitFor(() => {
-            expect(peekSystemEvents(OWNER_KEY)).toContain(
-              "Background task update: Operator lifecycle. Indexed 3 records",
-            );
+            expect(
+              (loadDeliveryQueueEntries("session") as QueuedSessionDelivery[])
+                .filter((entry) => entry.kind === "systemEvent" && entry.sessionKey === OWNER_KEY)
+                .map((entry) => (entry.kind === "systemEvent" ? entry.text : "")),
+            ).toContain("Background task update: Operator lifecycle. Indexed 3 records");
           });
 
           resetTaskRegistryForTests({ persist: false });
@@ -279,7 +292,6 @@ describe("task operations product boundary", () => {
           await tasksShowCommand({ lookup: operatorTask.taskId }, cancelledShow.runtime);
           expect(cancelledShow.logs.join("\n")).toContain("status: cancelled");
         } finally {
-          clearHeartbeat();
           resetTaskOperationsRuntime();
         }
       },

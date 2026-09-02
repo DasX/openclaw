@@ -182,6 +182,7 @@ function pairingStateMatchesBinding(
 }
 
 export type NodeRegistryOptions = {
+  captureSystemRunEventTarget?: (sessionKey?: string) => PendingSystemRunEvent["expectedTarget"];
   listRegisteredNodePluginToolCommands?:
     | (() => readonly RegisteredNodePluginToolCommand[] | undefined)
     | undefined;
@@ -322,6 +323,7 @@ export class NodeRegistry {
           ? this.sendEventToSession(current, event, payload)
           : false;
       },
+      captureSystemRunEventTarget: this.options.captureSystemRunEventTarget,
       rememberAuthorizedSystemRunEvent: (event) => this.rememberAuthorizedSystemRunEvent(event),
       publishActiveNodeContext: () => this.publishActiveNodeContext(),
     });
@@ -1157,7 +1159,7 @@ export class NodeRegistry {
     runId?: string;
     sessionKey: string;
     terminal: boolean;
-  }): boolean {
+  }): false | PendingSystemRunEvent {
     if (!params.connId || !params.sessionKey) {
       return false;
     }
@@ -1194,7 +1196,7 @@ export class NodeRegistry {
     if (params.terminal) {
       this.authorizedSystemRunEvents.delete(match.key);
     }
-    return true;
+    return match.event;
   }
 
   private rememberAuthorizedSystemRunEvent(

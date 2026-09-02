@@ -155,6 +155,9 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
   if (typeof patch.lightContext === "boolean") {
     next.lightContext = patch.lightContext;
   }
+  if (typeof patch.skipIfScratchEmpty === "boolean") {
+    next.skipIfScratchEmpty = patch.skipIfScratchEmpty;
+  }
   if (typeof patch.allowUnsafeExternalContent === "boolean") {
     next.allowUnsafeExternalContent = patch.allowUnsafeExternalContent;
   }
@@ -222,6 +225,7 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
     thinking: typeof patch.thinking === "string" ? patch.thinking : undefined,
     timeoutSeconds: patch.timeoutSeconds,
     lightContext: patch.lightContext,
+    skipIfScratchEmpty: patch.skipIfScratchEmpty,
     allowUnsafeExternalContent: patch.allowUnsafeExternalContent,
   };
   applyToolsAllowPatch(next, patch);

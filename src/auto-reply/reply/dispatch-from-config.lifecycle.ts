@@ -406,7 +406,7 @@ export function createDispatchReplyOperationCoordinator(params: {
       params.dispatchOperationSessionKey,
     );
     const allowGatewayEmbeddedQueueResolution =
-      replyTurnKind === "visible" &&
+      (replyTurnKind === "visible" || params.replyOptions?.internalEventExecution !== undefined) &&
       (params.replyOptions?.turnAdoptionLifecycle !== undefined ||
         params.allowActiveQueueResolution === true) &&
       activeReplyOperation === undefined &&
@@ -418,14 +418,16 @@ export function createDispatchReplyOperationCoordinator(params: {
       return { status: "ready" };
     }
     const allowActiveResolution =
-      replyTurnKind === "visible" && (phase === "pre_dispatch" || phase === "command_resolution");
+      (replyTurnKind === "visible" || params.replyOptions?.internalEventExecution !== undefined) &&
+      (phase === "pre_dispatch" || phase === "command_resolution");
     const allowGatewayQueueResolution =
       phase !== "pre_dispatch" &&
-      replyTurnKind === "visible" &&
+      (replyTurnKind === "visible" || params.replyOptions?.internalEventExecution !== undefined) &&
       (params.replyOptions?.turnAdoptionLifecycle !== undefined ||
         params.allowActiveQueueResolution === true) &&
       activeReplyOperation !== undefined &&
-      activeReplyOperation.turnKind !== "heartbeat";
+      (activeReplyOperation.turnKind !== "background" ||
+        params.replyOptions?.internalEventExecution !== undefined);
     if (allowGatewayQueueResolution) {
       // Gateway and low-level plugin turns must reach getReplyFromConfig while the owner is active;
       // that layer applies the session's steer/followup/collect/drop policy without concurrent runs.
@@ -670,8 +672,18 @@ export function createDispatchReplyOperationCoordinator(params: {
       return;
     }
     const timeoutPolicy = params.dispatcher.resolveFollowupAdmissionBarrierTimeoutPolicy?.();
-    const complete = () =>
-      operation.completeWithAfterClearBarrier(waitForDispatchDelivery(), timeoutPolicy);
+    const complete = () => {
+      if (params.replyOptions?.internalEventExecution) {
+        // Internal occurrences own their final send. Keep the admitted owner live
+        // through delivery; a matching session row is not a replacement capability.
+        void waitForDispatchDelivery().then(
+          () => operation.complete(),
+          () => operation.complete(),
+        );
+      } else {
+        operation.completeWithAfterClearBarrier(waitForDispatchDelivery(), timeoutPolicy);
+      }
+    };
     // Abort races the resolver, not its bookkeeping. Retain this exact owner
     // until that work exits; delivery must remain after-clear to avoid queue cycles.
     if (dispatchLifecycleWork.owner.size > 0) {

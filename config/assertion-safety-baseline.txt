@@ -1845,7 +1845,7 @@ src/agents/embedded-agent-runner/transcript-rewrite.ts	2
 src/agents/embedded-agent-subscribe.handlers.messages.lifecycle.ts	4
 src/agents/embedded-agent-subscribe.handlers.messages.stream.ts	6
 src/agents/embedded-agent-subscribe.handlers.messages.update.ts	6
-src/agents/embedded-agent-subscribe.handlers.tools.completion.ts	3
+src/agents/embedded-agent-subscribe.handlers.tools.completion.ts	2
 src/agents/embedded-agent-subscribe.handlers.tools.results.ts	14
 src/agents/embedded-agent-subscribe.handlers.tools.start.ts	8
 src/agents/embedded-agent-subscribe.handlers.ts	10
@@ -2053,7 +2053,6 @@ src/agents/tools/embedded-gateway-stub.ts	8
 src/agents/tools/gateway-tool.ts	5
 src/agents/tools/gateway.ts	1
 src/agents/tools/goal-tools.ts	4
-src/agents/tools/heartbeat-response-tool.ts	1
 src/agents/tools/image-generate-tool.ts	14
 src/agents/tools/image-tool.helpers.ts	2
 src/agents/tools/image-tool.ts	3
@@ -2114,7 +2113,7 @@ src/auto-reply/command-auth.ts	5
 src/auto-reply/command-turn-context.ts	1
 src/auto-reply/commands-registry.ts	1
 src/auto-reply/heartbeat-filter.ts	4
-src/auto-reply/heartbeat-tool-response.ts	3
+src/auto-reply/heartbeat-tool-response.ts	2
 src/auto-reply/reply-payload.ts	2
 src/auto-reply/reply.directive.directive-behavior.e2e-mocks.ts	1
 src/auto-reply/reply/acp-reset-target.ts	2
@@ -2518,7 +2517,6 @@ src/commands/doctor/shared/empty-allowlist-policy.ts	14
 src/commands/doctor/shared/empty-allowlist-scan.ts	17
 src/commands/doctor/shared/include-migration-ownership.ts	2
 src/commands/doctor/shared/legacy-config-compat.ts	1
-src/commands/doctor/shared/legacy-config-core-migrate.ts	1
 src/commands/doctor/shared/legacy-config-core-normalizers.ts	18
 src/commands/doctor/shared/legacy-config-issues.ts	1
 src/commands/doctor/shared/legacy-config-migrate.ts	2
@@ -3103,10 +3101,6 @@ src/infra/gateway-lock.ts	4
 src/infra/gateway-processes.ts	1
 src/infra/gemini-auth.ts	1
 src/infra/git-commit.ts	1
-src/infra/heartbeat-outcome-store.ts	1
-src/infra/heartbeat-runner-config.ts	1
-src/infra/heartbeat-visibility.ts	1
-src/infra/heartbeat-wake.ts	1
 src/infra/install-package-dir.ts	3
 src/infra/install-source-utils.ts	2
 src/infra/json-file.ts	1
@@ -3356,7 +3350,7 @@ src/plugin-sdk/approval-reaction-binding.ts	2
 src/plugin-sdk/channel-config-helpers.ts	24
 src/plugin-sdk/channel-config-ui-hints.ts	1
 src/plugin-sdk/channel-entry-contract.ts	6
-src/plugin-sdk/channel-inbound.ts	2
+src/plugin-sdk/channel-inbound.ts	1
 src/plugin-sdk/channel-ingress-runtime.ts	1
 src/plugin-sdk/channel-outbound.ts	1
 src/plugin-sdk/channel-replay-guard.ts	2

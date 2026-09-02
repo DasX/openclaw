@@ -31,6 +31,9 @@ const CRON_ACTIONS = [
   "run",
   "runs",
   "next_check",
+  "scratch_get",
+  "scratch_set",
+  "record_result",
   "wake",
 ] as const;
 
@@ -46,6 +49,9 @@ const CRON_DELIVERY_MODES = ["none", "announce", "webhook"] as const;
 const CRON_RUN_MODES = ["due", "force"] as const;
 
 type CronToolSchemaOptions = {
+  selfScoped?: boolean;
+  activeRun?: boolean;
+  pacingEnabled?: boolean;
   agentSessionKey?: string;
   /**
    * Whether cron.triggers.enabled is on for this deployment. When false, the
@@ -179,6 +185,7 @@ function createCronPayloadSchema(params: { triggersEnabled: boolean }): TSchema 
             description: "Lightweight bootstrap context (skip full workspace context)",
           }),
         ),
+        skipIfScratchEmpty: Type.Optional(Type.Boolean()),
         allowUnsafeExternalContent: Type.Optional(
           Type.Boolean({ description: "Allow untrusted external content in prompt" }),
         ),
@@ -228,6 +235,8 @@ function createCronDeliverySchema(): TSchema {
     Type.Object(
       {
         mode: optionalStringEnum(CRON_DELIVERY_MODES, { description: "Delivery mode" }),
+        target: Type.Optional(Type.Union([Type.Literal("owner"), Type.Null()])),
+        directPolicy: Type.Optional(Type.Union([stringEnum(["allow", "block"]), Type.Null()])),
         channel: deliveryStringSchema("Delivery channel"),
         to: deliveryStringSchema("Delivery target"),
         threadId: Type.Optional(
@@ -317,6 +326,20 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
         ),
         schedule: createCronScheduleSchema({ triggersEnabled }),
         pacing: createCronPacingSchema(),
+        activeHours: Type.Optional(
+          Type.Union([
+            Type.Object(
+              {
+                start: Type.String(),
+                end: Type.String(),
+                timezone: Type.Optional(Type.String()),
+              },
+              { additionalProperties: false },
+            ),
+            Type.Null(),
+          ]),
+        ),
+        idleOnly: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
         ...(triggersEnabled ? { trigger: createCronTriggerSchema() } : {}),
         sessionTarget: Type.Optional(
           Type.String({
@@ -350,7 +373,25 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
   );
   return Type.Object(
     {
-      action: stringEnum(CRON_ACTIONS),
+      action: stringEnum(
+        options?.selfScoped
+          ? [
+              "status",
+              "list",
+              "get",
+              "runs",
+              "remove",
+              ...(options.pacingEnabled ? ["next_check"] : []),
+              ...(options.activeRun ? ["scratch_get", "scratch_set", "record_result"] : []),
+            ]
+          : CRON_ACTIONS.filter(
+              (action) =>
+                action !== "scratch_get" &&
+                action !== "scratch_set" &&
+                action !== "record_result" &&
+                action !== "next_check",
+            ),
+      ),
       ...gatewayCallOptionSchemaProperties(),
       includeDisabled: Type.Optional(Type.Boolean()),
       limit: optionalPositiveIntegerSchema({
@@ -363,6 +404,10 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
       job,
       jobId: Type.Optional(Type.String()),
       id: Type.Optional(Type.String()),
+      content: Type.Optional(Type.Union([Type.String({ maxLength: 262144 }), Type.Null()])),
+      expectedRevision: optionalNonNegativeIntegerSchema(),
+      outcome: optionalStringEnum(["no_change", "progress", "done", "blocked", "needs_attention"]),
+      summary: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
       in: Type.Optional(
         Type.String({
           description: 'Relative duration for action="next_check" (for example, "15m")',

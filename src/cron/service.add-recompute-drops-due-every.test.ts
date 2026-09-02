@@ -18,13 +18,14 @@ describe("add() must not drop a due every-job's pending run", () => {
 
     const finished = createFinishedBarrier();
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       onEvent: finished.onEvent,
     });

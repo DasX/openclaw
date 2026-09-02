@@ -525,9 +525,10 @@ sessions do not passively receive session content
   `operator.admin` by default; explicit entries such as
   `plugin.approval.requested` / `plugin.approval.resolved` use
   `operator.approvals` instead.
-- Status/transport events (`heartbeat`, `presence`, `tick`, connect/disconnect
-  lifecycle) stay unrestricted so transport health is observable to every
-  authenticated session.
+- Status/transport events (`presence`, `tick`, connect/disconnect lifecycle)
+  and the deprecated `heartbeat` compatibility event stay unrestricted for
+  authenticated sessions. Use `tick`, not monitoring-job outcomes, for transport
+  liveness.
 - Unknown broadcast event families are scope-gated by default (fail-closed)
   unless a registered handler explicitly relaxes them.
 
@@ -560,8 +561,8 @@ methods. Treat this as feature discovery, not a full enumeration of
     - `gateway.identity.get` returns the gateway device identity used by relay and pairing flows.
     - `system-presence` returns the current presence snapshot for connected operator/node devices.
     - `system-event` appends a system event and can update/broadcast presence context.
-    - `last-heartbeat` returns the latest persisted heartbeat event.
-    - `set-heartbeats` toggles heartbeat processing on the gateway.
+    - `last-heartbeat` is a deprecated protocol-v4 adapter that projects the latest converted/default monitoring-job outcome into the legacy response shape. New clients use `cron.runs` for job history.
+    - `set-heartbeats` is a deprecated protocol-v4 adapter that enables or disables only converted/default monitoring jobs. It does not toggle all cron jobs or immediate session follow-ups. New clients update the intended job with `cron.update`.
     - `gateway.restart.preflight` is a deprecated, read-only compatibility preview of restart-specific active work. It does not close admission, create a suspension lease, or provide the atomic full-work fence of `gateway.suspend.prepare`; new restart flows should call `gateway.restart.request`.
     - `gateway.suspend.prepare` creates a short cooperative-suspension lease only when tracked Gateway work is idle. While prepared, authenticated WebSocket connects remain available, but only `gateway.suspend.*` and an exact targeted non-safe `gateway.restart.request` may run; safe and untargeted restarts remain fenced. `gateway.suspend.status` checks the lease, and `gateway.suspend.resume` releases it after thaw or an aborted host operation.
 
@@ -779,13 +780,20 @@ methods. Treat this as feature discovery, not a full enumeration of
   </Accordion>
 
   <Accordion title="Automation, skills, and tools">
-    - Automation: `wake` schedules an immediate or next-heartbeat wake text injection; `cron.get`, `cron.list`, `cron.status`, `cron.add`, `cron.update`, `cron.remove`, `cron.run`, `cron.runs` manage scheduled work.
+    - Automation: `cron.get`, `cron.list`, `cron.status`, `cron.add`, `cron.update`, `cron.remove`, `cron.run`, `cron.runs` manage ordinary scheduled work, including monitoring jobs.
+    - `wake` retains the protocol-v4 `now` and deprecated `next-heartbeat` mode values at the public boundary. Immediate follow-ups use ordinary session admission, including when cron is disabled. An explicit `sessionKey` preserves the historical immediate behavior even with `next-heartbeat`. Untargeted deferred requests require a valid corresponding scheduled job; otherwise the request returns an actionable result before enqueueing, rather than waiting indefinitely for a user message.
     - `cron.run` remains an enqueue-style RPC for manual runs. Clients that need completion semantics should read the returned `runId` and poll `cron.runs`.
     - `cron.runs` accepts an optional non-empty `runId` filter so clients can follow one queued manual run without racing against other history entries for the same job.
     - Skills and tools: `commands.list`, `skills.*`, `tools.catalog`, `tools.effective`, `tools.invoke`. See [Operator helper methods](#operator-helper-methods) below.
 
   </Accordion>
 </AccordionGroup>
+
+Retiring agent heartbeat execution does not change protocol v4. The deprecated
+`last-heartbeat`, `set-heartbeats`, `heartbeat` event, and `next-heartbeat` wire
+forms adapt canonical job/session state; they do not retain a separate execution
+engine. Removal requires the protocol-v5 transition. See
+[Heartbeat migration](/gateway/heartbeat).
 
 ### Session list bootstrap
 
@@ -845,7 +853,7 @@ count.
 - `presence`: system presence snapshot updates.
 - `tick`: periodic keepalive/liveness event.
 - `health`: gateway health snapshot update.
-- `heartbeat`: heartbeat event stream update.
+- `heartbeat`: deprecated protocol-v4 projection of converted/default monitoring-job outcomes. New clients use `cron` events and `cron.runs`.
 - `cron`: cron run/job change event.
 - `shutdown`: gateway shutdown notification.
 - `node.pair.requested` / `node.pair.resolved`: node pairing lifecycle.
@@ -924,8 +932,10 @@ false` or `suppressNotifyOnExit: true` suppresses notifications. Denied events
 never enqueue a system event or wake agent work. Finished events notify only for
 timeout, nonzero or unknown exit code, or nonempty compacted output; successful
 exit 0 with no output stays quiet. Finished notifications with a run ID are
-deduplicated by canonical session and run ID. A heartbeat wake is requested only
-after a system event is queued.
+deduplicated by canonical session and run ID. Accepted completion notifications
+use ordinary session admission after the system event is queued, remain bound to
+the originating session generation and route, and do not depend on cron or
+monitoring being enabled.
 
 Node event delivery is best-effort, not a durable completion ledger.
 

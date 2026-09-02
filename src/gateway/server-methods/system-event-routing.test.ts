@@ -12,13 +12,12 @@ import { listSystemPresence } from "../../infra/system-presence.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
-  requestHeartbeat: vi.fn(),
+  enqueueSessionEvent: vi.fn(),
   loadGatewaySessionRow: vi.fn(),
 }));
 
-vi.mock("../../infra/heartbeat-wake.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../infra/heartbeat-wake.js")>()),
-  requestHeartbeat: mocks.requestHeartbeat,
+vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
+  enqueueSessionEventForHost: mocks.enqueueSessionEvent,
 }));
 
 vi.mock("../session-utils.js", async (importOriginal) => ({
@@ -35,7 +34,7 @@ describe("system-event routing", () => {
 
   afterEach(() => {
     resetSystemEventsForTest();
-    mocks.requestHeartbeat.mockReset();
+    mocks.enqueueSessionEvent.mockReset();
     mocks.loadGatewaySessionRow.mockReset();
   });
 
@@ -63,14 +62,10 @@ describe("system-event routing", () => {
       'systemHandlers["system-event"] test invariant',
     )(request);
 
-    expect(peekSystemEvents(sessionKey)).toEqual(["OpenClaw updated. Welcome the user back."]);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
-      source: "notifications-event",
-      intent: "immediate",
-      reason: "wake",
-      sessionKey,
-      heartbeat: { target: "last" },
-    });
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
+      "OpenClaw updated. Welcome the user back.",
+      { source: "device", agentId: "main", sessionKey },
+    );
     expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
   });
 
@@ -101,8 +96,9 @@ describe("system-event routing", () => {
     )(request);
 
     expect(mocks.loadGatewaySessionRow).toHaveBeenCalledWith("global", { agentId: "ops" });
-    expect(mocks.requestHeartbeat).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: "global" }),
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
+      "Wake the retained session.",
+      expect.objectContaining({ agentId: "ops", sessionKey: "global" }),
     );
     expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
   });
@@ -132,15 +128,11 @@ describe("system-event routing", () => {
       'systemHandlers["system-event"] test invariant',
     )(request);
 
-    expect(peekSystemEvents("global")).toEqual(["Wake the system owner."]);
     expect(peekSystemEvents("agent:main:main")).toEqual([]);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
-      source: "notifications-event",
-      intent: "immediate",
-      reason: "wake",
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith("Wake the system owner.", {
+      source: "device",
       agentId: "main",
       sessionKey: "global",
-      heartbeat: { target: "last" },
     });
     expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
   });
@@ -168,7 +160,7 @@ describe("system-event routing", () => {
     )(request);
 
     expect(peekSystemEvents("agent:bogus:main")).toEqual([]);
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       false,
       undefined,
@@ -201,7 +193,7 @@ describe("system-event routing", () => {
     )(request);
 
     expect(peekSystemEvents(sessionKey)).toEqual([]);
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       false,
       undefined,
@@ -235,7 +227,7 @@ describe("system-event routing", () => {
 
     expect(peekSystemEvents(sessionKey)).toEqual([]);
     expect(mocks.loadGatewaySessionRow).not.toHaveBeenCalled();
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       false,
       undefined,

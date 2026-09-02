@@ -58,20 +58,22 @@ export type CronFormState = {
   scheduleExact: boolean;
   staggerAmount: string;
   staggerUnit: "seconds" | "minutes";
+  activeHoursEnabled: boolean;
+  activeHoursStart: string;
+  activeHoursEnd: string;
+  activeHoursTimezone: string;
+  idleOnly: boolean;
+  payloadSkipIfScratchEmpty: boolean;
+  deliveryTarget: "" | "owner";
+  deliveryDirectPolicy: "" | "allow" | "block";
   triggerEnabled: boolean;
   triggerScript: string;
   triggerOnce: boolean;
   sessionTarget: "main" | "isolated" | "current" | `session:${string}`;
   wakeMode: "next-heartbeat" | "now";
-  // System-owned payloads are always payloadLocked; the form only
-  // displays it, never submits it.
-  payloadKind:
-    | "systemEvent"
-    | "agentTurn"
-    | "command"
-    | "script"
-    | "heartbeat"
-    | "skillCollectionReview";
+  // System-owned payloads are display-only. Protocol v4 may also report retired
+  // monitors, which never become editable or executable through this form.
+  payloadKind: CronPayload["kind"];
   payloadLocked: boolean;
   payloadText: string;
   payloadModel: string;
@@ -111,7 +113,7 @@ function isCronPayload(value: unknown): value is CronPayload {
   if (value.kind === "script") {
     return typeof value.script === "string";
   }
-  if (isSystemOwnedCronPayloadKind(value.kind)) {
+  if (value.kind === "heartbeat" || isSystemOwnedCronPayloadKind(value.kind)) {
     return true;
   }
   return false;
@@ -152,6 +154,14 @@ const DEFAULT_CRON_FORM: CronFormState = {
   scheduleExact: false,
   staggerAmount: "",
   staggerUnit: "seconds",
+  activeHoursEnabled: false,
+  activeHoursStart: "09:00",
+  activeHoursEnd: "17:00",
+  activeHoursTimezone: "",
+  idleOnly: false,
+  payloadSkipIfScratchEmpty: false,
+  deliveryTarget: "",
+  deliveryDirectPolicy: "",
   triggerEnabled: false,
   triggerScript: "",
   triggerOnce: false,
@@ -187,6 +197,9 @@ export type CronFieldKey =
   | "everyAmount"
   | "cronExpr"
   | "staggerAmount"
+  | "activeHoursStart"
+  | "activeHoursEnd"
+  | "activeHoursTimezone"
   | "triggerScript"
   | "payloadText"
   | "payloadModel"
@@ -401,6 +414,22 @@ export function validateCronForm(form: CronFormState): CronFieldErrors {
       const timeout = toNumber(timeoutRaw, Number.NaN);
       if (!Number.isFinite(timeout) || timeout < 0) {
         errors.timeoutSeconds = "cron.errors.timeoutInvalid";
+      }
+    }
+  }
+  if (form.activeHoursEnabled) {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.activeHoursStart)) {
+      errors.activeHoursStart = "cron.errors.activeHoursTime";
+    }
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.activeHoursEnd) && form.activeHoursEnd !== "24:00") {
+      errors.activeHoursEnd = "cron.errors.activeHoursTime";
+    }
+    const timezone = form.activeHoursTimezone.trim();
+    if (timezone && timezone !== "local" && timezone !== "user") {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+      } catch {
+        errors.activeHoursTimezone = "cron.errors.activeHoursTimezone";
       }
     }
   }
@@ -929,6 +958,7 @@ function isReadOnlyCronPayload(payload: CronPayload | null): boolean {
   return (
     payload?.kind === "command" ||
     payload?.kind === "script" ||
+    payload?.kind === "heartbeat" ||
     isSystemOwnedCronPayloadKind(payload?.kind)
   );
 }
@@ -958,6 +988,14 @@ function jobToForm(job: CronJob, prev: CronFormState): CronFormState {
     scheduleExact: false,
     staggerAmount: "",
     staggerUnit: "seconds",
+    activeHoursEnabled: job.activeHours !== undefined,
+    activeHoursStart: job.activeHours?.start ?? DEFAULT_CRON_FORM.activeHoursStart,
+    activeHoursEnd: job.activeHours?.end ?? DEFAULT_CRON_FORM.activeHoursEnd,
+    activeHoursTimezone: job.activeHours?.timezone ?? "",
+    idleOnly: job.idleOnly === true,
+    payloadSkipIfScratchEmpty: payload?.kind === "agentTurn" && payload.skipIfScratchEmpty === true,
+    deliveryTarget: job.delivery?.target ?? "",
+    deliveryDirectPolicy: job.delivery?.directPolicy ?? "",
     triggerEnabled: job.trigger !== undefined,
     triggerScript: job.trigger?.script ?? "",
     triggerOnce: job.trigger?.once === true,
@@ -1120,6 +1158,7 @@ function buildCronPayload(form: CronFormState) {
     thinking?: string | null;
     timeoutSeconds?: number;
     lightContext?: boolean;
+    skipIfScratchEmpty?: boolean;
   } = { kind: "agentTurn", message };
   const model = form.payloadModel.trim();
   if (model) {
@@ -1135,6 +1174,9 @@ function buildCronPayload(form: CronFormState) {
     if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
       payload.timeoutSeconds = timeoutSeconds;
     }
+  }
+  if (form.payloadSkipIfScratchEmpty) {
+    payload.skipIfScratchEmpty = true;
   }
   if (form.payloadLightContext) {
     payload.lightContext = true;
@@ -1211,6 +1253,9 @@ function extractSavedCronJobId(response: unknown): string | null {
 export async function addCronJob(state: CronState): Promise<CronSaveResult> {
   let result: CronSaveResult = { saved: false };
   await withCronBusy(state, async (client) => {
+    if (state.cronForm.payloadKind === "heartbeat") {
+      throw new Error(t("cron.retiredMonitorHelp"));
+    }
     const form = normalizeCronFormState(state.cronForm);
     if (form !== state.cronForm) {
       state.cronForm = form;
@@ -1249,6 +1294,9 @@ export async function addCronJob(state: CronState): Promise<CronSaveResult> {
       if (!form.payloadThinking.trim() && editingPayload.thinking !== undefined) {
         payload.thinking = null;
       }
+      if (!form.payloadSkipIfScratchEmpty && editingPayload.skipIfScratchEmpty !== undefined) {
+        payload.skipIfScratchEmpty = false;
+      }
       if (!form.payloadLightContext && editingPayload.lightContext !== undefined) {
         payload.lightContext = false;
       }
@@ -1261,22 +1309,40 @@ export async function addCronJob(state: CronState): Promise<CronSaveResult> {
       selectedDeliveryMode === "announce"
         ? normalizedDeliveryAccountId || (editingJob?.delivery?.accountId ? null : undefined)
         : undefined;
+    const ownerTarget = selectedDeliveryMode === "announce" && form.deliveryTarget === "owner";
+    // An account is channel-scoped. Keep that explicit constraint for owner lookup,
+    // but remove stale recipient/thread routing rather than merging it into a DM target.
+    const ownerChannel =
+      normalizedDeliveryAccountId && form.deliveryChannel !== "last"
+        ? form.deliveryChannel.trim() || undefined
+        : undefined;
     const delivery =
       selectedDeliveryMode && selectedDeliveryMode !== "none"
         ? {
             mode: selectedDeliveryMode,
-            channel:
-              selectedDeliveryMode === "announce"
+            channel: ownerTarget
+              ? (ownerChannel ?? (editingJob?.delivery?.channel !== undefined ? null : undefined))
+              : selectedDeliveryMode === "announce"
                 ? normalizePersistedDeliveryChannel(form.deliveryChannel, {
                     preserveLastOnUpdate: Boolean(editingJob?.delivery?.channel),
                   })
                 : undefined,
             to:
-              form.deliveryTo.trim() ||
+              (ownerTarget ? "" : form.deliveryTo.trim()) ||
               (selectedDeliveryMode === "announce" && editingJob?.delivery?.to ? null : undefined),
+            target: ownerTarget ? "owner" : editingJob?.delivery?.target ? null : undefined,
+            directPolicy:
+              selectedDeliveryMode === "announce"
+                ? form.deliveryDirectPolicy ||
+                  (editingJob?.delivery?.directPolicy ? null : undefined)
+                : undefined,
             accountId: deliveryAccountId,
             bestEffort: form.deliveryBestEffort,
-            ...(form.deliveryThreadId !== undefined ? { threadId: form.deliveryThreadId } : {}),
+            threadId: ownerTarget
+              ? editingJob?.delivery?.threadId !== undefined
+                ? null
+                : undefined
+              : form.deliveryThreadId,
             ...(selectedDeliveryMode === "announce" && form.deliveryCompletionDestination
               ? { completionDestination: form.deliveryCompletionDestination }
               : {}),
@@ -1319,6 +1385,18 @@ export async function addCronJob(state: CronState): Promise<CronSaveResult> {
       sessionTarget: form.sessionTarget,
       wakeMode: form.wakeMode,
       trigger,
+      activeHours: form.activeHoursEnabled
+        ? {
+            start: form.activeHoursStart,
+            end: form.activeHoursEnd,
+            ...(form.activeHoursTimezone.trim()
+              ? { timezone: form.activeHoursTimezone.trim() }
+              : {}),
+          }
+        : editingJob?.activeHours
+          ? null
+          : undefined,
+      idleOnly: form.idleOnly || editingJob?.idleOnly !== undefined ? form.idleOnly : undefined,
       delivery,
       failureAlert,
     };
@@ -1649,6 +1727,10 @@ function buildCloneName(name: string, existingNames: Set<string>) {
 }
 
 export function startCronClone(state: CronState, job: CronJob) {
+  if (job.payload.kind === "heartbeat") {
+    state.cronError = t("cron.retiredMonitorHelp");
+    return;
+  }
   clearCronEditState(state);
   state.cronCloningJob = job;
   state.cronRunsJobId = job.id;

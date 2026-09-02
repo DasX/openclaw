@@ -357,8 +357,6 @@ export function renderSanitizedUserFacingText(
 
 export const GENERIC_EXTERNAL_RUN_FAILURE_TEXT =
   "⚠️ Something went wrong while processing your request. Please try again, or use /new to start a fresh session.";
-export const HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT =
-  "⚠️ Heartbeat check failed before it could produce an update. The main chat session remains available.";
 export const PROVIDER_CONVERSATION_STATE_ERROR_USER_MESSAGE =
   "⚠️ The model provider rejected the conversation state. Please try again, or use /new to start a fresh session.";
 const PROVIDER_RATE_LIMIT_OR_QUOTA_ERROR_USER_MESSAGE =
@@ -697,24 +695,4 @@ const CONTROL_UI_LOG_HINT = "To view logs, run `openclaw logs --follow` in a ter
 
 export function renderControlUiAgentFailureCopy(errorText: string): string {
   return `⚠️ Agent failed before reply: ${errorText.trim().replace(/\.\s*$/, "")}.\n${CONTROL_UI_LOG_HINT}`;
-}
-
-export function replaceGenericExternalRunFailureText(text: string): {
-  text: string;
-  replaced: boolean;
-} {
-  if (text.trim() === GENERIC_EXTERNAL_RUN_FAILURE_TEXT) {
-    return { text: HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT, replaced: true };
-  }
-  const start = text.indexOf(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
-  if (start < 0 || text.slice(start + GENERIC_EXTERNAL_RUN_FAILURE_TEXT.length).trim()) {
-    return { text, replaced: false };
-  }
-  const prefix = text.slice(0, start).trimEnd();
-  return {
-    text: prefix
-      ? `${prefix} ${HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT}`
-      : HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
-    replaced: true,
-  };
 }

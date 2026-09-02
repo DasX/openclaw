@@ -24,7 +24,6 @@ import {
   normalizeOptionalString,
   uniqueStrings,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { peekSystemEventEntries } from "openclaw/plugin-sdk/system-event-runtime";
 import { appendFailedDreamingEvent } from "./dreaming-events.js";
 import type { NarrativePhaseData } from "./dreaming-narrative.js";
 import { formatErrorMessage, includesSystemEventToken } from "./dreaming-shared.js";
@@ -32,7 +31,6 @@ import { formatErrorMessage, includesSystemEventToken } from "./dreaming-shared.
 const RUNTIME_CRON_RECONCILE_INTERVAL_MS = 60_000;
 const STARTUP_CRON_RETRY_DELAY_MS = 5_000;
 const STARTUP_CRON_RETRY_MAX_ATTEMPTS = 12;
-const HEARTBEAT_ISOLATED_SESSION_SUFFIX = ":heartbeat";
 const MANAGED_DREAMING_DECLARATION_KEY = "memory-core:memory-dreaming-promotion";
 
 type Logger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error">;
@@ -381,35 +379,6 @@ function resolveCronServiceFromGatewayContext(context: { getCron?: () => unknown
   return resolveCronServiceFromCandidate(context?.getCron?.());
 }
 
-function resolveDreamingTriggerSessionKeys(sessionKey?: string): string[] {
-  const normalized = normalizeOptionalString(sessionKey);
-  if (!normalized) {
-    return [];
-  }
-
-  const keys = [normalized];
-  // Isolated heartbeat runs execute in a sibling `:heartbeat` session while cron
-  // system events stay queued on the base main session.
-  if (normalized.endsWith(HEARTBEAT_ISOLATED_SESSION_SUFFIX)) {
-    const baseSessionKey = normalized.slice(0, -HEARTBEAT_ISOLATED_SESSION_SUFFIX.length).trim();
-    if (baseSessionKey) {
-      keys.push(baseSessionKey);
-    }
-  }
-
-  return uniqueStrings(keys);
-}
-
-function hasPendingManagedDreamingCronEvent(sessionKey?: string): boolean {
-  return resolveDreamingTriggerSessionKeys(sessionKey).some((candidateSessionKey) =>
-    peekSystemEventEntries(candidateSessionKey).some(
-      (event) =>
-        event.contextKey?.startsWith("cron:") === true &&
-        normalizeOptionalString(event.text) === DREAMING_SYSTEM_EVENT_TEXT,
-    ),
-  );
-}
-
 export function resolveShortTermPromotionDreamingConfig(params: {
   pluginConfig?: Record<string, unknown>;
   cfg?: OpenClawConfig;
@@ -549,7 +518,7 @@ async function reconcileShortTermDreamingCronJob(params: {
 async function runShortTermDreamingPromotionIfTriggered(params: {
   cleanedBody: string;
   trigger?: string;
-  /** Agent whose heartbeat/cron turn triggered the sweep. */
+  /** Agent whose scheduled turn triggered the sweep. */
   agentId?: string;
   workspaceDir?: string;
   cfg?: OpenClawConfig;
@@ -557,7 +526,7 @@ async function runShortTermDreamingPromotionIfTriggered(params: {
   logger: Logger;
   subagent?: OpenClawPluginApi["runtime"]["subagent"];
 }): Promise<{ handled: true; reason: string } | undefined> {
-  if (params.trigger !== "heartbeat" && params.trigger !== "cron") {
+  if (params.trigger !== "cron") {
     return undefined;
   }
   if (!includesSystemEventToken(params.cleanedBody, DREAMING_SYSTEM_EVENT_TEXT)) {
@@ -936,7 +905,7 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
     const configKey = runtimeConfigKey(config);
     if (!cron && config.enabled && !unavailableCronWarningEmitted) {
       // Avoid a noisy startup-path warning when the gateway has not exposed cron yet.
-      // The runtime reconciliation path (heartbeat-driven) will still warn if the
+      // The runtime reconciliation path (scheduled) will still warn if the
       // cron service remains unavailable after boot.
       if (params.reason === "startup" || params.reason === "startup_retry") {
         api.logger.debug?.(
@@ -1143,7 +1112,7 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
     "before_agent_reply",
     async (event, ctx) => {
       try {
-        if (ctx.trigger !== "heartbeat" && ctx.trigger !== "cron") {
+        if (ctx.trigger !== "cron") {
           return undefined;
         }
         const currentConfig = resolveCurrentConfig();
@@ -1151,11 +1120,7 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
           event.cleanedBody,
           DREAMING_SYSTEM_EVENT_TEXT,
         );
-        const isManagedHeartbeatTrigger =
-          ctx.trigger === "heartbeat" && hasPendingManagedDreamingCronEvent(ctx.sessionKey);
-        const isManagedCronTrigger = ctx.trigger === "cron";
-        const shouldHandleManagedDreaming =
-          hasManagedDreamingToken && (isManagedHeartbeatTrigger || isManagedCronTrigger);
+        const shouldHandleManagedDreaming = hasManagedDreamingToken;
         if (!shouldHandleManagedDreaming && !hasCronManagementContext()) {
           return undefined;
         }
@@ -1180,7 +1145,7 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
         return undefined;
       }
     },
-    { eligibleTriggers: ["heartbeat", "cron"] },
+    { eligibleTriggers: ["cron"] },
   );
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

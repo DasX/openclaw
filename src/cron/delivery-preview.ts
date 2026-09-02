@@ -63,6 +63,8 @@ async function resolveCronDeliveryPreview(params: {
     agentId,
     {
       channel: requestedChannel,
+      target: plan.target,
+      directPolicy: plan.directPolicy,
       to: plan.to,
       threadId: plan.threadId,
       accountId: plan.accountId,

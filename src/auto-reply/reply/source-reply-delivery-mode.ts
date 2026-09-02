@@ -135,12 +135,8 @@ export function resolveSourceReplyDeliveryMode(params: {
 }
 
 /** Returns true when a lifecycle turn must not redefine session-stable reply policy. */
-export function isSyntheticSourceReplyTurn(params: {
-  inputProvenance?: InputProvenance;
-  isHeartbeat?: boolean;
-}): boolean {
+export function isSyntheticSourceReplyTurn(params: { inputProvenance?: InputProvenance }): boolean {
   return (
-    params.isHeartbeat === true ||
     params.inputProvenance?.kind === "inter_session" ||
     params.inputProvenance?.kind === "internal_system"
   );
@@ -178,7 +174,6 @@ export function resolveSourceReplyVisibilityPolicy(params: {
    */
   sessionStableMessageToolAvailable?: boolean;
   defaultVisibleReplies?: "automatic" | "message_tool";
-  isHeartbeat?: boolean;
 }): SourceReplyVisibilityPolicy {
   const sourceReplyDeliveryMode = resolveSourceReplyDeliveryMode({
     cfg: params.cfg,
@@ -191,7 +186,6 @@ export function resolveSourceReplyVisibilityPolicy(params: {
   const hasStableTurnOverride =
     !isSyntheticSourceReplyTurn({
       inputProvenance: params.ctx.InputProvenance,
-      isHeartbeat: params.isHeartbeat,
     }) &&
     (params.requested !== undefined || isExplicitSourceReplyCommand(params.ctx, params.cfg));
   const sessionStableSourceReplyDeliveryMode = hasStableTurnOverride

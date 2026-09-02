@@ -474,6 +474,11 @@ Plugins can add additional top-level commands, such as
 
 </Accordion>
 
+The `system heartbeat` commands are deprecated compatibility controls for
+converted/default monitoring jobs, not a switch for all cron jobs. Use
+[`openclaw cron`](/cli/cron) to inspect and edit scheduled monitoring, and
+[`openclaw system event`](/cli/system) for session follow-ups.
+
 ## Chat slash commands
 
 Chat messages support `/...` commands. See [slash commands](/tools/slash-commands).

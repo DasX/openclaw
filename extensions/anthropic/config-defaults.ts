@@ -302,21 +302,12 @@ export function applyAnthropicConfigDefaults(params: {
   let mutated = false;
   const nextDefaults = { ...defaults };
   const contextPruning = defaults.contextPruning ?? {};
-  const heartbeat = defaults.heartbeat ?? {};
 
   if (defaults.contextPruning?.mode === undefined) {
     nextDefaults.contextPruning = {
       ...contextPruning,
       mode: "cache-ttl",
       ttl: defaults.contextPruning?.ttl ?? "1h",
-    };
-    mutated = true;
-  }
-
-  if (defaults.heartbeat?.every === undefined) {
-    nextDefaults.heartbeat = {
-      ...heartbeat,
-      every: authMode === "oauth" ? "1h" : "30m",
     };
     mutated = true;
   }
@@ -419,4 +410,13 @@ export function applyAnthropicConfigDefaults(params: {
       defaults: nextDefaults,
     },
   };
+}
+
+/** Subscription defaults avoid the API-key cadence; existing jobs remain operator-owned. */
+export function resolveAnthropicProactiveCadenceMs(params: {
+  config: OpenClawConfig;
+  env: NodeJS.ProcessEnv;
+}): number | undefined {
+  const authMode = resolveAnthropicDefaultAuthMode(params.config, params.env);
+  return authMode === "oauth" ? 3_600_000 : authMode === "api_key" ? 1_800_000 : undefined;
 }

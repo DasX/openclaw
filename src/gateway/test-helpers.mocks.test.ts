@@ -2,7 +2,7 @@
 import "./test-helpers.mocks.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import type { dispatchInboundMessage } from "../auto-reply/dispatch.js";
+import type { dispatchInboundMessageCore as dispatchInboundMessage } from "../auto-reply/dispatch.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import { dispatchInboundMessageMock } from "./test-helpers.runtime-state.js";
 

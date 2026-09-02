@@ -57,6 +57,7 @@ const cronContextRuntimeLoader = createLazyImportLoader(() => import("./run-cont
 
 export async function finalizeCronRun(params: {
   prepared: PreparedCronRunContext;
+  resultSummary?: string;
   execution: CronExecutionResult;
   abortReason: () => string;
   isAborted: () => boolean;
@@ -367,7 +368,7 @@ export async function finalizeCronRun(params: {
       ...(hasFatalErrorPayload
         ? { error: embeddedRunError ?? "cron isolated run returned an error payload" }
         : {}),
-      summary,
+      summary: params.resultSummary ?? summary,
       outputText,
       deliveryState: result?.deliveryState,
       delivered: result?.delivered,
@@ -397,25 +398,25 @@ export async function finalizeCronRun(params: {
   };
 
   const acceptedSessionSpawn = hasAcceptedSessionSpawn(finalRunResult.acceptedSessionSpawns);
-  const heartbeatOnlyResponse =
+  const quietResponse =
     prepared.deliveryRequested && !hasFatalErrorPayload && deliveryDisposition.kind !== "visible";
-  const heartbeatControlOnlyResponse =
-    heartbeatOnlyResponse &&
+  const controlOnlyResponse =
+    quietResponse &&
     (deliveryDisposition.kind === "empty" ||
-      (deliveryDisposition.kind === "heartbeat" && deliveryDisposition.controlOnly));
+      (deliveryDisposition.kind === "silent" && deliveryDisposition.controlOnly));
   const spawnOnlyHandoff =
     acceptedSessionSpawn &&
-    (heartbeatControlOnlyResponse ||
+    (controlOnlyResponse ||
       (deliveryPayloads.length === 0 && normalizeOptionalString(synthesizedText) === undefined));
-  if (spawnOnlyHandoff && heartbeatControlOnlyResponse) {
-    // Parent heartbeat acknowledgments cannot fulfill child delivery; one-shot
+  if (spawnOnlyHandoff && controlOnlyResponse) {
+    // Parent silent replies cannot fulfill child delivery; one-shot
     // cleanup must wait for actual descendant output before retiring the job.
     deliveryPayloads = [];
     synthesizedText = undefined;
     summary = undefined;
     outputText = undefined;
   }
-  const skipHeartbeatDelivery = heartbeatOnlyResponse && !spawnOnlyHandoff;
+  const skipQuietDelivery = quietResponse && !spawnOnlyHandoff;
   const sourceDeliveryOutcome = resolveSourceDeliveryOutcome(prepared.sourceDelivery, {
     didSendViaMessageTool: finalRunResult.didSendViaMessagingTool,
     messageToolSentTargets: finalRunResult.messagingToolSentTargets,
@@ -512,7 +513,7 @@ export async function finalizeCronRun(params: {
     resolvedDelivery: prepared.resolvedDelivery,
     deliveryRequested: prepared.deliveryRequested,
     undeliveredRunStatus: hasFatalErrorPayload || pendingPresentationWarningError ? "error" : "ok",
-    skipDelivery: skipHeartbeatDelivery
+    skipDelivery: skipQuietDelivery
       ? hasIntentionalSilentReply
         ? "silent"
         : deliveryDisposition.kind

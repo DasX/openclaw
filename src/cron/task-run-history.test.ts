@@ -126,13 +126,14 @@ describe("cron task run history", () => {
         const storePath = state.path("cron", "jobs.json");
         let now = Date.parse("2026-07-12T12:00:00.000Z");
         const cron = new CronService({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath,
           cronEnabled: true,
           cronConfig: { triggers: { enabled: true } },
           log: createNoopLogger(),
           nowMs: () => now,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           evaluateCronTrigger: vi.fn(async () => ({
             kind: "evaluated" as const,
             fire: true,

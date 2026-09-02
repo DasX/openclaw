@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 
 describe("resolveRunTypingPolicy", () => {
-  it("forces heartbeat policy for heartbeat runs", () => {
+  it("keeps internal events silent without a channel route", () => {
     const resolved = resolveRunTypingPolicy({
       requestedPolicy: "user_message",
-      isHeartbeat: true,
+      systemEvent: true,
     });
     expect(resolved).toEqual({
-      typingPolicy: "heartbeat",
+      typingPolicy: "system_event",
       suppressTyping: true,
     });
   });

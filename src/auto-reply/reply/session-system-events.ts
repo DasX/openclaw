@@ -10,54 +10,19 @@ import {
   formatZonedTimestamp,
   resolveTimezone,
 } from "../../infra/format-time/format-datetime.ts";
-import {
-  isExecCompletionEvent,
-  isHeartbeatDeliveryAwarenessEvent,
-} from "../../infra/heartbeat-events-filter.js";
 // Records system-level session events for restarts, forks, and resets.
 import { selectAgentSystemEvents } from "../../infra/system-event-ownership.js";
 import {
   consumeSelectedSystemEventEntries,
+  isSystemEventTurnOwned,
   peekSystemEventEntries,
-  type SystemEvent,
 } from "../../infra/system-events.js";
 import { acknowledgeSessionStateNotices } from "../../sessions/session-state-events.js";
 import { decodeSessionStateNoticeContextKey } from "../../sessions/session-state-notices.js";
 
-function isCronContextSystemEvent(event: SystemEvent): boolean {
-  return event.contextKey?.startsWith("cron:") ?? false;
-}
-
-function selectGenericSystemEvents(
-  events: readonly SystemEvent[],
-  options?: { suppressHeartbeatOwnedEvents?: boolean },
-): SystemEvent[] {
-  // Exec/cron events own dedicated heartbeat prompts. Heartbeat delivery
-  // awareness stays queued for the next ordinary target turn.
-  return events.filter(
-    (event) =>
-      !isExecCompletionEvent(event.text) &&
-      !(
-        options?.suppressHeartbeatOwnedEvents === true &&
-        (isCronContextSystemEvent(event) || isHeartbeatDeliveryAwarenessEvent(event))
-      ),
-  );
-}
-
 function compactSystemEvent(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed) {
-    return null;
-  }
-  const lower = normalizeLowercaseStringOrEmpty(trimmed);
-  if (lower.includes("reason periodic")) {
-    return null;
-  }
-  // Keep retired heartbeat prompts out of replayed legacy system events.
-  if (lower.startsWith("read heartbeat.md")) {
-    return null;
-  }
-  if (lower.includes("heartbeat poll") || lower.includes("heartbeat wake")) {
     return null;
   }
   if (trimmed.startsWith("Node:")) {
@@ -112,17 +77,15 @@ export async function drainFormattedSystemEvents(params: {
   sessionKey: string;
   isMainSession: boolean;
   isNewSession: boolean;
-  suppressHeartbeatOwnedEvents?: boolean;
 }): Promise<string | undefined> {
   const summaryLines: string[] = [];
   const systemLines: string[] = [];
-  // Exec completions have a dedicated heartbeat prompt; leave those entries queued
-  // so the heartbeat path can consume and deliver them.
+  // Producer-owned occurrences have their own admission; all other notices
+  // belong to the next normal context build, regardless of their text.
   const queued = consumeSelectedSystemEventEntries(
     params.sessionKey,
-    selectGenericSystemEvents(
-      selectAgentSystemEvents(peekSystemEventEntries(params.sessionKey), params.agentId),
-      { suppressHeartbeatOwnedEvents: params.suppressHeartbeatOwnedEvents },
+    selectAgentSystemEvents(peekSystemEventEntries(params.sessionKey), params.agentId).filter(
+      (event) => !isSystemEventTurnOwned(params.sessionKey, event),
     ),
   );
   const sessionStateTargets = queued

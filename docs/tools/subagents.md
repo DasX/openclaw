@@ -311,7 +311,7 @@ loops over `subagents`, `sessions_list`, `sessions_history`, shell
 Use the optional `message` field for private context that the resumed turn
 should receive. Use `acknowledgment` for a waiting reply when an interactive
 parent turn would otherwise end silently. The acknowledgment is not sent from
-sub-agent, heartbeat, or silent turns, and it does not replace a reply or
+sub-agent, monitoring, internal-event, or silent turns, and it does not replace a reply or
 message already delivered during the turn. This host-owned waiting status
 bypasses message-tool-only source suppression; ordinary model replies remain
 private unless the model sends them through the message tool.
@@ -620,7 +620,7 @@ Sub-agents use the same profile and tool-policy pipeline as the parent or
 target agent first. After that, OpenClaw applies the sub-agent restriction
 layer.
 
-Sub-agents always lose `gateway`, `agents_list`, `session_status`, `cron`,
+Sub-agents always lose `gateway`, `agents_list`, `session_status`, `automations`,
 `message`, `sessions_send`, and the `conversations_*` tools regardless of
 depth or role (system-level/interactive tools, direct delivery surfaces, or
 tools the main agent should coordinate). This hard-deny layer is derived from
@@ -653,7 +653,7 @@ receive `sessions_spawn`, `subagents`, `sessions_list`, and
     subagents: {
       tools: {
         // deny wins
-        deny: ["gateway", "cron"],
+        deny: ["gateway", "automations"],
         // if allow is set, it becomes allow-only (deny still wins)
         // allow: ["read", "exec", "process"]
       },

@@ -12,10 +12,6 @@ import {
   freezeDiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
 import {
-  resolveHeartbeatSummaryForAgent,
-  type HeartbeatSummary,
-} from "../../../infra/heartbeat-summary.js";
-import {
   buildAgentHookContextChannelFields,
   buildAgentHookContextIdentityFields,
 } from "../../../plugins/hook-agent-context.js";
@@ -102,7 +98,6 @@ type EmbeddedAttemptPromptAssembly = {
   promptForModelBeforeRuntimeContextSplit: string;
   promptForRuntimeContextBeforeAnnotation: string;
   transcriptLeafId: string | null;
-  heartbeatSummary?: ReturnType<typeof resolveHeartbeatSummaryForAgent>;
   promptCacheChangesForTurn: PromptCacheChange[] | null;
   leasedSteering?: EmbeddedAttemptSteeringLease;
 };
@@ -403,10 +398,6 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
   const transcriptLeafId = currentUserAdmission
     ? currentUserAdmission.effectiveParentId
     : input.sessionManager.getLeafId();
-  const heartbeatSummary =
-    !isSettledTurnFinalization && attempt.config && input.sessionAgentId
-      ? resolveHeartbeatSummaryForAgent(attempt.config, input.sessionAgentId)
-      : undefined;
 
   return {
     hookCtx,
@@ -421,7 +412,6 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
     promptForModelBeforeRuntimeContextSplit,
     promptForRuntimeContextBeforeAnnotation,
     transcriptLeafId,
-    heartbeatSummary,
     promptCacheChangesForTurn,
     leasedSteering,
   };
@@ -452,7 +442,6 @@ type PromptAssemblyContext = {
   promptForRuntimeContextSplit: string;
   promptForModelBeforeRuntimeContextSplit: string;
   promptForRuntimeContextBeforeAnnotation: string;
-  heartbeatSummary?: Pick<HeartbeatSummary, "ackMaxChars" | "prompt">;
 };
 
 type CurrentUserTimestampOverride = {
@@ -485,7 +474,6 @@ export function prepareEmbeddedAttemptPromptContext(input: {
   isRawModelRun: boolean;
   messages: AgentMessage[];
   preparedUserTurnMessage?: AgentMessage;
-  heartbeatOutcomeContext?: string;
   prompt: PromptAssemblyContext;
   replaceSessionMessages: (messages: AgentMessage[]) => void;
   sessionAgentId: string;
@@ -498,11 +486,7 @@ export function prepareEmbeddedAttemptPromptContext(input: {
   const preparedUserTurnTimestamp = (
     input.preparedUserTurnMessage as { timestamp?: unknown } | undefined
   )?.timestamp;
-  let sessionMessages = filterHeartbeatTranscriptArtifacts(
-    input.messages,
-    input.prompt.heartbeatSummary?.ackMaxChars,
-    input.prompt.heartbeatSummary?.prompt,
-  );
+  let sessionMessages = filterHeartbeatTranscriptArtifacts(input.messages);
   if (sessionMessages.length < input.messages.length) {
     input.replaceSessionMessages(sessionMessages);
   }
@@ -621,11 +605,7 @@ export function prepareEmbeddedAttemptPromptContext(input: {
   }
   const runtimeContextForHook = isRuntimeOnlyTurn
     ? undefined
-    : [
-        currentInboundContextText,
-        promptSubmission.runtimeContext?.trim(),
-        input.heartbeatOutcomeContext?.trim(),
-      ]
+    : [currentInboundContextText, promptSubmission.runtimeContext?.trim()]
         .filter((value): value is string => Boolean(value))
         .join("\n\n") || undefined;
   const runtimeContextMessageForCurrentTurn =

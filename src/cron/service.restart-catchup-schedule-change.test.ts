@@ -19,11 +19,12 @@ describe("CronService restart catch-up after a schedule change", () => {
     const lastRunUnderOldSchedule = Date.parse("2026-07-27T16:00:00.000Z"); // 27 Jul 19:00 +03
     const createService = () =>
       new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         runCommandJob: runCommandJob as never,
       });
@@ -118,12 +119,13 @@ describe("CronService restart catch-up after a schedule change", () => {
       ],
     });
     const service = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       runCommandJob: runCommandJob as never,
     });
@@ -166,12 +168,13 @@ describe("CronService restart catch-up after a schedule change", () => {
     });
     const createService = () =>
       new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         runCommandJob: runCommandJob as never,
       });

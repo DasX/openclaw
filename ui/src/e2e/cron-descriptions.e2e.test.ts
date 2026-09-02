@@ -46,11 +46,6 @@ suite.define(() => {
         description: "Inspect the scripted health check",
         payload: { kind: "script", script: "return 'healthy'" },
       },
-      {
-        ...cronJob("described-heartbeat", "Heartbeat check"),
-        description: "Explain the system-owned heartbeat",
-        payload: { kind: "heartbeat" },
-      },
     ] as const;
     const undescribedJob = cronJob("without-description", "Plain task");
     await suite.withPage(

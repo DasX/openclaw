@@ -46,12 +46,13 @@ function createAlertState(params: {
   sendCronFailureAlert: SendCronFailureAlert;
 }) {
   return createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: params.storePath,
     log: noopLogger,
     nowMs: params.nowMs,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     sendCronFailureAlert: params.sendCronFailureAlert,
     runIsolatedAgentJob: vi.fn(),
   });

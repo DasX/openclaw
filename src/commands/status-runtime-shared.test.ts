@@ -2,6 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resolveStatusGatewayDiagnosticsSafe,
+  resolveStatusAutomations,
+  resolveStatusLastHeartbeat,
   resolveStatusGatewayHealth,
   resolveStatusGatewayHealthSafe,
   resolveStatusRuntimeSnapshot,
@@ -440,6 +442,49 @@ describe("status-runtime-shared", () => {
     });
   });
 
+  it("keeps the last-heartbeat read at the deep JSON compatibility boundary", async () => {
+    await expect(
+      resolveStatusLastHeartbeat({ config: {}, gatewayReachable: false }),
+    ).resolves.toBeNull();
+    expect(mocks.callGateway).not.toHaveBeenCalled();
+    await expect(
+      resolveStatusLastHeartbeat({ config: {}, gatewayReachable: true }),
+    ).resolves.toEqual({ ok: true });
+    expect(mocks.callGateway).toHaveBeenCalledWith({
+      method: "last-heartbeat",
+      params: {},
+      config: {},
+      timeoutMs: undefined,
+    });
+    mocks.callGateway.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      resolveStatusLastHeartbeat({ config: {}, gatewayReachable: true }),
+    ).resolves.toBeNull();
+  });
+
+  it("uses canonical cron status and preserves unavailable outcomes", async () => {
+    const value = { enabled: true, jobs: 2, nextWakeAtMs: null };
+    mocks.callGateway.mockResolvedValueOnce(value);
+    await expect(resolveStatusAutomations({ config: {}, gatewayReachable: true })).resolves.toEqual(
+      { ok: true, value },
+    );
+    expect(mocks.callGateway).toHaveBeenCalledWith({
+      method: "cron.status",
+      params: {},
+      config: {},
+      timeoutMs: undefined,
+    });
+    mocks.callGateway.mockRejectedValueOnce(new Error("scheduler unavailable"));
+    await expect(resolveStatusAutomations({ config: {}, gatewayReachable: true })).resolves.toEqual(
+      { ok: false, error: "Error: scheduler unavailable" },
+    );
+    mocks.callGateway.mockClear();
+    await expect(
+      resolveStatusAutomations({ config: {}, gatewayReachable: false }),
+    ).resolves.toEqual({ ok: false, error: "gateway unreachable" });
+    expect(mocks.callGateway).not.toHaveBeenCalled();
+  });
+
   it("resolves daemon summaries together", async () => {
     await expect(resolveStatusServiceSummaries()).resolves.toEqual([
       { label: "LaunchAgent" },
@@ -462,10 +507,10 @@ describe("status-runtime-shared", () => {
       securityAudit: { summary: { critical: 0 }, findings: [] },
       usage: { providers: [] },
       health: { ok: true },
-      lastHeartbeat: { ok: true },
       gatewayService: { label: "LaunchAgent" },
       nodeService: { label: "node" },
     });
+    expect(mocks.callGateway.mock.calls.map(([input]) => input.method)).toEqual(["health"]);
     expect(mocks.runSecurityAudit).toHaveBeenCalledWith({
       config: { gateway: {} },
       sourceConfig: { gateway: { mode: "local" } },
@@ -509,7 +554,6 @@ describe("status-runtime-shared", () => {
       }),
     ).resolves.toMatchObject({
       health: { error: "Error: gateway health probe timed out" },
-      lastHeartbeat: { ok: true },
     });
   });
 

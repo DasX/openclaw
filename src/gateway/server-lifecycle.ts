@@ -261,10 +261,10 @@ export async function prepareGatewayLifecycle(params: {
       return previous;
     },
     setScheduledServiceHandles: (handles: {
-      heartbeatRunner: typeof runtimeState.heartbeatRunner;
+      sessionServices: typeof runtimeState.sessionServices;
       stopOutboundDeliveryRecovery: typeof runtimeState.stopOutboundDeliveryRecovery;
     }) => {
-      runtimeState.heartbeatRunner = handles.heartbeatRunner;
+      runtimeState.sessionServices = handles.sessionServices;
       runtimeState.stopOutboundDeliveryRecovery = handles.stopOutboundDeliveryRecovery;
     },
     setPostAttachHandles: (
@@ -286,7 +286,7 @@ export async function prepareGatewayLifecycle(params: {
     getReloadState: () => ({
       hooksConfig: runtimeState.hooksConfig,
       hookClientIpConfig: runtimeState.hookClientIpConfig,
-      heartbeatRunner: runtimeState.heartbeatRunner,
+      sessionServices: runtimeState.sessionServices,
       cronState: runtimeState.cronState,
       channelHealthMonitor: runtimeState.channelHealthMonitor,
     }),
@@ -297,9 +297,9 @@ export async function prepareGatewayLifecycle(params: {
       runtimeState.hooksConfig = next.hooksConfig;
       runtimeState.hookClientIpConfig = next.hookClientIpConfig;
     },
-    swapHeartbeatRunner: (next: typeof runtimeState.heartbeatRunner) => {
-      const previous = runtimeState.heartbeatRunner;
-      runtimeState.heartbeatRunner = next;
+    swapSessionServices: (next: typeof runtimeState.sessionServices) => {
+      const previous = runtimeState.sessionServices;
+      runtimeState.sessionServices = next;
       return previous;
     },
     swapCronState: (next: typeof runtimeState.cronState) => {
@@ -501,7 +501,7 @@ export async function prepareGatewayLifecycle(params: {
         stopChannel,
         pluginServices: runtimeState.pluginServices,
         cron: runtimeState.cronState.cron,
-        heartbeatRunner: runtimeState.heartbeatRunner,
+        sessionServices: runtimeState.sessionServices,
         updateCheckStop: runtimeState.stopGatewayUpdateCheck,
         stopTaskRegistryMaintenance: shutdownRuntime.stopTaskRegistryMaintenance,
         nodePresenceTimers,

@@ -1,4 +1,5 @@
 // Machine-owned values retired from openclaw.json live in the shared state database.
+import type { DatabaseSync } from "node:sqlite";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -13,6 +14,37 @@ import {
 } from "./openclaw-state-db.js";
 
 type ConfigMachineStateDatabase = Pick<OpenClawStateKyselyDatabase, "config_machine_state">;
+
+/** Read within an existing owner transaction without opening a second connection. */
+export function readConfigMachineStateInDatabase(database: DatabaseSync, key: string): unknown {
+  const row = executeSqliteQueryTakeFirstSync(
+    database,
+    getNodeSqliteKysely<ConfigMachineStateDatabase>(database)
+      .selectFrom("config_machine_state")
+      .select("value_json")
+      .where("state_key", "=", normalizeStateKey(key)),
+  );
+  return row ? JSON.parse(row.value_json) : undefined;
+}
+
+/** The caller owns the transaction coupling this receipt to its canonical data. */
+export function writeConfigMachineStateInDatabase(
+  database: DatabaseSync,
+  key: string,
+  value: unknown,
+  nowMs = Date.now(),
+): void {
+  const valueJson = serializeStateValue(value);
+  executeSqliteQuerySync(
+    database,
+    getNodeSqliteKysely<ConfigMachineStateDatabase>(database)
+      .insertInto("config_machine_state")
+      .values({ state_key: normalizeStateKey(key), value_json: valueJson, updated_at_ms: nowMs })
+      .onConflict((conflict) =>
+        conflict.column("state_key").doUpdateSet({ value_json: valueJson, updated_at_ms: nowMs }),
+      ),
+  );
+}
 
 function normalizeStateKey(key: string): string {
   const normalized = key.trim();

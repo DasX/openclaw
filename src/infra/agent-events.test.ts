@@ -894,14 +894,12 @@ describe("agent-events sequencing", () => {
     });
     registerAgentRunContext("run-ctx", {
       verboseLevel: "full",
-      isHeartbeat: true,
       lastActiveAt: 12_345,
     });
 
     const context = getAgentRunContext("run-ctx");
     expect(context?.sessionKey).toBe("session-main");
     expect(context?.verboseLevel).toBe("full");
-    expect(context?.isHeartbeat).toBe(true);
     expect(context?.isControlUiVisible).toBe(true);
     expect(context?.lastActiveAt).toBe(12_345);
   });

@@ -6,7 +6,7 @@ import {
   buildStatusFooterLines,
   buildStatusAgentsValue,
   buildStatusHealthRows,
-  buildStatusHeartbeatValue,
+  buildStatusAutomationsValue,
   buildStatusModelSelectionLines,
   buildStatusPairingRecoveryLines,
   buildStatusPluginCompatibilityLines,
@@ -51,26 +51,20 @@ describe("status.command-sections", () => {
     ).toBe("2 · no workspaces bootstrapping · sessions 0");
   });
 
-  it("shows when heartbeat is waiting for a delivery route", () => {
-    expect(
-      buildStatusHeartbeatValue({
-        summary: {
-          heartbeat: {
-            defaultAgentId: "main",
-            agents: [
-              {
-                agentId: "main",
-                enabled: true,
-                every: "30m",
-                everyMs: 1_800_000,
-                waitingForRoute: true,
-              },
-            ],
-          },
-        },
-      }),
-    ).toBe(
-      "30m (main; waiting for delivery route — set commands.ownerAllowFrom or channel allowFrom, or heartbeat.target)",
+  it.each([
+    [true, 0, null, "scheduler enabled · 0 total jobs · no wake scheduled"],
+    [true, 2, null, "scheduler enabled · 2 total jobs · no wake scheduled"],
+    [false, 2, null, "scheduler disabled · 2 total jobs · no wake scheduled"],
+    [true, 1, 1000, "scheduler enabled · 1 total job · next wake 1970-01-01T00:00:01.000Z"],
+  ] as const)("reports scheduler=%s jobs=%s next=%s", (enabled, jobs, nextWakeAtMs, expected) => {
+    expect(buildStatusAutomationsValue({ ok: true, value: { enabled, jobs, nextWakeAtMs } })).toBe(
+      expected,
+    );
+  });
+
+  it("keeps unavailable automation status explicit", () => {
+    expect(buildStatusAutomationsValue({ ok: false, error: "permission denied" })).toBe(
+      "unavailable (permission denied)",
     );
   });
 

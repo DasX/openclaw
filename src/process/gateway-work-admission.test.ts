@@ -1,4 +1,5 @@
 // Covers root work counting and reversible suspension admission transitions.
+import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   beginGatewayRestartSignalAdmission,
@@ -16,6 +17,7 @@ import {
   retainGatewayRootWorkAdmissionContinuation,
   resetGatewayWorkAdmission,
   rollbackGatewayRestartSignalFence,
+  runWithGatewayIndependentRootWorkAdmission,
   runWithGatewayIndependentRootWorkContinuation,
   runOutsideGatewayRootWorkAdmission,
   tryBeginGatewayPreparedRestartRootWorkAdmission,
@@ -516,3 +518,136 @@ it("does not wake deferred internal work into a restart drain", async () => {
 
   await expect(pending).rejects.toBeInstanceOf(GatewayDrainingError);
 });
+
+const independentRunners = [
+  ["admission", runWithGatewayIndependentRootWorkAdmission],
+  ["continuation", runWithGatewayIndependentRootWorkContinuation],
+] as const;
+
+it.each(independentRunners)(
+  "%s cancels repeated waiters while suspension stays prepared",
+  async (_name, runIndependent) => {
+    const suspension = tryBeginGatewaySuspendAdmission(() => {});
+    expect(suspension?.commit()).toBe(true);
+    const entered = vi.fn(async () => {});
+    const pending: Promise<unknown>[] = [];
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const controller = new AbortController();
+        const reason = new Error("cancelled admission");
+        const rejected = vi.fn();
+        const work = runIndependent(entered, "test:cancel", controller.signal).catch(rejected);
+        pending.push(work);
+        controller.abort(reason);
+        await vi.waitFor(() => expect(rejected).toHaveBeenCalledWith(reason));
+        await work;
+        expect(getGatewaySuspendAdmissionPhase()).toBe("prepared");
+        expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      }
+    } finally {
+      suspension?.release();
+      await Promise.allSettled(pending);
+    }
+    resetGatewayWorkAdmission();
+    expect(entered).not.toHaveBeenCalled();
+    expect(getActiveGatewayRootWorkCount()).toBe(0);
+  },
+);
+
+it.each(independentRunners)(
+  "%s rejects an already-cancelled admission",
+  async (_name, runIndependent) => {
+    const entered = vi.fn(async () => {});
+    const reason = new Error("already cancelled");
+    await expect(runIndependent(entered, "test:cancel", AbortSignal.abort(reason))).rejects.toBe(
+      reason,
+    );
+    expect(entered).not.toHaveBeenCalled();
+    expect(getActiveGatewayRootWorkCount()).toBe(0);
+  },
+);
+
+it("does not reserve a live-parent continuation after cancellation", async () => {
+  const entered = vi.fn(async () => {});
+  const reason = new Error("cancelled continuation");
+  await runWithGatewayRootWorkAdmissionForTest(async () => {
+    await expect(
+      runWithGatewayIndependentRootWorkContinuation(
+        entered,
+        "test:cancel",
+        AbortSignal.abort(reason),
+      ),
+    ).rejects.toBe(reason);
+    expect(getActiveGatewayRootWorkCount()).toBe(1);
+  });
+  expect(entered).not.toHaveBeenCalled();
+  expect(getActiveGatewayRootWorkCount()).toBe(0);
+});
+
+it.each(independentRunners)(
+  "%s removes admission listeners on reopen and rechecks cancellation before acquiring",
+  async (_name, runIndependent) => {
+    for (const outcome of ["resume", "cancel", "restart"] as const) {
+      const suspension = tryBeginGatewaySuspendAdmission(() => {});
+      expect(suspension?.commit()).toBe(true);
+      const controller = new AbortController();
+      const reason = new Error("cancelled before acquisition");
+      const entered = vi.fn(async () => "complete");
+      const work = runIndependent(entered, "test:reopen", controller.signal);
+      // Attach rejection handling before either owner can wake the waiter.
+      const result = work.then(
+        (value) => value,
+        (error: unknown) => error,
+      );
+      try {
+        expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+        if (outcome === "restart") {
+          markGatewayRestartDraining();
+        } else {
+          suspension?.release();
+          if (outcome === "cancel") {
+            controller.abort(reason);
+          }
+        }
+        if (outcome === "restart") {
+          expect(await result).toBeInstanceOf(GatewayDrainingError);
+        } else {
+          expect(await result).toBe(outcome === "resume" ? "complete" : reason);
+        }
+        expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+        expect(entered).toHaveBeenCalledTimes(outcome === "resume" ? 1 : 0);
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      } finally {
+        suspension?.release();
+        await result;
+        resetGatewayWorkAdmission();
+      }
+    }
+  },
+);
+
+it.each(independentRunners)(
+  "%s leaves acquired execution lifetime with its existing owner",
+  async (_name, runIndependent) => {
+    const controller = new AbortController();
+    let finish = () => {};
+    const execution = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const work = runIndependent(
+      async () => {
+        await execution;
+        return "complete";
+      },
+      "test:execution",
+      controller.signal,
+    );
+    controller.abort();
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    expect(getActiveGatewayRootWorkCount()).toBe(1);
+    finish();
+    await expect(work).resolves.toBe("complete");
+    expect(getActiveGatewayRootWorkCount()).toBe(0);
+  },
+);

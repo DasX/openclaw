@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
-import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import * as agentEvents from "../infra/agent-events.js";
 import { flushLogger, resetLogger, setLoggerOverride } from "../logging/logger.js";
@@ -2102,63 +2101,6 @@ describe("subscribeEmbeddedAgentSession", () => {
       phase: "end",
       livenessState: "working",
       replayInvalid: true,
-    });
-  });
-
-  it("notifies the runner once when a heartbeat response tool result is accepted", async () => {
-    const { session, emit } = createStubSessionHarness();
-    const onHeartbeatToolResponse = vi.fn();
-    const subscription = subscribeEmbeddedAgentSession({
-      session,
-      runId: "run-heartbeat-terminal",
-      sessionKey: "agent:main:main",
-      onHeartbeatToolResponse,
-    });
-
-    const result = {
-      details: {
-        status: "accepted",
-        outcome: "no_change",
-        notify: false,
-        summary: "Nothing needs attention.",
-      },
-    };
-    emitToolRun({
-      emit,
-      toolName: HEARTBEAT_RESPONSE_TOOL_NAME,
-      toolCallId: "heartbeat-1",
-      args: {
-        outcome: "no_change",
-        notify: false,
-        summary: "Nothing needs attention.",
-      },
-      isError: false,
-      result,
-    });
-    emitToolRun({
-      emit,
-      toolName: HEARTBEAT_RESPONSE_TOOL_NAME,
-      toolCallId: "heartbeat-2",
-      args: {
-        outcome: "no_change",
-        notify: false,
-        summary: "Nothing needs attention.",
-      },
-      isError: false,
-      result,
-    });
-    await subscription.waitForPendingEvents();
-
-    expect(subscription.getHeartbeatToolResponse()).toEqual({
-      outcome: "no_change",
-      notify: false,
-      summary: "Nothing needs attention.",
-    });
-    expect(onHeartbeatToolResponse).toHaveBeenCalledTimes(1);
-    expect(onHeartbeatToolResponse).toHaveBeenCalledWith({
-      outcome: "no_change",
-      notify: false,
-      summary: "Nothing needs attention.",
     });
   });
 

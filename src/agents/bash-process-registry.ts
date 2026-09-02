@@ -5,6 +5,7 @@
  */
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import type { SessionEventTarget } from "../auto-reply/reply/session-event-contract.js";
 import type { EventSessionRoutingPolicy } from "../infra/event-session-routing.js";
 import type { TerminationReason } from "../process/supervisor/types.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
@@ -78,6 +79,7 @@ export interface ProcessSession {
   /** Start-time routing policy for detached exec system events. */
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
+  notifySessionTarget?: SessionEventTarget;
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   exitNotified?: boolean;

@@ -8,6 +8,7 @@ import { deleteCronJobScratch } from "../scratch-store.js";
 import { isInvalidCronSessionTargetIdError } from "../session-target.js";
 import {
   getCronJobsStoreRevision,
+  readCronJobsStoreFingerprint,
   loadCronJobsStoreWithConfigJobs,
   saveCronJobsStore,
   type QuarantinedCronConfigJob,
@@ -25,6 +26,7 @@ import { computeJobNextRunAtMs, recomputeNextRuns } from "./jobs-scheduling.js";
 import { assertTimeScheduleSatisfiable } from "./jobs-validation.js";
 import { emit, type CronServiceState, type DeferredCronNotifications } from "./state.js";
 
+const loadedCronStoreFingerprints = new WeakMap<CronServiceState, string>();
 const loadedCronStoreRevisions = new WeakMap<CronServiceState, number>();
 
 type PersistOptions = {
@@ -146,6 +148,7 @@ export async function ensureLoaded(
   state: CronServiceState,
   opts?: {
     forceReload?: boolean;
+    checkExternalChanges?: boolean;
     /** Skip recomputing nextRunAtMs after load so the caller can run due
      *  jobs against the persisted values first (see onTimer). */
     skipRecompute?: boolean;
@@ -156,8 +159,11 @@ export async function ensureLoaded(
   if (state.store && !opts?.forceReload) {
     const loadedRevision = loadedCronStoreRevisions.get(state);
     if (
-      loadedRevision === undefined ||
-      loadedRevision === getCronJobsStoreRevision(state.deps.storePath)
+      (loadedRevision === undefined ||
+        loadedRevision === getCronJobsStoreRevision(state.deps.storePath)) &&
+      (!opts?.checkExternalChanges ||
+        loadedCronStoreFingerprints.get(state) ===
+          readCronJobsStoreFingerprint(state.deps.storePath))
     ) {
       return;
     }
@@ -167,6 +173,9 @@ export async function ensureLoaded(
     previousJobsById.set(job.id, job);
   }
   const loaded = await loadCronJobsStoreWithConfigJobs(state.deps.storePath);
+  if (loaded.jobsFingerprint) {
+    loadedCronStoreFingerprints.set(state, loaded.jobsFingerprint);
+  }
   const loadNowMs = state.deps.nowMs();
   // Persisted cron rows are validated lazily, so treat them as raw records at the
   // store boundary and only trust the CronJob shape after validation below.
@@ -345,6 +354,7 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
     return false;
   }
   loadedCronStoreRevisions.set(state, getCronJobsStoreRevision(state.deps.storePath));
+  loadedCronStoreFingerprints.set(state, readCronJobsStoreFingerprint(state.deps.storePath));
   if (quarantine) {
     state.pendingQuarantineConfigJobs = [];
     state.lastQuarantineFailureWarnKey = null;

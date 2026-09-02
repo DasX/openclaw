@@ -1,5 +1,12 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../../config/cron-limits.js";
 import type { CronServiceState } from "./state.js";
+
+type CronCapacityLease = { suspend: () => void; resume: (signal?: AbortSignal) => Promise<void> };
+const currentAdmission = new AsyncLocalStorage<CronCapacityLease>();
+export function captureCronCapacityLease(): CronCapacityLease | undefined {
+  return currentAdmission.getStore();
+}
 
 export function resolveRunConcurrency(): number {
   return DEFAULT_CRON_MAX_CONCURRENT_RUNS;
@@ -62,16 +69,31 @@ export function setCronRunCapacityListener(state: CronServiceState, listener: ()
   state.runAdmission.capacityListener ??= listener;
 }
 
-async function acquireCronRunAdmission(state: CronServiceState): Promise<(() => void) | null> {
+async function acquireCronRunAdmission(
+  state: CronServiceState,
+  signal?: AbortSignal,
+): Promise<(() => void) | null> {
   const admission = state.runAdmission;
-  if (state.stopped) {
+  if (state.stopped || signal?.aborted) {
     return null;
   }
   if (admission.waiters.length === 0 && admission.active < resolveRunConcurrency()) {
     return acquireCronRunSlot(state);
   }
   return await new Promise<(() => void) | null>((resolve) => {
-    admission.waiters.push(resolve);
+    const settle = (release: (() => void) | null) => {
+      signal?.removeEventListener("abort", cancel);
+      resolve(release);
+    };
+    const cancel = () => {
+      const index = admission.waiters.indexOf(settle);
+      if (index !== -1) {
+        admission.waiters.splice(index, 1);
+      }
+      settle(null);
+    };
+    admission.waiters.push(settle);
+    signal?.addEventListener("abort", cancel, { once: true });
   });
 }
 
@@ -92,13 +114,43 @@ export async function runWithCronAdmission<T>(
   execute: () => Promise<T>,
   acquiredRelease?: () => void,
 ): Promise<{ kind: "admitted"; value: T } | { kind: "stopped" }> {
-  const release = acquiredRelease ?? (await acquireCronRunAdmission(state));
+  let release = acquiredRelease ?? (await acquireCronRunAdmission(state));
   if (!release) {
     return { kind: "stopped" };
   }
+  let closed = false;
+  let resuming: Promise<void> | undefined;
+  const lease: CronCapacityLease = {
+    suspend() {
+      release?.();
+      release = null;
+    },
+    async resume(signal) {
+      if (closed) {
+        throw new Error("Cron admission has closed");
+      }
+      if (release) {
+        return;
+      }
+      resuming ??= (async () => {
+        const acquired = await acquireCronRunAdmission(state, signal);
+        if (closed || !acquired) {
+          acquired?.();
+          throw new Error("Cron admission stopped while awaiting execution capacity");
+        }
+        release = acquired;
+      })();
+      try {
+        await resuming;
+      } finally {
+        resuming = undefined;
+      }
+    },
+  };
   try {
-    return { kind: "admitted", value: await execute() };
+    return { kind: "admitted", value: await currentAdmission.run(lease, execute) };
   } finally {
-    release();
+    closed = true;
+    release?.();
   }
 }

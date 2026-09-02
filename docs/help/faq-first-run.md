@@ -53,16 +53,26 @@ and troubleshooting see the main [FAQ](/help/faq).
 
   </Accordion>
 
-  <Accordion title="Heartbeat keeps skipping. What do the skip reasons mean?">
-    | Skip reason | Meaning |
+  <Accordion title="My monitoring job keeps skipping. What should I check?">
+    Monitoring uses ordinary cron jobs. Inspect the job and its run history:
+
+    ```bash
+    openclaw cron show <jobId>
+    openclaw cron runs --id <jobId> --limit 20
+    ```
+
+    | Check | Meaning |
     | --- | --- |
-    | `quiet-hours` | Outside the configured active-hours window |
-    | `empty-heartbeat-file` | Heartbeat monitor scratch exists but only has blank, comment, header, fence, or empty-checklist scaffolding |
-    | `alerts-disabled` | All heartbeat visibility is off (`showOk`, `showAlerts`, and `useIndicator` all disabled) |
+    | `activeHours` | The job only runs inside its configured time window |
+    | `idleOnly` | The job yields to foreground work or session recovery before starting |
+    | `payload.skipIfScratchEmpty` | Present scratch containing only blank lines, comments, headings, fence markers, or empty checklist stubs skips the run; absent scratch does not |
+    | Delivery and `NO_REPLY` | A run can finish quietly without sending a message; inspect its result separately from delivery |
 
-    Older heartbeat `tasks:` blocks migrate to independently scheduled cron jobs with `openclaw doctor --fix`.
+    Older heartbeat monitors and `tasks:` blocks migrate in place with
+    `openclaw doctor --fix`. Retired heartbeat visibility settings are not controls
+    for new jobs.
 
-    Docs: [Heartbeat](/gateway/heartbeat), [Automation](/automation).
+    Docs: [Heartbeat migration](/gateway/heartbeat), [Cron jobs](/automation/cron-jobs).
 
   </Accordion>
 

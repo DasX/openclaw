@@ -4,6 +4,7 @@ import path from "node:path";
 import "./isolated-agent.mocks.js";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { CliDeps } from "../cli/deps.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { resolveDefaultSessionStorePath } from "../config/sessions.js";
 import { selectAgentSystemEvents } from "../infra/system-event-ownership.js";
 import {
@@ -38,8 +39,10 @@ async function runAnnounceTurn(params: {
     bestEffort?: boolean;
   };
 }) {
+  const cfg = makeCfg(params.home, params.storePath, params.cfgOverrides);
+  setRuntimeConfigSnapshot(cfg);
   return await runCronIsolatedAgentTurn({
-    cfg: makeCfg(params.home, params.storePath, params.cfgOverrides),
+    cfg,
     deps: params.deps ?? createCliDeps(),
     job: {
       ...makeJob({ kind: "agentTurn", message: "do it" }),

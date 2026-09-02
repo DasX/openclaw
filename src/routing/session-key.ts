@@ -46,32 +46,6 @@ function normalizeToken(value: string | undefined | null): string {
   return normalizeLowercaseStringOrEmpty(value);
 }
 
-export function scopedHeartbeatWakeOptions<T extends object>(
-  sessionKey: string,
-  wakeOptions: T,
-  mainKey?: string,
-  scope?: "per-sender" | "global",
-): T | (T & { sessionKey: string }) | (T & { agentId: string }) {
-  const parsed = parseAgentSessionKey(sessionKey);
-  if (!parsed) {
-    return wakeOptions;
-  }
-  if (isCronRunSessionKey(sessionKey)) {
-    // Global-scope agents drain the literal "global" queue, not agent-main;
-    // a targeted wake on agent:<id>:main would be unresolvable. Drop the
-    // sessionKey but carry the agent target so multi-agent global-scope
-    // setups still wake the originating agent's heartbeat.
-    if (scope === "global") {
-      return { ...wakeOptions, agentId: parsed.agentId };
-    }
-    return {
-      ...wakeOptions,
-      sessionKey: buildAgentMainSessionKey({ agentId: parsed.agentId, mainKey }),
-    };
-  }
-  return { ...wakeOptions, sessionKey };
-}
-
 export function resolveEventSessionKey(
   sessionKey: string,
   mainKey?: string,
@@ -82,7 +56,7 @@ export function resolveEventSessionKey(
     return sessionKey;
   }
   // Global-scope agents enqueue/drain via the literal "global" queue; agent-main
-  // would strand the event in a queue the heartbeat never peeks.
+  // would strand the event outside its ordinary session admission queue.
   if (scope === "global") {
     return "global";
   }

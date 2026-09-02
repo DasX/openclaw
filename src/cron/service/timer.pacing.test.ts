@@ -19,12 +19,13 @@ const STARTED_AT = ENDED_AT - 1_000;
 
 function makeState() {
   return createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: "/tmp/cron-pacing-timer/jobs.json",
     cronEnabled: true,
     log: createNoopLogger(),
     nowMs: () => ENDED_AT,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
 }
@@ -189,12 +190,12 @@ describe("applyJobResult dynamic cadence", () => {
         consecutiveErrors: 1,
       });
       expect(state.deps.enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(state.deps.requestHeartbeat).not.toHaveBeenCalled();
+      expect(state.deps.enqueueSessionEvent).not.toHaveBeenCalled();
       expect(deferredNotifications).toHaveLength(1);
 
       deferredNotifications[0]?.();
-      expect(state.deps.enqueueSystemEvent).toHaveBeenCalledOnce();
-      expect(state.deps.requestHeartbeat).toHaveBeenCalledOnce();
+      expect(state.deps.enqueueSystemEvent).not.toHaveBeenCalled();
+      expect(state.deps.enqueueSessionEvent).toHaveBeenCalledOnce();
     },
   );
 

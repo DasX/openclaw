@@ -44,14 +44,20 @@ OpenClaw also builds a separate idempotent replay view for sessions that persist
 
 ## Smart defaults
 
-The bundled Anthropic plugin auto-configures pruning and heartbeat cadence the first time it resolves an Anthropic (or Claude CLI) auth profile, but only for fields you have not already set explicitly:
+The bundled Anthropic plugin auto-configures pruning when it resolves an
+Anthropic (or Claude CLI) auth profile, unless you have explicitly set
+`agents.defaults.contextPruning.mode`:
 
-| Auth mode                                | `contextPruning.mode` | `contextPruning.ttl` | `heartbeat.every` |
-| ---------------------------------------- | --------------------- | -------------------- | ----------------- |
-| OAuth/token (including Claude CLI reuse) | `cache-ttl`           | `1h`                 | `1h`              |
-| API key                                  | `cache-ttl`           | `1h`                 | `30m`             |
+| Auth mode                                | `contextPruning.mode` | `contextPruning.ttl` |
+| ---------------------------------------- | --------------------- | -------------------- |
+| OAuth/token (including Claude CLI reuse) | `cache-ttl`           | `1h`                 |
+| API key                                  | `cache-ttl`           | `1h`                 |
 
-If you set `agents.defaults.contextPruning.mode` or `agents.defaults.heartbeat.every` yourself, OpenClaw does not override them. This auto-default only fires for Anthropic-family auth; other providers get pruning `off` unless you configure it.
+An explicit TTL is preserved. This auto-default only applies to Anthropic-family
+auth; other providers get pruning `off` unless you configure it. Pruning does not
+schedule model calls. Periodic monitoring belongs to ordinary
+[cron jobs](/automation/cron-jobs); older heartbeat configuration is handled by
+[Heartbeat migration](/gateway/heartbeat).
 
 ## Enable or disable
 

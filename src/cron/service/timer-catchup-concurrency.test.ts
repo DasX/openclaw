@@ -44,12 +44,13 @@ describe("cron startup catch-up concurrency", () => {
       const started = createDeferred();
       const release = createDeferred();
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         maxMissedJobsPerRestart: 1,
         missedJobStaggerMs: 5_000,
         runIsolatedAgentJob: vi.fn(async ({ job }) => {
@@ -127,12 +128,13 @@ describe("cron startup catch-up concurrency", () => {
     const selectedStarted = createDeferred();
     const releaseSelected = createDeferred<{ status: "ok"; summary: string }>();
     const firstState = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => startNow,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       maxMissedJobsPerRestart: 1,
       missedJobStaggerMs: 5_000,
       runIsolatedAgentJob: vi.fn(async ({ job }) => {
@@ -149,12 +151,13 @@ describe("cron startup catch-up concurrency", () => {
       await selectedStarted.promise;
       const foreignNow = startNow + 1;
       const foreignState = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => foreignNow,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const, summary: "foreign" })),
       });
       await expect(runCronJob(foreignState, deferred.id, "force")).resolves.toEqual({

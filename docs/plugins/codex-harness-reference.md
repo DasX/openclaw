@@ -384,7 +384,7 @@ inventory methods and server, authentication, or transport failures fail closed.
 Local stdio app-server sessions default to YOLO mode:
 `approvalPolicy: "never"`, `approvalsReviewer: "user"`, and
 `sandbox: "danger-full-access"`. This trusted local operator posture lets
-unattended OpenClaw turns and heartbeats make progress without native approval
+unattended OpenClaw turns and scheduled jobs make progress without native approval
 prompts that nobody is around to answer.
 
 If Codex's local system requirements file disallows implicit YOLO approval,
@@ -688,8 +688,8 @@ empty execution-environment selection. In that direct, unsandboxed case,
 OpenClaw keeps its policy-filtered `exec` and `process` tools as the shell
 fallback. Runtime allowlists and `codexDynamicToolsExclude` still apply.
 
-Most remaining OpenClaw integration tools, such as messaging, media, cron,
-browser, nodes, gateway, `heartbeat_respond`, and `web_search`, are available
+Most remaining OpenClaw integration tools, such as messaging, media, `automations`,
+browser, nodes, gateway, and `web_search`, are available
 through Codex tool search under that namespace. This keeps the initial model
 context smaller. A small set of tools stay directly callable regardless of
 `codexDynamicToolsLoading`, because Codex tool search can be unavailable or
@@ -929,7 +929,7 @@ mode.
 The current audited safe-deny names are:
 
 ```text
-automations, canvas, dashboard, gateway, heartbeat_respond, image_generate,
+automations, canvas, dashboard, gateway, image_generate,
 memory_get, memory_search, message, music_generate, show_widget, skill_workshop,
 tts, video_generate, web_fetch, x_search
 ```
@@ -980,9 +980,10 @@ Codex harness forwards the other bootstrap files as developer instructions:
 - The compact loaded OpenClaw skills list is also forwarded as turn-scoped
   collaboration developer instructions, so native Codex subagents do not
   inherit it either.
-- Heartbeat turns receive generic initiative guidance through collaboration
-  mode. Monitor cron scratch is appended to the heartbeat prompt instead of
-  injected as workspace context.
+- Scheduled jobs own their monitoring instructions. Present job scratch uses
+  the bounded scheduled turn-context path, not workspace bootstrap injection.
+  See [Cron jobs](/automation/cron-jobs) for scratch, result recording, quiet
+  completion, and pacing.
 - `MEMORY.md` content from the configured agent workspace is not pasted into
   native Codex turn input when memory tools are available for that
   workspace; when it exists, the harness adds a small workspace-memory

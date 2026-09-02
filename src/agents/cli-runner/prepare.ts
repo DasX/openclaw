@@ -77,7 +77,6 @@ import {
   makeBootstrapWarn as makeBootstrapWarnImpl,
   resolveBootstrapContextForRun as resolveBootstrapContextForRunImpl,
 } from "../bootstrap-files.js";
-import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import { isPrimaryBootstrapRun, resolveWorkspaceBootstrapRouting } from "../bootstrap-routing.js";
 import {
   CLI_AUTH_EPOCH_VERSION,
@@ -1931,7 +1930,7 @@ export async function prepareCliRunContext(
       });
       await drainPendingContextEngineTurnsBeforeRun({
         admission: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
-        isHeartbeat: isHeartbeatLifecycleRunKind(params.bootstrapContextRunKind),
+
         lease: params.contextEngineLogicalTurnLease,
         recorder: params.userTurnTranscriptRecorder,
         sessionTarget: params.sessionTarget,

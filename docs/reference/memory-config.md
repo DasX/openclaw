@@ -484,9 +484,10 @@ Index session transcripts and surface them via `memory_search`:
 Session indexing is opt-in and runs asynchronously. Results can be slightly stale. Active transcripts live in the agent's SQLite database, while retained transcript artifacts can live on disk. Treat access to both as part of the same trust boundary.
 </Warning>
 
-Internal dreaming-narrative, cron, and heartbeat session transcripts are not
-indexed, including retained compressed narrative archives whose live session
-metadata is gone. They may quote fragments from user conversations but are not
+Internal dreaming-narrative and cron session transcripts, including monitoring
+runs, are not indexed. Historical heartbeat sessions remain excluded, as do
+retained compressed narrative archives whose live session metadata is gone.
+They may quote fragments from user conversations but are not
 searchable memory sources. Sessions purged with
 [`openclaw memory forget`](/cli/memory#memory-forget) are also durably excluded,
 even though their source transcripts remain in the session store. A forced

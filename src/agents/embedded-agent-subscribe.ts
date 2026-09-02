@@ -410,7 +410,6 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     messagingToolSentMediaUrls.length = 0;
     pendingMessagingTexts.clear();
     pendingMessagingTargets.clear();
-    state.heartbeatToolResponse = undefined;
     state.pendingMessagingMediaUrls.clear();
     state.pendingToolMediaUrls = [];
     state.pendingToolMediaAttachments = [];
@@ -624,8 +623,6 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     getMessagingToolSentMediaUrls: () => messagingToolSentMediaUrls.slice(),
     getMessagingToolSentTargets: () => messagingToolSentTargets.slice(),
     getMessagingToolSourceReplyPayloads: () => messagingToolSourceReplyPayloads.slice(),
-    getHeartbeatToolResponse: () =>
-      state.heartbeatToolResponse ? { ...state.heartbeatToolResponse } : undefined,
     getPendingToolMediaReply: () => readPendingToolMediaReply(state),
     getToolAutoDeliveryMediaUrls: () => [...state.toolAutoDeliveryMediaUrls],
     hasToolMediaBlockReply: () => state.hasToolMediaBlockReply,

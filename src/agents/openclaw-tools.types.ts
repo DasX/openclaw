@@ -122,8 +122,6 @@ export type OpenClawToolsOptions = {
   disableMessageTool?: boolean;
   swarmCollector?: boolean;
   swarmOutputSchema?: Record<string, unknown>;
-  /** If true, include the heartbeat response tool for structured heartbeat outcomes. */
-  enableHeartbeatTool?: boolean;
   /** If true, skip plugin tool resolution and return only shipped core tools. */
   disablePluginTools?: boolean;
   /**

@@ -7,6 +7,8 @@ import {
 import {
   claimAgentRunApprovalAuthority,
   claimAgentRunContext,
+  createAutomationResultRecorder,
+  getAgentRunContextOwnership,
   claimAgentRunDelegatedAuthority,
   clearAgentRunContext,
   getAgentRunContext,
@@ -164,4 +166,30 @@ test("same-generation stale terminal clear cannot revoke a reused-run successor"
 
   expect(validateAgentRunDelegatedAuthority(successor)).toBe(true);
   expect(releaseAgentRunDelegatedAuthority(successor)).toBe(true);
+});
+
+test("automation result writes reject lost claims and retained callbacks after settlement", () => {
+  const generation = getAgentEventLifecycleGeneration();
+  const run = { pacingEnabled: true, assertCurrent: () => {}, closed: false };
+  const claim = claimAgentRunContext(
+    "automation",
+    {
+      sessionKey: "agent:main:main",
+      lifecycleGeneration: generation,
+      cronRunsByJobId: new Map([["job", run]]),
+    },
+    { trackOwner: true, ownsContext: true },
+  );
+  const record = createAutomationResultRecorder("automation", "job");
+  const owner = getAgentRunContextOwnership("automation")!;
+  owner.claimIds.delete(claim!);
+  expect(() => record({ outcome: "progress", summary: "stale" })).toThrow("no longer active");
+  owner.claimIds.add(claim!);
+  record({ outcome: "progress", summary: "completed step" });
+  expect(getAgentRunContext("automation")?.cronRunsByJobId?.get("job")?.result?.summary).toBe(
+    "completed step",
+  );
+  run.closed = true;
+  expect(() => record({ outcome: "done", summary: "late" })).toThrow("no longer active");
+  releaseAgentRunContext("automation", claim);
 });

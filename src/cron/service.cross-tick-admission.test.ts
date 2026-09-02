@@ -72,12 +72,13 @@ describe("cron service cross-tick bounded admission", () => {
       }
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 2;
@@ -158,12 +159,13 @@ describe("cron service cross-tick bounded admission", () => {
       }
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 2;
@@ -280,12 +282,13 @@ describe("cron service cross-tick bounded admission", () => {
       }
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => t0,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 2;
@@ -350,6 +353,7 @@ describe("cron service cross-tick bounded admission", () => {
       return { status: "ok" as const, summary: "pending done" };
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
@@ -377,7 +381,7 @@ describe("cron service cross-tick bounded admission", () => {
         return t0;
       },
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1;
@@ -443,12 +447,13 @@ describe("cron service cross-tick bounded admission", () => {
       }
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => Date.now(),
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 2;

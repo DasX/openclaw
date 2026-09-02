@@ -161,7 +161,7 @@ function createGatewayCloseTestDeps(
     disposeAllCodeModeRuns: mocks.disposeAllCodeModeRuns,
     closeProviderTransportDispatcherPool: mocks.closeProviderTransportDispatcherPool,
     cron: { stop: vi.fn() },
-    heartbeatRunner: { stop: vi.fn() } as never,
+    sessionServices: { stop: vi.fn() } as never,
     updateCheckStop: null,
     stopTaskRegistryMaintenance: null,
     nodePresenceTimers: new Map(),
@@ -260,7 +260,7 @@ describe("createGatewayCloseHandler", () => {
     // remaining teardown -- otherwise the HTTP/WS listeners and timers strand and the next
     // start hits EADDRINUSE.
     expect(stopAndDrain).toHaveBeenCalledTimes(1);
-    expect(deps.heartbeatRunner.stop).toHaveBeenCalledTimes(1);
+    expect(deps.sessionServices.stop).toHaveBeenCalledTimes(1);
     expect(httpClose).toHaveBeenCalled();
     expect(result.warnings.length).toBeGreaterThan(0);
     expect(getActivePluginRegistry()).toBeNull();
@@ -275,7 +275,7 @@ describe("createGatewayCloseHandler", () => {
     expect(result.warnings).toStrictEqual([]);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
     expect(deps.cron.stop).toHaveBeenCalledTimes(1);
-    expect(deps.heartbeatRunner.stop).toHaveBeenCalledTimes(1);
+    expect(deps.sessionServices.stop).toHaveBeenCalledTimes(1);
     expect(deps.stopMediaCleanup).toHaveBeenCalledTimes(1);
     expect(deps.chatRunState.clear).toHaveBeenCalledTimes(1);
   });
@@ -827,7 +827,7 @@ describe("createGatewayCloseHandler", () => {
       expect(stopChannel).toHaveBeenCalledWith("discord");
       expect(result.warnings).toContain("plugin-services");
       await expect(Promise.all(exits)).resolves.toHaveLength(2);
-      expect(deps.heartbeatRunner.stop).toHaveBeenCalledOnce();
+      expect(deps.sessionServices.stop).toHaveBeenCalledOnce();
       expect(
         mocks.logWarn.mock.calls.some(([message]) =>
           String(message).includes("plugin-services runtime disposal exceeded 5000ms"),

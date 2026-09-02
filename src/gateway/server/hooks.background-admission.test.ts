@@ -12,7 +12,6 @@ import { resolveHooksConfig } from "../hooks.js";
 const mocks = vi.hoisted(() => ({
   enqueueSystemEvent: vi.fn(),
   getRuntimeConfig: vi.fn<() => OpenClawConfig>(),
-  requestHeartbeat: vi.fn(),
   runCronIsolatedAgentTurn: vi.fn(),
 }));
 
@@ -22,8 +21,16 @@ vi.mock("../../config/io.js", () => ({
 vi.mock("../../cron/isolated-agent.js", () => ({
   runCronIsolatedAgentTurn: mocks.runCronIsolatedAgentTurn,
 }));
-vi.mock("../../infra/heartbeat-wake.js", () => ({
-  requestHeartbeat: mocks.requestHeartbeat,
+vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: (_agentId: string, sessionKey: string) => ({
+    sessionId: sessionKey,
+    generation: "hook-generation",
+  }),
+  enqueueSessionEventForHost: () => ({
+    id: "hook-event",
+    cancel: vi.fn(),
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
+  }),
 }));
 vi.mock("../../infra/system-events.js", () => ({
   enqueueSystemEvent: mocks.enqueueSystemEvent,

@@ -35,6 +35,7 @@ import {
   type PersistedClawMcpServerRef,
 } from "./mcp.js";
 import { ClawPackageInstallError, installClawPackages } from "./packages.js";
+import { installPortableHeartbeat } from "./portable-heartbeat.js";
 import {
   deleteClawInstallRecord,
   persistClawInstallRecord,
@@ -417,6 +418,7 @@ export async function applyClawAddPlan(
     });
   }
 
+  let committedConfig: OpenClawConfig;
   try {
     const commit: ConfigCommit =
       options.commitConfig ??
@@ -444,6 +446,7 @@ export async function applyClawAddPlan(
       if (existingAgent) {
         if (sameCommittedAgent(existingAgent, plan)) {
           configCommitted = true;
+          committedConfig = config;
           return config;
         }
         const nextConfig = replaceLegacyCommittedAgent({
@@ -457,6 +460,7 @@ export async function applyClawAddPlan(
         });
         if (nextConfig) {
           configCommitted = true;
+          committedConfig = nextConfig;
           return nextConfig;
         }
         throw new ClawAddMutationError(
@@ -483,6 +487,7 @@ export async function applyClawAddPlan(
         },
       };
       configCommitted = true;
+      committedConfig = nextConfig;
       return nextConfig;
     });
     try {
@@ -640,6 +645,7 @@ export async function applyClawAddPlan(
   const installCronJobs = options.installCronJobs ?? installClawCronJobs;
   try {
     cronJobs = await installCronJobs(plan, { ...options, gateway: options.cronGateway });
+    await installPortableHeartbeat(plan, committedConfig!, options);
   } catch (error) {
     const cronError =
       error instanceof ClawCronInstallError

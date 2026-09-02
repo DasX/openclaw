@@ -1,5 +1,6 @@
 // Persists task registry records and events through the OpenClaw SQLite state database.
 import type { DatabaseSync } from "node:sqlite";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Insertable, Selectable } from "kysely";
 import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import {
@@ -29,7 +30,11 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
-import { parseDeliveryContextJson, parseSqliteJsonValue } from "./task-registry.sqlite.shared.js";
+import {
+  parseDeliveryContextJson,
+  parseSqliteJsonValue,
+  parseTaskRequesterTarget,
+} from "./task-registry.sqlite.shared.js";
 import type { TaskRegistryStoreSnapshot } from "./task-registry.store.types.js";
 import {
   parseOptionalTaskTerminalOutcome,
@@ -166,10 +171,14 @@ function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
 
 function rowToTaskDeliveryState(row: TaskDeliveryStateRow): TaskDeliveryState {
   const requesterOrigin = parseDeliveryContextJson(row.requester_origin_json);
+  const stored = parseSqliteJsonValue(row.requester_origin_json);
+  const target = isRecord(stored) ? stored.requesterTarget : undefined;
+  const requesterTarget = parseTaskRequesterTarget(target);
   const lastNotifiedEventAt = normalizeSqliteNumber(row.last_notified_event_at);
   return {
     taskId: row.task_id,
     ...(requesterOrigin ? { requesterOrigin } : {}),
+    ...(requesterTarget ? { requesterTarget } : {}),
     ...(lastNotifiedEventAt != null ? { lastNotifiedEventAt } : {}),
   };
 }
@@ -215,7 +224,14 @@ export function bindTaskRecord(record: TaskRecord): BoundTaskRecord {
 function bindTaskDeliveryState(state: TaskDeliveryState): Insertable<TaskDeliveryStateTable> {
   return {
     task_id: state.taskId,
-    requester_origin_json: serializeJson(state.requesterOrigin),
+    requester_origin_json: serializeJson(
+      state.requesterOrigin || state.requesterTarget
+        ? {
+            ...state.requesterOrigin,
+            ...(state.requesterTarget ? { requesterTarget: state.requesterTarget } : {}),
+          }
+        : undefined,
+    ),
     last_notified_event_at: state.lastNotifiedEventAt ?? null,
   };
 }

@@ -51,8 +51,9 @@ injected into the bootstrap prompt on every turn.
 Over time, useful material from daily notes is distilled into `MEMORY.md` by
 the default [dreaming](/concepts/dreaming) sweep. The generated workspace
 instructions still encourage the agent to record durable facts as it works,
-while dreaming handles background consolidation. The default heartbeat prompt
-performs no memory maintenance on its own.
+while dreaming handles background consolidation. Ordinary
+[monitoring jobs](/automation/cron-jobs) do not replace this memory-consolidation
+sweep.
 
 If `MEMORY.md` grows past the bootstrap file budget, OpenClaw keeps the file on
 disk intact but truncates the copy injected into context. Treat that as a

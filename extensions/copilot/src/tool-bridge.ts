@@ -453,8 +453,6 @@ function buildOpenClawCodingToolsOptions(
     sourceReplyDeliveryMode: a.sourceReplyDeliveryMode,
     disableMessageTool: a.disableMessageTool,
     forceMessageTool: a.forceMessageTool,
-    enableHeartbeatTool: a.enableHeartbeatTool,
-    forceHeartbeatTool: a.forceHeartbeatTool,
     authProfileStore: a.toolAuthProfileStore ?? a.authProfileStore,
     computerContextEpoch: input.computerContextEpoch,
     // recordToolPrepStage intentionally omitted: copilot does not

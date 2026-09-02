@@ -27,7 +27,6 @@ describe("status cold imports", () => {
       securityAudit: undefined,
       usage: undefined,
       health: undefined,
-      lastHeartbeat: null,
       gatewayService: { label: "gateway" },
       nodeService: { label: "node" },
     });

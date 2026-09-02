@@ -9,6 +9,42 @@ import { loadTranscriptEvents, replaceSessionEntry } from "./session-accessor.js
 import { persistSessionTranscriptTurn } from "./session-accessor.transcript-turn.js";
 
 describe("transcript turn logical ownership", () => {
+  it("checks message authority at commit and before an exact idempotent replay", async () => {
+    await withTempHome(async (home) => {
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        sessionId: "owned-turn",
+        storePath: path.join(home, "sessions.json"),
+      };
+      await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      let current = true;
+      const assertCommitAllowed = () => {
+        if (!current) {
+          throw new Error("message owner closed");
+        }
+      };
+      const append = (content = "recorded outcome") =>
+        persistSessionTranscriptTurn(scope, {
+          expectedSessionId: scope.sessionId,
+          updateMode: "none",
+          messages: [
+            {
+              message: { role: "assistant", content, idempotencyKey: "outcome-1" },
+              assertCommitAllowed,
+            },
+          ],
+        });
+      await expect(append()).resolves.toMatchObject({ appendedCount: 1 });
+      await expect(append()).resolves.toMatchObject({ appendedCount: 0 });
+      await expect(append("different outcome")).rejects.toThrow();
+      const before = await loadTranscriptEvents(scope);
+      current = false;
+      await expect(append()).rejects.toThrow("message owner closed");
+      expect(await loadTranscriptEvents(scope)).toEqual(before);
+    });
+  });
+
   it("rejects a bare-key write for an ownerless explicit fleet", async () => {
     await withTempHome(async (home) => {
       const storePath = path.join(home, "sessions.json");

@@ -14,6 +14,7 @@ import {
   startTaskRunByRunId,
 } from "../../../tasks/detached-task-runtime.js";
 import { createSubagentTaskBackingDetail } from "../../../tasks/task-backing-authority.js";
+import type { TaskDeliveryState } from "../../../tasks/task-registry.types.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
@@ -64,6 +65,7 @@ export type RegisterSubagentRunParams = {
   controllerSessionKey?: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
+  requesterTarget?: TaskDeliveryState["requesterTarget"];
   progressOrigin?: SubagentProgressOrigin;
   requesterDisplayKey: string;
   task: string;
@@ -236,6 +238,9 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
           // Detached task runtimes are plugin-replaceable. Isolate their input so
           // mutation cannot change the already-persisted registry record.
           requesterOrigin: requesterOrigin ? structuredClone(requesterOrigin) : undefined,
+          requesterTarget: registerParams.requesterTarget
+            ? structuredClone(registerParams.requesterTarget)
+            : undefined,
           childSessionKey,
           runId,
           label: registerParams.label,

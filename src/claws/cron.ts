@@ -1,15 +1,18 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
+import { z } from "zod";
 import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
 import { createTrustedCronScheduledToolPolicy } from "../cron/scheduled-tool-policy.js";
 import { applyDefaultCronToolsAllow } from "../cron/tools-allow.js";
 import type { CronJob } from "../cron/types.js";
+import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
-import type { ClawAddPlan, ClawCronJob } from "./types.js";
+import { parseClawOpenClawProfile } from "./schema.js";
+import type { ClawAddPlan, ClawCronJob, ClawOpenClawProfile } from "./types.js";
 
 export const CLAW_CRON_REF_SCHEMA_VERSION = "openclaw.clawCronRef.v1" as const;
 
@@ -24,6 +27,19 @@ export type PersistedClawCronRef = {
   error?: string;
   createdAtMs: number;
   updatedAtMs: number;
+};
+
+// Reserved local ownership key, outside the portable cron id grammar. Not a cron declaration.
+export const CLAW_PORTABLE_HEARTBEAT_ID = "$portable-heartbeat";
+export type ClawPortableHeartbeat = NonNullable<ClawOpenClawProfile["agent"]["heartbeat"]>;
+export type PersistedClawHeartbeatRef = Omit<PersistedClawCronRef, "job"> & {
+  job: {
+    heartbeat: ClawPortableHeartbeat;
+    configRevision: string;
+    scratchDigest?: string;
+    sourceScratchDigest?: string;
+    sourceAgentDigest?: string;
+  };
 };
 
 type CronRefRow = {
@@ -295,7 +311,9 @@ export async function installClawCronJobs(
     nowMs?: number;
   } = {},
 ): Promise<PersistedClawCronRef[]> {
-  const actions = plan.actions.filter((action) => action.kind === "cronJob");
+  const actions = plan.actions.filter(
+    (action) => action.kind === "cronJob" && action.id !== CLAW_PORTABLE_HEARTBEAT_ID,
+  );
   if (actions.length === 0) {
     return [];
   }
@@ -422,7 +440,7 @@ export function readClawCronRefs(
       `SELECT schema_version, agent_id, manifest_id, declaration_key, scheduler_job_id,
               status, job_json, error, created_at_ms, updated_at_ms
          FROM claw_cron_refs
-        WHERE agent_id = ?
+        WHERE agent_id = ? AND manifest_id != '$portable-heartbeat'
         ORDER BY manifest_id`,
     )
     .all(agentId) as CronRefRow[];
@@ -453,7 +471,7 @@ export function markClawCronRefRemoved(
 }
 
 export function upsertClawCronRef(
-  ref: PersistedClawCronRef,
+  ref: PersistedClawCronRef | PersistedClawHeartbeatRef,
   options: OpenClawStateDatabaseOptions = {},
 ): void {
   runOpenClawStateWriteTransaction(({ db }) => {
@@ -488,4 +506,43 @@ export function upsertClawCronRef(
         updated_at_ms: ref.updatedAtMs,
       });
   }, options);
+}
+
+const ClawHeartbeatRefJobSchema = z
+  .object({
+    heartbeat: z.unknown(),
+    configRevision: z.string().min(1),
+    scratchDigest: z.string().optional(),
+    sourceScratchDigest: z.string().optional(),
+    sourceAgentDigest: z.string().optional(),
+  })
+  .strict();
+
+export function readClawHeartbeatRef(
+  agentId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): PersistedClawHeartbeatRef | undefined {
+  const { db } = openOpenClawStateDatabase(options);
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    getNodeSqliteKysely<{ claw_cron_refs: CronRefRow }>(db)
+      .selectFrom("claw_cron_refs")
+      .selectAll()
+      .where("agent_id", "=", agentId)
+      .where("manifest_id", "=", CLAW_PORTABLE_HEARTBEAT_ID),
+  );
+  if (!row) {
+    return undefined;
+  }
+  const job = ClawHeartbeatRefJobSchema.parse(JSON.parse(row.job_json));
+  const parsed = parseClawOpenClawProfile({
+    schemaVersion: 1,
+    agent: { heartbeat: job.heartbeat },
+  });
+  if (!parsed.ok || !parsed.profile.agent.heartbeat) {
+    throw new Error(
+      "Invalid portable heartbeat provenance; preserve the stored state and inspect claws status before retrying.",
+    );
+  }
+  return { ...rowToRef(row), job: { ...job, heartbeat: parsed.profile.agent.heartbeat } };
 }

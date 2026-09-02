@@ -98,11 +98,12 @@ describe.sequential("cron delivery outcomes", () => {
           resetTaskRegistryForTests({ persist: false });
           const storePath = state.path("cron", "jobs.json");
           const cron = new CronService({
+            runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
             storePath,
             cronEnabled: true,
             log: createNoopLogger(),
             enqueueSystemEvent: vi.fn(),
-            requestHeartbeat: vi.fn(),
+            enqueueSessionEvent: vi.fn(),
             runCommandJob: commandRunner(),
             runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
             sendCronWebhook: async (params) =>
@@ -194,11 +195,12 @@ describe.sequential("cron delivery outcomes", () => {
           resetTaskRegistryForTests({ persist: false });
           const storePath = state.path("cron", "jobs.json");
           const cron = new CronService({
+            runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
             storePath,
             cronEnabled: true,
             log: createNoopLogger(),
             enqueueSystemEvent: vi.fn(),
-            requestHeartbeat: vi.fn(),
+            enqueueSessionEvent: vi.fn(),
             runIsolatedAgentJob: vi.fn(async () => ({
               status: "error" as const,
               error: "monitor failed",
@@ -322,12 +324,13 @@ describe.sequential("cron delivery outcomes", () => {
           const storePath = state.path("cron", "jobs.json");
           let now = Date.now();
           const cron = new CronService({
+            runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
             storePath,
             cronEnabled: true,
             nowMs: () => now,
             log: createNoopLogger(),
             enqueueSystemEvent: vi.fn(),
-            requestHeartbeat: vi.fn(),
+            enqueueSessionEvent: vi.fn(),
             runIsolatedAgentJob: vi.fn(async () => ({
               status: "ok" as const,
               delivered: false,
@@ -442,13 +445,14 @@ describe.sequential("cron delivery outcomes", () => {
       { layout: "state-only", prefix: "openclaw-cron-alert-fallback-" },
       async (state) => {
         const enqueueSystemEvent = vi.fn();
-        const requestHeartbeat = vi.fn();
+        const enqueueSessionEvent = vi.fn();
         const cron = new CronService({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: state.path("cron", "jobs.json"),
           cronEnabled: true,
           log: createNoopLogger(),
           enqueueSystemEvent,
-          requestHeartbeat,
+          enqueueSessionEvent,
           runIsolatedAgentJob: vi.fn(async () => ({
             status: "error" as const,
             error: "provider unavailable",
@@ -484,18 +488,17 @@ describe.sequential("cron delivery outcomes", () => {
           await cron.run(job.id, "force");
 
           await vi.waitFor(() =>
-            expect(enqueueSystemEvent).toHaveBeenCalledWith(
+            expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith(
               expect.stringContaining('Automation "fallback owner" failed 1 times'),
-              { agentId: "work", sessionKey, contextKey: `cron:${job.id}:failure-alert` },
+              {
+                agentId: "work",
+                sessionKey,
+                contextKey: `cron:${job.id}:failure-alert`,
+                deliveryContext: undefined,
+              },
             ),
           );
-          expect(requestHeartbeat).toHaveBeenCalledWith({
-            source: "notifications-event",
-            intent: "immediate",
-            reason: "wake",
-            agentId: "work",
-            sessionKey,
-          });
+          expect(enqueueSystemEvent).not.toHaveBeenCalled();
         } finally {
           cron.stop();
         }
@@ -512,6 +515,7 @@ describe.sequential("cron delivery outcomes", () => {
           resetTaskRegistryForTests({ persist: false });
           const storePath = state.path("cron", "jobs.json");
           const cron = new CronService({
+            runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
             storePath,
             cronEnabled: true,
             cronConfig: {
@@ -526,7 +530,7 @@ describe.sequential("cron delivery outcomes", () => {
             },
             log: createNoopLogger(),
             enqueueSystemEvent: vi.fn(),
-            requestHeartbeat: vi.fn(),
+            enqueueSessionEvent: vi.fn(),
             runIsolatedAgentJob: vi.fn(async () => ({
               status: "skipped" as const,
               error: "requests-in-flight",
@@ -590,11 +594,12 @@ describe.sequential("cron delivery outcomes", () => {
       async (state) => {
         resetTaskRegistryForTests({ persist: false });
         const cron = new CronService({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: state.path("cron", "jobs.json"),
           cronEnabled: true,
           log: createNoopLogger(),
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runCommandJob: commandRunner(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });

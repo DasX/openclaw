@@ -20,7 +20,7 @@ type ChannelDoctorCompatibilityNormalizer = (params: {
   cfg: OpenClawConfig;
 }) => ChannelDoctorCompatibilityMutation;
 
-function migrateHeartbeatVisibility(raw: Record<string, unknown>, changes: string[]): void {
+export function migrateHeartbeatVisibility(raw: Record<string, unknown>, changes: string[]): void {
   const channels = isRecord(raw.channels) ? raw.channels : null;
   if (!channels) {
     return;
@@ -55,7 +55,8 @@ function migrateHeartbeatVisibility(raw: Record<string, unknown>, changes: strin
     if (!channelId.trim() || isChannelConfigMetadataKey(channelId) || !isRecord(value)) {
       continue;
     }
-    const preserveEmptyPluginBlock = channelId === "feishu";
+    // Empty plugin-owned transport blocks do not establish legacy visibility intent.
+    const preserveEmptyPluginBlock = true;
     migrateEntry(value, `channels.${channelId}`, preserveEmptyPluginBlock);
     const accounts = isRecord(value.accounts) ? value.accounts : null;
     if (!accounts) {

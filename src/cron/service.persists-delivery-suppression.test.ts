@@ -23,11 +23,12 @@ describe("CronService persists delivery suppression", () => {
         deliverySuppressionReason: "channel_transform",
       });
       const cron = new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath,
         cronEnabled: true,
         log: logger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob,
         onEvent: (event) => {
           if (event.action === "finished") {

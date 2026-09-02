@@ -1,60 +1,43 @@
-// Summarizes heartbeat config for CLI and UI display.
-import {
-  DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
-  DEFAULT_HEARTBEAT_EVERY,
-  resolveHeartbeatPromptCore as resolveHeartbeatPromptText,
-} from "../auto-reply/heartbeat.js";
+/** @deprecated v4 reporting projection; ordinary jobs own cadence and delivery. */
+import { tryResolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
+import { parseDurationMs } from "../cli/parse-duration.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { normalizeAgentId } from "../routing/session-key.js";
-import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
-import {
-  resolveHeartbeatAgents,
-  resolveHeartbeatConfig,
-  resolveHeartbeatIntervalMs,
-} from "./heartbeat-config.js";
+import { loadCronJobsStoreSync, resolveCronJobsStorePathFromConfig } from "../cron/store.js";
+import { getLegacyHeartbeatJobIds } from "./heartbeat-compat.js";
+import { projectHeartbeatSummary, type HeartbeatSummary } from "./heartbeat-summary-snapshot.js";
 
-export { resolveHeartbeatIntervalMs };
+export type { HeartbeatSummary } from "./heartbeat-summary-snapshot.js";
 
-/** Normalized heartbeat configuration for one agent. */
-export type HeartbeatSummary = {
-  enabled: boolean;
-  every: string;
-  everyMs: number | null;
-  prompt: string;
-  target: string;
-  model?: string;
-  session?: string;
-  ackMaxChars: number;
-};
-
-const DEFAULT_HEARTBEAT_TARGET = "owner";
-
-/** Return whether heartbeat scheduling applies to an agent. */
-export function isHeartbeatEnabledForAgent(cfg: OpenClawConfig, agentId?: string): boolean {
-  const resolvedAgentId = agentId ?? tryResolveAmbientHeartbeatAgentId(cfg);
-  return (
-    resolvedAgentId !== undefined &&
-    resolveHeartbeatAgents(cfg).some((agent) => agent.agentId === normalizeAgentId(resolvedAgentId))
-  );
-}
-
-/** Resolve display-ready heartbeat settings for an agent. */
 export function resolveHeartbeatSummaryForAgent(
   cfg: OpenClawConfig,
   agentId?: string,
 ): HeartbeatSummary {
-  const merged = resolveHeartbeatConfig(cfg, agentId);
-  const everyMs = resolveHeartbeatIntervalMs(cfg, undefined, merged);
-  const enabled = isHeartbeatEnabledForAgent(cfg, agentId) && everyMs !== null;
+  const owner = agentId ?? tryResolveAmbientOwnerAgentId(cfg);
+  const ids = new Set(getLegacyHeartbeatJobIds(cfg));
+  const job = loadCronJobsStoreSync(resolveCronJobsStorePathFromConfig(cfg)).jobs.find(
+    (candidate) => ids.has(candidate.id) && candidate.agentId === owner,
+  );
+  return projectHeartbeatSummary(job);
+}
 
-  return {
-    enabled,
-    every: enabled ? (merged?.every ?? DEFAULT_HEARTBEAT_EVERY) : "disabled",
-    everyMs: enabled ? everyMs : null,
-    prompt: resolveHeartbeatPromptText(merged?.prompt),
-    target: merged?.target ?? DEFAULT_HEARTBEAT_TARGET,
-    model: merged?.model,
-    session: merged?.session,
-    ackMaxChars: DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
-  };
+export function isHeartbeatEnabledForAgent(cfg: OpenClawConfig, agentId?: string): boolean {
+  return resolveHeartbeatSummaryForAgent(cfg, agentId).enabled;
+}
+
+/** Explicit legacy SDK input is parsed only here; current config has no heartbeat keys. */
+export function resolveHeartbeatIntervalMs(
+  cfg: OpenClawConfig,
+  overrideEvery?: string,
+  heartbeat?: { every?: string },
+): number | null {
+  const input = overrideEvery ?? heartbeat?.every;
+  if (input === undefined) {
+    return resolveHeartbeatSummaryForAgent(cfg).everyMs;
+  }
+  try {
+    const ms = parseDurationMs(input, { defaultUnit: "m" });
+    return ms > 0 ? ms : null;
+  } catch {
+    return null;
+  }
 }

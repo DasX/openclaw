@@ -6,11 +6,12 @@ import {
   setRuntimeConfigSnapshot,
   type OpenClawConfig,
 } from "../../config/config.js";
+import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
-import { requestHeartbeat, setHeartbeatWakeHandler } from "../../infra/heartbeat-wake.js";
 import * as execModule from "../../process/exec.js";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { VERSION } from "../../version.js";
+import { withPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
 
 const runtimeModelAuthMocks = vi.hoisted(() => ({
   getApiKeyForModel: vi.fn(),
@@ -192,8 +193,8 @@ describe("plugin runtime command execution", () => {
     {
       name: "exposes runtime.system.requestHeartbeat",
       readValue: (runtime: ReturnType<typeof createPluginRuntime>) =>
-        runtime.system.requestHeartbeat,
-      expected: requestHeartbeat,
+        typeof runtime.system.requestHeartbeat,
+      expected: "function",
     },
     {
       name: "exposes deprecated runtime.system.requestHeartbeatNow",
@@ -215,29 +216,66 @@ describe("plugin runtime command execution", () => {
     expect(typeof sessionRuntime.resolveEntryResetFreshness).toBe("function");
   });
 
-  it("maps deprecated runtime.system.requestHeartbeatNow to an immediate compatibility wake", async () => {
-    vi.useFakeTimers();
-    const handler = vi.fn(async (_request: Parameters<typeof requestHeartbeat>[0]) => ({
-      status: "skipped" as const,
-      reason: "disabled",
-    }));
-    const dispose = setHeartbeatWakeHandler(handler);
-    try {
-      createPluginRuntime().system.requestHeartbeatNow({
-        reason: "legacy-plugin",
-        coalesceMs: 0,
+  it("maps legacy wakes to the canonical Gateway and surfaces refusal", () => {
+    setRuntimeConfigSnapshot({});
+    const wake = vi.fn().mockReturnValue({ ok: true });
+    const context = {
+      cron: { wake },
+      getRuntimeConfig: () => ({}),
+    } as unknown as GatewayRequestContext;
+    withPluginRuntimeGatewayRequestScope({ context, isWebchatConnect: () => false }, () => {
+      const system = createPluginRuntime().system;
+      system.requestHeartbeatNow({ reason: "legacy-plugin", coalesceMs: 0 });
+      expect(wake).toHaveBeenCalledExactlyOnceWith({
+        mode: "now",
+        text: "legacy-plugin",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        expectedTarget: expect.objectContaining({
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          assertCurrent: expect.any(Function),
+        }),
       });
-      await vi.advanceTimersByTimeAsync(1);
-      const request = handler.mock.calls[0]?.[0] as
-        | { source?: string; intent?: string; reason?: string }
-        | undefined;
-      expect(request?.source).toBe("other");
-      expect(request?.intent).toBe("immediate");
-      expect(request?.reason).toBe("legacy-plugin");
-    } finally {
-      dispose();
-      vi.useRealTimers();
-    }
+      wake.mockReturnValueOnce({ ok: false, reason: "Choose an enabled scheduled job" });
+      expect(() => system.requestHeartbeat({ source: "other", intent: "event" })).toThrow(
+        "Choose an enabled scheduled job",
+      );
+      expect(wake).toHaveBeenLastCalledWith({
+        mode: "now",
+        text: "Review pending session events.",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        expectedTarget: expect.objectContaining({
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          assertCurrent: expect.any(Function),
+        }),
+      });
+    });
+    expect(() => createPluginRuntime().system.requestHeartbeatNow()).toThrow("live Gateway");
+  });
+
+  it("preserves explicit destination fields on the stable requestHeartbeatNow contract", async () => {
+    heartbeatRunnerMocks.runHeartbeatOnce.mockResolvedValue({ status: "ran", durationMs: 1 });
+    const context = {} as GatewayRequestContext;
+    const heartbeat = {
+      target: "slack",
+      to: "channel:fixture",
+      accountId: "fixture",
+      every: "1ms",
+    };
+    withPluginRuntimeGatewayRequestScope({ context, isWebchatConnect: () => false }, () => {
+      createPluginRuntime().system.requestHeartbeatNow({ intent: "manual", heartbeat });
+    });
+    await vi.waitFor(() =>
+      expect(heartbeatRunnerMocks.runHeartbeatOnce).toHaveBeenCalledWith(
+        expect.objectContaining({
+          heartbeat: { target: "slack", to: "channel:fixture", accountId: "fixture" },
+        }),
+      ),
+    );
+    heartbeatRunnerMocks.runHeartbeatOnce.mockReset();
   });
 
   it("resolves thinking policy with configured model compat from runtime config", () => {

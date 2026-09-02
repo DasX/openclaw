@@ -2615,7 +2615,8 @@ describe("gateway server chat", () => {
   ])(
     "chat.send does not rotate sessions for operator.write reset triggers and replies with denial: %s",
     async (message) => {
-      const { getReplyFromConfig } = await import("../auto-reply/reply/get-reply.js");
+      const { getReplyFromConfigCore: getReplyFromConfig } =
+        await import("../auto-reply/reply/get-reply.js");
       const { withFullRuntimeReplyConfig } =
         await import("../auto-reply/reply/get-reply-fast-path.js");
       const replyRun = await import("../auto-reply/reply/get-reply-run.js");

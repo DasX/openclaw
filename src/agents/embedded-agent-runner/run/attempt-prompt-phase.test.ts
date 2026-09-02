@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../../config/sessions/session-accessor.js";
-import { persistHeartbeatOutcome } from "../../../infra/heartbeat-outcome-store.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -333,7 +332,7 @@ afterEach(() => {
 });
 
 describe("runEmbeddedAttemptPromptPhase", () => {
-  it("does not claim heartbeat outcomes for detached user-triggered runs", async () => {
+  it("leaves the retired outcome table inert during detached user-triggered runs", async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-prompt-phase-heartbeat-"));
     tempStateDirs.push(stateDir);
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -341,14 +340,14 @@ describe("runEmbeddedAttemptPromptPhase", () => {
       { agentId: "main", env: process.env, sessionKey: "agent:main:main" },
       { sessionId: "prompt-phase-heartbeat-test", updatedAt: 1 },
     );
-    persistHeartbeatOutcome({
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      runSessionKey: "agent:main:main:heartbeat",
-      response: { outcome: "progress", notify: false, summary: "Heartbeat context" },
-      occurredAt: 1,
-      env: process.env,
-    });
+    // The agent-v19 table stays inert until its next approved schema migration.
+    openOpenClawAgentDatabase({ agentId: "main", env: process.env })
+      .db.prepare(
+        `INSERT INTO heartbeat_outcomes
+       (session_key, run_session_key, outcome, summary, occurred_at, updated_at)
+       VALUES (?, ?, 'progress', 'Historical context', 1, 1)`,
+      )
+      .run("agent:main:main", "agent:main:main:heartbeat");
     const fixture = createFixture();
     Object.assign(fixture.input.attempt, {
       sessionKey: "agent:main:main",

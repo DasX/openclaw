@@ -165,7 +165,11 @@ function createTestRuntime(overrides?: {
           if (!("route" in turn) || !("delivery" in turn)) {
             throw new Error("expected assembled Feishu comment turn plan");
           }
-          return await dispatchPlanForTest(turn);
+          const delivery = turn.delivery;
+          if (!delivery.deliver) {
+            throw new Error("expected core-managed Feishu comment delivery");
+          }
+          return await dispatchPlanForTest({ ...turn, delivery });
         }) as unknown as PluginRuntime["channel"]["inbound"]["run"],
       },
       pairing: {

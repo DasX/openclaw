@@ -61,7 +61,7 @@ No model call occurs in the matching path. On a hit, the main reply receives a b
 Standing intent (created 2026-07-27): Confirm the rollback owner.
 ```
 
-The matcher increments `fire_count`, records `last_fired_at`, and moves the intent through its explicit lifecycle. A fired intent becomes armed again only after its cooldown. It becomes `done` when its fire budget is exhausted and `expired` when its expiry passes. Expiry and cooldown maintenance also piggyback on existing heartbeat and cron reply hooks; OpenClaw does not add another timer subsystem.
+The matcher increments `fire_count`, records `last_fired_at`, and moves the intent through its explicit lifecycle. A fired intent becomes armed again only after its cooldown. It becomes `done` when its fire budget is exhausted and `expired` when its expiry passes. Expiry and cooldown maintenance also piggyback on ordinary cron reply hooks; OpenClaw does not add another timer subsystem.
 
 TriggerBench finds that prospective recall decays as context grows and can drift into an always-remind heuristic ([arXiv:2606.23459](https://arxiv.org/abs/2606.23459)). Structural matching and fire budgets keep recall independent of conversational context while bounding false alarms.
 

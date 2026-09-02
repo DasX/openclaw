@@ -7,7 +7,6 @@ import { MESSAGE_TOOL_ONLY_DELIVERY_HINT } from "../../plugin-sdk/message-tool-d
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { MEDIA_ONLY_USER_TEXT } from "../../sessions/user-turn-media.js";
 import type { SourceReplyDeliveryMode } from "../get-reply-options.types.js";
-import { HEARTBEAT_TRANSCRIPT_PROMPT } from "../heartbeat.js";
 import { buildInboundMediaNoteProjection } from "../media-note.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import { appendChannelPromptContext } from "./channel-prompt-context.js";
@@ -117,7 +116,6 @@ type ReplyPromptEnvelopeBaseParams = {
   startupAction: ReplyPromptEnvelopeStartupAction;
   startupContextPrelude?: string | null;
   softResetTail?: string;
-  isHeartbeat?: boolean;
   inboundEventKind?: InboundEventKind;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
 };
@@ -218,11 +216,9 @@ export function buildReplyPromptEnvelopeBase(
   const roomEventBody = isRoomEvent ? resolveRoomEventTranscriptBody(params) : undefined;
   const effectiveBaseBody =
     roomEventBody ?? (params.hasUserBody ? resetModelBody : MEDIA_ONLY_USER_TEXT);
-  const transcriptBody = params.isHeartbeat
-    ? HEARTBEAT_TRANSCRIPT_PROMPT
-    : params.isBareSessionReset
-      ? softResetTail || `[OpenClaw session ${params.startupAction}]`
-      : (roomEventBody ?? (params.hasUserBody ? params.baseBody : MEDIA_ONLY_USER_TEXT));
+  const transcriptBody = params.isBareSessionReset
+    ? softResetTail || `[OpenClaw session ${params.startupAction}]`
+    : (roomEventBody ?? (params.hasUserBody ? params.baseBody : MEDIA_ONLY_USER_TEXT));
   const currentInboundContext: CurrentInboundPromptContext | undefined =
     !params.isBareSessionReset && currentInboundContextText
       ? {

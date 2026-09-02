@@ -1387,7 +1387,7 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Bravo");
   });
 
-  it("removes shipped heartbeat prompt quotes from workspace context without dropping user guidance", () => {
+  it("preserves workspace instructions without applying the retired heartbeat prompt parser", () => {
     const heartbeatPrompts = [
       "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
       "Follow the heartbeat monitor scratch context when provided. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
@@ -1410,10 +1410,8 @@ describe("buildAgentSystemPrompt", () => {
         expect(prompt).toContain("Keep this user guidance.");
         expect(prompt).toContain("Keep this too.");
         expect(prompt).not.toContain("## Heartbeats");
-        expect(prompt).not.toContain("HEARTBEAT_OK");
-        expect(prompt).not.toContain("HEARTBEAT.md");
-        expect(prompt).not.toContain(heartbeatPrompt);
-        expect(prompt).not.toContain("Default heartbeat prompt:");
+        expect(prompt).toContain(heartbeatPrompt);
+        expect(prompt).toContain("Default heartbeat prompt:");
       }
     }
   });

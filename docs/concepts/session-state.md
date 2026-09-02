@@ -63,7 +63,7 @@ When a notify-eligible event lands and a watcher's cursor is behind, the watcher
 Session "agent:main:subagent:child" changed (other actor). Reconcile before acting: session_status sessionKey "agent:main:subagent:child" changesSince 12.
 ```
 
-Main-session watchers are also woken immediately via a heartbeat wake; nested sub-agent watchers get the notice on their next turn.
+Main-session watchers also request an ordinary session follow-up immediately; if the session is busy, admission queues it behind the active turn. This does not depend on scheduled monitoring or cron being enabled. Nested sub-agent watchers get the notice on their next turn.
 
 The protocol is deliberately anti-spam:
 
@@ -121,5 +121,5 @@ Current limits:
 
 - [Session tools](/concepts/session-tool) — `sessions_send`, `session_status`, `sessions_list`
 - [Sub-agents](/tools/subagents) — spawn edges and completion announcements
-- [Heartbeat](/gateway/heartbeat) — how queued notices wake main sessions
+- [Command queue](/concepts/queue) — how session follow-ups wait for admission
 - [Session management](/concepts/session) — session keys, scopes, lifecycle

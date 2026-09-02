@@ -7,6 +7,7 @@ import { promises as fs } from "node:fs";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
+import { captureSessionEventTargetForHost as captureSessionEventTarget } from "../../../auto-reply/reply/session-event-handoff.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import type { SubagentSpawnPreparation } from "../../../context-engine/types.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
@@ -140,6 +141,10 @@ export async function spawnSubagentDirect(
     },
     childIdem,
   } = requestResolution.resolved;
+  const { generation: _generation, ...requesterTarget } = captureSessionEventTarget(
+    requesterAgentId,
+    ownership.completionRequesterSessionKey,
+  );
   let modelApplied = false;
   let threadBindingReady = false;
   let hasBoundThreadDeliveryOrigin = false;
@@ -542,6 +547,7 @@ export async function spawnSubagentDirect(
           controllerSessionKey: ownership.controllerSessionKey,
           requesterSessionKey: ownership.completionRequesterSessionKey,
           requesterOrigin,
+          requesterTarget,
           progressOrigin,
           requesterDisplayKey: ownership.completionRequesterDisplayKey,
           task,

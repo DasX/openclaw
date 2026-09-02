@@ -2,7 +2,9 @@ import type { CommandLaneTaskMarker } from "../../process/command-queue.js";
 import type { CronActiveJobMarker } from "../active-jobs.js";
 import { resolveCronCompletionStatus } from "../completion-status.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { isProactiveJobCutoverPending } from "../proactive-job-receipt.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
+import type { CronServiceRunOptions } from "../service-contract.js";
 import {
   finishCronRunReceiptInDatabase,
   releaseLocalCronRunReceiptOwnership,
@@ -17,7 +19,7 @@ import type {
 import { normalizeCronRunErrorText } from "./execution-errors.js";
 import { failureNotificationDeliveryFromJobState } from "./failure-alerts.js";
 import { findJobOrThrow, hasActiveCronRun, isJobDue, isJobEnabled } from "./jobs-scheduling.js";
-import { assertSupportedJobSpec } from "./jobs-validation.js";
+import { assertExecutionPolicy, assertSupportedJobSpec } from "./jobs-validation.js";
 import { locked } from "./locked.js";
 import { markManualCronJobActive, ownsStreamSource } from "./ops-shared.js";
 import {
@@ -59,6 +61,8 @@ type PreparedManualRun =
       reservationIdentity: object;
       wasEnabled: boolean;
       payload?: CronPayload;
+      delivery?: CronServiceRunOptions["delivery"];
+      commitGuard?: () => void;
       evaluateTrigger?: boolean;
       streamBatch?: string;
       streamScheduleKey?: string;
@@ -79,11 +83,18 @@ export type ActivatedManualRun = Extract<PreparedManualRun, { ran: true }> & {
 };
 
 export type ManualRunOptions = {
+  /** Canonical result of this exact direct run, after durable settlement. */
+  onSettledResult?: (result: {
+    status: "ok" | "error" | "skipped";
+    error?: string;
+    deliveryError?: string;
+  }) => void;
   runId?: string;
   /** Revalidates the admitted caller immediately before reserving durable work. */
   commitGuard?: () => void;
   scheduleOwnershipAtMs?: number;
   payload?: CronPayload;
+  delivery?: CronServiceRunOptions["delivery"];
   terminalTracker?: ManualRunTerminalTracker;
   owningCronLaneTaskMarker?: CommandLaneTaskMarker;
   evaluateTrigger?: boolean;
@@ -263,6 +274,11 @@ async function inspectManualRunPreflight(
     // Normalize job tick state (clears stale runningAtMs markers) before
     // checking if already running, so a stale marker from a crashed Phase-1
     // persist does not block manual triggers for up to STUCK_RUN_MS (#17554).
+    if (isProactiveJobCutoverPending(state.deps.storePath, findJobOrThrow(state, id))) {
+      throw new Error(
+        "Automation migration is incomplete; run openclaw doctor --fix before executing this job",
+      );
+    }
     recomputeManualRunPreflight(state, id, mode);
     const job = findJobOrThrow(state, id);
     if (mode === "if-enabled" && (!isJobEnabled(job) || job.state.autoDisabled)) {
@@ -276,6 +292,9 @@ async function inspectManualRunPreflight(
     } catch (error) {
       await skipInvalidPersistedManualRun({ state, job, mode, runId, terminalTracker, error });
       return { ok: true, ran: false, reason: "invalid-spec" as const };
+    }
+    if (job.idleOnly && state.deps.isExecutionIdle?.(job) !== true) {
+      return { ok: true, ran: false, reason: "not-due" } as const;
     }
     if (hasActiveCronRun(job)) {
       return { ok: true, ran: false, reason: "already-running" as const };
@@ -340,6 +359,11 @@ export async function prepareManualRun(
     // The initial preflight is advisory. A command-lane wait or another cron
     // run can change this job before its reservation is persisted.
     await ensureLoaded(state, { skipRecompute: true });
+    if (isProactiveJobCutoverPending(state.deps.storePath, findJobOrThrow(state, id))) {
+      throw new Error(
+        "Automation migration is incomplete; run openclaw doctor --fix before executing this job",
+      );
+    }
     recomputeManualRunPreflight(state, id, mode);
     const job = findJobOrThrow(state, id);
     if (mode === "if-enabled" && (!isJobEnabled(job) || job.state.autoDisabled)) {
@@ -360,6 +384,9 @@ export async function prepareManualRun(
         error,
       });
       return { ok: true, ran: false, reason: "invalid-spec" as const };
+    }
+    if (job.idleOnly && state.deps.isExecutionIdle?.(job) !== true) {
+      return { ok: true, ran: false, reason: "not-due" } as const;
     }
     if (hasActiveCronRun(job)) {
       return { ok: true, ran: false, reason: "already-running" as const };
@@ -409,6 +436,8 @@ export async function prepareManualRun(
       reservationIdentity,
       wasEnabled: isJobEnabled(job),
       ...(opts?.payload ? { payload: structuredClone(opts.payload) } : {}),
+      ...(opts?.delivery ? { delivery: structuredClone(opts.delivery) } : {}),
+      ...(opts?.commitGuard ? { commitGuard: opts.commitGuard } : {}),
       ...(opts?.evaluateTrigger ? { evaluateTrigger: true } : {}),
       ...(opts?.streamBatch !== undefined ? { streamBatch: opts.streamBatch } : {}),
       ...(opts?.streamScheduleKey !== undefined
@@ -483,10 +512,31 @@ export async function activatePreparedManualRun(
       return { ok: true, ran: false, reason: "invalid-spec" } as const;
     }
 
+    if (job.idleOnly && state.deps.isExecutionIdle?.(job) !== true) {
+      await releasePreparedManualReservationWithRetry(state, prepared);
+      return { ok: true, ran: false, reason: "not-due" } as const;
+    }
+    let delivery = job.delivery;
+    if (prepared.delivery) {
+      const configured = job.delivery;
+      delivery = {
+        mode: "announce",
+        ...configured,
+        ...prepared.delivery,
+        // A destination override never widens the configured delivery authority.
+        ...(configured?.target === "owner"
+          ? { target: "owner", to: undefined, threadId: undefined }
+          : {}),
+        ...(configured?.accountId ? { accountId: configured.accountId } : {}),
+        ...(configured?.mode === "none" ? { mode: "none" } : {}),
+      };
+      assertExecutionPolicy({ ...job, delivery });
+    }
     const activation = await activateQueuedCronRun({
       state,
       job,
       reservationIdentity: prepared.reservationIdentity,
+      commitGuard: prepared.commitGuard,
       onUnavailableRollbackError: async () => {
         await releasePreparedManualReservationWithRetry(state, prepared);
       },
@@ -525,6 +575,9 @@ export async function activatePreparedManualRun(
     }
     if (prepared.payload) {
       executionJob.payload = structuredClone(prepared.payload);
+    }
+    if (prepared.delivery) {
+      executionJob.delivery = delivery;
     }
     return {
       ...prepared,

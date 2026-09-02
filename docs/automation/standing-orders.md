@@ -143,7 +143,7 @@ openclaw automations add \
 
 **Authority:** Check system health, restart services, send alerts
 **Approval gate:** Restart services automatically. Escalate if restart fails twice.
-**Trigger:** Every heartbeat cycle
+**Trigger:** Every 30 minutes (enforced via an automation job)
 
 ### Checks
 
@@ -161,6 +161,11 @@ openclaw automations add \
 | Stale task > 24h | Remind owner             | No                       |
 | Channel offline  | Log and retry next cycle | If offline > 2 hours     |
 ```
+
+Create an ordinary recurring job for these checks. Keep the checklist in that
+job's scratch and use its `activeHours`, `idleOnly`, and delivery policy when
+appropriate. The instruction above does not create a schedule by itself. See
+[Monitoring policies](/automation/cron-jobs#monitoring-policies).
 
 ## Execute-verify-report pattern
 

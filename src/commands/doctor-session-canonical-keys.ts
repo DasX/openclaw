@@ -26,6 +26,7 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import { copyRetiredSessionOutcomesForDoctor } from "./doctor-session-artifacts.js";
 import {
   collectCanonicalSessionRepairGroups,
   listCanonicalSessionStores,
@@ -290,6 +291,12 @@ function applyCanonicalDestinationArtifacts(params: {
         destinationAliasKeys,
       );
     }
+    copyRetiredSessionOutcomesForDoctor(
+      params.database,
+      params.database,
+      destinationAliasKeys,
+      params.winner.canonicalKey,
+    );
     copySessionNodeArtifactsForRepair(
       params.database,
       params.database,
@@ -302,6 +309,12 @@ function applyCanonicalDestinationArtifacts(params: {
     return;
   }
   deleteSessionMembersForRepair(params.database, params.winner.canonicalKey);
+  copyRetiredSessionOutcomesForDoctor(
+    params.database,
+    params.database,
+    [params.winner.sessionKey],
+    params.winner.canonicalKey,
+  );
   copySessionNodeArtifactsForRepair(
     params.database,
     params.database,

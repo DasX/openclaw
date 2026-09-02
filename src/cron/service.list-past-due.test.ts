@@ -19,30 +19,21 @@ async function writeJobsStore(storePath: string, jobs: CronJob[]) {
 
 function createCronFromStorePath(storePath: string) {
   return new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath,
     cronEnabled: true,
     log: noopLogger,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
-}
-
-function requireEnqueueSystemEventCall(
-  enqueueSystemEvent: ReturnType<typeof vi.fn>,
-): [string, { agentId?: string } | undefined] {
-  const call = enqueueSystemEvent.mock.calls[0];
-  if (!call) {
-    throw new Error("Expected enqueueSystemEvent call");
-  }
-  return call as [string, { agentId?: string } | undefined];
 }
 
 // regression: #16156
 describe("#16156: cron.list() must not silently advance past-due recurring jobs", () => {
   it("does not skip a cron job when list() is called while the job is past-due", async () => {
     const store = await makeStorePath();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -84,9 +75,12 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
     const updated = jobs.find((j) => j.id === job.id);
 
     // Job must have actually executed.
-    const [text, options] = requireEnqueueSystemEventCall(enqueueSystemEvent);
-    expect(text).toBe("cron-tick");
-    expect(options?.agentId).toBe("main");
+    expect(runSessionEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "cron-tick",
+        job: expect.objectContaining({ sessionTarget: "main" }),
+      }),
+    );
     expect(updated?.state.lastStatus).toBe("ok");
     // nextRunAtMs must advance to a future minute boundary after execution.
     expect(updated?.state.nextRunAtMs).toBeGreaterThan(firstDueAt);
@@ -96,7 +90,7 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
 
   it("does not skip a cron job when status() is called while the job is past-due", async () => {
     const store = await makeStorePath();
-    const { cron, enqueueSystemEvent, finished } = createStartedCronServiceWithFinishedBarrier({
+    const { cron, runSessionEvent, finished } = createStartedCronServiceWithFinishedBarrier({
       storePath: store.storePath,
       logger: noopLogger,
     });
@@ -128,9 +122,12 @@ describe("#16156: cron.list() must not silently advance past-due recurring jobs"
     const jobs = await cron.list({ includeDisabled: true });
     const updated = jobs.find((j) => j.id === job.id);
 
-    const [text, options] = requireEnqueueSystemEventCall(enqueueSystemEvent);
-    expect(text).toBe("tick-5");
-    expect(options?.agentId).toBe("main");
+    expect(runSessionEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "tick-5",
+        job: expect.objectContaining({ sessionTarget: "main" }),
+      }),
+    );
     expect(updated?.state.lastStatus).toBe("ok");
 
     cron.stop();

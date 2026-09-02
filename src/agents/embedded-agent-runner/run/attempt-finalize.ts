@@ -18,7 +18,6 @@ import { buildTrajectoryArtifacts } from "../../../trajectory/metadata.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import type { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
 import { FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE } from "../../bootstrap-files.js";
-import { isHeartbeatLifecycleRunKind } from "../../bootstrap-mode.js";
 import type { createCacheTrace } from "../../cache-trace.js";
 import { countActiveToolExecutions } from "../../embedded-agent-subscribe.handlers.tools.js";
 import { isSignalTimeoutReason } from "../../failover-error.js";
@@ -99,7 +98,6 @@ export function finalizeEmbeddedAttempt(
     successfulCronAdds: result.successfulCronAdds ?? 0,
     synthesizedPayloadCount: params.synthesizedPayloadCount,
     acceptedSessionSpawns: result.acceptedSessionSpawns,
-    heartbeatToolResponse: result.heartbeatToolResponse,
     clientToolCalls: result.clientToolCalls,
     yieldDetected: result.yieldDetected,
     lastToolError: result.lastToolError,
@@ -267,7 +265,6 @@ export async function completeEmbeddedAttemptAfterTurn(
           promptError: Boolean(state.promptError),
           aborted: lifecycleState.aborted,
           yieldAborted: state.yieldAborted,
-          isHeartbeat: isHeartbeatLifecycleRunKind(attempt.bootstrapContextRunKind),
         });
       }
     } else {
@@ -314,7 +311,6 @@ export async function completeEmbeddedAttemptAfterTurn(
         sessionManager,
         config: attempt.config,
         warn: (message) => log.warn(message),
-        isHeartbeat: isHeartbeatLifecycleRunKind(attempt.bootstrapContextRunKind),
       });
     }
   }

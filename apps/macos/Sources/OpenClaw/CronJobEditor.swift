@@ -16,13 +16,13 @@ struct CronJobEditor: View {
             + "Use an isolated session for agent turns so your main chat stays clean."
     static let sessionTargetNote =
         "Main jobs post a system event into the current main session. "
-            + "Current and isolated-style jobs run agent turns and can announce results to a channel."
+            + "Current runs detached; isolated uses a separate session. A session:<key> target runs in that shared session."
     static let scheduleKindNote =
         "“At” runs once, “Every” repeats with a duration, “Cron” uses a 5-field Unix expression."
     static let isolatedPayloadNote =
         "Isolated jobs always run an agent turn. Announce sends a short summary to a channel."
     static let mainPayloadNote =
-        "System events are injected into the current main session. Agent turns require an isolated session target."
+        "System events are injected into the current main session. Agent turns use isolated, current, or session:<key> targets."
 
     @State var name: String = ""
     @State var description: String = ""
@@ -67,6 +67,7 @@ struct CronJobEditor: View {
     }
 
     @State var deliveryMode: DeliveryChoice = .announce
+    @State var deliveryTarget: String = ""
     @State var channel: String = "last"
     @State var to: String = ""
     @State var thinking: String = ""
@@ -143,7 +144,7 @@ struct CronJobEditor: View {
                                 self.gridLabel("Wake mode")
                                 Picker("", selection: self.$wakeMode) {
                                     Text("now").tag(CronWakeMode.now)
-                                    Text("next-heartbeat").tag(CronWakeMode.nextHeartbeat)
+                                    Text("Next scheduled run").tag(CronWakeMode.nextHeartbeat)
                                 }
                                 .labelsHidden()
                                 .pickerStyle(.segmented)
@@ -354,21 +355,31 @@ struct CronJobEditor: View {
             if self.deliveryMode == .announce {
                 Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 10) {
                     GridRow {
-                        self.gridLabel("Channel")
-                        Picker("", selection: self.$channel) {
-                            ForEach(self.channelOptions, id: \.self) { channel in
-                                Text(self.channelLabel(for: channel)).tag(channel)
-                            }
+                        self.gridLabel("Destination")
+                        Picker("", selection: self.$deliveryTarget) {
+                            Text("Channel destination").tag("")
+                            Text("Owner direct message").tag("owner")
                         }
                         .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    GridRow {
-                        self.gridLabel("To")
-                        TextField("Optional override (phone number / chat id / Discord channel)", text: self.$to)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: .infinity)
+                    if self.deliveryTarget != "owner" {
+                        GridRow {
+                            self.gridLabel("Channel")
+                            Picker("", selection: self.$channel) {
+                                ForEach(self.channelOptions, id: \.self) { channel in
+                                    Text(self.channelLabel(for: channel)).tag(channel)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        GridRow {
+                            self.gridLabel("To")
+                            TextField("Optional override (phone number / chat id / Discord channel)", text: self.$to)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: .infinity)
+                        }
                     }
                     GridRow {
                         self.gridLabel("Best-effort")

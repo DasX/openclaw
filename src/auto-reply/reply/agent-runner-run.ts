@@ -44,8 +44,6 @@ import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
-import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
-import { recordReplyOperationAgentTurn } from "./reply-operation-agent-turn-state.js";
 import * as replyRunState from "./reply-operation-run-state.js";
 import { type ReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 import { bindReplyOperationTyping } from "./reply-run-typing.js";
@@ -106,7 +104,6 @@ export async function runReplyAgent(
   const effectiveResetTriggered = resetTriggered === true;
   const activeRunQueueMode = effectiveResetTriggered ? "interrupt" : resolvedQueue.mode;
 
-  const isHeartbeat = opts?.isHeartbeat === true;
   let didDeliverVisiblePartialReply = false;
   const onPartialReply = opts?.onPartialReply;
   const runOpts = onPartialReply
@@ -125,7 +122,7 @@ export async function runReplyAgent(
   const traceAttributes = {
     provider: followupRun.run.provider,
     hasSessionKey: Boolean(sessionKey ?? followupRun.run.sessionKey),
-    isHeartbeat,
+
     queueMode: resolvedQueue.mode,
     isActive,
     blockStreamingEnabled,
@@ -136,7 +133,7 @@ export async function runReplyAgent(
       config: followupRun.run.config,
       attributes: traceAttributes,
     });
-  const effectiveShouldSteer = !isHeartbeat && !effectiveResetTriggered && shouldSteer;
+  const effectiveShouldSteer = !effectiveResetTriggered && shouldSteer;
   const effectiveShouldFollowup = !effectiveResetTriggered && shouldFollowup;
   const messageInjectionDisposition = opts?.messageInjectionDisposition ?? "none";
   const incomingToolAuthorityFingerprint = resolveFollowupRunToolAuthorityFingerprint(followupRun);
@@ -167,7 +164,6 @@ export async function runReplyAgent(
   const typingSignals = createTypingSignaler({
     typing,
     mode: typingMode,
-    isHeartbeat,
   });
   const restartRecoverySourceTurnId = readChannelSourceTurnId(sessionCtx);
   const restartRecoveryEntry =
@@ -227,7 +223,7 @@ export async function runReplyAgent(
   const pendingToolTasks = new Set<Promise<void>>();
   const blockReplyTimeoutMs = opts?.blockReplyTimeoutMs ?? BLOCK_REPLY_SEND_TIMEOUT_MS;
   const touchActiveSessionEntry = async () => {
-    if (!activeSessionEntry || !activeSessionStore || !sessionKey) {
+    if (opts?.internalEventExecution || !activeSessionEntry || !activeSessionStore || !sessionKey) {
       return;
     }
     const updatedAt = Date.now();
@@ -295,20 +291,11 @@ export async function runReplyAgent(
   const activeRunQueueAction = resolveActiveRunQueueAction({
     queueAdmissionState,
     isActive,
-    isHeartbeat,
+
     shouldFollowup: effectiveShouldFollowup || shouldQueueAuthorityMismatch,
     queueMode: activeRunQueueMode,
     resetTriggered: effectiveResetTriggered,
   });
-  if (activeRunQueueAction === "drop") {
-    if (replyOperationRunState) {
-      replyOperationRunState.admission = { status: "skipped", reason: "active-run" };
-    }
-    releaseAdmissionTicket();
-    typing.cleanup();
-    return undefined;
-  }
-
   if (activeRunQueueAction === "enqueue-followup") {
     replyRunState.bindQueueDispositionToRunState(followupRun, replyOperationRunState);
     const enqueued = enqueueFollowupRun(
@@ -578,7 +565,7 @@ export async function runReplyAgent(
       followupRun,
       getActiveIsNewSession: () => activeIsNewSession,
       getActiveSessionEntry: () => activeSessionEntry,
-      isHeartbeat,
+
       isRestartRecoveryArmed,
       opts: runOpts,
       pendingToolTasks,
@@ -618,19 +605,10 @@ export async function runReplyAgent(
       typingSignals,
     });
   } catch (error) {
-    recordReplyOperationAgentTurn(
-      replyOperationRunState,
-      isReplyOperationSuperseded(replyOperation)
-        ? "superseded"
-        : replyOperation.result?.kind === "aborted"
-          ? "cancelled"
-          : "failed",
-      replyOperation,
-    );
     return await handleReplyAgentRunError(error, {
       cfg,
       resolveVisibleReplyDelivery,
-      isHeartbeat,
+
       isRestartRecoveryArmed,
       replyOperation,
       resolvedVerboseLevel,

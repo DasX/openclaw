@@ -409,6 +409,9 @@ export function detectOpenClawStateDatabaseSchemaMigrationsFromDatabase(
   ) {
     migrations.push({ kind: "conversation-binding-targets-v15", path: pathname });
   }
+  if (userVersion < 16 && tableExists(db, "cron_jobs")) {
+    migrations.push({ kind: "automation-policy-fence-v16", path: pathname });
+  }
   if (!hasCanonicalAgentDatabasesPrimaryKey(db)) {
     migrations.push({ kind: "agent-databases-composite-primary-key", path: pathname });
   }

@@ -47,12 +47,13 @@ function createBatchState(params: {
   isAgentAvailable?: Parameters<typeof createCronServiceState>[0]["isAgentAvailable"];
 }) {
   const state = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: params.storePath,
     log: noopLogger,
     nowMs: () => params.nowMs,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: params.runIsolatedAgentJob,
     isAgentAvailable: params.isAgentAvailable,
     maxMissedJobsPerRestart: 40,
@@ -170,12 +171,13 @@ describe("cron batch outcome finalization", () => {
         summary: "finished before terminal store failure",
       }));
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob,
         onEvent: (event) => events.push(event),
       });
@@ -221,12 +223,13 @@ describe("cron batch outcome finalization", () => {
 
         database.exec(`DROP TRIGGER IF EXISTS ${triggerName}`);
         recoveryState = createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           cronEnabled: true,
           storePath: store.storePath,
           log: noopLogger,
           nowMs: () => startedAt + 1,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob,
           onEvent: (event) => events.push(event),
         });
@@ -401,7 +404,8 @@ describe("cron batch outcome finalization", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
     const order: string[] = [];
-    const enqueueSystemEvent = vi.fn(
+    const enqueueSystemEvent = vi.fn();
+    const enqueueSessionEvent = vi.fn(
       (
         _text: string,
         _opts?: {
@@ -418,12 +422,10 @@ describe("cron batch outcome finalization", () => {
         order.push("notify");
       },
     );
-    const requestHeartbeat = vi.fn(() => {
-      order.push("heartbeat");
-    });
     const deliveryContext = { channel: "discord", to: "channel-1", accountId: "default" };
     const resolveOriginDeliveryContext = vi.fn(() => deliveryContext);
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
@@ -431,7 +433,7 @@ describe("cron batch outcome finalization", () => {
       defaultAgentId: "main",
       enqueueSystemEvent,
       resolveOriginDeliveryContext,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(),
     });
     await finalizeCompletedCronRunOutcomes(state, [
@@ -446,9 +448,9 @@ describe("cron batch outcome finalization", () => {
       }),
     ]);
 
-    expect(order).toEqual(["notify", "heartbeat"]);
-    expect(enqueueSystemEvent).toHaveBeenCalledOnce();
-    expect(enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(order).toEqual(["notify"]);
+    expect(enqueueSessionEvent).toHaveBeenCalledOnce();
+    expect(enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining(`openclaw automations enable ${job.id}`),
       {
         agentId: "main",
@@ -457,23 +459,15 @@ describe("cron batch outcome finalization", () => {
         deliveryContext,
       },
     );
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain("Recurring report");
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain(job.id);
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain("10 consecutive run failures");
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain("Cause: timeout");
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).not.toContain("/private/agent/work");
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).toContain("Recurring report");
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).toContain(job.id);
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).toContain("10 consecutive run failures");
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).toContain("Cause: timeout");
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).not.toContain("/private/agent/work");
     expect(resolveOriginDeliveryContext).toHaveBeenCalledWith({
       agentId: "main",
       sessionKey: undefined,
     });
-    expect(requestHeartbeat).toHaveBeenCalledWith(
-      expect.objectContaining({
-        source: "notifications-event",
-        intent: "immediate",
-        reason: "wake",
-        agentId: "main",
-      }),
-    );
     expect((await loadCronStore(store.storePath)).jobs[0]).toMatchObject({
       enabled: false,
       state: {
@@ -502,23 +496,22 @@ describe("cron batch outcome finalization", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
     const order: string[] = [];
-    const enqueueSystemEvent = vi.fn((_text: string) => {
+    const enqueueSystemEvent = vi.fn();
+    const enqueueSessionEvent = vi.fn((_text: string) => {
       const persisted = openOpenClawStateDatabase()
         .db.prepare("SELECT enabled FROM cron_jobs WHERE store_key = ? AND job_id = ?")
         .get(cronStoreKey(store.storePath), job.id) as { enabled: number };
       expect(persisted.enabled).toBe(0);
       order.push("notify");
     });
-    const requestHeartbeat = vi.fn(() => {
-      order.push("heartbeat");
-    });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => dueAt + 10,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(),
     });
     const finalized = await finalizeCompletedCronRunOutcomes(state, [
@@ -536,15 +529,15 @@ describe("cron batch outcome finalization", () => {
     expect(finalized).toHaveLength(1);
     expect(state.store?.jobs[0]?.enabled).toBe(false);
     expect(state.store?.jobs[0]?.state.nextRunAtMs).toBeUndefined();
-    expect(order).toEqual(["notify", "heartbeat"]);
-    expect(enqueueSystemEvent).toHaveBeenCalledOnce();
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain(
+    expect(order).toEqual(["notify"]);
+    expect(enqueueSessionEvent).toHaveBeenCalledOnce();
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).toContain(
       "Check automation history for details.",
     );
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).not.toContain(
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).not.toContain(
       "next run is outside the supported Date range",
     );
-    expect(requestHeartbeat).toHaveBeenCalledOnce();
+    expect(enqueueSessionEvent).toHaveBeenCalledOnce();
     expect((await loadCronStore(store.storePath)).jobs[0]).toMatchObject({
       enabled: false,
       state: {
@@ -571,12 +564,13 @@ describe("cron batch outcome finalization", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => dueAt + 10,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
     const database = openOpenClawStateDatabase().db;
@@ -605,7 +599,7 @@ describe("cron batch outcome finalization", () => {
         ]),
       ).rejects.toThrow("terminal write failed");
       expect(state.deps.enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(state.deps.requestHeartbeat).not.toHaveBeenCalled();
+      expect(state.deps.enqueueSessionEvent).not.toHaveBeenCalled();
       expect(state.store?.jobs[0]?.enabled).toBe(true);
       expect(state.store?.jobs[0]?.state.autoDisabled).toBeUndefined();
       expect((await loadCronStore(store.storePath)).jobs[0]?.enabled).toBe(true);

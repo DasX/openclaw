@@ -276,7 +276,7 @@ export function resolveFinalDoctorHealthContributions(params: {
       id: "doctor:heartbeat-cadence-migration",
       label: "Heartbeat cadence migration",
       healthChecks: {
-        description: "Heartbeat cadence config must be materialized in cron monitor rows.",
+        description: "Legacy heartbeat cadence must become ordinary editable automation jobs.",
         defaultEnabled: true,
         async detect(ctx) {
           const { collectHeartbeatCadenceMigrationFindings } =
@@ -295,7 +295,7 @@ export function resolveFinalDoctorHealthContributions(params: {
         async detect(ctx) {
           const { collectHeartbeatScratchMigrationFindings } =
             await import("../commands/doctor-heartbeat-scratch-migration.js");
-          return collectHeartbeatScratchMigrationFindings(ctx.cfg);
+          return collectHeartbeatScratchMigrationFindings(ctx.cfg, ctx.env);
         },
       },
       run: runHeartbeatScratchMigrationHealth,

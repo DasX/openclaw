@@ -469,6 +469,10 @@ bounds; content remains off by default.
 - `openclaw.session.recovery.age_ms` (histogram, attrs: same as the matching recovery counter)
 - `openclaw.run.attempt` (counter, attrs: `openclaw.attempt`)
 
+The `openclaw.channel=heartbeat` queue-depth series comes from the diagnostic
+sampling heartbeat. It does not represent the retired agent-monitoring engine
+or depend on a monitoring job being enabled.
+
 ### Session liveness telemetry
 
 A `processing` session does not age toward the built-in liveness threshold while OpenClaw observes reply, tool, status, block, or ACP runtime progress. Typing keepalives do not count as progress, so a silent model or harness can still be detected.
@@ -496,7 +500,7 @@ Only `session.stuck` emits the `openclaw.session.stuck` counter, the
 `openclaw.session.stuck_age_ms` histogram, and the `openclaw.session.stuck`
 span. Repeated `session.stuck` diagnostics back off while the session remains
 unchanged, so dashboards should alert on sustained increases rather than
-every heartbeat tick. For the config knob and defaults, see
+every diagnostic heartbeat tick. For the config knob and defaults, see
 [Configuration reference](/gateway/configuration-reference#diagnostics).
 
 Liveness warnings also emit:

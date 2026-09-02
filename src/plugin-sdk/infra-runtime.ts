@@ -204,7 +204,16 @@ export * from "../infra/fetch.js";
 export * from "../infra/file-lock.js";
 export * from "../infra/format-time/format-duration.ts";
 export * from "../infra/fs-safe.ts";
-export * from "../infra/heartbeat-events.ts";
+// Preserve the shipped event contract without publishing host-only cron projection helpers.
+export {
+  emitHeartbeatEvent,
+  getLastHeartbeatEvent,
+  onHeartbeatEvent,
+  resetHeartbeatEventsForTest,
+  resolveIndicatorType,
+  type HeartbeatEventPayload,
+  type HeartbeatIndicatorType,
+} from "../infra/heartbeat-events.ts";
 export * from "../infra/heartbeat-summary.ts";
 export * from "../infra/heartbeat-visibility.ts";
 export * from "../infra/home-dir.js";

@@ -1,14 +1,19 @@
 /** Shared cron operation invariants used across lifecycle, CRUD, and manual runs. */
 import { clearCronJobActive, markCronJobActive, type CronActiveJobMarker } from "../active-jobs.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
+import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { cronStreamScheduleKey } from "../stream-schedule.js";
 import type { CronJob } from "../types.js";
 import { recomputeUnownedCronSchedules } from "./run-recovery.js";
 import { applyCronRuntimeRowsToState } from "./runtime-store.js";
-import type { CronServiceState } from "./state.js";
+import { emit, type CronServiceState } from "./state.js";
 import { ensureLoaded, runPostPersistCronNotifications } from "./store.js";
 import { maybeNotifyIsolatedAgentSetupTimeout } from "./timer-notifications.js";
-import { type IsolatedAgentSetupTimeoutSignal, runsDetachedFromMainSession } from "./timer.js";
+import {
+  armTimer,
+  type IsolatedAgentSetupTimeoutSignal,
+  runsDetachedFromMainSession,
+} from "./timer.js";
 
 /** Resolves the effective agent using explicit job identity before configured defaults. */
 export function resolveEffectiveJobAgentId(
@@ -59,7 +64,32 @@ export function maybeNotifyManualIsolatedSetupTimeout(
 }
 
 export async function ensureLoadedForRead(state: CronServiceState) {
-  await ensureLoaded(state, { skipRecompute: true });
+  const previous = state.store;
+  // Explicit reads are also the CLI's acknowledgement of an out-of-process
+  // lifecycle commit. Compare definitions, not a process-local revision alone.
+  await ensureLoaded(state, { skipRecompute: true, checkExternalChanges: true });
+  if (state.schedulerStarted && previous !== state.store) {
+    const maintenance = recomputeUnownedCronSchedules(state);
+    runPostPersistCronNotifications(state, maintenance.notifications);
+    applyCronRuntimeRowsToState(state, maintenance.jobs);
+    const oldJobs = new Map(previous?.jobs.map((job) => [job.id, job]));
+    for (const job of state.store?.jobs ?? []) {
+      const old = oldJobs.get(job.id);
+      if (!old || resolveCronJobConfigRevision(old) !== resolveCronJobConfigRevision(job)) {
+        emit(state, {
+          action: old ? "updated" : "added",
+          jobId: job.id,
+          job,
+          nextRunAtMs: job.state.nextRunAtMs,
+        });
+      }
+      oldJobs.delete(job.id);
+    }
+    for (const jobId of oldJobs.keys()) {
+      emit(state, { action: "removed", jobId });
+    }
+    armTimer(state);
+  }
   if (!state.store || state.schedulerStarted) {
     return;
   }

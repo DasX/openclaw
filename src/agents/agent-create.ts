@@ -90,6 +90,8 @@ type CreateAgentParams = {
   transformConfig?: typeof transformConfigFileWithRetry;
   /** Prepare guided staged state at the last reversible edge before config publication. */
   prepareConfigCommit?: () => Promise<ConfigCommitRollback | void>;
+  /** Provider cadence from the staged onboarding config, before its final publication. */
+  proactiveCadenceMs?: number;
   provenance?: { createdVia: AgentCreatedVia; creatorAgentId?: string };
 };
 
@@ -474,6 +476,13 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
       const result = committed.result!;
       if (result.status === "created") {
         recordAgentProvenance(agentId, params.provenance ?? { createdVia: "operator" });
+        const { provisionDefaultProactiveJob } = await import("../cron/default-proactive-job.js");
+        const job = provisionDefaultProactiveJob(committed.nextConfig, agentId, {
+          cadenceMs: params.proactiveCadenceMs,
+        });
+        const { publishProvisionedCronJob } =
+          await import("../gateway/cron-lifecycle-publication.js");
+        await publishProvisionedCronJob(committed.nextConfig, job);
       }
       return {
         ...result,

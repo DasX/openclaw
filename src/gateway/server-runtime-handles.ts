@@ -1,6 +1,3 @@
-// Gateway mutable runtime handles.
-// Provides stop-safe defaults for timers, sidecars, subscriptions, and services.
-import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
 import type { ChannelHealthMonitor } from "./channel-health-monitor.js";
 import type { GatewayHotReloadStatus } from "./config-reload-status.types.js";
 import {
@@ -8,7 +5,10 @@ import {
   type MediaCleanupStopResult,
   waitForMediaCleanupDrains,
 } from "./server-media-cleanup-lifecycle.js";
-import { createNoopHeartbeatRunner } from "./server-runtime-service-shared.js";
+// Gateway mutable runtime handles.
+// Provides stop-safe defaults for timers, sidecars, subscriptions, and services.
+import type { SessionServices } from "./server-runtime-service-shared.js";
+import { createNoopSessionServices } from "./server-runtime-service-shared.js";
 import type { GatewayMaintenanceHandles } from "./server-runtime-services.js";
 import type { GatewayPostReadySidecarHandle } from "./server-startup-post-attach.js";
 
@@ -29,7 +29,7 @@ export type GatewayServerMutableState = {
   bonjourStop: (() => Promise<void>) | null;
   maintenance: GatewayMaintenanceHandles | null;
   stopMediaCleanup: () => Promise<MediaCleanupStopResult>;
-  heartbeatRunner: HeartbeatRunner;
+  sessionServices: SessionServices;
   stopOutboundDeliveryRecovery: () => Promise<void>;
   stopGatewayUpdateCheck: () => void;
   tailscaleCleanup: (() => Promise<void>) | null;
@@ -53,7 +53,7 @@ export function createGatewayServerMutableState(): GatewayServerMutableState {
     bonjourStop: null as (() => Promise<void>) | null,
     maintenance: null,
     stopMediaCleanup: () => waitForMediaCleanupDrains({ timeoutMs: MEDIA_CLEANUP_STOP_TIMEOUT_MS }),
-    heartbeatRunner: createNoopHeartbeatRunner(),
+    sessionServices: createNoopSessionServices(),
     stopOutboundDeliveryRecovery: async () => {},
     stopGatewayUpdateCheck: () => {},
     tailscaleCleanup: null as (() => Promise<void>) | null,

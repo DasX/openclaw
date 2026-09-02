@@ -1475,6 +1475,7 @@ describe("createOpenClawCodingTools", () => {
       await requireTool(tools, "file_fetch").execute?.("tool-call-1", {});
       expect(observedIdentity).toEqual({
         agentId: "main",
+        sessionEventToolsAllow: ["file_fetch"],
         sessionKey: "agent:main:telegram:direct:alice",
         turnSourceChannel: "discord",
         turnSourceTo: "channel:123",
@@ -2294,29 +2295,6 @@ describe("createOpenClawCodingTools", () => {
     });
 
     expect(toolNameList(tools)).toContain("message");
-  });
-
-  it("keeps heartbeat response available for heartbeat runs under the coding profile", () => {
-    const codingTools = createOpenClawCodingTools({
-      config: { tools: { profile: "coding" } },
-      trigger: "heartbeat",
-      enableHeartbeatTool: true,
-      forceHeartbeatTool: true,
-    });
-
-    expect(toolNameList(codingTools)).toContain("heartbeat_respond");
-  });
-
-  it("enables heartbeat response when visible replies are message-tool-only", () => {
-    const tools = createOpenClawCodingTools({
-      config: {
-        messages: { visibleReplies: "message_tool" },
-        tools: { profile: "coding" },
-      } as OpenClawConfig,
-      trigger: "heartbeat",
-    });
-
-    expect(toolNameList(tools)).toContain("heartbeat_respond");
   });
 
   it("keeps skill_workshop available under the coding profile", () => {

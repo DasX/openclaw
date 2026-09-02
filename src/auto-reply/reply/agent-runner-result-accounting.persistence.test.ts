@@ -128,7 +128,6 @@ async function createFixture() {
     commandBody: followupRun.prompt,
     defaultModel: diagnostic.model,
     followupRun,
-    isHeartbeat: false,
     pendingToolTasks: new Set(),
     preflightCompactionApplied: false,
     queueKey: sessionKey,
@@ -166,7 +165,6 @@ async function createFixture() {
     typingSignals: createTypingSignaler({
       typing: createMockTypingController(),
       mode: "never",
-      isHeartbeat: false,
     }),
   };
   const handle = createReplySessionEntryHandle({
@@ -199,7 +197,6 @@ async function createFixture() {
         defaultModel: diagnostic.model,
         typing: createMockTypingController(),
         typingMode: "never",
-        opts: { isHeartbeat: context.isHeartbeat },
       },
       execution: {
         commentaryPayloadsEnabled: false,
@@ -278,7 +275,7 @@ async function createFixture() {
 
 it("accounts a completed compaction before an empty heartbeat skips reply preparation", async () => {
   const fixture = await createFixture();
-  fixture.context.isHeartbeat = true;
+  fixture.context.followupRun.run.inputProvenance = { kind: "internal_system", sourceTool: "cron" };
   fixture.recordCompaction({ currentContextTokens: 40 });
   fixture.context.execution.result.payloads = [];
   fixture.context.execution.result.meta.agentMeta = {
@@ -456,7 +453,12 @@ describe.each(["ordinary", "followup"] as const)("%s context-pressure accounting
     { mode: "inter-session completion", withUsage: false },
   ])("preserves diagnostics for $mode with usage=$withUsage", async ({ mode, withUsage }) => {
     const fixture = await createFixture();
-    fixture.context.isHeartbeat = mode === "heartbeat";
+    if (mode === "heartbeat") {
+      fixture.context.followupRun.run.inputProvenance = {
+        kind: "internal_system",
+        sourceTool: "cron",
+      };
+    }
     fixture.context.execution.fallback.exhausted = mode === "exhausted fallback";
     if (mode === "inter-session completion") {
       fixture.context.followupRun.run.inputProvenance = {

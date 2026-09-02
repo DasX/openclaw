@@ -3,27 +3,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
 import { emitAcpLifecycleStart } from "../agents/command/attempt-execution.js";
 import { startAcpSpawnParentStreamRelay } from "../agents/subagents/spawn/acp-spawn-parent-stream.js";
+import { captureSessionEventTargetForHost as captureSessionEventTarget } from "../auto-reply/reply/session-event-handoff.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { resetCronActiveJobs } from "../cron/active-jobs.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
 import { registerAgentRunContext } from "../infra/agent-run-registry.js";
+import { loadDeliveryQueueEntries } from "../infra/delivery-queue-sqlite.js";
 import {
   getGatewaySuspendStatus,
   prepareGatewaySuspend,
   resumeGatewaySuspend,
 } from "../infra/gateway-suspend-coordinator.js";
-import {
-  requestHeartbeat,
-  setHeartbeatWakeHandler,
-  type HeartbeatWakeRequest,
-} from "../infra/heartbeat-wake.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { SessionBindingRecord } from "../infra/outbound/session-binding-service.js";
-import { selectAgentSystemEvents } from "../infra/system-event-ownership.js";
 import {
-  peekSystemEventEntries,
-  peekSystemEvents,
-  resetSystemEventsForTest,
-} from "../infra/system-events.js";
+  SessionDeliveryDeferredError,
+  type QueuedSessionDelivery,
+} from "../infra/session-delivery-queue-storage.js";
+import { resetSystemEventsForTest } from "../infra/system-events.js";
 import {
   createPluginStateKeyedStore,
   resetPluginStateStoreForTests,
@@ -499,44 +499,48 @@ async function withTaskRegistryTempDir<T>(
   });
 }
 
-const HEARTBEAT_FLUSH_REASON = "task-registry-test-flush";
-let heartbeatWakeRequests: HeartbeatWakeRequest[] = [];
-let clearHeartbeatWakeHandler: (() => void) | undefined;
-
-async function flushHeartbeatWakeRequests(): Promise<void> {
-  requestHeartbeat({
-    source: "other",
-    intent: "immediate",
-    reason: HEARTBEAT_FLUSH_REASON,
-    coalesceMs: 0,
-  });
-  await waitForFast(() => {
-    expect(heartbeatWakeRequests.some((request) => request.reason === HEARTBEAT_FLUSH_REASON)).toBe(
-      true,
-    );
-  });
+function readQueuedTaskEvents(sessionKey: string) {
+  return (loadDeliveryQueueEntries("session") as QueuedSessionDelivery[]).filter(
+    (entry): entry is Extract<QueuedSessionDelivery, { kind: "systemEvent" }> =>
+      entry.kind === "systemEvent" && entry.source === "task" && entry.sessionKey === sessionKey,
+  );
 }
-
-function expectHeartbeatWake(
-  source: "background-task" | "background-task-blocked",
+function taskHandoffIdempotencyKey(entry: QueuedSessionDelivery): string {
+  if (!entry.idempotencyKey) {
+    throw new Error("Task handoff is missing its occurrence idempotency key");
+  }
+  return entry.idempotencyKey;
+}
+function readQueuedTaskTexts(sessionKey: string) {
+  return readQueuedTaskEvents(sessionKey).map((entry) => entry.text);
+}
+const deferTaskSessionEvent = async () => {
+  // These registry tests inspect the durable handoff before session admission.
+  throw new SessionDeliveryDeferredError("Session busy");
+};
+function expectTaskSessionHandoff(
+  kind: "background-task" | "background-task-blocked",
   sessionKey: string,
 ) {
-  expect(heartbeatWakeRequests).toContainEqual(
-    expect.objectContaining({ source, reason: source, sessionKey }),
-  );
+  const events = readQueuedTaskEvents(sessionKey);
+  expect(
+    events.some((entry) =>
+      kind === "background-task-blocked"
+        ? taskHandoffIdempotencyKey(entry).endsWith(":blocked-followup")
+        : !taskHandoffIdempotencyKey(entry).endsWith(":blocked-followup"),
+    ),
+  ).toBe(true);
+  expect(events.every((entry) => entry.expectedTarget?.sessionKey === sessionKey)).toBe(true);
 }
 
 describe("task-registry", () => {
   beforeEach(async () => {
     resetGatewayWorkAdmission();
-    heartbeatWakeRequests = [];
-    clearHeartbeatWakeHandler = setHeartbeatWakeHandler(async (request) => {
-      heartbeatWakeRequests.push(request);
-      return { status: "ran", durationMs: 0 };
+    setRuntimeConfigSnapshot({
+      agents: { entries: { main: { default: true }, alpha: {}, beta: {}, codex: {} } },
     });
-    await flushHeartbeatWakeRequests();
-    heartbeatWakeRequests = [];
     setTaskRegistryDeliveryRuntimeForTests({
+      deliverTaskSessionEvent: deferTaskSessionEvent,
       sendMessage: hoisted.sendMessageMock,
     });
     setTaskRegistryControlRuntimeForTests({
@@ -557,9 +561,7 @@ describe("task-registry", () => {
   afterEach(async () => {
     resetGatewayWorkAdmission();
     vi.useRealTimers();
-    await flushHeartbeatWakeRequests();
-    clearHeartbeatWakeHandler?.();
-    clearHeartbeatWakeHandler = undefined;
+    clearRuntimeConfigSnapshot();
     resetSystemEventsForTest();
     resetAgentEventsForTest({ preserveListeners: true });
     resetCronActiveJobs();
@@ -638,16 +640,10 @@ describe("task-registry", () => {
           });
           await maybeDeliverTaskTerminalUpdate(task.taskId);
         }
-        const events = peekSystemEventEntries("global");
+        const events = readQueuedTaskEvents("global");
         expect(events).toHaveLength(kind === "blocked" ? 2 : 1);
-        expect(selectAgentSystemEvents(events, "alpha")).toEqual(events);
-        expect(selectAgentSystemEvents(events, "beta")).toEqual([]);
-        await flushHeartbeatWakeRequests();
-        const taskWakes = heartbeatWakeRequests.filter((request) =>
-          request.source.startsWith("background-task"),
-        );
-        expect(taskWakes.length).toBeGreaterThan(0);
-        expect(taskWakes.every((request) => request.agentId === "alpha")).toBe(true);
+        expect(events.every((event) => event.agentId === "alpha")).toBe(true);
+        expect(events.every((event) => event.expectedTarget?.agentId === "alpha")).toBe(true);
       });
     },
   );
@@ -2012,6 +2008,7 @@ describe("task-registry", () => {
     await withTaskRegistryTempDir(async () => {
       const resolveTaskControlUiSessionUrl = vi.fn(() => "https://dashboard.example/chat/task");
       setTaskRegistryDeliveryRuntimeForTests({
+        deliverTaskSessionEvent: deferTaskSessionEvent,
         sendMessage: hoisted.sendMessageMock,
         resolveTaskControlUiSessionUrl,
       });
@@ -2047,10 +2044,10 @@ describe("task-registry", () => {
         }),
       );
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
-      expect(peekSystemEvents("agent:main:main")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:main")).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
       ]);
-      expect(peekSystemEvents("agent:main:main")[0]).not.toContain("Inspect:");
+      expect(readQueuedTaskTexts("agent:main:main")[0]).not.toContain("Inspect:");
       expect(resolveTaskControlUiSessionUrl).not.toHaveBeenCalled();
     });
   });
@@ -2072,7 +2069,7 @@ describe("task-registry", () => {
         });
 
         await waitForAssertion(() =>
-          expect(peekSystemEvents("agent:main:main")).toEqual([
+          expect(readQueuedTaskTexts("agent:main:main")).toEqual([
             expect.stringContaining("Background task ready for review: ACP background task"),
           ]),
         );
@@ -2087,13 +2084,43 @@ describe("task-registry", () => {
         expectRecordFields(requireTaskById(task.taskId), {
           deliveryStatus: "pending",
         });
-        expect(peekSystemEvents("agent:main:main")).toEqual([
+        expect(readQueuedTaskTexts("agent:main:main")).toEqual([
           expect.stringContaining("Background task ready for review: ACP background task"),
         ]);
         expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       },
       { durableStore: true },
     );
+  });
+
+  it("closes retained outbound callbacks after the exact task delivery settles", async () => {
+    await withTaskRegistryTempDir(async () => {
+      const guards: Array<() => Promise<void>> = [];
+      hoisted.sendMessageMock.mockImplementationOnce(async (params) => {
+        guards.push(params.onDeliveryAttempt, params.onPlatformSendDispatch);
+        await params.onDeliveryAttempt();
+        await params.onPlatformSendDispatch();
+        return { channel: "discord", to: "channel:123", via: "direct" };
+      });
+      const task = createTaskFixture("acp", {
+        requesterOrigin: { channel: "discord", to: "channel:123", threadId: "321" },
+        runId: "closed-delivery",
+        task: "Deliver the completed task result",
+        deliveryStatus: "pending",
+      });
+      emitAgentEvent({
+        runId: "closed-delivery",
+        stream: "lifecycle",
+        data: { phase: "end", endedAt: 250 },
+      });
+      await waitForAssertion(() =>
+        expect(requireTaskById(task.taskId).deliveryStatus).toBe("delivered"),
+      );
+      expect(guards).toHaveLength(2);
+      for (const guard of guards) {
+        await expect(guard()).rejects.toThrow("replaced or settled");
+      }
+    });
   });
 
   it.each([
@@ -2116,6 +2143,7 @@ describe("task-registry", () => {
     await withTaskRegistryTempDir(async () => {
       const resolveTaskControlUiSessionUrl = vi.fn(() => testCase.inspectUrl);
       setTaskRegistryDeliveryRuntimeForTests({
+        deliverTaskSessionEvent: deferTaskSessionEvent,
         sendMessage: hoisted.sendMessageMock,
         resolveTaskControlUiSessionUrl,
       });
@@ -2181,7 +2209,7 @@ describe("task-registry", () => {
       expectRecordFields(message.mirror, {
         sessionKey: "agent:main:main",
       });
-      expect(peekSystemEvents("agent:main:main")).toStrictEqual([]);
+      expect(readQueuedTaskTexts("agent:main:main")).toStrictEqual([]);
     });
   });
 
@@ -2255,7 +2283,7 @@ describe("task-registry", () => {
       expect(String(message.content)).toContain(
         "Next: parent will review/verify before calling it done.",
       );
-      expect(peekSystemEvents(origin.ownerKey)).toStrictEqual([]);
+      expect(readQueuedTaskTexts(origin.ownerKey)).toStrictEqual([]);
     });
   });
 
@@ -2304,7 +2332,7 @@ describe("task-registry", () => {
         expect(task.deliveryStatus).toBe("session_queued");
       });
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
-      expect(peekSystemEvents("agent:main:guildchat:channel:room-9")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:guildchat:channel:room-9")).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
       ]);
     });
@@ -2352,7 +2380,7 @@ describe("task-registry", () => {
         expect(task.deliveryStatus).toBe("session_queued");
       });
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
-      expect(peekSystemEvents("agent:main:discord:guild-123:channel-parent-channel")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:discord:guild-123:channel-parent-channel")).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
       ]);
     });
@@ -2428,11 +2456,10 @@ describe("task-registry", () => {
         expect(task.deliveryStatus).toBe("session_queued");
       });
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
-      expect(peekSystemEvents(ownerKey)).toEqual([
+      expect(readQueuedTaskTexts(ownerKey)).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
       ]);
-      await flushHeartbeatWakeRequests();
-      expectHeartbeatWake("background-task", ownerKey);
+      expectTaskSessionHandoff("background-task", ownerKey);
     });
   });
 
@@ -2465,7 +2492,7 @@ describe("task-registry", () => {
         }),
       );
       await waitForAssertion(() => {
-        const events = peekSystemEvents("agent:main:main");
+        const events = readQueuedTaskTexts("agent:main:main");
         expect(events).toHaveLength(1);
         expect(events[0]).toContain("Background task failed: ACP background task");
       });
@@ -2503,7 +2530,7 @@ describe("task-registry", () => {
       await maybeDeliverTaskTerminalUpdate(task.taskId);
 
       expectRecordFields(requireTaskById(task.taskId), { deliveryStatus: "failed" });
-      expect(peekSystemEvents("agent:main:main")).toHaveLength(testCase.expectedFallbackCount);
+      expect(readQueuedTaskTexts("agent:main:main")).toHaveLength(testCase.expectedFallbackCount);
     });
   });
 
@@ -2527,12 +2554,11 @@ describe("task-registry", () => {
           terminalOutcome: "blocked",
         }),
       );
-      expect(peekSystemEvents("agent:main:main")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:main")).toEqual([
         "Background task blocked: ACP background task (run run-deli). Writable session or apply_patch authorization required.",
         "Task needs follow-up: ACP background task (run run-deli). Writable session or apply_patch authorization required.",
       ]);
-      await flushHeartbeatWakeRequests();
-      expectHeartbeatWake("background-task-blocked", "agent:main:main");
+      expectTaskSessionHandoff("background-task-blocked", "agent:main:main");
     });
   });
 
@@ -2559,7 +2585,7 @@ describe("task-registry", () => {
           deliveryStatus: "session_queued",
         }),
       );
-      const events = peekSystemEvents("agent:main:main");
+      const events = readQueuedTaskTexts("agent:main:main");
       expect(events).toHaveLength(1);
       expect(events[0]).toContain("Background task ready for review: ACP background task");
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
@@ -2582,13 +2608,12 @@ describe("task-registry", () => {
           deliveryStatus: "session_queued",
         }),
       );
-      expect(peekSystemEvents("agent:main:main")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:main")).toEqual([
         "Background task blocked: ACP background task (run run-sess). Writable session or apply_patch authorization required.",
         "Task needs follow-up: ACP background task (run run-sess). Writable session or apply_patch authorization required.",
       ]);
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
-      await flushHeartbeatWakeRequests();
-      expectHeartbeatWake("background-task-blocked", "agent:main:main");
+      expectTaskSessionHandoff("background-task-blocked", "agent:main:main");
     });
   });
 
@@ -2626,7 +2651,7 @@ describe("task-registry", () => {
       });
 
       await waitForAssertion(() => {
-        const events = peekSystemEvents("agent:main:main");
+        const events = readQueuedTaskTexts("agent:main:main");
         expect(events).toHaveLength(1);
         expect(events[0]).toBe(
           "Background task ready for review: ACP background task (run run-deta). Next: parent will review/verify before calling it done.",
@@ -2659,11 +2684,10 @@ describe("task-registry", () => {
             "Background task blocked: ACP background task (run run-bloc). Writable session or apply_patch authorization required.",
         }),
       );
-      expect(peekSystemEvents("agent:main:main")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:main")).toEqual([
         "Task needs follow-up: ACP background task (run run-bloc). Writable session or apply_patch authorization required.",
       ]);
-      await flushHeartbeatWakeRequests();
-      expectHeartbeatWake("background-task-blocked", "agent:main:main");
+      expectTaskSessionHandoff("background-task-blocked", "agent:main:main");
     });
   });
 
@@ -2685,18 +2709,19 @@ describe("task-registry", () => {
       });
 
       await waitForAssertion(() => {
-        const events = peekSystemEvents("agent:main:main");
+        const events = readQueuedTaskTexts("agent:main:main");
         expect(events).toHaveLength(1);
         expect(events[0]).toBe(
           "Background task ready for review: ACP background task (run run-succ). Created /tmp/file.txt and verified contents. Next: parent will review/verify before calling it done.",
         );
       });
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
-      await flushHeartbeatWakeRequests();
-      expectHeartbeatWake("background-task", "agent:main:main");
-      expect(heartbeatWakeRequests).not.toContainEqual(
-        expect.objectContaining({ source: "background-task-blocked" }),
-      );
+      expectTaskSessionHandoff("background-task", "agent:main:main");
+      expect(
+        readQueuedTaskEvents("agent:main:main").some((entry) =>
+          taskHandoffIdempotencyKey(entry).endsWith(":blocked-followup"),
+        ),
+      ).toBe(false);
     });
   });
 
@@ -2799,7 +2824,7 @@ describe("task-registry", () => {
         task: "Spawn ACP child",
         deliveryStatus: "pending",
       });
-      expect(peekSystemEvents("agent:main:main")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:main")).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
       ]);
     });
@@ -3243,7 +3268,7 @@ describe("task-registry", () => {
       expectRecordFields(requireTaskById(task.taskId), {
         status: "running",
       });
-      expect(peekSystemEvents("agent:main:main")).toStrictEqual([]);
+      expect(readQueuedTaskTexts("agent:main:main")).toStrictEqual([]);
     });
   });
 
@@ -4350,6 +4375,8 @@ describe("task-registry", () => {
 
       const relay = startAcpSpawnParentStreamRelay({
         runId: "run-quiet-terminal",
+        requesterAgentId: "main",
+        expectedTarget: captureSessionEventTarget("main", "agent:main:main"),
         parentSessionKey: "agent:main:main",
         childSessionKey: "agent:codex:acp:child",
         agentId: "codex",
@@ -4369,7 +4396,7 @@ describe("task-registry", () => {
       });
       vi.advanceTimersByTime(10);
 
-      expect(peekSystemEvents("agent:main:main")).toStrictEqual([]);
+      expect(readQueuedTaskTexts("agent:main:main")).toStrictEqual([]);
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
 
       emitAgentEvent({
@@ -4383,7 +4410,7 @@ describe("task-registry", () => {
       await flushAsyncWork();
 
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
-      expect(peekSystemEvents("agent:main:main")).toEqual([
+      expect(readQueuedTaskTexts("agent:main:main")).toEqual([
         "Background task ready for review: ACP background task (run run-quie). Next: parent will review/verify before calling it done.",
       ]);
       relay.dispose();
@@ -4428,7 +4455,7 @@ describe("task-registry", () => {
         content:
           "Background task failed: ACP background task (run run-fail). Permission denied by ACP runtime",
       });
-      expect(peekSystemEvents("agent:main:main")).toStrictEqual([]);
+      expect(readQueuedTaskTexts("agent:main:main")).toStrictEqual([]);
     });
   });
 
@@ -4453,6 +4480,8 @@ describe("task-registry", () => {
 
       const relay = startAcpSpawnParentStreamRelay({
         runId: "run-state-stream",
+        requesterAgentId: "main",
+        expectedTarget: captureSessionEventTarget("main", "agent:main:main"),
         parentSessionKey: "agent:main:main",
         childSessionKey: "agent:codex:acp:child",
         agentId: "codex",
@@ -4476,7 +4505,7 @@ describe("task-registry", () => {
           "Background task update: ACP background task. No prompt submission observed for 1s after child start.",
       });
 
-      expect(peekSystemEvents("agent:main:main")).toStrictEqual([]);
+      expect(readQueuedTaskTexts("agent:main:main")).toStrictEqual([]);
       relay.dispose();
       vi.useRealTimers();
     });

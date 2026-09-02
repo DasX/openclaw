@@ -5,8 +5,7 @@ import type {
   MessageShortcut,
   SlackShortcutMiddlewareArgs,
 } from "@slack/bolt";
-import { requestHeartbeat } from "openclaw/plugin-sdk/heartbeat-runtime";
-import { enqueueRoutedSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
+import { getSlackRuntime } from "../../runtime.js";
 import { authorizeSlackSystemEventSender } from "../auth.js";
 import type { SlackMonitorContext } from "../context.js";
 import { resolveSlackDeferredActionTarget } from "../deferred-action-routing.js";
@@ -125,25 +124,27 @@ async function handleSlackShortcut(params: {
   params.ctx.runtime.log?.(
     `slack:interaction ${interactionType} callback=${callbackId} user=${userId} channel=${channelId ?? "direct"}`,
   );
-  const queued = enqueueRoutedSystemEvent(params.formatSystemEvent(eventPayload), route, {
-    contextKey,
-    deliveryContext: {
-      channel: "slack",
-      to: deferredTarget.target,
-      accountId: params.ctx.accountId,
-      threadId: threadTs,
-    },
-  });
-  if (queued) {
-    requestHeartbeat({
-      source: "hook",
-      intent: "immediate",
-      reason: "hook:slack-interaction",
+  const receipt = getSlackRuntime().system.enqueueSessionEvent(
+    params.formatSystemEvent(eventPayload),
+    {
       agentId: route.agentId,
       sessionKey: route.sessionKey,
-      heartbeat: { target: "last" },
-    });
-  }
+      contextKey,
+      deliveryContext: {
+        channel: "slack",
+        to: deferredTarget.target,
+        accountId: params.ctx.accountId,
+        threadId: threadTs,
+      },
+    },
+  );
+  void receipt.settled.then((outcome) => {
+    if (outcome.status !== "completed") {
+      params.ctx.runtime.log?.(
+        `slack:interaction follow-up ${outcome.status}: ${outcome.error ?? "cancelled"}`,
+      );
+    }
+  });
 }
 
 export function registerSlackShortcutHandler(params: {

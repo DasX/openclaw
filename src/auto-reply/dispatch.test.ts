@@ -76,9 +76,9 @@ vi.mock("./reply/reply-dispatcher.js", async () => {
 });
 
 const {
-  dispatchInboundMessage,
-  dispatchInboundMessageWithDispatcher,
-  dispatchInboundMessageWithBufferedDispatcher,
+  dispatchInboundMessageCore: dispatchInboundMessage,
+  dispatchInboundMessageWithDispatcherCore: dispatchInboundMessageWithDispatcher,
+  dispatchInboundMessageWithBufferedDispatcherCore: dispatchInboundMessageWithBufferedDispatcher,
   dispatchInboundMessageWithProjectedDispatcher,
   withReplyDispatcher,
 } = await import("./dispatch.js");

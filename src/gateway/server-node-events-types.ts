@@ -44,7 +44,7 @@ export type NodeEventContext = {
     runId?: string;
     sessionKey: string;
     terminal: boolean;
-  }) => boolean;
+  }) => false | import("./node-registry.invoke-stream.js").PendingSystemRunEvent;
   updateNodePresenceActivity?: (params: {
     nodeId: string;
     connId?: string;

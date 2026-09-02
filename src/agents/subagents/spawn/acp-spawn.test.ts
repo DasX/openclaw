@@ -84,7 +84,6 @@ const hoisted = vi.hoisted(() => {
   const readAcpSessionMetaMock = vi.fn();
   const resolveStorePathMock = vi.fn();
   const resolveSessionTranscriptFileMock = vi.fn();
-  const areHeartbeatsEnabledMock = vi.fn();
   const normalizeChannelIdMock = vi.fn((channelId: string) => {
     const normalized = channelId.trim().toLowerCase();
     return normalized || null;
@@ -179,7 +178,6 @@ const hoisted = vi.hoisted(() => {
     readAcpSessionMetaMock,
     resolveStorePathMock,
     resolveSessionTranscriptFileMock,
-    areHeartbeatsEnabledMock,
     normalizeChannelIdMock,
     cleanupFailedAcpSpawnMock,
     registerSubagentRunMock,
@@ -241,10 +239,6 @@ vi.mock("../../../gateway/call.js", () => ({
   callGateway: hoisted.callGatewayMock,
 }));
 
-vi.mock("../../../infra/heartbeat-wake.js", () => ({
-  areHeartbeatsEnabled: hoisted.areHeartbeatsEnabledMock,
-}));
-
 vi.mock("./acp-spawn-parent-stream.js", () => ({
   startAcpSpawnParentStreamRelay: hoisted.startAcpSpawnParentStreamRelayMock,
 }));
@@ -257,6 +251,23 @@ vi.mock("../registry/subagent-registry.js", () => ({
 
 vi.mock("../registry/subagent-registry-read.js", () => ({
   getSubagentRunByChildSessionKey: hoisted.getSubagentRunByChildSessionKeyMock,
+}));
+
+const taskAdmission = vi.hoisted(() => ({
+  create: vi.fn(() => ({ taskId: "admitted-acp-task" })),
+  fail: vi.fn(),
+}));
+vi.mock("../../../tasks/detached-task-runtime.js", () => ({
+  createQueuedTaskRun: taskAdmission.create,
+  failTaskRunByRunId: taskAdmission.fail,
+}));
+vi.mock("../../../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: (agentId: string, sessionKey: string) => ({
+    agentId,
+    sessionKey,
+    sessionId: "original-requester",
+    generation: "gateway-generation",
+  }),
 }));
 
 vi.mock("../../../tasks/runtime-internal.js", () => ({
@@ -708,7 +719,8 @@ describe("spawnAcpDirect", () => {
     setActivePluginRegistry(createTestRegistry());
     acpRuntimeRegistryTesting.resetAcpRuntimeBackendsForTests();
     replaceSpawnConfig(createDefaultSpawnConfig());
-    hoisted.areHeartbeatsEnabledMock.mockReset().mockReturnValue(true);
+    taskAdmission.create.mockReset().mockReturnValue({ taskId: "admitted-acp-task" });
+    taskAdmission.fail.mockReset();
     hoisted.cleanupFailedAcpSpawnMock.mockReset().mockResolvedValue(undefined);
     hoisted.registerSubagentRunMock.mockReset();
     hoisted.countActiveRunsForSessionMock.mockReset().mockReturnValue(0);
@@ -3534,24 +3546,6 @@ describe("spawnAcpDirect", () => {
       },
       {
         agentSessionKey: "agent:research:subagent:invalid-heartbeat",
-      },
-    );
-
-    const accepted = expectAcceptedSpawn(result);
-    expect(accepted.mode).toBe("run");
-    expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
-  });
-
-  it("does not implicitly stream when heartbeats are runtime-disabled", async () => {
-    hoisted.areHeartbeatsEnabledMock.mockReturnValue(false);
-
-    const result = await spawnAcpDirect(
-      {
-        task: "Investigate flaky tests",
-        agentId: "codex",
-      },
-      {
-        agentSessionKey: "agent:main:subagent:runtime-disabled",
       },
     );
 

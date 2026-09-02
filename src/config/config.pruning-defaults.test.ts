@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "./config.js";
 import { applyProviderConfigDefaultsForConfig } from "./provider-policy.js";
 
-function expectAnthropicPruningDefaults(cfg: OpenClawConfig, heartbeatEvery = "30m") {
+function expectAnthropicPruningDefaults(cfg: OpenClawConfig) {
   expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("cache-ttl");
   expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("1h");
-  expect(cfg.agents?.defaults?.heartbeat?.every).toBe(heartbeatEvery);
+  expect(cfg.agents?.defaults?.heartbeat).toBeUndefined();
 }
 
 function applyAnthropicDefaultsForTest(config: OpenClawConfig) {
@@ -20,7 +20,7 @@ describe("config pruning defaults", () => {
     expect(cfg.agents?.defaults?.contextPruning?.mode).toBeUndefined();
   });
 
-  it("enables cache-ttl pruning + 1h heartbeat for Anthropic OAuth", () => {
+  it("enables OAuth cache-ttl pruning without restoring retired heartbeat config", () => {
     const cfg = applyAnthropicDefaultsForTest({
       auth: {
         profiles: {
@@ -30,7 +30,7 @@ describe("config pruning defaults", () => {
       agents: { defaults: {} },
     });
 
-    expectAnthropicPruningDefaults(cfg, "1h");
+    expectAnthropicPruningDefaults(cfg);
   });
 
   it("backfills raw and canonical Claude CLI policies for selected Anthropic CLI auth", () => {

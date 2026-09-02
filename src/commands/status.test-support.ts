@@ -1,7 +1,6 @@
 // Status test support builds reusable gateway, update, heartbeat, and service fixtures for command tests.
 import os from "node:os";
 import path from "node:path";
-import type { HeartbeatEventPayload } from "../infra/heartbeat-events.js";
 import { isBetaTag } from "../infra/update-channels.js";
 import type { Tone } from "../memory-host-sdk/status.js";
 import type { PluginCompatibilityNotice } from "../plugins/status.js";
@@ -196,15 +195,6 @@ export function createStatusScanResultFixture(
   };
 }
 
-function createStatusLastHeartbeat(): HeartbeatEventPayload {
-  return {
-    ts: Date.now() - 30_000,
-    status: "ok-token",
-    channel: "quietchat",
-    accountId: "acct",
-  };
-}
-
 function createStatusHealth() {
   return {
     ok: true as const,
@@ -266,7 +256,7 @@ export function createStatusCommandOverviewRowsParams(
     osLabel: "macOS",
     summary: baseStatusSummary,
     health: createStatusHealth(),
-    lastHeartbeat: createStatusLastHeartbeat(),
+    automations: { ok: true, value: { enabled: true, jobs: 2, nextWakeAtMs: null } },
     agentStatus: baseStatusAgentStatus,
     memory: baseStatusMemory,
     memoryPlugin: baseStatusMemoryPlugin,
@@ -302,7 +292,7 @@ export function createStatusCommandReportDataParams(
     },
     health: createStatusHealth(),
     usageLines: ["usage line"],
-    lastHeartbeat: createStatusLastHeartbeat(),
+    automations: { ok: true, value: { enabled: true, jobs: 2, nextWakeAtMs: null } },
     agentStatus: baseStatusAgentStatus,
     channels: {
       rows: [{ id: "quietchat", label: "QuietChat", enabled: true, state: "ok", detail: "ready" }],

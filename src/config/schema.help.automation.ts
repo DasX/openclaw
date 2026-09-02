@@ -158,9 +158,9 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
   "hooks.mappings[].match.source":
     "Source match condition for a hook mapping, typically set by trusted upstream metadata or adapter logic. Use stable source identifiers so routing remains deterministic across retries.",
   "hooks.mappings[].action":
-    'Mapping action type: "wake" triggers agent wake flow, while "agent" sends directly to agent handling. Use "agent" for immediate execution and "wake" when heartbeat-driven processing is preferred.',
+    'Mapping action type: "wake" triggers agent wake flow, while "agent" sends directly to agent handling. Use "agent" for an independent agent turn and "wake" to notify the owning session.',
   "hooks.mappings[].wakeMode":
-    'Wake scheduling mode: "now" wakes immediately, while "next-heartbeat" defers until the next heartbeat cycle. Use deferred mode for lower-priority automations that can tolerate slight delay.',
+    'Wake scheduling mode: "now" wakes immediately, while "next-heartbeat" is the deprecated wire name for deferring to the corresponding scheduled automation. Use deferred mode for lower-priority automations that can tolerate slight delay.',
   "hooks.mappings[].name":
     "Human-readable mapping display name used in diagnostics and operator-facing config UIs. Keep names concise and descriptive so routing intent is obvious during incident review.",
   "hooks.mappings[].agentId":
@@ -297,7 +297,7 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
   "tts.providers.*.apiKey":
     "Provider API key used by that speech provider when its plugin requires authenticated TTS access.", // pragma: allowlist secret
   channels:
-    "Channel provider configurations plus shared defaults that control access policies, heartbeat visibility, and per-surface behavior. Keep defaults centralized and override per provider only where required.",
+    "Channel provider configurations plus shared defaults that control access policies and per-surface behavior. Keep defaults centralized and override per provider only where required.",
   "channels.mattermost":
     "Mattermost channel provider configuration for bot credentials, base URL, and message trigger modes. Keep mention/trigger rules strict in high-volume team channels.",
   "channels.defaults":
@@ -314,14 +314,6 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
     "Treat quoted bot messages as implicit mentions by default. Defaults to true for backward compatibility.",
   "channels.defaults.implicitMentions.threadParticipation":
     "Treat follow-ups in threads where the bot participated as implicit mentions by default. Defaults to true for backward compatibility.",
-  "channels.defaults.heartbeatVisibility":
-    "Default heartbeat visibility settings for status messages emitted by providers/channels. Tune this globally to reduce noisy healthy-state updates while keeping alerts visible.",
-  "channels.defaults.heartbeatVisibility.showOk":
-    "Shows healthy/OK heartbeat status entries when true in channel status outputs. Keep false in noisy environments and enable only when operators need explicit healthy confirmations.",
-  "channels.defaults.heartbeatVisibility.showAlerts":
-    "Shows degraded/error heartbeat alerts when true so operator channels surface problems promptly. Keep enabled in production so broken channel states are visible.",
-  "channels.defaults.heartbeatVisibility.useIndicator":
-    "Enables concise indicator-style heartbeat rendering instead of verbose status text where supported. Use indicator mode for dense dashboards with many active channels.",
   "channels.defaults.botLoopProtection":
     "Default pair loop protection settings for channel providers that support bot-to-bot loop guards. Use provider-specific overrides only when one channel needs a different budget.",
   "channels.defaults.botLoopProtection.enabled":
@@ -332,10 +324,6 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
     "Sliding window length in seconds for pair loop budgets. Default for supporting channels is 60.",
   "channels.defaults.botLoopProtection.cooldownSeconds":
     "Cooldown seconds applied to a pair after it exceeds the loop budget. Default for supporting channels is 60.",
-  "agents.defaults.heartbeat.directPolicy":
-    'Controls whether heartbeat delivery may target direct/DM chats: "allow" (default) permits DM delivery and "block" suppresses direct-target sends.',
-  "agents.entries.*.heartbeat.directPolicy":
-    'Per-agent override for heartbeat direct/DM delivery policy; use "block" for agents that should only send heartbeat alerts to non-DM destinations.',
   "channels.mattermost.configWrites":
     "Allow Mattermost to write config in response to channel events/commands (default: true).",
   "channels.modelByChannel":

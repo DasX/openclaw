@@ -1,3 +1,4 @@
+import type { SessionEventTarget } from "../auto-reply/reply/session-event-contract.js";
 import {
   captureGatewayRootWorkAdmissionContinuationScope,
   isGatewayRestartDraining,
@@ -9,6 +10,8 @@ import { NODE_INVOKE_PAIRING_CHANGED_ABORT } from "./node-registry-private-token
 export const NODE_INVOKE_NOT_READY = "NODE_NOT_READY";
 
 export type PendingSystemRunEvent = {
+  /** Host-captured before invocation awaits; never supplied by the node. */
+  expectedTarget?: SessionEventTarget;
   runId: string;
   sessionKey?: string;
   timeoutMs?: number | null;

@@ -6,6 +6,7 @@ import {
   deprecatedProfileIds,
   normalizeConfig,
   resolveThinkingProfile,
+  resolveProactiveCadenceMs,
 } from "./provider-policy-api.js";
 
 function createModel(id: string, name: string): ModelDefinitionConfig {
@@ -40,6 +41,21 @@ function levelIds(levels: readonly { id: string }[] | undefined): string[] {
 }
 
 describe("anthropic provider policy public artifact", () => {
+  it.each([
+    ["oauth", 3_600_000],
+    ["token", 3_600_000],
+    ["api_key", 1_800_000],
+  ] as const)("keeps %s proactive cadence in the provider setup policy", (mode, cadence) => {
+    const config = {
+      auth: { profiles: { default: { provider: "anthropic", mode } } },
+      agents: { defaults: {} },
+    };
+    expect(resolveProactiveCadenceMs({ config, env: {} })).toBe(cadence);
+    expect(applyConfigDefaults({ config, env: {} }).agents?.defaults).not.toHaveProperty(
+      "heartbeat",
+    );
+  });
+
   it("publishes native Claude profiles retired from generic auth", () => {
     expect(deprecatedProfileIds).toEqual(["anthropic:claude-cli"]);
   });

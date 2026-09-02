@@ -114,12 +114,13 @@ describe("CronService read ops while job is running", () => {
     const jobs = Array.from({ length: 100 }, (_, index) => futureJob(`stable-${index}`, nowMs));
     await writeCronStoreSnapshot({ storePath: store.storePath, jobs });
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => nowMs,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -147,12 +148,13 @@ describe("CronService read ops while job is running", () => {
     const job = futureJob("unstarted-missing-next", nowMs, false);
     await writeCronStoreSnapshot({ storePath: store.storePath, jobs: [job] });
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => nowMs,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -191,11 +193,12 @@ describe("CronService read ops while job is running", () => {
         resolveFinished = resolve;
       });
       const cron = new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
         onEvent: (event) => {
           if (event.action === "finished" && event.status === status) {
@@ -244,11 +247,12 @@ describe("CronService read ops while job is running", () => {
 
         cron.stop();
         restartedCron = new CronService({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: store.storePath,
           cronEnabled: true,
           log: noopLogger,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         await restartedCron.start();
@@ -271,7 +275,7 @@ describe("CronService read ops while job is running", () => {
     vi.setSystemTime(new Date("2025-12-13T00:00:00.000Z"));
     const store = await makeStorePath();
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     let resolveFinished: (() => void) | undefined;
     const finished = new Promise<void>((resolve) => {
       resolveFinished = resolve;
@@ -280,11 +284,12 @@ describe("CronService read ops while job is running", () => {
     const isolatedRun = createDeferredIsolatedRun();
 
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
       onEvent: (evt) => {
         if (evt.action === "finished" && evt.status === "ok") {
@@ -358,11 +363,12 @@ describe("CronService read ops while job is running", () => {
       const originalAt = Date.parse("2030-01-01T00:05:00.000Z");
       const intermediateAt = Date.parse("2030-01-01T00:10:00.000Z");
       const cron = new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
       });
       let restartedCron: CronService | undefined;
@@ -403,11 +409,12 @@ describe("CronService read ops while job is running", () => {
 
         cron.stop();
         restartedCron = new CronService({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath: store.storePath,
           cronEnabled: true,
           log: noopLogger,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         });
         await restartedCron.start();
@@ -426,15 +433,16 @@ describe("CronService read ops while job is running", () => {
   it("keeps list and status responsive during manual cron.run execution", async () => {
     const store = await makeStorePath();
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     const isolatedRun = createDeferredIsolatedRun();
 
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
     });
 
@@ -486,7 +494,7 @@ describe("CronService read ops while job is running", () => {
   it("keeps list and status responsive after startup defers catch-up runs", async () => {
     const store = await makeStorePath();
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     const nowMs = Date.parse("2025-12-13T00:00:00.000Z");
 
     await writeCronStoreSnapshot({
@@ -511,12 +519,13 @@ describe("CronService read ops while job is running", () => {
     const isolatedRun = createDeferredIsolatedRun();
 
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => nowMs,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
       startupDeferredMissedAgentJobDelayMs: 120_000,
     });

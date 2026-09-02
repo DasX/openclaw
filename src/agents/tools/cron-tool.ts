@@ -12,7 +12,12 @@ import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normal
 import type { CronDelivery } from "../../cron/types.js";
 import { normalizeHttpWebhookUrl } from "../../cron/webhook-url.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
-import { recordCronNextCheckProposal } from "../../infra/agent-run-registry.js";
+import {
+  createAutomationResultRecorder,
+  createAutomationRunGuard,
+  getAgentRunContext,
+  recordCronNextCheckProposal,
+} from "../../infra/agent-run-registry.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { isRecord } from "../../utils.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
@@ -50,6 +55,10 @@ import {
   cronCreateRequiresCreatorAuthority,
   resolveCronCreatorExecToolTarget,
 } from "./cron-tool-creator-cap.js";
+import {
+  buildCronToolDescription,
+  formatCronTerminalPresentation,
+} from "./cron-tool-presentation.js";
 import {
   assertCronPacingInput,
   createCronToolSchema,
@@ -99,7 +108,12 @@ function assertCronSelfRemoveScope(
   if (!selfRemoveOnlyJobId || isCronSelfIntrospectionAction(action)) {
     return;
   }
-  if (action === "next_check") {
+  if (
+    action === "next_check" ||
+    action === "scratch_get" ||
+    action === "scratch_set" ||
+    action === "record_result"
+  ) {
     const id = readCronJobIdParam(params);
     if (!id || id === selfRemoveOnlyJobId) {
       return;
@@ -118,46 +132,6 @@ function filterCronStatusResultForSelfScope(result: unknown): unknown {
   return { enabled: isRecord(result) && result.enabled === true };
 }
 
-function formatCronTerminalPresentation(
-  params: unknown,
-  result: unknown,
-): { text: string } | undefined {
-  if (!isRecord(params) || !isRecord(result) || !isRecord(result.details)) {
-    return undefined;
-  }
-  switch (params.action) {
-    case "status": {
-      const enabled = result.details.enabled === true ? "yes" : "no";
-      return { text: `Automations scheduler status.\nEnabled: ${enabled}` };
-    }
-    case "list": {
-      const total =
-        typeof result.details.total === "number" &&
-        Number.isFinite(result.details.total) &&
-        result.details.total >= 0
-          ? Math.floor(result.details.total)
-          : undefined;
-      const count =
-        total ?? (Array.isArray(result.details.jobs) ? result.details.jobs.length : undefined);
-      return count === undefined
-        ? { text: "Automations listed." }
-        : { text: `Automations listed.\nCount: ${count}` };
-    }
-    case "get":
-      return { text: "Automation loaded." };
-    case "runs": {
-      const entries = Array.isArray(result.details.entries)
-        ? result.details.entries.length
-        : undefined;
-      return entries === undefined
-        ? { text: "Automation run history loaded." }
-        : { text: `Automation run history loaded.\nCount: ${entries}` };
-    }
-    default:
-      return undefined;
-  }
-}
-
 function isOlderGatewayWithoutCompactCronList(error: unknown): boolean {
   return (
     error instanceof GatewayClientRequestError &&
@@ -167,65 +141,45 @@ function isOlderGatewayWithoutCompactCronList(error: unknown): boolean {
   );
 }
 
-function buildCronToolDescription(params: { triggersEnabled: boolean }): string {
-  const addFields = params.triggersEnabled
-    ? "{name?,schedule,payload,sessionTarget?,pacing?,trigger?,delivery?,enabled?}"
-    : "{name?,schedule,payload,sessionTarget?,pacing?,delivery?,enabled?}";
-  const streamScheduleLine = params.triggersEnabled
-    ? '\n- {kind:"stream",command:[argv],mode?:"line"|"match",match?}: fires on supervised process output; disabled only when cron.triggers.enabled=false.'
-    : "";
-  const scriptPayloadLine = params.triggersEnabled
-    ? '\n- script {kind:"script",script,timeoutSeconds?,toolBudget?}: main|isolated only; disabled only when cron.triggers.enabled=false.'
-    : "";
-  const triggerSection = params.triggersEnabled
-    ? `TRIGGER (condition watcher on every/cron): {script,once?}; available unless cron.triggers.enabled=false — if off, say so; never model-poll instead. Quiet headless check, no model; 30s/5 tool calls/16KB state. Read frozen trigger.state, return json({fire,message?,state?}) with NEW state; dedupe via state, never memory. fire:false saves state only. fire:true runs payload; message is that run's entire context — self-contained. Fire on failures/timeouts too; success-only watchers look healthy when broken. Script stays read-only; actions belong in payload. once:true disables after first fire. Code Mode: await exec({command:"..."}).`
-    : `TRIGGERS DISABLED (cron.triggers.enabled=false): condition triggers, script payloads, and stream schedules are unavailable here. Omit trigger; use plain time-based schedules. If the user asks for a conditional watcher, say it is unsupported — never model-poll instead, and never silently create an unconditional job in its place.`;
-  const silentWatcherCue = params.triggersEnabled ? ' Silent watcher=>mode:"none".' : "";
-  return `Gateway scheduler: reminders, delayed self-wakeups, loops, recurring work${params.triggersEnabled ? ", event watchers" : ""}. Never exec sleep/poll as timer.
-
-ACTIONS: status | list [includeDisabled,limit?,offset?] (use nextOffset for the next page) | get jobId | add job | update jobId job (partial: only supplied fields change; null clears) | remove jobId | run jobId (runMode "force"=now) | runs jobId = history | next_check in:"30m" (own paced run only) | wake text mode?:"now"|"next-heartbeat"(default) nudges a caller-owned lane (sessionKey/agentId to pick another).
-
-ADD: ${addFields}. Required: schedule+payload.
-
-SCHEDULE:
-- {kind:"at",at:"ISO-8601"} one-shot; no tz=UTC; auto-deletes after successful completion: delivery confirmed, not requested, intentionally silent, or explicitly bestEffort. Failed/unknown required delivery retains it disabled.
-- {kind:"every",everyMs}.
-- {kind:"cron",expr,tz?:"IANA"}: expr is wall time in tz; never pre-convert to UTC; no tz=gateway host local. 18:00 Shanghai => {expr:"0 18 * * *",tz:"Asia/Shanghai"}.${streamScheduleLine}
-
-TARGET+PAYLOAD:
-- "current" (agentTurn default) = this conversation: the run stays detached, reads bounded chat context, then commits its final visible assistant result to this conversation's durable history. Self-wakeup/"continue later"/loop = at|every + agentTurn + current.
-- "isolated" = fresh detached session (shows in \`openclaw tasks\`); standalone background work.
-- "main" = heartbeat lane; payload {kind:"systemEvent",text} (systemEvent default target).
-- "session:<key>" = named session.
-- agentTurn {kind:"agentTurn",message,model?,thinking?,timeoutSeconds?}; timeoutSeconds 0=none.
-- Inherited configured MCP authority includes only model-callable tools; interactive app-view-only capabilities are excluded from headless jobs.${scriptPayloadLine}
-
-PACED LOOP: recurring job + pacing{min?,max?} durations ("15m","4h"; at least one). Inside its run, job calls next_check in:"<dur>" to set the next delay (clamped to bounds, measured from run end; failed runs keep normal backoff). Adaptive polling: tighten when active, back off when quiet.
-
-${triggerSection}
-
-DELIVERY {mode:"none"|"announce"|"webhook",channel?,to?,threadId?,bestEffort?,completionDestination?}: where detached run output goes. Omitted=announce (current=>canonical session commit, plus one normal channel send for external chats; isolated=>last route; set channel/to for a specific chat — no messaging tool inside the run). A current announce succeeds only after its history commit; WebChat observes that commit live and after reconnect without another user message.${silentWatcherCue} webhook posts finished-run event (successful empty summary is intentional silence, no POST) to URL in \`to\`. To keep announce delivery and also POST completion, use mode:"announce" with completionDestination:{mode:"webhook",to:"https://..."}.
-
-FAILURE ALERTS: jobs with a failure route default to alerting after 2 consecutive execution failures with a 1h cooldown. Route order: job failureAlert fields, delivery.failureDestination over global cron.failureAlert destination fields, then primary announce. failureAlert:false disables execution/delivery alerts, not the auto-disable safety notice; a failureAlert object activates/tunes. bestEffort suppresses inherited execution alerts. Required completion-delivery failure uses only an alternate route, bypasses after, and shares the execution-alert cooldown from the first failure; it does not increment the execution streak.
-
-Job wakeMode (main jobs): "now"(default)|"next-heartbeat". Restricted automation-run sessions: self status/list/get/runs/remove + own next_check only. jobId canonical (id=compat). contextMessages 0-10 embeds recent chat lines into reminder text.`;
-}
-
 export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): AnyAgentTool {
   const callGateway = deps?.callGatewayTool ?? callGatewayTool;
+  const assertCurrentRun =
+    opts?.runId && opts.selfRemoveOnlyJobId
+      ? createAutomationRunGuard(opts.runId, opts.selfRemoveOnlyJobId)
+      : undefined;
+  const automationRun =
+    opts?.runId && opts.selfRemoveOnlyJobId
+      ? getAgentRunContext(opts.runId)?.cronRunsByJobId?.get(opts.selfRemoveOnlyJobId)
+      : undefined;
+  const activeRun = Boolean(automationRun?.assertCurrent && !automationRun.closed);
+  const pacingEnabled = Boolean(activeRun && automationRun?.pacingEnabled);
+
+  const recordResult =
+    opts?.runId && opts.selfRemoveOnlyJobId
+      ? createAutomationResultRecorder(opts.runId, opts.selfRemoveOnlyJobId)
+      : undefined;
   // Trigger-gated surfaces default on, matching cron/service/jobs-validation.ts.
   const triggersEnabled = opts?.config?.cron?.triggers?.enabled !== false;
   const tool: AnyAgentTool = {
     label: "Automations",
     name: AUTOMATIONS_TOOL_NAME,
     displaySummary: CRON_TOOL_DISPLAY_SUMMARY,
-    description: buildCronToolDescription({ triggersEnabled }),
+    description: buildCronToolDescription({
+      triggersEnabled,
+      selfScoped: Boolean(opts?.selfRemoveOnlyJobId),
+      pacingEnabled,
+      activeRun,
+    }),
     parameters: createCronToolSchema({
       agentSessionKey: opts?.agentSessionKey,
       triggersEnabled,
+      selfScoped: Boolean(opts?.selfRemoveOnlyJobId),
+      pacingEnabled,
+      activeRun,
     }),
     execute: async (_toolCallId, args, operationSignal) => {
       operationSignal?.throwIfAborted();
+      assertCurrentRun?.();
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });
       assertCronSelfRemoveScope(opts, action, params);
@@ -451,7 +405,8 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
               const shouldInfer =
                 (deliveryValue == null || delivery) &&
                 (mode === "" || mode === "announce") &&
-                !hasTarget;
+                !hasTarget &&
+                delivery?.target !== "owner";
               if (shouldInfer) {
                 const inferred = resolveCronCreationDelivery({
                   cfg: runtimeConfig,
@@ -630,6 +585,56 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 id,
               }),
             );
+          }
+          case "scratch_get":
+          case "scratch_set": {
+            const jobId = readCronSelfRemoveOnlyJobId(opts);
+            if (!jobId || !assertCurrentRun) {
+              throw new Error(
+                "scratch actions are only available inside the currently running automation; use the automation editor for other jobs",
+              );
+            }
+            if (action === "scratch_get") {
+              return jsonResult(await callGateway("cron.scratch.get", gatewayOpts, { id: jobId }));
+            }
+            if (typeof params.content !== "string" && params.content !== null) {
+              throw new Error("scratch_set requires complete content or null to clear");
+            }
+            const expectedRevision = readNonNegativeIntegerParam(params, "expectedRevision");
+            if (expectedRevision === undefined) {
+              throw new Error("scratch_set requires expectedRevision from scratch_get");
+            }
+            return jsonResult(
+              await callGateway("cron.scratch.set", gatewayOpts, {
+                id: jobId,
+                content: params.content,
+                expectedRevision,
+              }),
+            );
+          }
+          case "record_result": {
+            const jobId = readCronSelfRemoveOnlyJobId(opts);
+            const runId = opts?.runId?.trim();
+            if (!jobId || !runId || !recordResult) {
+              throw new Error(
+                "record_result is only available inside the currently running automation",
+              );
+            }
+            const outcome = params.outcome;
+            if (
+              outcome !== "no_change" &&
+              outcome !== "progress" &&
+              outcome !== "done" &&
+              outcome !== "blocked" &&
+              outcome !== "needs_attention"
+            ) {
+              throw new Error(
+                "record_result requires no_change, progress, done, blocked, or needs_attention",
+              );
+            }
+            const summary = readToolStringParam(params, "summary", { required: true });
+            recordResult({ outcome, summary });
+            return jsonResult({ ok: true, outcome, summary });
           }
           case "next_check": {
             const jobId = readCronSelfRemoveOnlyJobId(opts);

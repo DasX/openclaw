@@ -105,8 +105,13 @@ describe("system-cli", () => {
     {
       name: "rejected Gateway call",
       args: ["system", "event", "--text", "hello", "--json"],
-      gatewayResult: { ok: false, reason: "unwakeable-session-key" },
-      expectedError: "unwakeable-session-key",
+      gatewayResult: {
+        ok: false,
+        reason:
+          "No enabled ordinary scheduled session job can receive this wake. Choose mode now or create an automation with a scheduled session turn.",
+      },
+      expectedError:
+        "No enabled ordinary scheduled session job can receive this wake. Choose mode now or create an automation with a scheduled session turn.",
       gatewayCalls: 1,
     },
   ])(
@@ -148,27 +153,32 @@ describe("system-cli", () => {
     expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
   });
 
-  it("forwards --session-key on system event", async () => {
-    await runCli([
-      "system",
-      "event",
-      "--text",
-      "ping",
-      "--session-key",
-      "agent:main:telegram:dm:42",
-    ]);
+  it.each(["now", "next-heartbeat"])(
+    "forwards explicit session events with v4 mode %s unchanged",
+    async (mode) => {
+      await runCli([
+        "system",
+        "event",
+        "--text",
+        "ping",
+        "--mode",
+        mode,
+        "--session-key",
+        "agent:main:telegram:dm:42",
+      ]);
 
-    expect(callGatewayFromCli).toHaveBeenCalledTimes(1);
-    const [method, gatewayOptions, params, requestOptions] = gatewayCall();
-    expect(method).toBe("wake");
-    expect(typeof gatewayOptions).toBe("object");
-    expect(params).toEqual({
-      mode: "next-heartbeat",
-      text: "ping",
-      sessionKey: "agent:main:telegram:dm:42",
-    });
-    expect(requestOptions).toEqual({ expectFinal: false });
-  });
+      expect(callGatewayFromCli).toHaveBeenCalledTimes(1);
+      const [method, gatewayOptions, params, requestOptions] = gatewayCall();
+      expect(method).toBe("wake");
+      expect(typeof gatewayOptions).toBe("object");
+      expect(params).toEqual({
+        mode,
+        text: "ping",
+        sessionKey: "agent:main:telegram:dm:42",
+      });
+      expect(requestOptions).toEqual({ expectFinal: false });
+    },
+  );
 
   it("omits sessionKey from payload when --session-key not provided", async () => {
     await runCli(["system", "event", "--text", "ping"]);

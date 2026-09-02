@@ -1,6 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { listAgentEntries } from "../../agents/agent-scope.js";
 import { redactChannelStatusSummaryBaseUrl } from "../../channels/account-snapshot-fields.js";
 import { buildChannelAccountSnapshotFromInspection } from "../../channels/account-summary.js";
@@ -16,7 +15,10 @@ import type { SessionEntrySummary } from "../../config/sessions/session-accessor
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isDiagnosticFlagEnabled } from "../../infra/diagnostic-flags.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { resolveHeartbeatSummaryForAgent } from "../../infra/heartbeat-summary.js";
+import {
+  projectHeartbeatSummary,
+  readHeartbeatSummarySnapshot,
+} from "../../infra/heartbeat-summary-snapshot.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   degradedPluginMatchesRoot,
@@ -65,9 +67,6 @@ const debugHealth = (
     healthLog.info(message, meta);
   }
 };
-
-const resolveHeartbeatSummary = (cfg: OpenClawConfig, agentId: string) =>
-  resolveHeartbeatSummaryForAgent(cfg, agentId);
 
 function attachPluginActivation(
   plugin: NonNullable<ReturnType<typeof getActivePluginRegistry>>["plugins"][number] | undefined,
@@ -156,6 +155,7 @@ export async function buildHealthAgentSummaries(
   { defaultAgentId, ordered }: ReturnType<typeof resolveHealthAgentOrder>,
 ): Promise<AgentHealthSummary[]> {
   const reader = await createHealthSessionStoreReader(ordered.map((entry) => entry.id));
+  const heartbeatJobs = await readHeartbeatSummarySnapshot(cfg);
   return ordered.map((entry) => {
     const store = reader.read(
       resolveSessionStorePathCore(cfg.session?.store, { agentId: entry.id }),
@@ -165,7 +165,7 @@ export async function buildHealthAgentSummaries(
       agentId: entry.id,
       name: entry.name,
       isDefault: entry.id === defaultAgentId,
-      heartbeat: resolveHeartbeatSummary(cfg, entry.id),
+      heartbeat: projectHeartbeatSummary(heartbeatJobs.find((job) => job.agentId === entry.id)),
       sessions: projectHealthSessions(store.path, store),
     };
   });
@@ -537,19 +537,7 @@ export async function collectGatewayHealthSnapshot(params: {
   const channelBindings = buildChannelAccountBindings(cfg);
   const agents = await buildHealthAgentSummaries(cfg, { defaultAgentId, ordered });
   const summaryAgent = agents.find((agent) => agent.isDefault) ?? agents[0];
-  const configuredHeartbeatAgentId = normalizeOptionalString(
-    cfg.agents?.defaults?.heartbeat?.agentId,
-  );
-  const heartbeatSummaryAgent =
-    (configuredHeartbeatAgentId
-      ? agents.find(
-          (agent) =>
-            agent.heartbeat.enabled &&
-            agent.agentId === normalizeAgentId(configuredHeartbeatAgentId),
-        )
-      : undefined) ??
-    agents.find((agent) => agent.heartbeat.enabled) ??
-    summaryAgent;
+  const heartbeatSummaryAgent = agents.find((agent) => agent.heartbeat.enabled) ?? summaryAgent;
   const heartbeatSeconds = heartbeatSummaryAgent?.heartbeat.everyMs
     ? Math.round(heartbeatSummaryAgent.heartbeat.everyMs / 1000)
     : 0;

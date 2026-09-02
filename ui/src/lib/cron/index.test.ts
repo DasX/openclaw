@@ -245,6 +245,156 @@ function createCronJobsReloadHarness(stateOverrides: Partial<CronState> = {}) {
 }
 
 describe("cron controller", () => {
+  it.each([undefined, "alerts"])(
+    "clears explicit recipients and threads when switching to owner (account %s)",
+    async (accountId) => {
+      const completionDestination = {
+        mode: "webhook",
+        to: "https://example.test/completion",
+      } as const;
+      const failureDestination = {
+        mode: "announce",
+        channel: "telegram",
+        to: "failure-dm",
+      } as const;
+      const job = createCronJob({
+        id: "threaded-job",
+        name: "Threaded alerts",
+        delivery: {
+          mode: "announce",
+          channel: "telegram",
+          to: "group-route",
+          threadId: 73,
+          accountId,
+          directPolicy: "block",
+          bestEffort: true,
+          completionDestination,
+          failureDestination,
+        },
+      });
+      const { state, request, submit } = createCronEditHarness(job);
+      state.cronForm.deliveryTarget = "owner";
+      const update = requestPayload(await submit());
+      expect(validateCronUpdateParams(update)).toBe(true);
+      expect(requireRecord(update.patch, "update patch").delivery).toEqual({
+        mode: "announce",
+        target: "owner",
+        channel: accountId ? "telegram" : null,
+        to: null,
+        threadId: null,
+        ...(accountId ? { accountId } : {}),
+        directPolicy: "block",
+        bestEffort: true,
+        completionDestination,
+        failureDestination,
+      });
+
+      const ownerJob = createCronJob({
+        ...job,
+        delivery: {
+          mode: "announce",
+          target: "owner",
+          ...(accountId ? { channel: "telegram", accountId } : {}),
+          directPolicy: "block",
+          bestEffort: true,
+        },
+      });
+      for (const mode of ["announce", "webhook"] as const) {
+        startCronEdit(state, ownerJob);
+        Object.assign(state.cronForm, {
+          deliveryTarget: "",
+          deliveryMode: mode,
+          deliveryChannel: "telegram",
+          deliveryTo: mode === "announce" ? "chosen-recipient" : "https://example.test/notify",
+        });
+        request.mockClear();
+        const reversed = requestPayload(await submit());
+        expect(validateCronUpdateParams(reversed)).toBe(true);
+        expect(requireRecord(reversed.patch, "reverse patch").delivery).toEqual({
+          mode,
+          target: null,
+          bestEffort: true,
+          to: mode === "announce" ? "chosen-recipient" : "https://example.test/notify",
+          ...(mode === "announce"
+            ? { directPolicy: "block", channel: "telegram", ...(accountId ? { accountId } : {}) }
+            : {}),
+        });
+      }
+    },
+  );
+
+  it("retains v4 report-only monitors without offering edit or clone execution", async () => {
+    const job = createCronJob({
+      id: "legacy-report",
+      name: "Legacy monitor",
+      payload: { kind: "heartbeat" },
+    });
+    const { state, request } = createCronEditHarness(job);
+    expect(state.cronForm.payloadKind).toBe("heartbeat");
+    expect(await addCronJob(state)).toEqual({ saved: false });
+    expect(state.cronError).toContain("openclaw doctor --fix");
+    startCronClone(state, job);
+    expect(state.cronCloningJob).toBeNull();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each(["isolated", "current", "session:agent:ops:main"] as const)(
+    "edits and clears monitoring policies as ordinary job fields without changing %s execution",
+    async (sessionTarget) => {
+      const job = createCronJob({
+        id: "converted-monitor",
+        name: "Proactive check",
+        sessionTarget,
+        activeHours: { start: "22:00", end: "06:00", timezone: "Europe/Vienna" },
+        idleOnly: true,
+        payload: { kind: "agentTurn", message: "Check scratch", skipIfScratchEmpty: true },
+        delivery: { mode: "announce", target: "owner", directPolicy: "block" },
+      });
+      const { state, request, submit } = createCronEditHarness(job);
+      state.cronForm.payloadText = "Check the updated checklist";
+      const update = requestPayload(await submit());
+      expect(validateCronUpdateParams(update)).toBe(true);
+      expect(update).toMatchObject({
+        id: job.id,
+        expectedConfigRevision: job.configRevision,
+        patch: {
+          sessionTarget,
+          activeHours: job.activeHours,
+          idleOnly: true,
+          payload: {
+            kind: "agentTurn",
+            message: "Check the updated checklist",
+            skipIfScratchEmpty: true,
+          },
+          delivery: { mode: "announce", target: "owner", directPolicy: "block" },
+        },
+      });
+      expect(JSON.stringify(update)).not.toContain('"channel":"last"');
+
+      startCronEdit(state, job);
+      Object.assign(state.cronForm, {
+        activeHoursEnabled: false,
+        idleOnly: false,
+        payloadSkipIfScratchEmpty: false,
+        deliveryTarget: "",
+        deliveryDirectPolicy: "",
+      });
+      // Capture the second request, not the earlier update retained in mock history.
+      request.mockClear();
+      const cleared = requestPayload(await submit());
+      expect(validateCronUpdateParams(cleared)).toBe(true);
+      expect(cleared).toMatchObject({
+        patch: {
+          sessionTarget,
+          activeHours: null,
+          idleOnly: false,
+          payload: { skipIfScratchEmpty: false },
+          delivery: { target: null, directPolicy: null },
+        },
+      });
+    },
+  );
+
   it("collects configured model suggestions from defaults and per-agent entries", () => {
     expect(
       resolveConfiguredCronModelSuggestions({

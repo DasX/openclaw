@@ -168,6 +168,7 @@ Flags:
     - Retired QMD memory config and derived workspace cleanup; see [Migrating from QMD](/concepts/memory-builtin#migrating-from-qmd).
     - Legacy plugin manifest contract key migration (`speechProviders`, `realtimeTranscriptionProviders`, `realtimeVoiceProviders`, `mediaUnderstandingProviders`, `imageGenerationProviders`, `videoGenerationProviders`, `webFetchProviders`, `webSearchProviders` → `contracts`).
     - Legacy cron store migration (`jobId`, `schedule.cron`, top-level delivery/payload fields, payload `provider`, `notify: true` webhook fallback jobs).
+    - Heartbeat retirement: convert monitors and task blocks to ordinary jobs in place, preserve their state, then remove retired agent and channel visibility config after verification. See [Heartbeat migration](/gateway/heartbeat).
     - Legacy workspace `TOOLS.md` migration into the `## Tools` section of `AGENTS.md`, with the original archived under the state directory before removal.
     - Codex CLI runtime pin repair (`agentRuntime.id: "codex-cli"` → `"codex"`) across `agents.defaults`, `agents.entries.*`, and `models.providers.*` (including per-model entries).
     - Stale plugin config cleanup when plugins are enabled; when `plugins.enabled=false`, stale plugin references are preserved as inert containment config.
@@ -190,7 +191,7 @@ Flags:
     - Channel status warnings (probed from the running gateway).
     - Channel-specific permission checks live under `openclaw channels capabilities`; for example, Discord voice channel permissions are audited with `openclaw channels capabilities --channel discord --target channel:<channel-id>`.
     - WhatsApp responsiveness checks for degraded Gateway event-loop health with local TUI clients still running; `--fix` stops only verified local TUI clients.
-    - Codex route repair for legacy `openai-codex/*` model refs in primary models, fallbacks, image/video generation models, heartbeat/subagent/compaction overrides, hooks, channel model overrides, and session route pins; `--fix` rewrites them to `openai/*`, migrates `openai-codex:*` auth profiles/order to `openai:*`, removes stale session/whole-agent runtime pins, and lets the repaired effective route determine whether Codex is compatible.
+    - Codex route repair for legacy `openai-codex/*` model refs in primary models, fallbacks, image/video generation models, subagent/compaction overrides, legacy heartbeat model inputs, hooks, channel model overrides, and session route pins; `--fix` rewrites them to `openai/*`, migrates `openai-codex:*` auth profiles/order to `openai:*`, removes stale session/whole-agent runtime pins, and lets the repaired effective route determine whether Codex is compatible.
     - Supervisor config audit (launchd/systemd/schtasks) with optional repair.
     - Embedded proxy environment cleanup for gateway services that captured shell `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` values during install or update.
     - Gateway runtime checks (unsupported legacy Bun services, version-manager paths).
@@ -244,7 +245,13 @@ That stages grounded durable candidates into the short-term dreaming store while
 
     Doctor also warns when `plugins.allow` is non-empty and tool policy uses wildcard or plugin-owned tool entries. `tools.allow: ["*"]` only matches tools from plugins that actually load; it does not bypass the exclusive plugin allowlist.
 
-    `doctor --fix` removes `workspace: null` from `agents.entries.<id>` so normal workspace resolution can apply. It also removes invalid `heartbeat.activeHours` windows from agent entries and `agents.defaults`, preserving other heartbeat settings. Reconfigure a valid window if needed; without an explicit or inherited window, heartbeat hours are unrestricted. These repairs also apply after migrating a legacy `agents.list` roster.
+    `doctor --fix` removes `workspace: null` from `agents.entries.<id>` so normal workspace resolution can apply. These repairs also apply after migrating a legacy `agents.list` roster.
+
+    Retired `agents.defaults.heartbeat` and per-agent heartbeat settings are
+    migration inputs, not runtime configuration. Doctor resolves them before
+    converting monitors to ordinary jobs. If a legacy execution window or target
+    cannot be migrated safely, keep the recoverable input and follow the
+    reported repair guidance instead of deleting the restriction by hand.
 
   </Accordion>
   <Accordion title="2. Legacy config key migrations">
@@ -316,7 +323,7 @@ That stages grounded durable candidates into the short-term dreaming store while
     | `browser.ssrfPolicy.hostnameAllowlist`                                                           | wildcard-aware `browser.ssrfPolicy.allowedHostnames`                          |
     | sandbox browser `enableNoVnc`                                                                    | `noVncEnabled`                                                                |
     | root `media`                                                                                     | `attachments`                                                                |
-    | channel/account `heartbeat` visibility blocks                                                   | `heartbeatVisibility`                                                         |
+    | channel/account `heartbeat` or `heartbeatVisibility` blocks                                     | removed after verified conversion to ordinary job policy                      |
     | `channels.slack.identity`                                                                        | `channels.slack.postAs`                                                       |
     | root `audit`                                                                                     | `logging.audit`                                                               |
     | `gateway.nodes.skills.enabled`                                                                   | `gateway.nodes.allowSkills`                                                   |
@@ -343,7 +350,7 @@ That stages grounded durable candidates into the short-term dreaming store while
     | `agents.entries.*.memorySearch`                                                                     | `agents.entries.*.memory.search`                                               |
     | `memorySearch.provider: "auto"`                                                                  | `"openai"`                                                                    |
     | `memorySearch.store.path` (any level)                                                            | removed (memory indexes live in each agent database)                       |
-    | top-level `heartbeat`                                                                            | `agents.defaults.heartbeat` / `channels.defaults.heartbeat`                 |
+    | top-level `heartbeat`, `agents.defaults.heartbeat`, per-agent `heartbeat`                        | ordinary monitoring jobs; legacy config removed after verified migration      |
     | `plugins.openai-codex` policy ids                                                                | `plugins.openai`                                                             |
     | `tools.web.x_search.apiKey`                                                                      | `plugins.entries.xai.config.webSearch.apiKey`                               |
     | `session.maintenance.rotateBytes`, `session.parentForkMaxTokens`                                 | removed (deprecated)                                                        |
@@ -400,7 +407,7 @@ That stages grounded durable candidates into the short-term dreaming store while
   <Accordion title="2f. Codex route repair">
     Doctor checks for legacy `openai-codex/*` model refs. Native Codex harness routing uses canonical `openai/*` model refs, but the prefix alone never selects Codex. With runtime policy unset or `auto`, only an exact official HTTPS Platform Responses or ChatGPT Responses route with no authored request override is eligible. See [OpenAI implicit agent runtime](/providers/openai#implicit-agent-runtime).
 
-    In `--fix` / `--repair` mode, doctor rewrites affected default-agent and per-agent refs, including primary models, fallbacks, image/video generation models, heartbeat/subagent/compaction overrides, hooks, channel model overrides, and stale persisted session route state:
+    In `--fix` / `--repair` mode, doctor rewrites affected default-agent and per-agent refs, including primary models, fallbacks, image/video generation models, subagent/compaction overrides, legacy heartbeat model inputs, hooks, channel model overrides, and stale persisted session route state:
 
     - `openai-codex/gpt-*` becomes `openai/gpt-*`.
     - Codex intent moves to provider/model-scoped `agentRuntime.id: "codex"` entries for repaired agent model refs.
@@ -456,6 +463,33 @@ That stages grounded durable candidates into the short-term dreaming store while
     Gateway startup normalizes the runtime projection and ignores the top-level `notify` marker, but leaves persisted cron state for doctor repair. Doctor removes inert markers for jobs with no migration target (`delivery.mode` none/absent, an unusable legacy webhook target, or existing announce/chat delivery), leaving existing delivery untouched, so repeated `doctor --fix` runs no longer re-warn about the same job.
 
     On Linux, doctor also warns when the user's crontab still invokes legacy `~/.openclaw/bin/ensure-whatsapp.sh`. That host-local script is not maintained by current OpenClaw and can write false `Gateway inactive` messages to `~/.openclaw/logs/whatsapp-health.log` when cron cannot reach the systemd user bus. Remove the stale crontab entry with `crontab -e`; use `openclaw channels status --probe`, `openclaw doctor`, and `openclaw gateway status` for current health checks.
+
+  </Accordion>
+  <Accordion title="Heartbeat retirement">
+    `openclaw doctor --fix` converts existing monitor and `heartbeat-task:*`
+    rows in place to ordinary `agentTurn` jobs. It preserves job IDs, history,
+    scratch content and revisions, scratch tombstones, disabled and auto-disabled
+    state, authority, schedule anchors, and pending scheduling slots. Effective
+    legacy config is read before retirement; job policy owns monitoring after
+    conversion.
+
+    Doctor commits and verifies the canonical jobs before removing retired
+    `agents.*.heartbeat` settings, channel/account heartbeat visibility settings,
+    or legacy checklist files. Interrupted or ambiguous migrations retain
+    recoverable input and report the next repair action. Do not delete that
+    input to silence a warning.
+
+    A one-time per-agent provisioning receipt keeps restart, config reload, and
+    repeated Doctor runs from recreating a deleted default monitor or overwriting
+    edits. Meaningful pending context moves to normal session context/delivery
+    ownership; there is no separate heartbeat execution fallback.
+
+    This retirement advances shared-state schema 15 to 16 so older gateways
+    cannot silently ignore the new job policies. Agent schema 19 is unchanged;
+    `heartbeat_outcomes` remains inert until a later approved schema bump.
+    Back up state before upgrading and use a compatible backup for rollback;
+    never lower schema markers. See [Database schemas](/reference/database-schemas)
+    and [Heartbeat migration](/gateway/heartbeat).
 
   </Accordion>
   <Accordion title="3c. Session lock cleanup">
@@ -568,7 +602,7 @@ That stages grounded durable candidates into the short-term dreaming store while
 
   </Accordion>
   <Accordion title="11d. Stale channel plugin cleanup">
-    When `openclaw doctor --fix` removes a missing channel plugin, it also removes the dangling channel-scoped config that referenced that plugin: `channels.<id>` entries, heartbeat targets that named the channel, and `agents.*.models["<channel>/*"]` overrides. This prevents Gateway boot loops where the channel runtime is gone but config still asks the gateway to bind to it.
+    When `openclaw doctor --fix` removes a missing channel plugin, it also removes the dangling channel-scoped config that referenced that plugin: `channels.<id>` entries, legacy heartbeat targets that named the channel, and `agents.*.models["<channel>/*"]` overrides. This prevents Gateway boot loops where the channel runtime is gone but config still asks the gateway to bind to it.
   </Accordion>
   <Accordion title="12. Gateway auth checks (local token)">
     Doctor checks local gateway token auth readiness.

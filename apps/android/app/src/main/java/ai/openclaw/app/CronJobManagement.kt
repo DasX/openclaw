@@ -416,7 +416,7 @@ internal fun buildCronUpdateParams(
   ) { "Session target must be main, isolated, current, or session:<id>." }
   val wakeMode = edit.wakeMode.trim()
   require(wakeMode == "now" || wakeMode == "next-heartbeat") {
-    "Wake mode must be now or next-heartbeat."
+    "Choose Now or Next scheduled run."
   }
 
   val schedulePatch = buildCronSchedulePatch(original = original, edit = edit.schedule)

@@ -71,12 +71,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
     );
     const runIsolatedAgentJob = vi.fn().mockResolvedValue({ status: "ok", summary: "done" });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
       resolveDefaultAgentId: () => undefined,
       resolveSessionStoreAgentIds: () => ["worker"],
@@ -107,12 +108,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
       await saveCronStore(store.storePath, { version: 1, jobs: [job] });
       const runIsolatedAgentJob = vi.fn().mockResolvedValue({ status: "ok", summary: "done" });
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob,
         defaultAgentId: "main",
         resolveSessionStoreAgentIds: () => {
@@ -152,12 +154,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
     const sessionStorePath = path.join(path.dirname(store.storePath), "sessions", "sessions.json");
 
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       // This will throw, simulating a failure during job execution.
       runIsolatedAgentJob: vi.fn().mockRejectedValue(new Error("gateway down")),
       defaultAgentId: "main",
@@ -216,12 +219,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
       { sessionId: "worker-expired", updatedAt: now - 25 * 3_600_000 },
     );
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn().mockResolvedValue({ status: "ok", summary: "done" }),
       defaultAgentId: "main",
       resolveSessionStorePath: (agentId) => {
@@ -263,12 +267,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
 
     const resolvedAgentIds: string[] = [];
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       resolveDefaultAgentId: () => "ops",
       resolveSessionStorePath: (agentId) => {
@@ -309,12 +314,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
       );
     }
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn().mockResolvedValue({ status: "ok", summary: "done" }),
       defaultAgentId: "main",
       resolveSessionStoreAgentIds: () => ["main", "worker"],
@@ -369,12 +375,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
       return sessionStorePath;
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       resolveDefaultAgentId: () => undefined,
       resolveSessionStoreAgentIds: () => [liveAgentId, unavailableAgentId],
@@ -414,12 +421,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
     );
 
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       defaultAgentId: "ops",
       resolveSessionStoreAgentIds: () => ["retired"],
@@ -455,12 +463,13 @@ describe("CronService - session reaper runs in finally block (#31946)", () => {
     );
 
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       defaultAgentId: "agent-default",
       sessionStorePath,

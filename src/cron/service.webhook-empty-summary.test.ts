@@ -20,11 +20,12 @@ describe("cron webhook optional output", () => {
       const sendCronWebhook = vi.fn(async () => {});
       const events: CronEvent[] = [];
       const cron = new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: logger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({
           status,
           summary,

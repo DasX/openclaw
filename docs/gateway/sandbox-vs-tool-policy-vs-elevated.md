@@ -104,7 +104,7 @@ Available groups:
 | `group:memory`     | `memory_search`, `memory_get`                                                                                                                                                                                                                            |
 | `group:web`        | `web_search`, `x_search`, `web_fetch`                                                                                                                                                                                                                    |
 | `group:ui`         | `browser`, `screen`, `terminal`, `canvas`, `progress_card`, `show_widget`                                                                                                                                                                                |
-| `group:automation` | `heartbeat_respond`, `cron`, `gateway`                                                                                                                                                                                                                   |
+| `group:automation` | `automations`, `gateway`                                                                                                                                                                                                                                 |
 | `group:messaging`  | `message`                                                                                                                                                                                                                                                |
 | `group:nodes`      | `nodes`, `computer`                                                                                                                                                                                                                                      |
 | `group:agents`     | `agents_list`, `get_goal`, `create_goal`, `update_goal`, `progress_card`, `ask_user`, `skill_workshop`                                                                                                                                                   |
@@ -113,6 +113,10 @@ Available groups:
 | `group:plugins`    | all loaded plugin-owned tools, including configured MCP servers exposed through `bundle-mcp`                                                                                                                                                             |
 
 For read-only agents, deny `group:runtime` as well as mutating filesystem tools unless sandbox filesystem policy or a separate host boundary enforces the read-only constraint.
+
+`automations` is the scheduler tool; existing policy entries named `cron` remain
+accepted aliases. Monitoring jobs use this same tool and policy group, not a
+separate heartbeat tool.
 
 For sandboxed MCP servers, the sandbox tool policy is a second allow gate. If `mcp.servers` is configured but sandboxed turns only show built-in tools, add `bundle-mcp`, `group:plugins`, or a server-prefixed MCP tool name/glob such as `outlook__send_mail` or `outlook__*` to `tools.sandbox.tools.alsoAllow`, then restart/reload the gateway and recapture the tool list. Server globs use the provider-safe MCP server prefix: non-`[A-Za-z0-9_-]` characters become `-`, names that do not start with a letter get an `mcp-` prefix, and long or duplicate prefixes may be truncated or suffixed.
 

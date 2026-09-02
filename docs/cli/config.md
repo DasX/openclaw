@@ -32,7 +32,7 @@ openclaw config schema --json
 openclaw config get browser.executablePath
 openclaw config set browser.executablePath "/usr/bin/google-chrome"
 openclaw config set browser.profiles.work.executablePath "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-openclaw config set agents.defaults.heartbeat.every "2h"
+openclaw config set agents.defaults.userTimezone "America/Chicago"
 openclaw config set logging.audit.executionIdentity true
 openclaw config set 'agents.entries.main.tools.exec.node' "node-id-or-name"
 openclaw config set agents.defaults.models '{"openai/gpt-5.4":{}}' --strict-json --merge
@@ -156,12 +156,17 @@ the provider docs and verify behavior on the selected runtime and provider.
 Values parse as JSON5 when possible; otherwise they are treated as raw strings. Use `--strict-json` to require standard JSON with no string fallback (JSON5-only syntax such as comments, trailing commas, or unquoted keys is then rejected). `--json` is a legacy alias for `--strict-json` on `config set`.
 
 ```bash
-openclaw config set agents.defaults.heartbeat.every "0m"
+openclaw config set agents.defaults.typingMode "never"
 openclaw config set gateway.port 19001 --strict-json
 openclaw config set channels.whatsapp.groups '["*"]' --strict-json
 ```
 
 `config get <path> --json` prints the redacted value as JSON instead of terminal-formatted text.
+
+Periodic check-ins are ordinary cron jobs, not `agents.*.heartbeat` config.
+Use [the cron CLI](/cli/cron) to edit their schedules, prompts, and delivery.
+Run `openclaw doctor --fix` to migrate legacy heartbeat settings before editing
+the converted jobs; see [Heartbeat migration](/gateway/heartbeat).
 
 When a write changes `agents.defaults.model` or a per-agent `agents.entries.*.model`, OpenClaw resolves each changed primary or fallback through the configured catalogs and the selected provider's model resolver before writing. Provider-supported exact `provider/model` pins are accepted even when absent from the curated picker; validation does not replace the selected model. Unknown model references are rejected without changing the active config. Run `openclaw models list` to browse the picker, or check the provider's documentation for an exact model ID. Successful validation does not prove that your account can call the model.
 

@@ -23,11 +23,15 @@ Local onboarding defaults new local configs to `tools.profile: "coding"` when un
 | Profile     | Includes                                                                                                                                                                                                                                                |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `minimal`   | `session_status` only                                                                                                                                                                                                                                   |
-| `coding`    | `group:fs`, `group:runtime`, `group:web`, `group:sessions`, `group:memory`, `cron`, `get_goal`, `create_goal`, `update_goal`, `progress_card`, `ask_user`, `skill_workshop`, `image`, `image_generate`, `music_generate`, `video_generate`              |
+| `coding`    | `group:fs`, `group:runtime`, `group:web`, `group:sessions`, `group:memory`, `automations`, `get_goal`, `create_goal`, `update_goal`, `progress_card`, `ask_user`, `skill_workshop`, `image`, `image_generate`, `music_generate`, `video_generate`       |
 | `messaging` | `group:messaging`, `sessions`, `sessions_list`, `sessions_history`, `sessions_search`, `conversations_list`, `conversations_send`, `conversations_turn`, `sessions_send`, `sessions_spawn`, `sessions_yield`, `subagents`, `session_status`, `ask_user` |
 | `full`      | No restriction (same as unset)                                                                                                                                                                                                                          |
 
 `coding` and `messaging` also implicitly allow `bundle-mcp` (configured MCP servers).
+
+The scheduler tool is named `automations`; `cron` remains an accepted policy
+alias. Its self-scoped scratch and result actions replace `heartbeat_respond`.
+See [Cron jobs](/automation/cron-jobs) for job ownership and quiet completion.
 
 ### Tool groups
 
@@ -39,7 +43,7 @@ Local onboarding defaults new local configs to `tools.profile: "coding"` when un
 | `group:memory`     | `memory_search`, `memory_get`                                                                                                                                                                                                                            |
 | `group:web`        | `web_search`, `x_search`, `web_fetch`                                                                                                                                                                                                                    |
 | `group:ui`         | `browser`, `screen`, `dashboard`, `terminal`, `portal`, `canvas`, `show_widget`                                                                                                                                                                          |
-| `group:automation` | `heartbeat_respond`, `cron`, `gateway`                                                                                                                                                                                                                   |
+| `group:automation` | `automations`, `gateway`                                                                                                                                                                                                                                 |
 | `group:messaging`  | `message`                                                                                                                                                                                                                                                |
 | `group:nodes`      | `nodes`, `computer`                                                                                                                                                                                                                                      |
 | `group:agents`     | `agents_list`, `get_goal`, `create_goal`, `update_goal`, `progress_card`, `ask_user`, `skill_workshop`                                                                                                                                                   |
@@ -735,7 +739,7 @@ Interactive custom-provider onboarding infers image input for known vision-model
 
   </Accordion>
   <Accordion title="Local models (llama.cpp / llama-server)">
-    The canonical `llama-cpp` provider applies the llama.cpp schema cleaner in managed and existing-server modes. If you instead point a **custom provider ID** at a remote `llama-server` (or another OpenAI-compatible llama.cpp endpoint), set `compat.toolSchemaProfile: "llamacpp"` on each model whose chat template compiles tool arguments into GBNF. The profile removes `pattern` and `maxLength` values at or above 2000, covering the `cron` tool's `trigger.script` limit of 65536. It is a targeted mitigation, not complete compatibility for every JSON Schema constraint or `minLength`.
+    The canonical `llama-cpp` provider applies the llama.cpp schema cleaner in managed and existing-server modes. If you instead point a **custom provider ID** at a remote `llama-server` (or another OpenAI-compatible llama.cpp endpoint), set `compat.toolSchemaProfile: "llamacpp"` on each model whose chat template compiles tool arguments into GBNF. The profile removes `pattern` and `maxLength` values at or above 2000, covering the `automations` tool's `trigger.script` limit of 65536. It is a targeted mitigation, not complete compatibility for every JSON Schema constraint or `minLength`.
 
     ```json5
     {

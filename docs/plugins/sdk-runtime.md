@@ -925,20 +925,98 @@ snapshots; OpenClaw owns all persistence and lifecycle coordination.
 
     ```typescript
     const accepted = api.runtime.system.enqueueSystemEvent(text, options);
-    api.runtime.system.requestHeartbeat({
-      source: "other",
-      intent: "event",
-      reason: "plugin-event",
-    });
-    api.runtime.system.requestHeartbeatNow({ reason: "plugin-event" }); // Deprecated compatibility alias.
-    const heartbeatResult = await api.runtime.system.runHeartbeatOnce({
-      reason: "plugin-triggered-check",
-    });
     const output = await api.runtime.system.runCommandWithTimeout(cmd, args, opts);
     const hint = api.runtime.system.formatNativeDependencyHint(pkg);
     ```
 
-    `runHeartbeatOnce(...)` runs a single heartbeat cycle immediately, bypassing the normal coalesce timer. Delivery defaults to the configured operator DM (`commands.ownerAllowFrom`, then channel `allowFrom`); pass `{ heartbeat: { target: "none" } }` for an internal-only run.
+    Use `captureSessionEventTarget` before asynchronous plugin work, then
+    `enqueueSessionEvent` to run its completion through that destination's normal
+    session queue. `enqueueSystemEvent` only stores context; it does not start a turn.
+
+    ```typescript
+    import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
+
+    function startFollowup(
+      runtime: PluginRuntime,
+      agentId: string,
+      sessionKey: string,
+      work: (signal: AbortSignal) => Promise<string>,
+    ) {
+      // Capture synchronously: never recapture a reset/replaced session after work.
+      const expectedTarget = runtime.system.captureSessionEventTarget(agentId, sessionKey);
+      const controller = new AbortController();
+      let receipt: ReturnType<PluginRuntime["system"]["enqueueSessionEvent"]> | undefined;
+      const settled = (async () => {
+        try {
+          const text = await work(controller.signal);
+          controller.signal.throwIfAborted();
+          receipt = runtime.system.enqueueSessionEvent(text, {
+            agentId,
+            sessionKey,
+            expectedTarget,
+            abortSignal: controller.signal,
+          });
+          const outcome = await receipt.settled;
+          if (outcome.status === "failed") {
+            runtime.logging.getChildLogger({ plugin: "example" }).warn(
+              outcome.error ?? "Session follow-up failed",
+            );
+          }
+          // completed means execution settled; delivered separately records a send.
+          return outcome;
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            runtime.logging.getChildLogger({ plugin: "example" }).error(String(error));
+          }
+          throw error;
+        }
+      })();
+      return {
+        settled, // The caller must await/catch this promise, including cancellation.
+        cancel: () => {
+          controller.abort();
+          receipt?.cancel();
+        },
+      };
+    }
+    ```
+
+    Call `cancel()` on plugin shutdown or when the producing operation is no
+    longer needed, and await settlement before releasing its resources. The
+    receipt cancels that exact occurrence, not every pending event. Text must
+    contain 1–4000 characters. A target is an opaque process-local handle: retain
+    the original object, never clone or serialize it. A copied handle, reset
+    session, or retired lifecycle is rejected; retry only as new work authorized
+    against the current destination. The captured route is retained unless you
+    supply an explicit `deliveryContext`. Do not pass host scheduler, admission,
+    or occurrence fields; the runtime filters them out.
+
+    Scheduled monitoring belongs to ordinary [cron jobs](/automation/cron-jobs).
+    Immediate event follow-ups use ordinary session admission and do not depend
+    on cron or monitoring being enabled. Enqueueing context alone is not proof
+    that a follow-up ran or was delivered.
+
+    `requestHeartbeat(...)`, `requestHeartbeatNow(...)`, and
+    `runHeartbeatOnce(...)` remain deprecated external SDK boundary adapters.
+    Their legacy names do not select a separate heartbeat execution engine or
+    runtime fallback. Do not use them for new monitoring integrations; use
+    ordinary job/session ownership and delivery policy. Existing callers keep
+    their supported argument and result contracts through the deprecation
+    window, including the legacy internal-only `heartbeat.target: "none"`
+    input. See [Heartbeat SDK migration](/plugins/sdk-migration#heartbeat-retirement).
+
+    A per-call target changes only that run's execution snapshot, not the stored
+    job. Configured active hours, idle requirements, tool limits, owner-only
+    delivery, account selection, and direct-message restrictions still apply.
+    Approval checks use the effective execution definition; changing its delivery
+    does not inherit a standing grant for a different definition.
+
+    SDK `event` intent enters ordinary session admission immediately; it is not
+    the wire `next-heartbeat` wake mode, which retains its explicit deferral
+    contract. Retained runtime methods and captured targets belong to their
+    original plugin registration and Gateway lifetime. Callbacks registered
+    before first activation work after activation, but cannot regain authority
+    after replacement, retirement, or reactivation.
 
     `runCommandWithTimeout(...)` returns captured `stdout` and `stderr`, optional
     truncation counts, `code`, `signal`, `killed`, `termination`, and

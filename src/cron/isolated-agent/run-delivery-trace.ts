@@ -130,7 +130,11 @@ export function buildCronDeliveryTrace(params: {
     accountId: params.deliveryPlan.accountId,
     threadId: params.deliveryPlan.threadId,
     source:
-      params.deliveryPlan.channel === "last" || !params.deliveryPlan.channel ? "last" : "explicit",
+      params.deliveryPlan.target === "owner"
+        ? "owner"
+        : params.deliveryPlan.channel === "last" || !params.deliveryPlan.channel
+          ? "last"
+          : "explicit",
   });
   const includeResolved =
     params.deliveryPlan.mode !== "none" || hasExplicitCronDeliveryTarget(params.deliveryPlan);
@@ -274,6 +278,8 @@ export async function resolveCronDeliveryContext(params: {
   }
   const { resolveDeliveryTarget } = await loadCronDeliveryRuntime();
   const resolvedDelivery = await resolveDeliveryTarget(params.cfg, params.agentId, {
+    target: deliveryPlan.target,
+    directPolicy: deliveryPlan.directPolicy,
     channel: deliveryPlan.channel ?? "last",
     to: deliveryPlan.to,
     threadId: deliveryPlan.threadId,

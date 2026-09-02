@@ -17,7 +17,6 @@ import {
   isHostScopedAgentToolActive,
   runWithAgentRingZeroTools,
 } from "../agent-tools.ring-zero-context.js";
-import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
 import type { EmbeddedRunAttemptInternalParams } from "../embedded-agent-runner/run/internal-params.js";
 import type {
@@ -422,7 +421,7 @@ async function runSelectedAgentHarnessAttempt(
     });
     await drainPendingContextEngineTurnsBeforeRun({
       admission: internalParams.userTurnTranscriptRecorder?.getAdmissionReceipt(),
-      isHeartbeat: isHeartbeatLifecycleRunKind(internalParams.bootstrapContextRunKind),
+
       lease: internalParams.contextEngineLogicalTurnLease,
       recorder: internalParams.userTurnTranscriptRecorder,
       sessionTarget: internalParams.sessionTarget,
@@ -506,7 +505,6 @@ async function runSelectedAgentHarnessAttempt(
           result.terminal.aborted === true),
       yieldAborted:
         result.terminal.kind === "aborted" && result.terminal.source === "yield_cleanup",
-      isHeartbeat: isHeartbeatLifecycleRunKind(internalParams.bootstrapContextRunKind),
     });
   }
   const { contextEngineTerminalAnchor: _contextEngineTerminalAnchor, ...publicResult } = result;

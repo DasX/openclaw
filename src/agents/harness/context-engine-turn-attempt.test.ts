@@ -113,7 +113,6 @@ async function createAcceptedTurnFixture(params: {
     admission,
     database,
     engineId: "test",
-    isHeartbeat: false,
   });
   return {
     admission,
@@ -273,7 +272,6 @@ describe("accepted context-engine turn finalization", () => {
       admission,
       database,
       engineId: "test",
-      isHeartbeat: false,
     });
     const baseFacts = {
       boundary: { admission, terminal: terminal.anchor },
@@ -384,7 +382,6 @@ describe("accepted context-engine turn finalization", () => {
       admission: siblingAdmission,
       database,
       engineId: "test",
-      isHeartbeat: false,
     });
     warn.mockClear();
     await finalizeAcceptedContextEngineTurn({
@@ -418,7 +415,6 @@ describe("accepted context-engine turn finalization", () => {
         admission: rejectedAdmission,
         database,
         engineId: "test",
-        isHeartbeat: false,
       });
       await finalizeAcceptedContextEngineTurn({
         facts: {

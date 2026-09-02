@@ -3,12 +3,18 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { registerLegacyContextEngine } from "../../context-engine/legacy.registration.js";
 import {
   registerContextEngineForOwner,
   resolveLogicalTurnContextEngines,
 } from "../../context-engine/registry.js";
 import type { ContextEngineRuntimeContext } from "../../context-engine/types.js";
+import { loadDeliveryQueueEntries } from "../../infra/delivery-queue-sqlite.js";
+import {
+  SessionDeliveryDeferredError,
+  type QueuedSessionDelivery,
+} from "../../infra/session-delivery-queue-storage.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../../infra/system-events.js";
 import {
   enqueueCommandInLane,
@@ -104,8 +110,13 @@ function expectRecordFields(record: Record<string, unknown>, expected: Record<st
   }
 }
 
-function expectSystemEventContaining(sessionKey: string, text: string) {
-  expect(peekSystemEvents(sessionKey).join("\n")).toContain(text);
+function expectTaskHandoffContaining(sessionKey: string, text: string) {
+  const events = (loadDeliveryQueueEntries("session") as QueuedSessionDelivery[]).filter(
+    (entry): entry is Extract<QueuedSessionDelivery, { kind: "systemEvent" }> =>
+      entry.kind === "systemEvent" && entry.source === "task" && entry.sessionKey === sessionKey,
+  );
+  expect(events.map((entry) => entry.text).join("\n")).toContain(text);
+  expect(events.every((entry) => entry.expectedTarget?.sessionKey === sessionKey)).toBe(true);
 }
 
 vi.mock("./context-engine-capabilities.js", () => ({
@@ -139,6 +150,13 @@ async function loadFreshContextEngineMaintenanceModuleForTest() {
 describe("createDeferredTurnMaintenanceAbortSignal", () => {
   beforeEach(async () => {
     await loadFreshContextEngineMaintenanceModuleForTest();
+    setRuntimeConfigSnapshot({ agents: { entries: { main: {} } } });
+    setTaskRegistryDeliveryRuntimeForTests({
+      sendMessage: vi.fn(),
+      deliverTaskSessionEvent: async () => {
+        throw new SessionDeliveryDeferredError("Session busy");
+      },
+    });
   });
 
   it("aborts on termination signals and unregisters listeners", () => {
@@ -1651,6 +1669,9 @@ describe("runContextEngineMaintenance", () => {
         const sendMessageMock = vi.fn();
         setTaskRegistryDeliveryRuntimeForTests({
           sendMessage: sendMessageMock,
+          deliverTaskSessionEvent: vi.fn(async () => {
+            throw new Error("unexpected maintenance notification");
+          }),
         });
 
         const sessionKey = "agent:main:session-fast";
@@ -1757,7 +1778,7 @@ describe("runContextEngineMaintenance", () => {
         await waitForAssertion(() => expect(maintain).toHaveBeenCalledTimes(1));
         await vi.advanceTimersByTimeAsync(11_000);
         await waitForAssertion(() =>
-          expectSystemEventContaining(
+          expectTaskHandoffContaining(
             sessionKey,
             "Background task update: Context engine turn maintenance.",
           ),
@@ -1776,7 +1797,7 @@ describe("runContextEngineMaintenance", () => {
         }
         releaseMaintenance();
         await waitForAssertion(() =>
-          expectSystemEventContaining(
+          expectTaskHandoffContaining(
             sessionKey,
             "Background task done: Context engine turn maintenance",
           ),
@@ -1841,7 +1862,7 @@ describe("runContextEngineMaintenance", () => {
         await waitForAssertion(() => expect(backgroundEngine["maintain"]).toHaveBeenCalledTimes(1));
         process.emit("SIGTERM", "SIGTERM");
         await waitForAssertion(() =>
-          expectSystemEventContaining(
+          expectTaskHandoffContaining(
             sessionKey,
             "Background task failed: Context engine turn maintenance",
           ),

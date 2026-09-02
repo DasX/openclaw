@@ -22,7 +22,6 @@ const restartPlan = {
   reloadHooks: false,
   restartGmailWatcher: false,
   restartCron: false,
-  restartHeartbeat: false,
   restartHealthMonitor: false,
   reloadPlugins: false,
   restartChannels: new Set(),

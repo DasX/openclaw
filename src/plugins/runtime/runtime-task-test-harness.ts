@@ -12,6 +12,7 @@ import {
 
 const runtimeTaskMocks = vi.hoisted(() => ({
   sendMessageMock: vi.fn(),
+  deliverTaskSessionEventMock: vi.fn(),
   cancelSessionMock: vi.fn(),
   killSubagentRunAdminMock: vi.fn(),
 }));
@@ -23,6 +24,7 @@ export function getRuntimeTaskMocks() {
 export function installRuntimeTaskDeliveryMock(): void {
   setTaskRegistryDeliveryRuntimeForTests({
     sendMessage: runtimeTaskMocks.sendMessageMock,
+    deliverTaskSessionEvent: runtimeTaskMocks.deliverTaskSessionEventMock,
   });
   setTaskRegistryControlRuntimeForTests({
     cancelActiveCronTaskRun: () => false,

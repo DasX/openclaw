@@ -267,28 +267,28 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
   });
 
   it.each([
-    "HEARTBEAT_OK",
-    "**HEARTBEAT_OK**",
-    "<b>HEARTBEAT_OK</b>",
-    "<thinking>Check the schedule.</thinking>\nHEARTBEAT_OK",
-    '{"action":"HEARTBEAT_OK"}',
-    '"HEARTBEAT_OK"',
+    "NO_REPLY",
+    "**NO_REPLY**",
+    "<b>NO_REPLY</b>",
+    "<thinking>Check the schedule.</thinking>\nNO_REPLY",
+    '{"action":"NO_REPLY"}',
+    '"NO_REPLY"',
   ])(
     "waits for the accepted child instead of treating %s as its final reply",
-    async (heartbeatReply) => {
-      const heartbeatPayload = { text: heartbeatReply };
+    async (silentReply) => {
+      const silentPayload = { text: silentReply };
       mockAgentRun({
-        payloads: [heartbeatPayload],
+        payloads: [silentPayload],
         usage: { input: 10, output: 1 },
         acceptedSessionSpawns: [{ runId: "run-child", childSessionKey: "agent:default:child" }],
       });
       mockAnnounceOutcome({
-        summary: heartbeatPayload.text,
-        outputText: heartbeatPayload.text,
-        synthesizedText: heartbeatPayload.text,
-        deliveryPayload: heartbeatPayload,
-        deliveryPayloads: [heartbeatPayload],
-        deliveryDisposition: { kind: "heartbeat", controlOnly: true },
+        summary: silentPayload.text,
+        outputText: silentPayload.text,
+        synthesizedText: silentPayload.text,
+        deliveryPayload: silentPayload,
+        deliveryPayloads: [silentPayload],
+        deliveryDisposition: { kind: "silent", controlOnly: true },
       });
 
       const result = await runCronIsolatedAgentTurn(makeIsolatedAgentParamsFixture());
@@ -311,12 +311,12 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
     {
       name: "a substantive sibling payload",
       parentReply: "Checked inbox and calendar.",
-      payloads: [{ text: "Checked inbox and calendar." }, { text: "HEARTBEAT_OK" }],
+      payloads: [{ text: "Checked inbox and calendar." }, { text: "NO_REPLY" }],
     },
     {
-      name: "substantive text in the heartbeat payload",
-      parentReply: "HEARTBEAT_OK child completed reminder",
-      payloads: [{ text: "HEARTBEAT_OK child completed reminder" }],
+      name: "substantive text in the silent payload",
+      parentReply: "NO_REPLY child completed reminder",
+      payloads: [{ text: "NO_REPLY child completed reminder" }],
     },
   ])(
     "preserves $name instead of treating an accepted child as the only completion",
@@ -332,7 +332,7 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
         synthesizedText: parentReply,
         deliveryPayload: payloads.at(-1),
         deliveryPayloads: payloads,
-        deliveryDisposition: { kind: "heartbeat", controlOnly: false },
+        deliveryDisposition: { kind: "silent", controlOnly: false },
       });
 
       const result = await runCronIsolatedAgentTurn(makeIsolatedAgentParamsFixture());
@@ -340,7 +340,7 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
       expect(dispatchCronDeliveryMock).toHaveBeenCalledWith(
         expect.objectContaining({
           spawnOnlyHandoff: false,
-          skipDelivery: "heartbeat",
+          skipDelivery: "silent",
           deliveryPayloads: payloads,
           synthesizedText: parentReply,
           summary: parentReply,
@@ -352,21 +352,21 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
     },
   );
 
-  it("preserves a heartbeat-only accepted child handoff failure as a cron error", async () => {
-    const heartbeatPayload = { text: "HEARTBEAT_OK" };
+  it("preserves a silent-only accepted child handoff failure as a cron error", async () => {
+    const silentPayload = { text: "NO_REPLY" };
     const error = "cron child-session handoff timed out before producing a final assistant payload";
     mockAgentRun({
-      payloads: [heartbeatPayload],
+      payloads: [silentPayload],
       usage: { input: 10, output: 1 },
       acceptedSessionSpawns: [{ runId: "run-child", childSessionKey: "agent:default:child" }],
     });
     mockAnnounceOutcome({
-      summary: heartbeatPayload.text,
-      outputText: heartbeatPayload.text,
-      synthesizedText: heartbeatPayload.text,
-      deliveryPayload: heartbeatPayload,
-      deliveryPayloads: [heartbeatPayload],
-      deliveryDisposition: { kind: "heartbeat", controlOnly: true },
+      summary: silentPayload.text,
+      outputText: silentPayload.text,
+      synthesizedText: silentPayload.text,
+      deliveryPayload: silentPayload,
+      deliveryPayloads: [silentPayload],
+      deliveryDisposition: { kind: "silent", controlOnly: true },
     });
     mockDeliveryFailure(error);
 
@@ -375,8 +375,8 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
     expect(result.status).toBe("error");
     expect(result.error).toBe(error);
     expect(result.delivered).toBe(false);
-    expect(result.summary).not.toBe(heartbeatPayload.text);
-    expect(result.outputText).not.toBe(heartbeatPayload.text);
+    expect(result.summary).not.toBe(silentPayload.text);
+    expect(result.outputText).not.toBe(silentPayload.text);
   });
 
   it("preserves structured-parent delivery failures after accepting a child", async () => {

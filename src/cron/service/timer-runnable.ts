@@ -1,4 +1,5 @@
 import { parseAbsoluteTimeMs } from "../parse.js";
+import { isProactiveJobCutoverPending } from "../proactive-job-receipt.js";
 import type { CronJob } from "../types.js";
 import {
   computeJobPreviousRunAtOrBeforeMs,
@@ -58,7 +59,10 @@ export function isRunnableJob(params: {
   if (!job.state) {
     job.state = {};
   }
-  if (!isJobEnabled(job)) {
+  if (isProactiveJobCutoverPending(params.state.deps.storePath, job) || !isJobEnabled(job)) {
+    return false;
+  }
+  if (job.idleOnly && params.state.deps.isExecutionIdle?.(job) !== true) {
     return false;
   }
   if (params.skipJobIds?.has(job.id)) {

@@ -28,8 +28,8 @@ shared `message` tool. Your plugin owns:
   chats, thread ids, and parent fallbacks
 - **Outbound** - sending text, media, and polls to the platform
 - **Threading** - how replies are threaded
-- **Heartbeat typing** - optional typing/busy signals for heartbeat delivery
-  targets
+- **Typing and busy signals** - transport-specific indicators within the shared
+  reply and delivery lifecycle
 
 Core owns the shared message tool, prompt wiring, the outer session-key shape,
 generic `:thread:` bookkeeping, and dispatch.
@@ -292,11 +292,16 @@ removal date; removal waits for external channel-plugin adoption.
 
 ### Typing indicators
 
-If your channel supports typing indicators outside inbound replies, expose
-`heartbeat.sendTyping(...)` on the channel plugin. Core calls it with the
-resolved heartbeat delivery target before the heartbeat model run starts and
-uses the shared typing keepalive/cleanup lifecycle. Add
-`heartbeat.clearTyping(...)` when the platform needs an explicit stop signal.
+Keep typing indicators in the shared reply and outbound delivery lifecycle.
+Scheduled monitoring uses ordinary cron jobs; it does not have a separate
+heartbeat model run or typing lifecycle.
+
+The existing `heartbeat.sendTyping(...)` and `heartbeat.clearTyping(...)`
+channel SDK hooks remain deprecated boundary adapters for older plugins.
+Do not introduce them in new code or invoke heartbeat-only hooks for every cron
+job. A platform that requires an explicit stop signal must still clean up its
+typing indicator when the shared lifecycle settles. See
+[Heartbeat migration](/gateway/heartbeat) for the compatibility boundary.
 
 ### Media source params
 

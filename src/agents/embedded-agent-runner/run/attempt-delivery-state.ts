@@ -11,7 +11,6 @@ export function copyAttemptDeliveryState(attempt: EmbeddedRunAttemptResult) {
     messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
     messagingToolSentTargets: attempt.messagingToolSentTargets,
     messagingToolSourceReplyPayloads: attempt.messagingToolSourceReplyPayloads,
-    heartbeatToolResponse: attempt.heartbeatToolResponse,
     successfulCronAdds: attempt.successfulCronAdds,
     acceptedSessionSpawns: attempt.acceptedSessionSpawns,
   };

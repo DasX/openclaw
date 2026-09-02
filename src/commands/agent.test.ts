@@ -104,11 +104,7 @@ vi.mock("../auto-reply/reply/session-stable-reply-mode.js", () => ({
 vi.mock("../auto-reply/reply/source-reply-delivery-mode.js", () => ({
   // Source-reply policy has focused owner coverage. Command preparation only
   // needs to distinguish synthetic turns before forwarding stable facts.
-  isSyntheticSourceReplyTurn: (params: {
-    inputProvenance?: { kind?: string };
-    isHeartbeat?: boolean;
-  }) =>
-    params.isHeartbeat === true ||
+  isSyntheticSourceReplyTurn: (params: { inputProvenance?: { kind?: string } }) =>
     params.inputProvenance?.kind === "inter_session" ||
     params.inputProvenance?.kind === "internal_system",
 }));

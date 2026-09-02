@@ -96,13 +96,13 @@ describe("openclaw-tools progress_card gating", () => {
         transcripts: { enabled: true },
       } as OpenClawConfig,
       cwd: "/repo",
-      enableHeartbeatTool: true,
       taskSuggestionDeliveryMode: "gateway",
     });
 
     expect(
       emittedNames.filter((name) => resolveCoreToolFactoryFamily(name) !== "openclaw"),
     ).toEqual([]);
+    expect(emittedNames).not.toContain("heartbeat_respond");
   });
 
   it("enables progress_card by default", () => {

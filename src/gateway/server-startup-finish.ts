@@ -394,7 +394,7 @@ export async function finishGatewayStartup(params: {
     getState: kernel.getReloadState,
     setState: (nextState) => {
       kernel.setReloadHookState(nextState);
-      kernel.swapHeartbeatRunner(nextState.heartbeatRunner);
+      kernel.swapSessionServices(nextState.sessionServices);
       const previousCronState = kernel.swapCronState(nextState.cronState);
       kernel.setChannelHealthMonitor(nextState.channelHealthMonitor);
       if (previousCronState !== nextState.cronState) {

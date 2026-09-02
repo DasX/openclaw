@@ -610,7 +610,7 @@ describe("Codex app-server dynamic tool build", () => {
       "tool_search_code",
       "web_search",
       "message",
-      "heartbeat_respond",
+      "automations",
       "sessions_spawn",
     ].map((name) => ({ name }));
 
@@ -618,7 +618,7 @@ describe("Codex app-server dynamic tool build", () => {
       "progress_card",
       "web_search",
       "message",
-      "heartbeat_respond",
+      "automations",
       "sessions_spawn",
     ]);
   });
@@ -2311,21 +2311,17 @@ describe("Codex app-server dynamic tool build", () => {
     runtimePlan.tools.normalize = planNormalize as typeof runtimePlan.tools.normalize;
     params.runtimePlan = runtimePlan;
     const messageTool = createRuntimeDynamicTool("message");
-    const heartbeatTool = createRuntimeDynamicTool("heartbeat_respond");
+    const automationTool = createRuntimeDynamicTool("automations");
     const invalidTool = {
       ...createRuntimeDynamicTool("invalid_registered_tool"),
       parameters: { type: "array", items: { type: "string" } },
     };
-    setOpenClawCodingToolsFactoryForTests((options) => [
-      messageTool,
-      ...(options?.enableHeartbeatTool === true ? [heartbeatTool, invalidTool] : []),
-    ]);
+    setOpenClawCodingToolsFactoryForTests(() => [messageTool, automationTool, invalidTool]);
 
     const turnTools = await buildDynamicToolsForTest(params, workspaceDir, {
       sandbox: null as never,
     });
     const registeredTools = await buildDynamicToolsForTest(params, workspaceDir, {
-      forceHeartbeatTool: true,
       ignoreDisableMessageTool: true,
       ignoreRuntimePlan: true,
       sandbox: null as never,
@@ -2343,12 +2339,12 @@ describe("Codex app-server dynamic tool build", () => {
     expect(hoisted.normalizeAgentRuntimeTools.mock.calls[1]?.[0]).not.toHaveProperty(
       "runtimeHandle",
     );
-    expect(turnTools.map((tool) => tool.name)).toEqual(["message"]);
+    expect(turnTools.map((tool) => tool.name)).toEqual(["message", "automations"]);
     expect(turnTools[0]?.description).toBe(`turn:${messageTool.description}`);
-    expect(registeredTools.map((tool) => tool.name)).toEqual(["message", "heartbeat_respond"]);
+    expect(registeredTools.map((tool) => tool.name)).toEqual(["message", "automations"]);
     expect(registeredTools.map((tool) => tool.description)).toEqual([
       messageTool.description,
-      heartbeatTool.description,
+      automationTool.description,
     ]);
     expect(hoisted.resolveWebSearchToolPolicy).not.toHaveBeenCalled();
   });

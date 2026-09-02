@@ -1,5 +1,6 @@
 import { markCronJobActive } from "../active-jobs.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { isProactiveJobCutoverPending } from "../proactive-job-receipt.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import {
   adjudicateActiveCronRunReceiptInDatabase,
@@ -265,6 +266,7 @@ export async function persistQueuedCronRunReservations(params: {
             if (
               !job ||
               !planned ||
+              isProactiveJobCutoverPending(params.state.deps.storePath, job, database) ||
               job.enabled !== planned.enabled ||
               (!params.immediateJobIds?.has(jobId) &&
                 job.state.nextRunAtMs !== planned.state.nextRunAtMs) ||
@@ -364,6 +366,7 @@ export async function activateQueuedCronRun(params: {
   state: CronServiceState;
   job: CronJob;
   reservationIdentity: object;
+  commitGuard?: () => void;
   onUnavailable?: () => void;
   onUnavailableRollbackError?: () => Promise<void>;
 }): Promise<
@@ -392,9 +395,13 @@ export async function activateQueuedCronRun(params: {
       jobIds: [job.id],
       operationLabel: "cron.run-activation",
       mutate: ({ database, jobs }) => {
+        params.commitGuard?.();
         const current = jobs.get(job.id);
         const markerAtMs = state.queuedRunReservationsByJobId.get(job.id)?.markerAtMs;
         if (!current || markerAtMs === undefined || current.state.queuedAtMs !== markerAtMs) {
+          return { value: undefined, runHooks: false };
+        }
+        if (isProactiveJobCutoverPending(state.deps.storePath, current, database)) {
           return { value: undefined, runHooks: false };
         }
         previousLastError = current.state.lastError;

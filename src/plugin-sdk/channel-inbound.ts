@@ -39,6 +39,7 @@ import type {
   PreparedChannelTurn,
   RunChannelTurnParams,
 } from "../channels/turn/types.js";
+import { publicChannelTurn, publicChannelTurnParams } from "./reply-options.js";
 
 export {
   readAgentRunTerminalOutcome,
@@ -241,14 +242,11 @@ export function runChannelInboundEvent<TRaw, TDispatchResult = DispatchFromConfi
 export async function runChannelInboundEvent<TRaw, TDispatchResult = DispatchFromConfigResult>(
   params: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
 ) {
-  const run = runChannelTurn as (
-    value: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
-  ) => Promise<ChannelTurnResult<TDispatchResult>>;
-  return await run(params);
+  return await runChannelTurn(publicChannelTurnParams(params));
 }
 
 export async function dispatchChannelInboundReply(params: AssembledInboundReply) {
-  return await dispatchAssembledChannelTurn(params);
+  return await dispatchAssembledChannelTurn(publicChannelTurn(params));
 }
 
 export function dispatchChannelInboundTurn(
@@ -263,7 +261,7 @@ export async function dispatchChannelInboundTurn(
   const dispatch = dispatchRoutedChannelTurn as (
     value: ChannelTurnPlan<ChannelTurnDeliveryAdapter>,
   ) => Promise<ChannelTurnResult>;
-  return await dispatch(params);
+  return await dispatch(publicChannelTurn(params));
 }
 
 export {

@@ -83,12 +83,13 @@ describe.each([
       const sendCronFailureAlert = vi.fn(async () => undefined);
       const freshState = () =>
         createCronServiceState({
+          runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
           storePath,
           cronEnabled: true,
           log: logger,
           nowMs: Date.now,
           enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
+          enqueueSessionEvent: vi.fn(),
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
           runCommandJob,
           onEvent,

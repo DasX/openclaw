@@ -3,7 +3,7 @@ summary: "Background task tracking for ACP runs, subagents, automation runs, and
 read_when:
   - Inspecting background work in progress or recently completed
   - Debugging delivery failures for detached agent runs
-  - Understanding how background runs relate to sessions, automations, and heartbeat
+  - Understanding how background runs relate to sessions and automations
 title: "Background tasks"
 sidebarTitle: "Background tasks"
 ---
@@ -14,24 +14,24 @@ Looking for scheduling? See [Automation](/automation) for choosing the right mec
 
 Background tasks track work that runs **outside your main conversation session**: ACP runs, subagent spawns, automation job runs, and CLI-initiated operations.
 
-Tasks do **not** replace sessions, automations, or heartbeats - they are the **activity ledger** that records what detached work happened, when, and whether it succeeded.
+Tasks do **not** replace sessions or automations - they are the **activity ledger** that records what detached work happened, when, and whether it succeeded.
 
 For a strict, ephemeral one-shot agent run in CI or a script, use [`openclaw agent exec`](/cli/agent#agent-exec) instead of managed background work.
 
 <Note>
-Not every agent run creates a task. Heartbeat turns and normal interactive chat do not. All automation runs, ACP spawns, subagent spawns, gateway-dispatched CLI agent commands, and agent-started background `exec` commands do.
+Not every agent run creates a task. Normal interactive chat does not. All automation runs (including converted heartbeat monitors), ACP spawns, subagent spawns, gateway-dispatched CLI agent commands, and agent-started background `exec` commands do.
 </Note>
 
 ## TL;DR
 
-- Tasks are **records**, not schedulers - automations and heartbeat decide _when_ work runs, tasks track _what happened_.
-- ACP, subagents, all automation jobs, and CLI operations create tasks. Heartbeat turns do not.
+- Tasks are **records**, not schedulers - automations decide _when_ scheduled work runs, tasks track _what happened_.
+- ACP, subagents, all automation jobs, and CLI operations create tasks.
 - Each task moves through `queued → running → terminal` (succeeded, failed, timed_out, cancelled, or lost).
 - Automation tasks stay live while the automations runtime still owns the job; if the in-memory runtime state is gone, task maintenance first checks durable automation run history before marking a task lost.
-- Completion is push-driven: detached work can notify directly or wake the requester session/heartbeat when it finishes, so status polling loops are usually the wrong shape.
+- Completion is push-driven: detached work can notify directly or submit a follow-up to the requester session when it finishes, so status polling loops are usually the wrong shape.
 - Isolated automation runs and subagent completions best-effort clean up tracked browser tabs/processes for their child session before final cleanup bookkeeping.
 - Isolated automation delivery suppresses stale interim parent replies while descendant subagent work is still draining, and it prefers final descendant output when that arrives before delivery.
-- Completion notifications are delivered directly to a channel or queued for the next heartbeat.
+- Completion notifications are delivered directly to a channel or queued through normal session admission, without requiring periodic monitoring or an enabled cron scheduler.
 - `openclaw tasks list` shows all tasks; `openclaw tasks audit` surfaces issues.
 - Terminal records are kept for 7 days (`lost` records for 24 hours), then automatically pruned.
 
@@ -116,7 +116,6 @@ Not every agent run creates a task. Heartbeat turns and normal interactive chat 
     While a session-backed media-generation task is still active, `image_generate`, `music_generate`, and `video_generate` guard against accidental retries: repeating the call for the same prompt/request returns the matching active task status instead of starting a duplicate, while a distinct prompt can start its own task. Use `action: "status"` when you want an explicit progress/status lookup from the agent side.
   </Accordion>
   <Accordion title="What does not create tasks">
-    - Heartbeat turns - main-session; see [Heartbeat](/gateway/heartbeat)
     - Normal interactive chat turns
     - Direct `/command` responses
 
@@ -171,14 +170,15 @@ Agent run completion is authoritative for active task records. A successful deta
 
 ## Delivery and notifications
 
-When a task reaches a terminal state, OpenClaw notifies you. There are two delivery paths:
+When a task reaches a terminal state, its notification policy determines whether
+OpenClaw notifies you. There are two delivery paths:
 
 **Direct delivery** - if the task has a channel target (the `requesterOrigin`), the completion message goes straight to that channel (Discord, Slack, Telegram, etc.). Group and channel task completions are instead routed through the requester session so the parent agent can write the visible reply. For subagent completions, OpenClaw also preserves bound thread/topic routing when available and can fill a missing `to` / account from the requester session's stored route (`lastChannel` / `lastTo` / `lastAccountId`) before giving up on direct delivery.
 
-**Session-queued delivery** - if direct delivery fails or no origin is set, the update is queued as a system event in the requester's session and surfaces on the next heartbeat.
+**Session-queued delivery** - if direct delivery fails or no origin is set, the update is submitted to the requester's normal session admission queue. It waits for active work to settle and is fenced against a reset, deleted, or replaced session rather than being delivered into a different conversation.
 
 Notifications retain the recorded requester agent, even when another agent executes
-the task. With `session.scope: "global"`, queued updates and heartbeat wakes stay
+the task. With `session.scope: "global"`, queued updates and session follow-ups stay
 with that requester; another agent sharing the `global` session key cannot consume them.
 
 When `gateway.publicOrigin` is configured and the Control UI is enabled,
@@ -194,7 +194,8 @@ Use `openclaw tasks retry` to create a fenced new delivery generation, or
 a visible result when an earlier provider acknowledgement was ambiguous.
 
 <Tip>
-Session-queued task completions trigger an immediate heartbeat wake, so you see the result quickly - you do not have to wait for the next scheduled heartbeat tick.
+Session-queued task completions request immediate session processing. They do not
+wait for a scheduled monitoring job and still work when cron is disabled.
 </Tip>
 
 That means the usual workflow is push-based: start detached work once, then let the runtime wake or notify you on completion. Poll task state only when you need debugging, intervention, or an explicit audit.
@@ -412,10 +413,11 @@ A sweeper runs every **60 seconds** (first pass about 5 seconds after gateway st
     See [Automations](/automation/cron-jobs).
 
   </Accordion>
-  <Accordion title="Tasks and heartbeat">
-    Heartbeat runs are main-session turns - they do not create task records. When a task completes, it can trigger a heartbeat wake so you see the result promptly.
-
-    See [Heartbeat](/gateway/heartbeat).
+  <Accordion title="Tasks and monitoring">
+    Scheduled monitors are ordinary automation jobs and create task records like
+    other jobs. Immediate task completions use session admission instead of
+    starting a periodic monitor. See [Heartbeat migration](/gateway/heartbeat)
+    for older installations.
 
   </Accordion>
   <Accordion title="Tasks and sessions">
@@ -438,6 +440,6 @@ flow content into the generic decision-fact table.
 
 - [Automation](/automation) - all automation mechanisms at a glance
 - [CLI: Tasks](/cli/tasks) - CLI command reference
-- [Heartbeat](/gateway/heartbeat) - periodic main-session turns
+- [Heartbeat migration](/gateway/heartbeat) - upgrade older monitors and integrations
 - [Automations](/automation/cron-jobs) - scheduling background work
 - [Task Flow](/automation/taskflow) - flow orchestration above tasks

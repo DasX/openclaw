@@ -66,7 +66,14 @@ import type { BlockReplyFlushContext } from "../types.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";
 export type { ClientToolDefinition } from "../../command/shared-types.js";
 
-export type EmbeddedRunTrigger = "cron" | "heartbeat" | "manual" | "memory" | "overflow" | "user";
+export type EmbeddedRunTrigger =
+  | "cron"
+  | "event"
+  | "heartbeat"
+  | "manual"
+  | "memory"
+  | "overflow"
+  | "user";
 
 export type ResolvedToolPromptFinalizer = (params: {
   prompt: string;
@@ -217,10 +224,6 @@ export type RunEmbeddedAgentParams = {
   promptMode?: PromptMode;
   /** Keep the message tool available even when a narrow profile would omit it. */
   forceMessageTool?: boolean;
-  /** Include the heartbeat response tool for structured heartbeat outcomes. */
-  enableHeartbeatTool?: boolean;
-  /** Keep the heartbeat response tool available even when a narrow profile would omit it. */
-  forceHeartbeatTool?: boolean;
   /** Allow runtime plugins for this run to late-bind the gateway subagent. */
   allowGatewaySubagentBinding?: boolean;
   /** @deprecated Use sessionTarget plus sessionId/sessionKey/agentId for runtime identity. */
@@ -524,8 +527,6 @@ export type EmbeddedForegroundPromptContext = Pick<
   | "contextWindow"
   | "promptMode"
   | "forceMessageTool"
-  | "enableHeartbeatTool"
-  | "forceHeartbeatTool"
   | "allowGatewaySubagentBinding"
   | "extraSystemPrompt"
   | "sourceReplyDeliveryMode"

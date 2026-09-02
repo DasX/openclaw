@@ -204,7 +204,7 @@ enum AgentAutomationEditError: LocalizedError {
         case .invalidName: String(localized: "Automation name is required.")
         case .invalidSessionTarget:
             String(localized: "Session target must be main, isolated, current, or session:<id>.")
-        case .invalidWakeMode: String(localized: "Wake mode must be now or next-heartbeat.")
+        case .invalidWakeMode: String(localized: "Choose Now or Next scheduled run.")
         case let .invalidSchedule(message), let .invalidPayload(message): message
         case .gatewayChanged: String(localized: "The connected Gateway changed. Refresh Automations and try again.")
         case .gatewayChangedAfterDispatch:

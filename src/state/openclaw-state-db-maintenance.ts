@@ -56,6 +56,7 @@ const STATE_MIGRATION_ALLOWED_MISSING_TABLES = {
   12: STATE_V6_ADDITIVE_TABLES,
   13: LAZY_ADDITIVE_STATE_TABLES,
   14: LAZY_ADDITIVE_STATE_TABLES,
+  15: LAZY_ADDITIVE_STATE_TABLES,
 } as const satisfies Record<number, readonly string[]>;
 type OpenClawStateMigrationVersion = keyof typeof STATE_MIGRATION_ALLOWED_MISSING_TABLES;
 
@@ -239,6 +240,11 @@ function assertOpenClawStateDatabaseV12ForMigration(
 
 /** Keep historical migration gates beside their version-specific ownership assertions. */
 export const openClawStateMigrationAssertions = new Map([
+  [
+    15,
+    (database: DatabaseSync, options: { pathname: string }) =>
+      assertOpenClawStateDatabaseVersionForMigration(database, { ...options, version: 15 }),
+  ],
   [5, assertOpenClawStateDatabaseV5ForMigration],
   [6, assertOpenClawStateDatabaseV6ForMigration],
   [7, assertOpenClawStateDatabaseV7ForMigration],

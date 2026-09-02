@@ -287,7 +287,7 @@ vi.mock("../../auto-reply/dispatch.js", async () => {
     typeof import("../../auto-reply/dispatch-dispatcher.js")
   >("../../auto-reply/dispatch-dispatcher.js");
   return {
-    dispatchInboundMessage: dispatchInboundMessageMock,
+    dispatchInboundMessageCore: dispatchInboundMessageMock,
     dispatchInboundMessageWithProjectedDispatcher: vi.fn(
       async (params: ProjectedDispatchParams) => {
         const { dispatcherOptions, ...dispatchParams } = params;

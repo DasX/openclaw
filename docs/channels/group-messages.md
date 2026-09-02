@@ -85,7 +85,7 @@ Only owner numbers (from `channels.whatsapp.allowFrom`, or the bot's own E.164 w
 
 ## Known considerations
 
-- Heartbeats run in the agent's main session; group sessions never get heartbeat runs.
+- Scheduled monitoring uses ordinary [cron jobs](/automation/cron-jobs). To monitor a group, choose its session explicitly and configure the job's delivery target; a group does not acquire a schedule merely by receiving messages.
 - Echo suppression remembers the combined prompt (history + current message) per session so the bot's own delivered messages do not retrigger it; an identical repeated batch can be skipped as an echo.
 - Session store entries appear as `agent:<agentId>:whatsapp:group:<jid>` in the per-agent SQLite session store; a missing entry just means the group has not triggered a run yet.
 - Typing indicators follow `agents.entries.*.typingMode` / `agents.defaults.typingMode`. When visible replies are opted into message-tool-only mode, typing starts immediately by default so group members can see the agent working even if no automatic final reply is posted. Explicit typing-mode config still wins.

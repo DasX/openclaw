@@ -48,12 +48,13 @@ async function runTimer(jobs: CronJob[], nowMs: number) {
   const store = await makeStorePath();
   await writeCronStoreSnapshot({ storePath: store.storePath, jobs });
   const state = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: store.storePath,
     cronEnabled: true,
     log: logger,
     nowMs: () => nowMs,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
   state.schedulerStarted = true;

@@ -537,8 +537,7 @@ export function prepareEmbeddedAttemptStream(input: {
       activeQueueAdmissions--;
     }
   };
-  const heartbeatReplyOperation =
-    attempt.replyOperation?.turnKind === "heartbeat" ? attempt.replyOperation : undefined;
+
   const applyPermissionMode = input.applyPermissionMode;
   const queueHandle: AttemptStreamQueueHandle = {
     kind: "embedded",
@@ -576,9 +575,6 @@ export function prepareEmbeddedAttemptStream(input: {
       claimEmbeddedPendingUserInputAnswer(text, options, attempt.sessionKey),
     cancelPendingUserInput: (resolvedBy) =>
       cancelPendingAgentQuestionForSession({ sessionKey: attempt.sessionKey, resolvedBy }),
-    preemptByVisibleTurn: heartbeatReplyOperation
-      ? () => heartbeatReplyOperation.supersede()
-      : undefined,
     queueMessage,
     messageInjection: {
       isAvailable: () =>

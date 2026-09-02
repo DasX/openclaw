@@ -44,6 +44,79 @@ function insertEmptyAlias(params: {
 }
 
 describe("doctor transcript owner repair", () => {
+  it.each(["main", "ops"])(
+    "preserves pending legacy outcome bytes across %s canonical-key repair",
+    async (sourceAgentId) => {
+      await withStateDirEnv("openclaw-doctor-outcome-owner-", async ({ stateDir }) => {
+        const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+        const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions.json");
+        const sourceStore = resolveSessionStorePathCore(storeTemplate, {
+          agentId: sourceAgentId,
+          env,
+        });
+        const destinationStore = resolveSessionStorePathCore(storeTemplate, {
+          agentId: "main",
+          env,
+        });
+        const sourceKey = "agent:main:main";
+        const canonicalKey = "agent:main:work";
+        const cfg: OpenClawConfig = {
+          agents: { entries: { main: { default: true }, ops: {} } },
+          session: { mainKey: "work", store: storeTemplate },
+        };
+        insertLegacySession({
+          agentId: sourceAgentId,
+          entry: { sessionId: "outcome-session", updatedAt: 20 },
+          env,
+          sessionKey: sourceKey,
+          storePath: sourceStore,
+        });
+        const source = openOpenClawAgentDatabase({
+          agentId: sourceAgentId,
+          env,
+          path: resolveSqliteTargetFromSessionStorePath(sourceStore, {
+            agentId: sourceAgentId,
+            env,
+          }).path,
+        });
+        source.db
+          .prepare(
+            "INSERT INTO heartbeat_outcomes (session_key, run_session_key, outcome, summary, occurred_at, updated_at) VALUES (?, ?, 'blocked', ?, 10, 20)",
+          )
+          .run(sourceKey, sourceKey, "Still pending\nwith exact bytes 🦞");
+        expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
+          repairedGroups: 1,
+        });
+        const destination = openOpenClawAgentDatabase({
+          agentId: "main",
+          env,
+          path: resolveSqliteTargetFromSessionStorePath(destinationStore, { agentId: "main", env })
+            .path,
+        });
+        const read = () =>
+          destination.db
+            .prepare(
+              "SELECT session_key, run_session_key, outcome, summary, occurred_at, updated_at FROM heartbeat_outcomes",
+            )
+            .all();
+        expect(read()).toEqual([
+          {
+            session_key: canonicalKey,
+            run_session_key: canonicalKey,
+            outcome: "blocked",
+            summary: "Still pending\nwith exact bytes 🦞",
+            occurred_at: 10,
+            updated_at: 20,
+          },
+        ]);
+        expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
+          repairedGroups: 0,
+        });
+        expect(read()).toHaveLength(1);
+      });
+    },
+  );
+
   it.each([
     { sourceAgentId: "main", requiredAlias: true, requiredCanonical: false },
     { sourceAgentId: "ops", requiredAlias: true, requiredCanonical: false },

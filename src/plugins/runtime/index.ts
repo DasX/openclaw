@@ -22,6 +22,7 @@ import {
   listRuntimeVideoGenerationProviders,
 } from "../../video-generation/runtime.js";
 import { listWebSearchProviders, runWebSearch } from "../../web-search/runtime.js";
+import { bindGatewayContextResolver, getGatewayContextResolver } from "./gateway-request-scope.js";
 import { createRuntimeAgent } from "./runtime-agent.js";
 import { createRuntimeBase } from "./runtime-base.js";
 import { defineCachedValue } from "./runtime-cache.js";
@@ -325,6 +326,9 @@ export const createPluginRuntime: PluginRuntimeFactory = (
   defineCachedValue(runtime, "videoGeneration", createRuntimeVideoGeneration);
   defineCachedValue(runtime, "musicGeneration", createRuntimeMusicGeneration);
   defineCachedValue(runtime, "llm", createRuntimeLlmFacade);
+  if (_options.subagent) {
+    bindGatewayContextResolver(runtime, getGatewayContextResolver(_options.subagent));
+  }
 
   return runtime as unknown as PluginRuntime;
 };

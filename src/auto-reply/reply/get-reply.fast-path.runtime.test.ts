@@ -13,7 +13,7 @@ import {
 } from "../reply.test-harness.js";
 import { loadGetReplyModuleForTest } from "./get-reply.test-loader.js";
 
-let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
+let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfigCore;
 const agentMocks = createReplyRuntimeMocks();
 const { withTempHome } = createTempHomeHarness({ prefix: "openclaw-getreply-fast-" });
 
@@ -21,7 +21,9 @@ installReplyRuntimeMocks(agentMocks);
 
 describe("getReplyFromConfig fast-path runtime", () => {
   beforeAll(async () => {
-    ({ getReplyFromConfig } = await loadGetReplyModuleForTest({ cacheKey: import.meta.url }));
+    ({ getReplyFromConfigCore: getReplyFromConfig } = await loadGetReplyModuleForTest({
+      cacheKey: import.meta.url,
+    }));
     vi.stubEnv("OPENCLAW_TEST_FAST", "1");
     resetReplyRuntimeMocks(agentMocks);
     agentMocks.runEmbeddedAgent.mockResolvedValue(makeEmbeddedTextResult("warm runtime"));

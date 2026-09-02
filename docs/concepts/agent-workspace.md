@@ -236,7 +236,8 @@ Suggested `.gitignore` starter:
 
 ## Related
 
-- [Heartbeat](/gateway/heartbeat) - heartbeat monitors and cron scratch
+- [Cron jobs](/automation/cron-jobs) - scheduled monitoring and per-job scratch
+- [Heartbeat migration](/gateway/heartbeat) - retired workspace checklist and monitor configuration
 - [Sandboxing](/gateway/sandboxing) - workspace access in sandboxed environments
 - [Session](/concepts/session) - session storage paths
 - [Standing orders](/automation/standing-orders) - persistent instructions in workspace files

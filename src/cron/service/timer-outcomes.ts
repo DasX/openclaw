@@ -34,10 +34,8 @@ import {
   applyTriggerRunResult,
   resolveCronNextRunWithLowerBound,
   resolveDeliveryState,
-  resolveDisabledHeartbeatOneShotRetryDecision,
   resolveNextRunAtMsOrDisable,
   resolveTransientCronRetryDecision,
-  shouldRetryDisabledHeartbeatOneShot,
 } from "./timer-trigger.js";
 
 type CronScheduleOwnership = "current" | "stale";
@@ -93,6 +91,13 @@ export function applyJobResult(
     deferredNotifications?: DeferredCronNotifications;
   },
 ): boolean {
+  if (result.admissionDeferred && result.executionStarted !== true) {
+    // Foreground admission won before the monitor executed. Retire only this
+    // reservation; its original pending schedule and last outcome stay authoritative.
+    job.state.queuedAtMs = undefined;
+    job.state.runningAtMs = undefined;
+    return false;
+  }
   const previousScheduleState = {
     enabled: job.enabled,
     nextRunAtMs: job.state.nextRunAtMs,
@@ -226,46 +231,7 @@ export function applyJobResult(
       job.state.pacedNextRunAtMs = previousScheduleState.pacedNextRunAtMs;
       job.state.forcePreservedNextRunAtMs = previousScheduleState.nextRunAtMs;
     } else if (job.schedule.kind === "at") {
-      if (shouldRetryDisabledHeartbeatOneShot(job, result)) {
-        const retryDecision = resolveDisabledHeartbeatOneShotRetryDecision({
-          cronConfig: state.deps.cronConfig,
-          consecutiveSkipped: job.state.consecutiveSkipped,
-        });
-        if (retryDecision.retryable && retryDecision.backoffMs !== undefined) {
-          job.enabled = true;
-          if (
-            assignNextRunAtMs({
-              state,
-              job,
-              candidate: result.endedAt + retryDecision.backoffMs,
-              deferredNotifications: opts?.deferredNotifications,
-            }) !== undefined
-          ) {
-            state.deps.log.info(
-              {
-                jobId: job.id,
-                jobName: job.name,
-                consecutiveSkipped: retryDecision.consecutiveSkipped,
-                backoffMs: retryDecision.backoffMs,
-                nextRunAtMs: job.state.nextRunAtMs,
-              },
-              "cron: scheduling one-shot retry after disabled heartbeat",
-            );
-          }
-        } else {
-          job.enabled = false;
-          job.state.nextRunAtMs = undefined;
-          state.deps.log.warn(
-            {
-              jobId: job.id,
-              jobName: job.name,
-              consecutiveSkipped: retryDecision.consecutiveSkipped,
-              reason: retryDecision.reason,
-            },
-            "cron: disabling one-shot job after disabled heartbeat retries",
-          );
-        }
-      } else if (result.status === "ok" || result.status === "skipped") {
+      if (result.status === "ok" || result.status === "skipped") {
         // One-shot done or skipped: disable to prevent tight-loop (#11452).
         job.enabled = false;
         job.state.nextRunAtMs = undefined;

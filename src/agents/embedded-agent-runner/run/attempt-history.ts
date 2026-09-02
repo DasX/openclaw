@@ -16,7 +16,6 @@ import {
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import type { AssembleResult } from "../../../context-engine/types.js";
-import { resolveHeartbeatSummaryForAgent } from "../../../infra/heartbeat-summary.js";
 import type { ProviderRuntimeModel } from "../../../plugins/provider-runtime-model.types.js";
 import {
   hasInterSessionUserProvenance,
@@ -559,15 +558,7 @@ export async function prepareEmbeddedAttemptHistory(input: {
       if (isSettledTurnFinalization) {
         return validated;
       }
-      const heartbeatSummary =
-        attempt.config && input.sessionAgentId
-          ? resolveHeartbeatSummaryForAgent(attempt.config, input.sessionAgentId)
-          : undefined;
-      const heartbeatFiltered = filterHeartbeatTranscriptArtifacts(
-        validated,
-        heartbeatSummary?.ackMaxChars,
-        heartbeatSummary?.prompt,
-      );
+      const heartbeatFiltered = filterHeartbeatTranscriptArtifacts(validated);
       const truncated = preserveCompactionReplayWindow(
         heartbeatFiltered,
         limitHistoryTurns(

@@ -34,7 +34,7 @@ async function withCronService(
   run: (params: {
     cron: CronService;
     enqueueSystemEvent: ReturnType<typeof vi.fn>;
-    requestHeartbeat: ReturnType<typeof vi.fn>;
+    enqueueSessionEvent: ReturnType<typeof vi.fn>;
   }) => Promise<void>,
 ) {
   await withCronServiceForTest(
@@ -64,14 +64,15 @@ describe("CronService", () => {
 
   it("skips main jobs with empty systemEvent text", async () => {
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: "cron-empty-systemevent-test.json",
       log: noopLogger,
       nowMs: () => Date.now(),
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job: CronJob = {
@@ -92,11 +93,11 @@ describe("CronService", () => {
     expect(result.status).toBe("skipped");
     expect(result.error).toMatch(/non-empty/i);
     expect(enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(requestHeartbeat).not.toHaveBeenCalled();
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
   });
 
   it("disables persisted main jobs with empty systemEvent text after skipping them", async () => {
-    await withCronService(true, async ({ cron, enqueueSystemEvent, requestHeartbeat }) => {
+    await withCronService(true, async ({ cron, enqueueSystemEvent, enqueueSessionEvent }) => {
       const atMs = Date.parse("2025-12-13T00:00:01.000Z");
       await cron.add({
         name: "empty systemEvent test",
@@ -111,7 +112,7 @@ describe("CronService", () => {
       await vi.runOnlyPendingTimersAsync();
 
       expect(enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(requestHeartbeat).not.toHaveBeenCalled();
+      expect(enqueueSessionEvent).not.toHaveBeenCalled();
 
       const job = await waitForFirstJob(cron, (current) => current?.state.lastStatus === "skipped");
       expect(job?.enabled).toBe(false);
@@ -122,7 +123,7 @@ describe("CronService", () => {
   });
 
   it("does not schedule timers when cron is disabled", async () => {
-    await withCronService(false, async ({ cron, enqueueSystemEvent, requestHeartbeat }) => {
+    await withCronService(false, async ({ cron, enqueueSystemEvent, enqueueSessionEvent }) => {
       const atMs = Date.parse("2025-12-13T00:00:01.000Z");
       await cron.add({
         name: "disabled cron job",
@@ -141,7 +142,7 @@ describe("CronService", () => {
       await vi.runOnlyPendingTimersAsync();
 
       expect(enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(requestHeartbeat).not.toHaveBeenCalled();
+      expect(enqueueSessionEvent).not.toHaveBeenCalled();
       expect(noopLogger.warn).toHaveBeenCalled();
     });
   });

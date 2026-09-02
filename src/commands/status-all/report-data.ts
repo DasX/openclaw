@@ -19,6 +19,7 @@ import {
 } from "../status-overview-surface.ts";
 import {
   resolveStatusGatewayDiagnosticsSafe,
+  resolveStatusAutomations,
   resolveStatusGatewayHealthSafe,
   type StatusGatewayDiagnosticsResult,
   type resolveStatusServiceSummaries,
@@ -202,7 +203,7 @@ export async function buildStatusAllReportData(params: {
   timeoutMs?: number;
 }) {
   const gatewaySnapshot = params.overview.gatewaySnapshot;
-  const [{ configPath, health, diagnosis }, summary] = await Promise.all([
+  const [{ configPath, health, diagnosis }, summary, automations] = await Promise.all([
     resolveStatusAllLocalDiagnosis({
       overview: params.overview,
       progress: params.progress,
@@ -214,6 +215,14 @@ export async function buildStatusAllReportData(params: {
     }),
     params.overview.runtimeDegradation ??
       resolveStatusSummaryFromOverview({ overview: params.overview }),
+    resolveStatusAutomations({
+      config: params.overview.cfg,
+      gatewayReachable: gatewaySnapshot.gatewayReachable && !params.nodeOnlyGateway,
+      timeoutMs: params.timeoutMs,
+      ...(gatewaySnapshot.gatewayCallOverrides
+        ? { callOverrides: gatewaySnapshot.gatewayCallOverrides }
+        : {}),
+    }),
   ]);
 
   const overviewSurface: StatusOverviewSurface = buildStatusOverviewSurfaceFromOverview({
@@ -223,6 +232,7 @@ export async function buildStatusAllReportData(params: {
     nodeOnlyGateway: params.nodeOnlyGateway,
   });
   const overviewRows = buildStatusAllOverviewRows({
+    automations,
     surface: overviewSurface,
     osLabel: params.overview.osSummary.label,
     configPath,

@@ -6,6 +6,7 @@ import type { AcpSpawnRuntimeCloseHandle } from "../../../acp/control-plane/spaw
 import { cleanupFailedAcpSpawn } from "../../../acp/control-plane/spawn.js";
 import { isAcpEnabledByPolicy, resolveAcpAgentPolicyError } from "../../../acp/policy.js";
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
+import { captureSessionEventTargetForHost as captureSessionEventTarget } from "../../../auto-reply/reply/session-event-handoff.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import {
@@ -31,6 +32,7 @@ import {
   recordSessionCreated,
   recordSubagentSpawned,
 } from "../../../sessions/session-state-events.js";
+import { createQueuedTaskRun, failTaskRunByRunId } from "../../../tasks/detached-task-runtime.js";
 import { deliveryContextFromSession } from "../../../utils/delivery-context.shared.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
@@ -206,6 +208,18 @@ export async function spawnAcpDirect(
     sessionKey: requesterInternalKey,
     agentId: ctx.requesterAgentIdOverride,
   });
+  const parentEventTarget = parentSessionKey
+    ? captureSessionEventTarget(requesterAgentId, parentSessionKey)
+    : undefined;
+  const ownership = resolveSubagentSpawnOwnership({
+    cfg,
+    agentSessionKey: ctx.agentSessionKey,
+    completionOwnerKey: ctx.completionOwnerKey,
+  });
+  const { generation: _requesterGeneration, ...requesterTarget } = captureSessionEventTarget(
+    requesterAgentId,
+    ownership.completionRequesterSessionKey,
+  );
   const runtimePolicyError = resolveAcpSpawnRuntimePolicyError({
     cfg,
     requesterAgentId,
@@ -418,11 +432,6 @@ export async function spawnAcpDirect(
     ? resolveEventSessionRoutingPolicy({ cfg, sessionKey: parentSessionKey })
     : undefined;
   const gatewayAttachments = toGatewayImageAttachments(params.attachments);
-  const ownership = resolveSubagentSpawnOwnership({
-    cfg,
-    agentSessionKey: ctx.agentSessionKey,
-    completionOwnerKey: ctx.completionOwnerKey,
-  });
   const requesterOrigin = requesterState.origin;
   const progressOrigin = {
     channel: requesterOrigin?.channel,
@@ -440,6 +449,25 @@ export async function spawnAcpDirect(
   };
   const adapter: SpawnBackendAdapter<AcpBackendState> = {
     async initialize() {
+      // Persist the original requester before ACP initialization can outlive a reset.
+      // The manager adopts this same task when it acquires its execution instance.
+      const task = createQueuedTaskRun({
+        runtime: "acp",
+        sourceId: childIdem,
+        runId: childIdem,
+        ownerKey: ownership.completionRequesterSessionKey,
+        scopeKind: "session",
+        requesterAgentId,
+        agentId: targetAgentId,
+        childSessionKey: sessionKey,
+        requesterOrigin,
+        requesterTarget,
+        task: params.task,
+        label: params.label,
+      });
+      if (!task) {
+        throw new Error("Could not persist ACP requester ownership before initialization");
+      }
       const creationStamp = buildSessionCreationStamp({
         via: "spawn",
         actor: { type: "agent", id: requesterAgentId },
@@ -521,10 +549,12 @@ export async function spawnAcpDirect(
         agentId: targetAgentId,
       });
       const startParentRelay = (runId: string) =>
-        effectiveStreamToParent && parentSessionKey
+        effectiveStreamToParent && parentSessionKey && parentEventTarget
           ? startAcpSpawnParentStreamRelay({
               runId,
               parentSessionKey,
+              requesterAgentId,
+              expectedTarget: parentEventTarget,
               childSessionKey: sessionKey,
               childSessionId: state.initializedSession.sessionId,
               agentId: targetAgentId,
@@ -572,8 +602,16 @@ export async function spawnAcpDirect(
       state.parentRelay?.notifyStarted();
       return { runId };
     },
-    async cleanupOnFailure({ state }) {
+    async cleanupOnFailure({ state, error }) {
       state?.parentRelay?.dispose();
+      failTaskRunByRunId({
+        runtime: "acp",
+        runId: childIdem,
+        sessionKey,
+        endedAt: Date.now(),
+        error: summarizeSpawnError(error),
+        suppressDelivery: true,
+      });
       await cleanupFailedAcpSpawn({
         cfg,
         sessionKey,
@@ -612,6 +650,7 @@ export async function spawnAcpDirect(
         controllerSessionKey,
         requesterSessionKey: ownership.completionRequesterSessionKey,
         requesterOrigin,
+        requesterTarget,
         progressOrigin,
         requesterDisplayKey: ownership.completionRequesterDisplayKey,
         task: params.task,

@@ -568,7 +568,6 @@ describe("typing controller", () => {
     const signaler = createTypingSignaler({
       typing,
       mode: "message",
-      isHeartbeat: false,
     });
 
     await signaler.signalExecutionActivity?.();
@@ -618,7 +617,6 @@ describe("resolveTypingMode", () => {
           configured: undefined,
           isGroupChat: false,
           wasMentioned: false,
-          isHeartbeat: false,
         },
         expected: "instant",
       },
@@ -628,7 +626,6 @@ describe("resolveTypingMode", () => {
           configured: undefined,
           isGroupChat: true,
           wasMentioned: false,
-          isHeartbeat: false,
         },
         expected: "message",
       },
@@ -638,7 +635,6 @@ describe("resolveTypingMode", () => {
           configured: undefined,
           isGroupChat: true,
           wasMentioned: false,
-          isHeartbeat: false,
           sourceReplyDeliveryMode: "message_tool_only" as const,
         },
         expected: "instant",
@@ -649,7 +645,6 @@ describe("resolveTypingMode", () => {
           configured: "message" as const,
           isGroupChat: true,
           wasMentioned: false,
-          isHeartbeat: false,
           sourceReplyDeliveryMode: "message_tool_only" as const,
         },
         expected: "message",
@@ -660,7 +655,6 @@ describe("resolveTypingMode", () => {
           configured: "instant" as const,
           isGroupChat: true,
           wasMentioned: false,
-          isHeartbeat: false,
           sourceReplyDeliveryMode: "message_tool_only" as const,
         },
         expected: "instant",
@@ -671,7 +665,6 @@ describe("resolveTypingMode", () => {
           configured: undefined,
           isGroupChat: true,
           wasMentioned: true,
-          isHeartbeat: false,
         },
         expected: "instant",
       },
@@ -681,7 +674,6 @@ describe("resolveTypingMode", () => {
           configured: "thinking" as const,
           isGroupChat: false,
           wasMentioned: false,
-          isHeartbeat: false,
         },
         expected: "thinking",
       },
@@ -691,19 +683,8 @@ describe("resolveTypingMode", () => {
           configured: "message" as const,
           isGroupChat: true,
           wasMentioned: true,
-          isHeartbeat: false,
         },
         expected: "message",
-      },
-      {
-        name: "heartbeat forces never",
-        input: {
-          configured: "instant" as const,
-          isGroupChat: false,
-          wasMentioned: false,
-          isHeartbeat: true,
-        },
-        expected: "never",
       },
       {
         name: "suppressTyping forces never",
@@ -711,7 +692,6 @@ describe("resolveTypingMode", () => {
           configured: "instant" as const,
           isGroupChat: false,
           wasMentioned: false,
-          isHeartbeat: false,
           suppressTyping: true,
         },
         expected: "never",
@@ -722,7 +702,6 @@ describe("resolveTypingMode", () => {
           configured: "instant" as const,
           isGroupChat: false,
           wasMentioned: false,
-          isHeartbeat: false,
           typingPolicy: "system_event" as const,
         },
         expected: "never",
@@ -883,7 +862,6 @@ describe("createTypingSignaler", () => {
       const signaler = createTypingSignaler({
         typing,
         mode: testCase.mode,
-        isHeartbeat: false,
       });
 
       await signaler.signalRunStart();
@@ -898,7 +876,6 @@ describe("createTypingSignaler", () => {
     const signaler = createTypingSignaler({
       typing,
       mode: "message",
-      isHeartbeat: false,
     });
 
     await signaler.signalMessageStart();
@@ -914,7 +891,6 @@ describe("createTypingSignaler", () => {
     const signaler = createTypingSignaler({
       typing,
       mode: "thinking",
-      isHeartbeat: false,
     });
 
     // Reasoning delta starts the typing loop and refreshes TTL,
@@ -937,7 +913,6 @@ describe("createTypingSignaler", () => {
     const signaler = createTypingSignaler({
       typing,
       mode: "message",
-      isHeartbeat: false,
     });
 
     await signaler.signalTextDelta(undefined);
@@ -951,7 +926,6 @@ describe("createTypingSignaler", () => {
     const signaler = createTypingSignaler({
       typing,
       mode: "message",
-      isHeartbeat: false,
     });
 
     // Tool fires before any text — suppressed in message mode.
@@ -974,7 +948,7 @@ describe("createTypingSignaler", () => {
   it("starts typing on tool-start for instant and thinking modes", async () => {
     for (const mode of ["instant", "thinking"] as const) {
       const typing = createMockTypingController();
-      const signaler = createTypingSignaler({ typing, mode, isHeartbeat: false });
+      const signaler = createTypingSignaler({ typing, mode });
 
       await signaler.signalToolStart();
 
@@ -986,7 +960,7 @@ describe("createTypingSignaler", () => {
   it("starts typing on execution activity for active reply modes", async () => {
     for (const mode of ["instant", "message", "thinking"] as const) {
       const typing = createMockTypingController();
-      const signaler = createTypingSignaler({ typing, mode, isHeartbeat: false });
+      const signaler = createTypingSignaler({ typing, mode });
 
       await signaler.signalExecutionActivity?.();
 
@@ -998,12 +972,18 @@ describe("createTypingSignaler", () => {
 
   it("suppresses typing when disabled", async () => {
     const disabledCases = [
-      { mode: "instant" as const, isHeartbeat: true },
-      { mode: "never" as const, isHeartbeat: false },
+      { mode: "instant" as const, suppressTyping: true },
+      { mode: "never" as const },
     ];
     for (const params of disabledCases) {
       const typing = createMockTypingController();
-      const signaler = createTypingSignaler({ typing, ...params });
+      const mode = resolveTypingMode({
+        configured: params.mode,
+        suppressTyping: "suppressTyping" in params && params.suppressTyping,
+        isGroupChat: false,
+        wasMentioned: false,
+      });
+      const signaler = createTypingSignaler({ typing, mode });
 
       await signaler.signalRunStart();
       await signaler.signalTextDelta("hi");

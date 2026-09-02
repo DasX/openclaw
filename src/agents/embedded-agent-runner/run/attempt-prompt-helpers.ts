@@ -37,19 +37,13 @@ import { log } from "../logger.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type PromptBuildHookRunner = {
-  hasHooks: (
-    hookName: "agent_turn_prepare" | "heartbeat_prompt_contribution" | "before_prompt_build",
-  ) => boolean;
+  hasHooks: (hookName: "agent_turn_prepare" | "before_prompt_build") => boolean;
   runAgentTurnPrepare?: (
     event: {
       prompt: string;
       messages: unknown[];
       queuedInjections: PluginNextTurnInjectionRecord[];
     },
-    ctx: PluginHookAgentContext,
-  ) => Promise<PluginAgentTurnPrepareResult | undefined>;
-  runHeartbeatPromptContribution?: (
-    event: { sessionKey?: string; agentId?: string; heartbeatName?: string },
     ctx: PluginHookAgentContext,
   ) => Promise<PluginAgentTurnPrepareResult | undefined>;
   runBeforePromptBuild: (
@@ -117,7 +111,7 @@ export async function resolvePromptBuildHookResult(params: {
     rememberDrainedInjections(runId, queuedContext.queuedInjections);
   }
   // Hook ordering mirrors the prompt assembly boundary: queued injections first,
-  // then prepare/heartbeat contributions, then prompt-build hooks.
+  // then prepare contributions, then prompt-build hooks.
   const turnPrepareResult =
     params.hookRunner?.runAgentTurnPrepare && params.hookRunner.hasHooks("agent_turn_prepare")
       ? await params.hookRunner
@@ -131,24 +125,6 @@ export async function resolvePromptBuildHookResult(params: {
           )
           .catch((hookErr: unknown) => {
             log.warn(`agent_turn_prepare hook failed: ${String(hookErr)}`);
-            return undefined;
-          })
-      : undefined;
-  const heartbeatContribution =
-    params.hookCtx.trigger === "heartbeat" &&
-    params.hookRunner?.runHeartbeatPromptContribution &&
-    params.hookRunner.hasHooks("heartbeat_prompt_contribution")
-      ? await params.hookRunner
-          .runHeartbeatPromptContribution(
-            {
-              sessionKey: params.hookCtx.sessionKey,
-              agentId: params.hookCtx.agentId,
-              heartbeatName: "heartbeat",
-            },
-            params.hookCtx,
-          )
-          .catch((hookErr: unknown) => {
-            log.warn(`heartbeat_prompt_contribution hook failed: ${String(hookErr)}`);
             return undefined;
           })
       : undefined;
@@ -174,13 +150,11 @@ export async function resolvePromptBuildHookResult(params: {
     prependContext: joinPresentTextSegments([
       queuedContext.prependContext,
       turnPrepareResult?.prependContext,
-      heartbeatContribution?.prependContext,
       promptBuildResult?.prependContext,
     ]),
     appendContext: joinPresentTextSegments([
       queuedContext.appendContext,
       turnPrepareResult?.appendContext,
-      heartbeatContribution?.appendContext,
       promptBuildResult?.appendContext,
     ]),
     prependSystemContext: wrapPluginSystemContextSection(promptBuildResult?.prependSystemContext),

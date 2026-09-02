@@ -143,8 +143,8 @@ describe("embedded attempt context injection", () => {
     expect(input.requesterSenderId).toBe("@alice:example.org");
   });
 
-  it.each(["heartbeat"] as const)(
-    "never skips %s bootstrap filtering",
+  it.each(["cron"] as const)(
+    "uses normal continuation policy for lightweight %s runs",
     async (bootstrapContextRunKind) => {
       const { result, hasCompletedBootstrapTurn, resolveBootstrapContextForRun } =
         await resolveBootstrapContext({
@@ -154,14 +154,14 @@ describe("embedded attempt context injection", () => {
           completed: true,
         });
 
-      expect(result.isContinuationTurn).toBe(false);
+      expect(result.isContinuationTurn).toBe(true);
       expect(result.shouldRecordCompletedBootstrapTurn).toBe(false);
-      expect(hasCompletedBootstrapTurn).not.toHaveBeenCalled();
-      expect(resolveBootstrapContextForRun).toHaveBeenCalledTimes(1);
+      expect(hasCompletedBootstrapTurn).toHaveBeenCalledOnce();
+      expect(resolveBootstrapContextForRun).not.toHaveBeenCalled();
     },
   );
 
-  it("runs full bootstrap injection after a successful non-heartbeat turn", async () => {
+  it("runs full bootstrap injection after a successful ordinary turn", async () => {
     const resolver = vi.fn(async () => ({
       bootstrapFiles: [{ name: "AGENTS.md", content: "bootstrap context" }],
       contextFiles: [{ path: "AGENTS.md", content: "bootstrap context" }],
@@ -178,7 +178,7 @@ describe("embedded attempt context injection", () => {
     expect(result.bootstrapFiles).toEqual([{ name: "AGENTS.md", content: "bootstrap context" }]);
   });
 
-  it.each(["heartbeat"] as const)(
+  it.each(["cron"] as const)(
     "does not record full bootstrap completion for %s runs",
     async (bootstrapContextRunKind) => {
       const { result } = await resolveBootstrapContext({

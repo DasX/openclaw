@@ -26,16 +26,17 @@ describe("CronService", () => {
     { name: "lexically different paths to the same store", alias: "lexical" },
   ] as const)("avoids duplicate runs when two services share $name", async ({ alias }) => {
     const store = await makeStorePath();
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const runSessionEvent = vi.fn(async () => ({ status: "ok" as const, executionStarted: true }));
+    const enqueueSessionEvent = vi.fn();
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
 
     const cronA = new CronService({
+      runSessionEvent,
       storePath: store.storePath,
       cronEnabled: true,
       log: noopLogger,
-      enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSystemEvent: vi.fn(),
+      enqueueSessionEvent,
       runIsolatedAgentJob,
     });
 
@@ -56,11 +57,12 @@ describe("CronService", () => {
     }
 
     const cronB = new CronService({
+      runSessionEvent,
       storePath: aliasedStorePath,
       cronEnabled: true,
       log: noopLogger,
-      enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSystemEvent: vi.fn(),
+      enqueueSessionEvent,
       runIsolatedAgentJob,
     });
 
@@ -72,8 +74,10 @@ describe("CronService", () => {
     await cronA.status();
     await cronB.status();
 
-    expect(enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(runSessionEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ text: "hello" }),
+    );
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
 
     cronA.stop();
     cronB.stop();
@@ -85,11 +89,12 @@ describe("CronService", () => {
     const aliasedStorePath = `${path.dirname(store.storePath)}/../${path.basename(path.dirname(store.storePath))}/${path.basename(store.storePath)}`;
     const createState = (storePath: string) =>
       createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath,
         cronEnabled: true,
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
     const events: string[] = [];
@@ -123,11 +128,12 @@ describe("CronService", () => {
     const store = await makeStorePath();
     const createService = () =>
       new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
     const cronA = createService();
@@ -160,16 +166,20 @@ describe("CronService", () => {
   it("re-arms a stale service after a missing remove reloads an earlier job", async () => {
     const store = await makeStorePath();
     const createState = () => {
-      const enqueueSystemEvent = vi.fn();
+      const runSessionEvent = vi.fn(async () => ({
+        status: "ok" as const,
+        executionStarted: true,
+      }));
       const state = createCronServiceState({
+        runSessionEvent,
         storePath: store.storePath,
         cronEnabled: true,
         log: noopLogger,
-        enqueueSystemEvent,
-        requestHeartbeat: vi.fn(),
+        enqueueSystemEvent: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
-      return { state, enqueueSystemEvent };
+      return { state, runSessionEvent };
     };
     const stale = createState();
     const writer = createState();
@@ -210,7 +220,9 @@ describe("CronService", () => {
 
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(stale.enqueueSystemEvent).toHaveBeenCalledWith("earlier-job", expect.any(Object));
+    expect(stale.runSessionEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ text: "earlier-job" }),
+    );
     if (stale.state.timer) {
       clearTimeout(stale.state.timer);
     }

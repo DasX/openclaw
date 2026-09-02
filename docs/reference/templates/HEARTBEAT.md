@@ -7,7 +7,7 @@ read_when:
 
 # HEARTBEAT.md is retired
 
-OpenClaw no longer creates `HEARTBEAT.md` in new workspaces or reads it at runtime. Heartbeat instructions now live in the system-owned monitor's cron scratch in the shared state database.
+OpenClaw no longer creates `HEARTBEAT.md` in new workspaces or reads it at runtime. Existing checklists migrate to an ordinary automation job's scratch in the shared state database; the job owns its schedule and execution settings.
 
 Manage the current scratch with the monitor job id from `openclaw cron list --all`:
 
@@ -18,11 +18,11 @@ openclaw cron scratch <jobId> --file notes.md
 openclaw cron scratch <jobId> --unset
 ```
 
-If an older workspace still contains `HEARTBEAT.md`, run `openclaw doctor --fix`. Doctor imports its instructions into monitor scratch, converts valid legacy `tasks:` entries into cron jobs, archives the original under the state directory, and removes the workspace file.
+If an older workspace still contains `HEARTBEAT.md`, run `openclaw doctor --fix`. Doctor imports its instructions into job scratch and converts supported legacy `tasks:` entries into ordinary jobs before archiving the original. Existing job IDs, history, scratch revisions and tombstones, disabled state, and scheduling anchors are preserved. Ambiguous or blocked input remains recoverable; follow Doctor's diagnostic instead of deleting it manually.
 
 ## Related
 
-- [Heartbeat](/gateway/heartbeat)
+- [Heartbeat migration](/gateway/heartbeat)
 - [Cron CLI](/cli/cron)
 - [Doctor](/cli/doctor)
-- [Heartbeat config](/gateway/config-agents)
+- [Retired heartbeat configuration](/gateway/config-agents#retired-heartbeat-configuration)

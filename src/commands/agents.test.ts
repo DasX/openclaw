@@ -435,7 +435,6 @@ describe("agents helpers", () => {
     const cfg: OpenClawConfig = {
       agents: {
         defaults: {
-          heartbeat: { agentId: "work", every: "5m" },
           systemAgent: { agentId: "WORK" },
           subagents: { allowAgents: ["work", "home"] },
         },
@@ -488,14 +487,12 @@ describe("agents helpers", () => {
     ]);
     expect(result.config.tools?.agentToAgent?.allow).toEqual(["home"]);
     expect(result.config.agents?.defaults?.subagents?.allowAgents).toEqual(["home"]);
-    expect(result.config.agents?.defaults?.heartbeat).toEqual({ every: "5m" });
     expect(result.config.agents?.defaults?.systemAgent).toBeUndefined();
     expect(result.config.talk).toEqual({ provider: "test-provider" });
     expect(result.config.agents?.entries?.home?.subagents?.allowAgents).toEqual(["home"]);
     expect(result.removedBindings).toBe(1);
     expect(result.removedAllow).toBe(1);
     expect(result.clearedOwnerRefs).toEqual([
-      "agents.defaults.heartbeat.agentId",
       "agents.defaults.systemAgent.agentId",
       "talk.agentId",
     ]);
@@ -515,21 +512,5 @@ describe("agents helpers", () => {
     expect(result.config.agents?.entries).toEqual({
       research: { workspace: "/srv/fleet/research" },
     });
-  });
-
-  it("removes ambient heartbeat policy when its owner leaves a surviving fleet", () => {
-    const result = pruneAgentConfig(
-      {
-        agents: {
-          ownership: "explicit",
-          defaults: { heartbeat: { agentId: "ops", every: "5m" } },
-          entries: { ops: {}, research: {}, writer: {} },
-        },
-      },
-      "ops",
-    );
-
-    expect(result.config.agents?.defaults?.heartbeat).toBeUndefined();
-    expect(result.clearedOwnerRefs).toContain("agents.defaults.heartbeat");
   });
 });

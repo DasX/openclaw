@@ -11,14 +11,21 @@ export const pluginLoaderCacheState = new PluginLoaderCacheState<PluginRegistry>
 
 // Registry identities cross built/source module copies. Their activation and
 // revocation state must share that lifetime, or valid owners fail and revocations split.
-const { retiredRegistries, activatedRegistries, registryEpochs, recordEpochs, revokedRecordEpoch } =
-  resolveGlobalSingleton(Symbol.for("openclaw.pluginRegistryLifecycle"), () => ({
-    retiredRegistries: new WeakSet<PluginRegistry>(),
-    activatedRegistries: new WeakSet<PluginRegistry>(),
-    registryEpochs: new WeakMap<PluginRegistry, object>(),
-    recordEpochs: new WeakMap<PluginRegistry, WeakMap<PluginRecord, object>>(),
-    revokedRecordEpoch: Object.freeze({}),
-  }));
+const {
+  retiredRegistries,
+  activatedRegistries,
+  registryEpochs,
+  pendingRegistryEpochs,
+  recordEpochs,
+  revokedRecordEpoch,
+} = resolveGlobalSingleton(Symbol.for("openclaw.pluginRegistryLifecycle"), () => ({
+  retiredRegistries: new WeakSet<PluginRegistry>(),
+  activatedRegistries: new WeakSet<PluginRegistry>(),
+  registryEpochs: new WeakMap<PluginRegistry, object>(),
+  pendingRegistryEpochs: new WeakMap<PluginRegistry, object>(),
+  recordEpochs: new WeakMap<PluginRegistry, WeakMap<PluginRecord, object>>(),
+  revokedRecordEpoch: Object.freeze({}),
+}));
 
 export type PluginRegistryLifecycleEpoch = object;
 type PluginRecordLifecycleEpoch = object;
@@ -28,6 +35,7 @@ export function markPluginRegistryRetired(registry: PluginRegistry | null | unde
   if (registry) {
     retiredRegistries.add(registry);
     registryEpochs.delete(registry);
+    pendingRegistryEpochs.delete(registry);
     // Retired registrations cannot be reused and retain their Gateway/cache generation.
     // Release every cache key now, including keys that will never be looked up again.
     pluginLoaderCacheState.deleteValue(registry);
@@ -37,11 +45,15 @@ export function markPluginRegistryRetired(registry: PluginRegistry | null | unde
 /** Marks a registry active and clears any previous retired state. */
 export function markPluginRegistryActive(registry: PluginRegistry | null | undefined): void {
   if (registry) {
+    const firstEpoch = !activatedRegistries.has(registry)
+      ? pendingRegistryEpochs.get(registry)
+      : undefined;
     activatedRegistries.add(registry);
     retiredRegistries.delete(registry);
     // Every activation owns a fresh opaque generation. A retired closure cannot
     // regain authority merely because the same registry object becomes active.
-    registryEpochs.set(registry, Object.freeze({}));
+    registryEpochs.set(registry, firstEpoch ?? Object.freeze({}));
+    pendingRegistryEpochs.delete(registry);
   }
 }
 
@@ -68,6 +80,10 @@ export function activatePluginRecordLifecycleEpoch(
   const registryEpoch = registryEpochs.get(registry);
   if (!registryEpoch || retiredRegistries.has(registry)) {
     return undefined;
+  }
+  const existing = recordEpochs.get(registry)?.get(record);
+  if (existing && isPluginRecordLifecycleEpochActive(registry, record, existing)) {
+    return existing;
   }
   const epoch = Object.freeze({ registryEpoch });
   const epochs = recordEpochs.get(registry) ?? new WeakMap<PluginRecord, object>();
@@ -118,9 +134,25 @@ export function isPluginRegistryRetired(registry: PluginRegistry): boolean {
 export function capturePluginLifecycleAuthority(
   registry: PluginRegistry,
   record?: PluginRecord,
-  options?: { scopedRuntime?: boolean },
+  options?: { scopedRuntime?: boolean; registration?: boolean },
 ): (() => boolean) | undefined {
-  const epoch = registryEpochs.get(registry);
+  // Registration can precede first activation. Reserve that exact epoch now;
+  // an unused retained callback must never acquire a later activation's authority.
+  let epoch = registryEpochs.get(registry);
+  if (
+    options?.registration &&
+    !epoch &&
+    !activatedRegistries.has(registry) &&
+    !retiredRegistries.has(registry)
+  ) {
+    epoch = pendingRegistryEpochs.get(registry) ?? Object.freeze({});
+    pendingRegistryEpochs.set(registry, epoch);
+  }
+  if (options?.registration && epoch && record) {
+    const epochs = recordEpochs.get(registry) ?? new WeakMap<PluginRecord, object>();
+    epochs.set(record, Object.freeze({ registryEpoch: epoch }));
+    recordEpochs.set(registry, epochs);
+  }
   const recordEpoch = record && recordEpochs.get(registry)?.get(record);
   if (
     (!epoch && !options?.scopedRuntime) ||
@@ -130,6 +162,7 @@ export function capturePluginLifecycleAuthority(
     return undefined;
   }
   return () =>
+    (!options?.registration || activatedRegistries.has(registry)) &&
     registryEpochs.get(registry) === epoch &&
     !retiredRegistries.has(registry) &&
     (!record ||

@@ -464,7 +464,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: infra-runtime now names its error exports explicitly.
       // -1: infra-runtime excludes the internal system-event receipt API.
       // -1: infra-runtime re-exports number coercion directly from its canonical owner.
-      50,
+      // -1: pin the shipped heartbeat event exports; cron projection is host-only.
+      49,
       env,
     ),
   };

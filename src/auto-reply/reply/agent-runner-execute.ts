@@ -31,8 +31,6 @@ import {
 import type { FollowupRun } from "./queue.js";
 import type { ReplyMediaContext } from "./reply-media-paths.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
-import { recordReplyOperationAgentTurn } from "./reply-operation-agent-turn-state.js";
-import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
@@ -75,7 +73,7 @@ type ExecutePreparedReplyAgentRunInput = Pick<
   resolveVisibleReplyDelivery: () => Promise<boolean>;
   getActiveIsNewSession: () => boolean;
   getActiveSessionEntry: () => SessionEntry | undefined;
-  isHeartbeat: boolean;
+
   isRestartRecoveryArmed: () => boolean;
   pendingToolTasks: Set<Promise<void>>;
   replyMediaContext: ReplyMediaContext;
@@ -128,7 +126,7 @@ export async function executePreparedReplyAgentRun(
     followupRun,
     getActiveIsNewSession,
     getActiveSessionEntry,
-    isHeartbeat,
+
     isRestartRecoveryArmed,
     opts,
     pendingToolTasks,
@@ -203,7 +201,7 @@ export async function executePreparedReplyAgentRun(
       sessionKey,
       runtimePolicySessionKey,
       storePath,
-      isHeartbeat,
+
       replyOperation,
       onVisibleErrorPayloads: (payloads) => {
         logVerbose(
@@ -231,7 +229,7 @@ export async function executePreparedReplyAgentRun(
       sessionKey,
       runtimePolicySessionKey,
       storePath,
-      isHeartbeat,
+
       abortSignal: replyOperation.abortSignal,
       onCompactionStart: () => replyOperation.setPhase("preflight_compacting"),
       onSessionIdChanged: (sessionId) => replyOperation.updateSessionId(sessionId),
@@ -366,7 +364,7 @@ export async function executePreparedReplyAgentRun(
           shouldEmitToolOutput,
           pendingToolTasks,
           resetSessionAfterRoleOrderingConflict,
-          isHeartbeat,
+
           sessionKey,
           runtimePolicySessionKey,
           getActiveSessionEntry,
@@ -381,17 +379,6 @@ export async function executePreparedReplyAgentRun(
     },
   );
   const operationSuperseded = isReplyOperationSuperseded(replyOperation);
-  recordReplyOperationAgentTurn(
-    resolveReplyOperationRunState(opts),
-    operationSuperseded
-      ? "superseded"
-      : runOutcome.outcome.kind === "rejected"
-        ? "failed"
-        : runOutcome.outcome.kind === "aborted"
-          ? "cancelled"
-          : runOutcome.outcome.status,
-    replyOperation,
-  );
   activeSessionEntry = getActiveSessionEntry();
   const activeIsNewSession = getActiveIsNewSession();
 
@@ -430,7 +417,7 @@ export async function executePreparedReplyAgentRun(
     commandBody,
     defaultModel,
     followupRun,
-    isHeartbeat,
+
     opts,
     pendingToolTasks,
     preflightCompactionApplied,

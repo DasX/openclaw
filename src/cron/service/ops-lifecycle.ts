@@ -1,4 +1,5 @@
 import { materializeLegacyDefaultCronJobOwners } from "../legacy-default-agent-owner-migration.js";
+import { subscribeCronJobsStoreMutations } from "../store.js";
 import { failureNotificationDeliveryFromJobState } from "./failure-alerts.js";
 import {
   configureForeignReceiptMonitor,
@@ -11,6 +12,7 @@ import {
 import { nextWakeAtMs } from "./jobs-scheduling.js";
 import { locked } from "./locked.js";
 import { emitCronRunFinished } from "./ops-run-preparation.js";
+import { ensureLoadedForRead } from "./ops-shared.js";
 import { cancelCronRunAdmissionWaiters } from "./run-admission.js";
 import {
   proposeCronRunRecovery,
@@ -24,6 +26,8 @@ import { STARTUP_INTERRUPTED_ERROR, type InterruptedStartupRun } from "./startup
 import type { CronServiceState } from "./state.js";
 import { ensureLoaded, runPostPersistCronNotifications } from "./store.js";
 import { armTimer, runMissedJobs, stopTimer } from "./timer.js";
+
+const mutationSubscriptions = new WeakMap<CronServiceState, () => void>();
 
 function emitInterruptedRun(state: CronServiceState, interrupted: InterruptedStartupRun): void {
   const job = state.store?.jobs.find((entry) => entry.id === interrupted.jobId);
@@ -119,6 +123,21 @@ async function reconcileForeignRunReceipts(state: CronServiceState): Promise<voi
 /** Starts the cron service, atomically repairs abandoned runs, and arms scheduling. */
 export async function start(state: CronServiceState): Promise<void> {
   state.stopped = false;
+  mutationSubscriptions.get(state)?.();
+  const generation = state.lifecycleGeneration;
+  mutationSubscriptions.set(
+    state,
+    subscribeCronJobsStoreMutations(state.deps.storePath, () => {
+      void locked(state, async () => {
+        if (state.stopped || state.lifecycleGeneration !== generation) {
+          return;
+        }
+        await ensureLoadedForRead(state);
+      }).catch((error: unknown) =>
+        state.deps.log.error({ err: String(error) }, "cron: committed job adoption failed"),
+      );
+    }),
+  );
   stopForeignReceiptMonitor(state);
   configureForeignReceiptMonitor(state, async () => await reconcileForeignRunReceipts(state));
   if (!state.deps.cronEnabled) {
@@ -214,6 +233,8 @@ export async function start(state: CronServiceState): Promise<void> {
 
 /** Stops the cron service timer without mutating persisted job state. */
 export function stop(state: CronServiceState) {
+  mutationSubscriptions.get(state)?.();
+  mutationSubscriptions.delete(state);
   state.lifecycleGeneration += 1;
   state.stopped = true;
   cancelCronRunAdmissionWaiters(state);

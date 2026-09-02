@@ -2,9 +2,13 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { enqueueSessionEventForHost as enqueueSessionEvent } from "../auto-reply/reply/session-event-handoff.js";
 import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { requestHeartbeat, setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { applyPathPrepend, findPathKey } from "../infra/path-prepend.js";
 import {
   peekSystemEventEntries,
@@ -48,7 +52,21 @@ vi.mock("../infra/exec-approval-surface.js", () => ({
     !channel || channel === "internal" || channel === "tui",
 }));
 
-vi.mock("../utils/delivery-context.shared.js", () => ({
+vi.mock("../auto-reply/reply/session-event-handoff.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../auto-reply/reply/session-event-handoff.js")>();
+  return { ...actual, enqueueSessionEventForHost: vi.fn(actual.enqueueSessionEventForHost) };
+});
+
+vi.mock("../auto-reply/dispatch.js", () => ({
+  dispatchInboundMessageWithRoutedChannelDispatcher: vi.fn(async (params) => {
+    params.replyOptions.turnAdoptionLifecycle.onDeferred();
+    return { deferredToActiveRun: true };
+  }),
+}));
+
+vi.mock("../utils/delivery-context.shared.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/delivery-context.shared.js")>()),
   normalizeDeliveryContext: (context?: {
     channel?: string | null;
     to?: string | number | null;
@@ -443,19 +461,19 @@ async function startBackgroundCommand(tool: ExecToolInstance, command: string) {
   return requireRunningSessionId(result);
 }
 
-async function expectNotifyOnExitWake(tool: ExecToolInstance, expected: Record<string, unknown>) {
-  const wakeHandler = vi.fn().mockResolvedValue({ status: "skipped", reason: "disabled" });
-  const dispose = setHeartbeatWakeHandler(
-    wakeHandler as unknown as Parameters<typeof setHeartbeatWakeHandler>[0],
-  );
-  try {
-    await startBackgroundCommand(tool, shellEcho("notify"));
-    await expect
-      .poll(() => wakeHandler.mock.calls.at(0)?.[0], NOTIFY_POLL_OPTIONS)
-      .toEqual(expected);
-  } finally {
-    dispose();
-  }
+async function expectNotifyOnExitHandoff(tool: ExecToolInstance) {
+  await startBackgroundCommand(tool, shellEcho("notify"));
+  await expect
+    .poll(() => vi.mocked(enqueueSessionEvent).mock.calls.at(0)?.[1], NOTIFY_POLL_OPTIONS)
+    .toMatchObject({
+      sessionKey: DEFAULT_NOTIFY_SESSION_KEY,
+      agentId: "main",
+      source: "exec",
+      expectedTarget: expect.objectContaining({
+        agentId: "main",
+        sessionKey: DEFAULT_NOTIFY_SESSION_KEY,
+      }),
+    });
 }
 
 async function drainNotifyEvents(sessionKey = DEFAULT_NOTIFY_SESSION_KEY) {
@@ -779,25 +797,14 @@ describe("exec exit codes", () => {
 describe("exec notifyOnExit", () => {
   useCapturedEnv([...SHELL_ENV_KEYS], applyDefaultShellEnv);
 
-  async function drainPendingHeartbeatWakes(): Promise<void> {
-    const handler = vi.fn(async () => ({ status: "ran" as const, durationMs: 0 }));
-    const dispose = setHeartbeatWakeHandler(handler);
-    try {
-      requestHeartbeat({
-        source: "other",
-        intent: "immediate",
-        reason: "test-cleanup",
-        coalesceMs: 0,
-      });
-      await expect.poll(() => handler.mock.calls.length, NOTIFY_POLL_OPTIONS).toBeGreaterThan(0);
-    } finally {
-      dispose();
-    }
-  }
-
-  beforeEach(drainPendingHeartbeatWakes);
-
-  afterEach(drainPendingHeartbeatWakes);
+  beforeEach(() => {
+    setRuntimeConfigSnapshot(notifyCfg);
+    vi.mocked(enqueueSessionEvent).mockClear();
+  });
+  afterEach(() => {
+    resetSystemEventsForTest();
+    clearRuntimeConfigSnapshot();
+  });
 
   it("enqueues a system event when a backgrounded exec exits", async () => {
     const tool = createNotifyOnExitExecTool();
@@ -853,13 +860,8 @@ describe("exec notifyOnExit", () => {
     expect(queuedEvent?.deliveryContext?.threadId).toBe("47");
   });
 
-  it("scopes notifyOnExit heartbeat wake to the exec session key", async () => {
-    await expectNotifyOnExitWake(createNotifyOnExitExecTool(), {
-      source: "exec-event",
-      intent: "event",
-      reason: "exec-event",
-      sessionKey: DEFAULT_NOTIFY_SESSION_KEY,
-    });
+  it("hands off notifyOnExit to the original exec session", async () => {
+    await expectNotifyOnExitHandoff(createNotifyOnExitExecTool());
   });
 
   it.each<NotifyNoopCase>(NOOP_NOTIFY_CASES)("$label", runNotifyNoopCase);

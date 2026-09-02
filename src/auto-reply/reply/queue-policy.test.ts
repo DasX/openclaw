@@ -7,29 +7,26 @@ describe("resolveActiveRunQueueAction", () => {
     expect(
       resolveActiveRunQueueAction({
         isActive: false,
-        isHeartbeat: false,
         shouldFollowup: true,
         queueMode: "collect",
       }),
     ).toBe("run-now");
   });
 
-  it("drops heartbeat runs while another run is active", () => {
+  it("queues followup work while another run is active", () => {
     expect(
       resolveActiveRunQueueAction({
         isActive: true,
-        isHeartbeat: true,
         shouldFollowup: true,
         queueMode: "collect",
       }),
-    ).toBe("drop");
+    ).toBe("enqueue-followup");
   });
 
-  it("enqueues followups for non-heartbeat active runs", () => {
+  it("enqueues followups in collect mode", () => {
     expect(
       resolveActiveRunQueueAction({
         isActive: true,
-        isHeartbeat: false,
         shouldFollowup: true,
         queueMode: "collect",
       }),
@@ -41,7 +38,6 @@ describe("resolveActiveRunQueueAction", () => {
       expect(
         resolveActiveRunQueueAction({
           isActive: true,
-          isHeartbeat: false,
           shouldFollowup: true,
           queueMode,
           resetTriggered: true,
@@ -50,23 +46,21 @@ describe("resolveActiveRunQueueAction", () => {
     }
   });
 
-  it("keeps heartbeat drops ahead of reset-triggered turns", () => {
+  it("lets lifecycle reset admission supersede queued followups", () => {
     expect(
       resolveActiveRunQueueAction({
         isActive: true,
-        isHeartbeat: true,
         shouldFollowup: true,
         queueMode: "followup",
         resetTriggered: true,
       }),
-    ).toBe("drop");
+    ).toBe("run-now");
   });
 
   it("ignores reset-triggered policy when there is no active run", () => {
     expect(
       resolveActiveRunQueueAction({
         isActive: false,
-        isHeartbeat: false,
         shouldFollowup: true,
         queueMode: "collect",
         resetTriggered: true,

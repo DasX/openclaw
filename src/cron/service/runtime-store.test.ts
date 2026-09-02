@@ -27,12 +27,13 @@ describe("cron runtime row publication", () => {
       nextRunAtMs: now + 60_000,
     });
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/runtime-store-import.json",
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
     state.store = { version: 1, jobs: [resident] };

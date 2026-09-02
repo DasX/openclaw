@@ -23,13 +23,12 @@ export function validateFirstOnboardingAgentName(value: string | undefined): str
   return validation.ok ? undefined : `${validation.message}. Choose another name.`;
 }
 
-function isInjectedMainRoster(config: OpenClawConfig): boolean {
+function isBareMainRoster(config: OpenClawConfig): boolean {
   const roster = listAgentEntries(config);
   const entry = roster[0];
   return (
     roster.length === 1 &&
     entry?.id === "main" &&
-    entry?.default === true &&
     Object.keys(entry).every((key) => key === "id" || key === "default")
   );
 }
@@ -91,7 +90,7 @@ export async function ensureOnboardingAgent(params: {
   const candidateRoster = listAgentEntries(params.config);
   if (
     candidateRoster.length > 0 &&
-    (params.preserveCandidateRoster || !isInjectedMainRoster(params.config))
+    (params.preserveCandidateRoster || !isBareMainRoster(params.config))
   ) {
     return {
       config: params.config,
@@ -119,9 +118,12 @@ export async function ensureOnboardingAgent(params: {
     };
   }
   const firstAgentName = params.firstAgent ? params.firstAgent.name.trim() : "main";
+  const agentId = normalizeAgentId(firstAgentName);
+  const { resolveDefaultProactiveCadenceMs } = await import("../cron/default-proactive-job.js");
   const created = await createAgent({
+    proactiveCadenceMs: resolveDefaultProactiveCadenceMs(params.config, agentId),
     entry: {
-      id: normalizeAgentId(firstAgentName),
+      id: agentId,
       name: firstAgentName,
       workspace: params.workspace,
     },

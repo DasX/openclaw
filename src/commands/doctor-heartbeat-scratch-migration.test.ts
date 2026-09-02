@@ -12,6 +12,7 @@ import {
   resolveCronJobsStorePathFromConfig,
 } from "../cron/store.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { ensureHeartbeatMonitorJobs } from "./doctor-heartbeat-cadence-migration.js";
 import {
   collectHeartbeatScratchMigrationFindings,
   maybeMigrateHeartbeatFilesToScratch,
@@ -65,7 +66,7 @@ async function loadMonitor(cfg?: OpenClawConfig) {
   const storePath = cfg ? resolveCronJobsStorePathFromConfig(cfg) : resolveCronJobsStorePath();
   const store = await loadCronJobsStore(storePath);
   const monitor = store.jobs.find(
-    (job) => job.agentId === "main" && job.payload.kind === "heartbeat",
+    (job) => job.agentId === "main" && job.payload.kind === "agentTurn",
   );
   if (!monitor) {
     throw new Error("expected migrated heartbeat monitor");
@@ -186,7 +187,7 @@ describe("HEARTBEAT.md cron scratch migration", () => {
     const store = await loadCronJobsStore(storePath);
     for (const agentId of ["main", "ops"]) {
       const monitor = store.jobs.find(
-        (job) => job.agentId === agentId && job.payload.kind === "heartbeat",
+        (job) => job.agentId === agentId && job.payload.kind === "agentTurn",
       );
       expect(monitor, agentId).toBeDefined();
       expect(readCronJobScratchState(storePath, monitor!.id).scratch?.content, agentId).toBe(
@@ -195,104 +196,32 @@ describe("HEARTBEAT.md cron scratch migration", () => {
     }
   });
 
-  it("leaves a shared workspace file untouched when only a disabled agent is enrolled", async () => {
-    const fixture = await createFixture();
-    const cfg = {
-      agents: {
-        defaults: { heartbeat: { every: "30m" }, workspace: fixture.workspace },
-        list: [
-          { id: "main", workspace: fixture.workspace },
-          { id: "ollama", workspace: fixture.workspace, heartbeat: { every: "0m" } },
-        ],
-      },
-    } as OpenClawConfig;
-    await fs.writeFile(fixture.heartbeatPath, "shared checklist\n", "utf8");
-
-    await expect(collectHeartbeatScratchMigrationFindings(cfg)).resolves.toEqual([]);
-    const result = await maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true });
-
-    expect(result).toEqual({ changes: [], warnings: [] });
-    await expect(fs.readFile(fixture.heartbeatPath, "utf8")).resolves.toBe("shared checklist\n");
-  });
-
-  it("copies into enabled scratch while retaining a file shared with a disabled agent", async () => {
+  it("imports shared scratch and tasks into disabled owners without re-enabling them", async () => {
     const fixture = await createFixture();
     const cfg = sharedHeartbeatConfig(fixture.workspace);
-    await fs.writeFile(fixture.heartbeatPath, "shared checklist\n", "utf8");
-
-    await expect(collectHeartbeatScratchMigrationFindings(cfg)).resolves.toEqual([]);
-    const result = await maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true });
-
-    expect(result.warnings).toEqual([]);
-    expect(result.changes).toHaveLength(1);
-    expect(result.changes[0]).toContain("retained the shared legacy file");
-    await expect(fs.readFile(fixture.heartbeatPath, "utf8")).resolves.toBe("shared checklist\n");
-    const { monitor, storePath } = await loadMonitor(cfg);
-    expect(readCronJobScratchState(storePath, monitor.id).scratch?.content).toBe(
-      "shared checklist\n",
-    );
-
-    const rename = vi.spyOn(fs, "rename");
-    const rerun = await maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true });
-    expect(rerun).toEqual({ changes: [], warnings: [] });
-    expect(rename).not.toHaveBeenCalled();
-    await expect(fs.readFile(fixture.heartbeatPath, "utf8")).resolves.toBe("shared checklist\n");
-  });
-
-  it("imports a retained task source after its disabled owner is re-enabled", async () => {
-    const fixture = await createFixture();
     const source =
       "# Checklist\n\ntasks:\n  - name: inbox\n    interval: 1h\n    prompt: Check inbox\n";
-    const mixed = sharedHeartbeatConfig(fixture.workspace);
-    await fs.writeFile(fixture.heartbeatPath, source, "utf8");
-
-    await maybeMigrateHeartbeatFilesToScratch({ cfg: mixed, shouldRepair: true });
-    await maybeMigrateHeartbeatTasksToCron({ cfg: mixed, shouldRepair: true });
-    const enabled = sharedHeartbeatConfig(fixture.workspace, "30m");
-
-    const result = await maybeMigrateHeartbeatFilesToScratch({
-      cfg: enabled,
-      shouldRepair: true,
-    });
-
+    await fs.writeFile(fixture.heartbeatPath, source);
+    expect(await collectHeartbeatScratchMigrationFindings(cfg)).toHaveLength(2);
+    const result = await maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true });
     expect(result.warnings).toEqual([]);
+    expect(result.changes).toHaveLength(2);
     await expect(fs.access(fixture.heartbeatPath)).rejects.toMatchObject({ code: "ENOENT" });
-    const storePath = resolveCronJobsStorePath();
-    const store = await loadCronJobsStore(storePath);
-    const monitor = store.jobs.find(
-      (job) => job.agentId === "ollama" && job.payload.kind === "heartbeat",
+    const storePath = resolveCronJobsStorePathFromConfig(cfg);
+    const monitors = (await loadCronJobsStore(storePath)).jobs;
+    for (const monitor of monitors) {
+      expect(readCronJobScratchState(storePath, monitor.id).scratch?.content).toBe(source);
+    }
+    await maybeMigrateHeartbeatTasksToCron({ cfg, shouldRepair: true });
+    const disabled = (await loadCronJobsStore(storePath)).jobs.filter(
+      (job) => job.agentId === "ollama",
     );
-    expect(monitor).toBeDefined();
-    expect(readCronJobScratchState(storePath, monitor!.id).scratch?.content).toBe(source);
-  });
-
-  it("imports a changed retained source into a re-enabled owner without overwriting its peer", async () => {
-    const fixture = await createFixture();
-    const mixed = sharedHeartbeatConfig(fixture.workspace);
-    await fs.writeFile(fixture.heartbeatPath, "original checklist\n", "utf8");
-    await maybeMigrateHeartbeatFilesToScratch({ cfg: mixed, shouldRepair: true });
-    await fs.writeFile(fixture.heartbeatPath, "updated checklist\n", "utf8");
-    const enabled = sharedHeartbeatConfig(fixture.workspace, "30m");
-
-    const result = await maybeMigrateHeartbeatFilesToScratch({
-      cfg: enabled,
-      shouldRepair: true,
+    expect(disabled).toHaveLength(2);
+    expect(disabled.every((job) => !job.enabled)).toBe(true);
+    expect(await maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true })).toEqual({
+      changes: [],
+      warnings: [],
     });
-
-    expect(result.changes).toHaveLength(1);
-    expect(result.changes[0]).toContain("another heartbeat owner's scratch was left unchanged");
-    expect(result.changes[0]).not.toContain("disabled");
-    expect(result.warnings.join("\n")).toContain("already has different cron scratch");
-    await expect(fs.readFile(fixture.heartbeatPath, "utf8")).resolves.toBe("updated checklist\n");
-    const storePath = resolveCronJobsStorePath();
-    const store = await loadCronJobsStore(storePath);
-    const scratchByAgentId = new Map(
-      store.jobs
-        .filter((job) => job.payload.kind === "heartbeat")
-        .map((job) => [job.agentId, readCronJobScratchState(storePath, job.id).scratch?.content]),
-    );
-    expect(scratchByAgentId.get("main")).toBe("original checklist\n");
-    expect(scratchByAgentId.get("ollama")).toBe("updated checklist\n");
   });
 
   it("does not import stale bytes while retaining a shared disabled-owner file", async () => {
@@ -316,9 +245,16 @@ describe("HEARTBEAT.md cron scratch migration", () => {
     expect(readCronJobScratchState(storePath, monitor.id)).toEqual({ currentRevision: 0 });
   });
 
-  it("rolls back retained scratch when the claimed inode changes after acquisition", async () => {
+  it("retains pending migration ownership and monotonic CAS after an inode edit", async () => {
     const fixture = await createFixture();
     const cfg = sharedHeartbeatConfig(fixture.workspace);
+    const monitors = await ensureHeartbeatMonitorJobs(cfg, resolveCronJobsStorePathFromConfig(cfg));
+    writeCronJobScratch({
+      storePath: resolveCronJobsStorePathFromConfig(cfg),
+      jobId: monitors.get("ollama")!.id,
+      content: "Operator-owned checklist",
+      expectedRevision: 0,
+    });
     await fs.writeFile(fixture.heartbeatPath, "planned content\n", "utf8");
     const sourceHandle = await fs.open(fixture.heartbeatPath, "r+");
     const link = fs.link.bind(fs);
@@ -342,12 +278,38 @@ describe("HEARTBEAT.md cron scratch migration", () => {
       "post-claim descriptor edit\n",
     );
     const { monitor, storePath } = await loadMonitor(cfg);
-    expect(readCronJobScratchState(storePath, monitor.id)).toEqual({ currentRevision: 0 });
+    const pending = readCronJobScratchState(storePath, monitor.id);
+    expect(pending).toMatchObject({
+      currentRevision: 1,
+      scratch: { content: "planned content\n", sourceSha256: expect.any(String) },
+    });
+    expect(
+      writeCronJobScratch({
+        storePath,
+        jobId: monitor.id,
+        content: "stale writer",
+        expectedRevision: 0,
+      }),
+    ).toMatchObject({ ok: false, reason: "revision-conflict" });
+    await maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true });
+    const retried = readCronJobScratchState(storePath, monitor.id);
+    expect(retried.currentRevision).toBe(2);
+    expect(retried.scratch?.content).toBe(await fs.readFile(fixture.heartbeatPath, "utf8"));
+    expect(readCronJobScratchState(storePath, monitors.get("ollama")!.id).scratch?.content).toBe(
+      "Operator-owned checklist",
+    );
   });
 
-  it("rolls back retained scratch when the claimed inode changes during restoration", async () => {
+  it("preserves pending bytes across restoration races without overriding operator edits", async () => {
     const fixture = await createFixture();
     const cfg = sharedHeartbeatConfig(fixture.workspace);
+    const monitors = await ensureHeartbeatMonitorJobs(cfg, resolveCronJobsStorePathFromConfig(cfg));
+    writeCronJobScratch({
+      storePath: resolveCronJobsStorePathFromConfig(cfg),
+      jobId: monitors.get("ollama")!.id,
+      content: "Operator-owned checklist",
+      expectedRevision: 0,
+    });
     await fs.writeFile(fixture.heartbeatPath, "planned content\n", "utf8");
     const sourceHandle = await fs.open(fixture.heartbeatPath, "r+");
     const link = fs.link.bind(fs);
@@ -371,7 +333,26 @@ describe("HEARTBEAT.md cron scratch migration", () => {
       "restore-window descriptor edit\n",
     );
     const { monitor, storePath } = await loadMonitor(cfg);
-    expect(readCronJobScratchState(storePath, monitor.id)).toEqual({ currentRevision: 0 });
+    const pending = readCronJobScratchState(storePath, monitor.id);
+    expect(pending).toMatchObject({
+      currentRevision: 1,
+      scratch: { content: "planned content\n", sourceSha256: expect.any(String) },
+    });
+    expect(
+      writeCronJobScratch({
+        storePath,
+        jobId: monitor.id,
+        content: "stale writer",
+        expectedRevision: 0,
+      }),
+    ).toMatchObject({ ok: false, reason: "revision-conflict" });
+    await maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true });
+    const retried = readCronJobScratchState(storePath, monitor.id);
+    expect(retried.currentRevision).toBe(2);
+    expect(retried.scratch?.content).toBe(await fs.readFile(fixture.heartbeatPath, "utf8"));
+    expect(readCronJobScratchState(storePath, monitors.get("ollama")!.id).scratch?.content).toBe(
+      "Operator-owned checklist",
+    );
   });
 
   it("respects a configured cron store partition", async () => {

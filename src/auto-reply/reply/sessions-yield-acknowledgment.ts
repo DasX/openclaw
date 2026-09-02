@@ -5,7 +5,7 @@ export function buildSessionsYieldAcknowledgmentPayload(params: {
   yielded: boolean;
   yieldAcknowledgment?: string;
   isInteractive: boolean;
-  isHeartbeat?: boolean;
+
   silentExpected?: boolean;
   isSubagentSession: boolean;
   hasExplicitSilentReply: boolean;
@@ -16,7 +16,6 @@ export function buildSessionsYieldAcknowledgmentPayload(params: {
     !params.yielded ||
     !text ||
     !params.isInteractive ||
-    params.isHeartbeat === true ||
     params.silentExpected === true ||
     params.isSubagentSession ||
     params.hasExplicitSilentReply ||

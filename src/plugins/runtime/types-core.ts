@@ -3,7 +3,7 @@ import type { CreateChannelIngressDrainOptions } from "../../channels/message/in
 import type { CreateChannelIngressQueueOptions } from "../../channels/message/ingress-queue.js";
 import type { ConfigMutationBase } from "../../config/mutation-types.js";
 import type { SessionPluginJsonValue } from "../../config/sessions/types.js";
-import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
+import type { HeartbeatRunResult } from "../../infra/heartbeat-wake-contracts.js";
 import type { LogLevel } from "../../logging/levels.js";
 import type { MediaUnderstandingRuntime } from "../../media-understanding/runtime-types.js";
 import type { PluginRuntimeTaskFlows, PluginRuntimeTaskRuns } from "./runtime-tasks.types.js";
@@ -213,7 +213,7 @@ export type RunHeartbeatOnceOptions = {
   reason?: string;
   agentId?: string;
   sessionKey?: string;
-  /** Override heartbeat config (e.g. `{ target: "last" }` to deliver to the last active channel). */
+  /** @deprecated Per-run delivery selection; configured delivery restrictions still apply. */
   heartbeat?: { target?: string };
 };
 
@@ -411,17 +411,20 @@ export type PluginRuntimeCore = {
     }) => Promise<{ ok: true; runId: string } | { ok: false; reason: string }>;
   };
   system: {
+    captureSessionEventTarget: typeof import("./runtime-session-events.js").captureSessionEventTarget;
+    enqueueSessionEvent: typeof import("./runtime-session-events.js").enqueueSessionEvent;
     enqueueSystemEvent: typeof import("../../infra/system-events.js").enqueueSystemEvent;
+    /** @deprecated Use enqueueSessionEvent or an ordinary automation; retained through at least one stable replacement release. */
     requestHeartbeat: typeof import("../../infra/heartbeat-wake.js").requestHeartbeat;
     /**
-     * @deprecated Use `requestHeartbeat({ source, intent, reason })` so wake producers declare
-     * scheduler intent explicitly.
+     * @deprecated Use enqueueSessionEvent with an explicit agent/session.
+     * Retained through at least one stable replacement release; removal requires a separately approved breaking SDK release.
      */
     requestHeartbeatNow: (opts?: RuntimeRequestHeartbeatNowOptions) => void;
     /**
-     * Run a single heartbeat cycle immediately (bypassing the coalesce timer).
-     * Accepts an optional `heartbeat` config override so callers can choose
-     * an explicit destination or opt into internal-only `target: "none"` runs.
+     * @deprecated Executes one receipt-owned ordinary automation with per-run delivery selection.
+     * Use the automation API; retained through at least one stable replacement release.
+     * Removal requires a separately approved breaking SDK release.
      */
     runHeartbeatOnce: (opts?: RunHeartbeatOnceOptions) => Promise<HeartbeatRunResult>;
     runCommandWithTimeout: typeof import("../../process/exec.js").runCommandWithTimeout;

@@ -35,128 +35,20 @@ function collectChanges(params: {
 }
 
 describe("pushResolvedAgentCapabilityChanges", () => {
-  it("classifies effective sandbox and heartbeat changes", () => {
+  it("compares sandbox authority without interpreting retired runtime heartbeat config", () => {
     const changes = collectChanges({
       currentAgent: { id: "worker", sandbox: { mode: "all" }, heartbeat: { every: "1h" } },
-      desiredAgent: { id: "worker", sandbox: { mode: "off" }, heartbeat: { every: "5m" } },
-    });
-    expect(changes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: "agent.sandbox.mode",
-          classification: "escalation",
-          requiresDistinctConsent: true,
-        }),
-        expect.objectContaining({
-          path: "agent.heartbeat.every",
-          classification: "escalation",
-          requiresDistinctConsent: true,
-        }),
-      ]),
-    );
-
-    const inherited = collectChanges({
-      currentAgent: { id: "worker", sandbox: { mode: "all" }, heartbeat: { every: "1h" } },
-      desiredAgent: { id: "worker" },
-      defaults: { sandbox: { mode: "off" }, heartbeat: { every: "5m" } },
-    });
-    expect(inherited).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: "agent.sandbox.mode",
-          classification: "escalation",
-          requiresDistinctConsent: true,
-          desired: expect.objectContaining({ summary: "off" }),
-        }),
-        expect.objectContaining({
-          path: "agent.heartbeat.every",
-          classification: "escalation",
-          requiresDistinctConsent: true,
-          current: expect.objectContaining({ summary: "1h" }),
-          desired: expect.objectContaining({ summary: "5m" }),
-        }),
-      ]),
-    );
-  });
-
-  it("resolves the implicit heartbeat interval", () => {
-    const changes: Changes = [];
-    pushResolvedAgentCapabilityChanges({
-      changes,
-      agentId: "main",
-      config: {
-        agents: { list: [{ id: "main", heartbeat: { every: "1h" } }] },
-      },
-      desiredAgent: { id: "main" },
+      desiredAgent: { id: "worker", sandbox: { mode: "off" } },
+      defaults: { heartbeat: { every: "5m" } },
     });
     expect(changes).toContainEqual(
       expect.objectContaining({
-        path: "agent.heartbeat.every",
-        classification: "escalation",
-        requiresDistinctConsent: true,
-        current: expect.objectContaining({ summary: "1h" }),
-        desired: expect.objectContaining({ summary: "30m" }),
-      }),
-    );
-  });
-
-  it("preserves implicit default-agent heartbeat resolution", () => {
-    const changes: Changes = [];
-    pushResolvedAgentCapabilityChanges({
-      changes,
-      agentId: "worker",
-      config: { agents: { list: [{ id: "worker" }, { id: "other" }] } },
-      desiredAgent: { id: "worker" },
-    });
-    expect(changes.filter((change) => change.path.startsWith("agent.heartbeat."))).toEqual([]);
-  });
-
-  it("classifies heartbeat activity increases and reductions directionally", () => {
-    const moreFrequent = collectChanges({
-      currentAgent: { id: "worker", heartbeat: { every: "1h" } },
-      desiredAgent: { id: "worker", heartbeat: { every: "5m" } },
-    });
-    expect(moreFrequent).toContainEqual(
-      expect.objectContaining({
-        path: "agent.heartbeat.every",
+        path: "agent.sandbox.mode",
         classification: "escalation",
         requiresDistinctConsent: true,
       }),
     );
-
-    const lessFrequent = collectChanges({
-      currentAgent: {
-        id: "worker",
-        heartbeat: { every: "5m", isolatedSession: false, timeoutSeconds: 60 },
-      },
-      desiredAgent: {
-        id: "worker",
-        heartbeat: { every: "1h", isolatedSession: true, timeoutSeconds: 30 },
-      },
-    });
-    expect(lessFrequent).toEqual(
-      expect.arrayContaining(
-        ["every", "isolatedSession", "timeoutSeconds"].map((field) =>
-          expect.objectContaining({
-            path: `agent.heartbeat.${field}`,
-            classification: "reduction",
-            requiresDistinctConsent: false,
-          }),
-        ),
-      ),
-    );
-
-    const disabled = collectChanges({
-      currentAgent: { id: "worker", heartbeat: { every: "5m" } },
-      desiredAgent: { id: "worker", heartbeat: { every: "0m" } },
-    });
-    expect(disabled).toContainEqual(
-      expect.objectContaining({
-        path: "agent.heartbeat.every",
-        classification: "reduction",
-        requiresDistinctConsent: false,
-      }),
-    );
+    expect(changes.some((change) => change.path.startsWith("agent.heartbeat"))).toBe(false);
   });
 
   it("ranks sandbox mode and sharing scope", () => {
@@ -552,11 +444,6 @@ describe("pushResolvedAgentCapabilityChanges", () => {
       expect.arrayContaining([
         expect.objectContaining({
           path: "agent.sandbox.mode",
-          classification: "escalation",
-          requiresDistinctConsent: true,
-        }),
-        expect.objectContaining({
-          path: "agent.heartbeat.every",
           classification: "escalation",
           requiresDistinctConsent: true,
         }),

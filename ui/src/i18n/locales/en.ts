@@ -1508,10 +1508,17 @@ export const en: TranslationMap = {
   },
   debug: {
     snapshotsTitle: "Snapshots",
-    snapshotsSubtitle: "Status, health, and heartbeat data.",
+    snapshotsSubtitle: "Scheduler and security status.",
+    automations: "Automations",
+    automationsSubtitle:
+      "Gateway-wide scheduler. Job totals include disabled jobs. Inspect individual jobs and run history on the Automations page.",
+    automationsSummary: "Scheduler {state} · {count} total jobs · Next wake: {next}",
+    noWakeScheduled: "none scheduled",
+    rawProtocolTitle: "Raw protocol / legacy inspection",
+    rawProtocolSubtitle:
+      "Unmodified status and health payloads. Legacy heartbeat fields describe converted/default jobs, not all automations.",
     status: "Status",
     health: "Health",
-    lastHeartbeat: "Last heartbeat",
     security: {
       audit: "Security audit",
       critical: "{count} critical",
@@ -1562,6 +1569,8 @@ export const en: TranslationMap = {
       totalShort: "{value} total",
       delayP99: "Delay p99",
       uptime: "Uptime",
+      eventJob: "Job {id}",
+      eventRun: "Run {id}",
       activeRunsCount: "{count} active",
       noActiveRuns: "No active runs.",
     },
@@ -6745,6 +6754,28 @@ export const en: TranslationMap = {
     deleteFailed: "The secret was not deleted. Reload the list and try again.",
   },
   cron: {
+    retiredMonitor: "Retired monitor",
+    retiredMonitorHelp:
+      "This is a report-only legacy monitor. Run openclaw doctor --fix on the Gateway host, then refresh Automations to manage the converted job.",
+    scratch: {
+      title: "Job scratch",
+      help: "Private working notes for this automation. Loaded only when opened; never included in the task list or run history. Do not store credentials here.",
+      content: "Scratch content",
+      load: "Load scratch",
+      reload: "Reload scratch",
+      save: "Save scratch",
+      clear: "Remove scratch",
+      empty:
+        "No scratch saved. Saving an empty editor creates explicit empty scratch; removing it restores missing scratch.",
+      limit: "{bytes} / {max} bytes",
+      conflict:
+        "Scratch changed during editing. Your draft is preserved. Reload the latest version before saving again.",
+      redacted:
+        "Sensitive content was redacted. Saving is disabled to protect the original. You can remove this scratch without revealing it.",
+      saved: "Scratch saved.",
+      removed: "Scratch removed.",
+      tooLarge: "Scratch exceeds the byte limit.",
+    },
     adminRequired: "Browsing only. Automation changes require operator.admin access.",
     tabs: {
       filterLabel: "Automation status",
@@ -6957,11 +6988,32 @@ export const en: TranslationMap = {
       runsIn: "Runs in",
       mainSession: "Main session",
       isolatedSession: "Isolated session",
-      sessionHelp: "Main posts into the agent's timeline. Isolated runs a dedicated agent turn.",
+      sessionHelp:
+        "Main posts into the agent's timeline. Isolated uses a separate session; current runs detached. A session:<key> target runs in that shared session.",
       wakeMode: "Wake mode",
       now: "Now",
-      nextHeartbeat: "Next heartbeat",
-      wakeModeHelp: "Now triggers immediately. Next heartbeat waits for the next cycle.",
+      activeHours: "Active hours",
+      activeHoursHelp:
+        "Only run within this window, including manual runs. Overnight windows are supported; the end is exclusive.",
+      activeHoursStart: "Window start",
+      activeHoursEnd: "Window end",
+      idleOnly: "Wait until idle",
+      idleOnlyHelp: "Yield to active work before starting this automation.",
+      skipIfScratchEmpty: "Skip empty scratch",
+      skipIfScratchEmptyHelp:
+        "Skip when saved scratch has no tasks. Missing scratch does not suppress runs.",
+      deliveryTarget: "Destination",
+      channelTarget: "Channel destination",
+      ownerTarget: "Owner direct message",
+      ownerTargetHelp:
+        "Owner delivery resolves a concrete owner DM each run, never the last group conversation.",
+      directPolicy: "Direct messages",
+      defaultPolicy: "Default policy",
+      allowDirect: "Allow",
+      blockDirect: "Block",
+      nextScheduledRun: "Next scheduled run",
+      wakeModeHelp:
+        "Now runs immediately. Next scheduled run defers to the corresponding automation.",
       action: "Action",
       command: "Command",
       script: "Script",
@@ -7072,6 +7124,8 @@ export const en: TranslationMap = {
       due: "Due {rel}",
     },
     errors: {
+      activeHoursTime: "Enter HH:MM (24:00 is allowed only for the end).",
+      activeHoursTimezone: "Enter a valid IANA timezone, local, or user.",
       nameRequired: "Name is required.",
       scheduleAtInvalid: "Enter a valid date/time.",
       everyAmountInvalid: "Interval must be greater than 0.",

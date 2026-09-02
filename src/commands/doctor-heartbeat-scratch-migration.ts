@@ -1,33 +1,40 @@
 /** Doctor-owned migration from workspace HEARTBEAT.md files into cron job scratch. */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { TextDecoder } from "node:util";
+import { TextDecoder, isDeepStrictEqual } from "node:util";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readDefaultProactiveJobReceiptInDatabase } from "../cron/default-proactive-job.js";
 import { CRON_JOB_SCRATCH_MAX_BYTES } from "../cron/scratch-contract.js";
 import {
-  deleteCronJobScratch,
   hashCronScratchSource,
   readCronJobScratchState,
   writeCronJobScratch,
 } from "../cron/scratch-store.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
+import { cronStoreKey } from "../cron/store/key.js";
+import {
+  loadCronRows,
+  loadedCronStoreFromRows,
+  projectCronJobThroughStorageCodec,
+} from "../cron/store/row-codec.js";
 import type { CronJob } from "../cron/types.js";
 import type { HealthFinding } from "../flows/health-checks.js";
 import { formatErrorMessage as errorMessage } from "../infra/errors.js";
-import { resolveHeartbeatAgents, resolveHeartbeatIntervalMs } from "../infra/heartbeat-config.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { readRegularFile } from "../infra/regular-file.js";
 import { escapeRegExp } from "../shared/regexp.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { shortenHomePath } from "../utils.js";
 import { ensureHeartbeatMonitorJobs } from "./doctor-heartbeat-cadence-migration.js";
+import { resolveHeartbeatAgents } from "./doctor-heartbeat-legacy.js";
 
 const HEARTBEAT_SCRATCH_MIGRATION_CHECK_ID = "core/doctor/heartbeat-scratch-migration";
 const LEGACY_HEARTBEAT_FILENAME = "HEARTBEAT.md";
-const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type HeartbeatScratchMigrationResult = {
   changes: string[];
@@ -42,29 +49,12 @@ type HeartbeatSource = {
   sha256: string;
 };
 
-async function resolveHeartbeatScratchMigrationOwners(cfg: OpenClawConfig) {
-  const migrationAgents: ReturnType<typeof resolveHeartbeatAgents> = [];
-  const disabledEntryKeys = new Set<string>();
-  for (const agent of resolveHeartbeatAgents(cfg)) {
-    if (resolveHeartbeatIntervalMs(cfg, undefined, agent.heartbeat) !== null) {
-      migrationAgents.push(agent);
-      continue;
-    }
-    const workspaceDir = resolveAgentWorkspaceDir(cfg, agent.agentId);
-    const workspaceRealPath = await fs
-      .realpath(workspaceDir)
-      .catch(() => path.resolve(workspaceDir));
-    disabledEntryKeys.add(path.join(workspaceRealPath, LEGACY_HEARTBEAT_FILENAME));
-  }
-  return { migrationAgents, disabledEntryKeys };
-}
-
 async function readHeartbeatSource(
   cfg: OpenClawConfig,
   agentId: string,
-  options?: { recoverClaims?: boolean },
+  options?: { recoverClaims?: boolean; env?: NodeJS.ProcessEnv },
 ): Promise<HeartbeatSource | undefined> {
-  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId, options?.env);
   const heartbeatPath = path.join(workspaceDir, LEGACY_HEARTBEAT_FILENAME);
   let sourceStat;
   try {
@@ -142,7 +132,7 @@ type HeartbeatSourceClaim = {
   claimPath: string;
   restore(cause: unknown): Promise<void>;
   retain(): Promise<void>;
-  release(params: { archivePath: string }): Promise<void>;
+  release(params: { archivePath: string; verifyDestination: () => void }): Promise<void>;
 };
 
 const HEARTBEAT_CLAIM_INFIX = ".doctor-importing-";
@@ -324,13 +314,14 @@ async function claimHeartbeatSource(source: HeartbeatSource): Promise<HeartbeatS
       await restore(undefined);
       await verifyRestoredUnchanged();
     },
-    release: async ({ archivePath }) => {
+    release: async ({ archivePath, verifyDestination }) => {
       await verifyUnchanged();
       // Retire the claim by moving the inode into the archive instead of
       // unlinking it: a writer holding an open descriptor that lands a write
       // after the hash check above still writes into the preserved archive
       // file, never into a deleted inode.
       const claimStat = await fs.lstat(claimPath);
+      verifyDestination();
       if (claimStat.isSymbolicLink()) {
         // The removable entry is the symlink itself; its target file stays in
         // the workspace, so no open-descriptor write can be lost here.
@@ -343,11 +334,12 @@ async function claimHeartbeatSource(source: HeartbeatSource): Promise<HeartbeatS
         if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
           throw error;
         }
-        // Cross-device archive: the pre-written archive copy already holds the
-        // verified bytes. Accepted tradeoff: the unlink below reopens the
-        // microsecond open-descriptor window only when workspace and state dir
-        // sit on different filesystems.
-        await fs.unlink(claimPath);
+        // An open descriptor may still modify this inode. A cross-device copy
+        // cannot safely retire it; keep the claim recoverable instead of unlinking.
+        throw new Error(
+          `Heartbeat source and archive are on different filesystems; the original is retained at ${claimPath}. Move the archive onto the workspace filesystem before retrying.`,
+          { cause: error },
+        );
       }
     },
   };
@@ -394,20 +386,18 @@ function migrationFinding(params: {
 /** Reports remaining workspace heartbeat files without changing them. */
 export async function collectHeartbeatScratchMigrationFindings(
   cfg: OpenClawConfig,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<readonly HealthFinding[]> {
   const findings: HealthFinding[] = [];
-  const { migrationAgents, disabledEntryKeys } = await resolveHeartbeatScratchMigrationOwners(cfg);
+  const migrationAgents = resolveHeartbeatAgents(cfg);
   for (const agent of migrationAgents) {
     const heartbeatPath = path.join(
-      resolveAgentWorkspaceDir(cfg, agent.agentId),
+      resolveAgentWorkspaceDir(cfg, agent.agentId, env),
       LEGACY_HEARTBEAT_FILENAME,
     );
     try {
-      const source = await readHeartbeatSource(cfg, agent.agentId);
+      const source = await readHeartbeatSource(cfg, agent.agentId, { env });
       if (!source) {
-        continue;
-      }
-      if (disabledEntryKeys.has(source.entryKey)) {
         continue;
       }
       findings.push(
@@ -443,19 +433,14 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
   const storePath = resolveCronJobsStorePathFromConfig(params.cfg, env);
   const changes: string[] = [];
   const warnings: string[] = [];
-  const { migrationAgents, disabledEntryKeys } = await resolveHeartbeatScratchMigrationOwners(
-    params.cfg,
-  );
+  const migrationAgents = resolveHeartbeatAgents(params.cfg);
   if (!params.shouldRepair) {
     for (const agent of migrationAgents) {
       try {
-        const source = await readHeartbeatSource(params.cfg, agent.agentId);
+        const source = await readHeartbeatSource(params.cfg, agent.agentId, { env });
         if (source) {
-          const retained = disabledEntryKeys.has(source.entryKey)
-            ? " The shared legacy file will be retained because a heartbeat owner is disabled."
-            : "";
           note(
-            `${shortenHomePath(source.path)} will migrate into scratch for Heartbeat (${agent.agentId}).${retained}`,
+            `${shortenHomePath(source.path)} will migrate into automation scratch for ${agent.agentId}.`,
             "Heartbeat migration preview",
           );
         }
@@ -484,23 +469,26 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
   // Agents can share one workspace file. Group monitors by source path and
   // import into every monitor before the file is archived and removed once, so
   // the first agent's cleanup cannot starve its siblings.
-  const groups = new Map<
-    string,
-    { source: HeartbeatSource; agents: [string, CronJob][]; retainSource: boolean }
-  >();
-  const migrationAgentIds = new Set(migrationAgents.map((agent) => agent.agentId));
+  const groups = new Map<string, { source: HeartbeatSource; agents: [string, CronJob][] }>();
   for (const [agentId, monitor] of monitors) {
-    if (!migrationAgentIds.has(agentId)) {
-      continue;
-    }
     let source: HeartbeatSource | undefined;
     try {
-      source = await readHeartbeatSource(params.cfg, agentId, { recoverClaims: true });
+      source = await readHeartbeatSource(params.cfg, agentId, { recoverClaims: true, env });
     } catch (error) {
       warnings.push(`Agent "${agentId}" HEARTBEAT.md was not migrated: ${errorMessage(error)}`);
       continue;
     }
     if (!source) {
+      continue;
+    }
+    const receipt = withExistingOpenClawStateDatabaseReadOnly(
+      ({ db }) => readDefaultProactiveJobReceiptInDatabase(db, storePath, agentId),
+      { env },
+    );
+    if (receipt?.phase === "complete") {
+      warnings.push(
+        `Agent "${agentId}" has completed cutover; its newly present HEARTBEAT.md was retained without changing the operator-owned automation.`,
+      );
       continue;
     }
     // Group by the directory entry being removed (canonical parent directory +
@@ -510,19 +498,18 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
     const group = groups.get(source.entryKey) ?? {
       source,
       agents: [],
-      retainSource: disabledEntryKeys.has(source.entryKey),
     };
     group.agents.push([agentId, monitor]);
     groups.set(source.entryKey, group);
   }
 
-  for (const { source, agents, retainSource } of groups.values()) {
+  for (const { source, agents } of groups.values()) {
     // Precondition pass first: operator-owned scratch (different content or an
     // explicit unset tombstone) stays untouched while other owners can still
     // receive the source. Any skipped owner keeps the shared file in place.
     // The revision seen here is also the CAS token for the later write, so a
     // concurrent edit in between surfaces as a conflict, never an overwrite.
-    let keepSource = retainSource;
+    let keepSource = false;
     const importAgents: [string, CronJob][] = [];
     let scratchWriteNeeded = false;
     const plannedRevisionByJobId = new Map<string, number>();
@@ -533,11 +520,7 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
       if (state.currentRevision > 0 && !current) {
         warnings.push(`Agent "${agentId}" scratch was explicitly unset; it was left unchanged.`);
         keepSource = true;
-      } else if (
-        current &&
-        current.content !== source.content &&
-        current.sourceSha256 !== source.sha256
-      ) {
+      } else if (current && current.content !== source.content && !current.sourceSha256) {
         warnings.push(
           `Agent "${agentId}" already has different cron scratch; it was left unchanged.`,
         );
@@ -581,15 +564,26 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
     }
 
     let importedAll = true;
+    const verifiedScratch = new Map<string, ReturnType<typeof readCronJobScratchState>>();
     const groupChanges: string[] = [];
-    const committedThisRun: Array<{
-      agentId: string;
-      monitor: CronJob;
-      previous: ReturnType<typeof readCronJobScratchState>["scratch"];
-      newRevision: number;
-    }> = [];
     for (const [agentId, monitor] of importAgents) {
       try {
+        const currentJob = withExistingOpenClawStateDatabaseReadOnly(
+          ({ db }) =>
+            loadedCronStoreFromRows(loadCronRows(db, cronStoreKey(storePath))).store.jobs.find(
+              (job) => job.id === monitor.id,
+            ),
+          { env },
+        );
+        if (
+          !currentJob ||
+          !isDeepStrictEqual(
+            projectCronJobThroughStorageCodec(currentJob),
+            projectCronJobThroughStorageCodec(monitor),
+          )
+        ) {
+          throw new Error("automation changed during scratch migration");
+        }
         const state = readCronJobScratchState(storePath, monitor.id, { env });
         const shouldWriteScratch = state.scratch?.sourceSha256 !== source.sha256;
         if (shouldWriteScratch) {
@@ -604,21 +598,17 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
           if (!write.ok) {
             throw new Error("scratch changed during migration");
           }
-          committedThisRun.push({
-            agentId,
-            monitor,
-            previous: state.scratch,
-            newRevision: write.currentRevision,
-          });
         }
-        const verified = readCronJobScratchState(storePath, monitor.id, { env }).scratch;
+        const destination = readCronJobScratchState(storePath, monitor.id, { env });
+        const verified = destination.scratch;
         if (!verified || verified.sourceSha256 !== source.sha256) {
           throw new Error("scratch verification failed after write");
         }
+        verifiedScratch.set(monitor.id, destination);
         if (!keepSource || shouldWriteScratch) {
           groupChanges.push(
             keepSource
-              ? `Copied ${shortenHomePath(source.path)} into cron scratch for ${monitor.displayName ?? monitor.name}; retained the shared legacy file because ${retainSource ? "a heartbeat owner is disabled" : "another heartbeat owner's scratch was left unchanged"}.`
+              ? `Copied ${shortenHomePath(source.path)} into cron scratch for ${monitor.displayName ?? monitor.name}; retained the shared legacy file because another automation owner's scratch was left unchanged.`
               : `Migrated ${shortenHomePath(source.path)} into cron scratch for ${monitor.displayName ?? monitor.name}.`,
           );
         }
@@ -629,52 +619,10 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
         importedAll = false;
       }
     }
-    // The restored legacy file is authoritative again after any rollback, so
-    // this run's scratch imports must revert too — otherwise those agents keep
-    // serving the imported copy and ignore later edits to the restored file.
-    // A monitor that had no row before must return to no-row (not a tombstone),
-    // or a future migration retry treats the rolled-back import as explicitly unset.
-    const rollbackCommitted = () => {
-      for (const commit of committedThisRun.toReversed()) {
-        if (!commit.previous) {
-          // Revision-guarded atomic delete restores the pre-migration no-row
-          // state so a future migration retry can import it. Accepted
-          // tradeoff: this resets the revision counter to 0, so a writer still
-          // holding a pre-migration expectedRevision:0 token could CAS through
-          // after the rollback; that requires a third concurrent writer racing
-          // doctor and is preferred over permanently blocking migration.
-          const deleted = deleteCronJobScratch(
-            storePath,
-            commit.monitor.id,
-            { env },
-            {
-              expectedRevision: commit.newRevision,
-            },
-          );
-          if (!deleted) {
-            warnings.push(
-              `Agent "${commit.agentId}" scratch changed before the migration rollback; leaving current scratch in place.`,
-            );
-          }
-          continue;
-        }
-        const revert = writeCronJobScratch({
-          storePath,
-          jobId: commit.monitor.id,
-          content: commit.previous.content,
-          expectedRevision: commit.newRevision,
-          sourceSha256: commit.previous.sourceSha256,
-          options: { env },
-        });
-        if (!revert.ok) {
-          warnings.push(
-            `Agent "${commit.agentId}" scratch changed before the migration rollback; leaving current scratch in place.`,
-          );
-        }
-      }
-    };
+    // Pending cutover receipts fence execution. Keep migration-owned scratch on
+    // interruption so retries can refresh it by CAS without ever resetting revisions.
+    // An ordinary edit clears sourceSha256 and is never overwritten by a retry.
     if (!importedAll) {
-      rollbackCommitted();
       try {
         await claim.restore(undefined);
       } catch (error) {
@@ -687,7 +635,6 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
         await claim.retain();
         changes.push(...groupChanges);
       } catch (error) {
-        rollbackCommitted();
         warnings.push(
           `${shortenHomePath(source.path)} was not migrated: ${errorMessage(error)}. Rerun doctor to retry safely.`,
         );
@@ -699,12 +646,37 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
       // the newer file itself and reports HeartbeatClaimChangedError.
       await claim.release({
         archivePath: archivePathForSource(importAgents[0]![0], source.sha256, env),
+        verifyDestination: () => {
+          const jobs =
+            withExistingOpenClawStateDatabaseReadOnly(
+              ({ db }) =>
+                loadedCronStoreFromRows(loadCronRows(db, cronStoreKey(storePath))).store.jobs,
+              { env },
+            ) ?? [];
+          for (const [, monitor] of importAgents) {
+            const job = jobs.find((candidate) => candidate.id === monitor.id);
+            if (
+              !job ||
+              !isDeepStrictEqual(
+                projectCronJobThroughStorageCodec(job),
+                projectCronJobThroughStorageCodec(monitor),
+              ) ||
+              !isDeepStrictEqual(
+                readCronJobScratchState(storePath, monitor.id, { env }),
+                verifiedScratch.get(monitor.id),
+              )
+            ) {
+              throw new Error(
+                "automation or scratch changed before source retirement; the migration claim was retained",
+              );
+            }
+          }
+        },
       });
       changes.push(...groupChanges);
     } catch (error) {
       if (error instanceof Error && error.name === HEARTBEAT_CLAIM_CHANGED_ERROR) {
-        // The changed file is authoritative; committed scratch must not shadow it.
-        rollbackCommitted();
+        // The changed file remains authoritative until the pending cutover completes.
         warnings.push(
           `${shortenHomePath(source.path)} was not migrated: ${errorMessage(error)}. Rerun doctor to retry safely.`,
         );

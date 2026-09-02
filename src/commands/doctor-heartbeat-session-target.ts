@@ -6,11 +6,11 @@ import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveHeartbeatAgents, resolveHeartbeatIntervalMs } from "../infra/heartbeat-config.js";
-import { resolveHeartbeatDeliveryTarget } from "../infra/outbound/targets.js";
+import { resolveProactiveDeliveryTarget } from "../infra/outbound/targets.js";
 import { loadLegacySessionStore } from "../infra/state-migrations.legacy-session-store.js";
 import { resolveAgentIdFromSessionKey, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { isSubagentSessionKey } from "../sessions/session-key-utils.js";
+import { resolveHeartbeatAgents, resolveHeartbeatIntervalMs } from "./doctor-heartbeat-legacy.js";
 
 /**
  * Detect heartbeat configs that pin a non-existent session. The runtime
@@ -55,10 +55,10 @@ export function describeHeartbeatSessionTargetIssues(cfg: OpenClawConfig): strin
     if (target === "none") {
       continue;
     }
-    const deliveryWithoutSession = resolveHeartbeatDeliveryTarget({
+    const deliveryWithoutSession = resolveProactiveDeliveryTarget({
       cfg,
       agentId,
-      heartbeat: heartbeatConfig,
+      policy: heartbeatConfig,
     });
     if (deliveryWithoutSession.channel !== "none" && deliveryWithoutSession.to) {
       continue;
@@ -101,10 +101,10 @@ export function describeHeartbeatSessionTargetIssues(cfg: OpenClawConfig): strin
     }).path;
     const ownerTarget = target === undefined || target === "owner";
     const missingRouteOutcome = ownerTarget
-      ? `  Heartbeats will skip with reason="no-route" until a configured owner resolves to a direct message.`
+      ? `  Migrated automations will skip with reason="no-route" until a configured owner resolves to a direct message.`
       : deliveryWithoutSession.reason === "no-route"
-        ? `  Heartbeats will skip with reason="no-route" until that session has a delivery route.`
-        : `  Heartbeats will run but resolve delivery to channel="none"/reason="no-target", so replies are dropped.`;
+        ? `  Migrated automations will skip with reason="no-route" until that session has a delivery route.`
+        : `  Migrated automations will run but resolve delivery to channel="none"/reason="no-target", so replies are dropped.`;
     const fix = ownerTarget
       ? `  Fix: set commands.ownerAllowFrom or a channel allowFrom to a direct-message owner, set heartbeat.target="none", or choose an explicit heartbeat target.`
       : `  Fix: point heartbeat.session at a session the agent actually owns, set heartbeat.target="none" to suppress delivery, or remove the heartbeat.session field to fall back to the agent main session.`;

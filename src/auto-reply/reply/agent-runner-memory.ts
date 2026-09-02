@@ -744,7 +744,7 @@ export async function runSessionCompactionIfNeeded(params: {
   sessionKey?: string;
   runtimePolicySessionKey?: string;
   storePath?: string;
-  isHeartbeat: boolean;
+
   /** Completed commands carry the actual harness, not the originally requested runtime. */
   agentHarnessId?: string;
   abortSignal?: AbortSignal;
@@ -787,7 +787,7 @@ export async function runSessionCompactionIfNeeded(params: {
   const runtimeId = resolveFollowupAgentRuntimeId(runtimeParams);
   const isCli = followupUsesCliRuntime(runtimeParams, runtimeId);
   const ownsNativeCompaction = followupOwnsNativeCompaction(runtimeParams, runtimeId);
-  if (params.isHeartbeat || isCli || ownsNativeCompaction) {
+  if (isCli || ownsNativeCompaction) {
     return entry ?? params.sessionEntry;
   }
   const isCodexRuntime = normalizeLowercaseStringOrEmpty(runtimeId) === "codex";
@@ -962,7 +962,7 @@ export async function runSessionCompactionIfNeeded(params: {
       `tokenCount=${tokenCountForCompaction ?? freshPersistedTokens ?? "undefined"} ` +
       `contextWindow=${contextWindowTokens} threshold=${threshold} ` +
       `responsesServerCompactionThreshold=${responsesServerCompactionThreshold ?? "undefined"} ` +
-      `isHeartbeat=${params.isHeartbeat} isCli=${isCli} ` +
+      `isCli=${isCli} ` +
       `persistedFresh=${entry?.totalTokensFresh === true} ` +
       `transcriptPromptTokens=${transcriptPromptTokens ?? "undefined"} ` +
       `transcriptPromptSource=${transcriptUsageTokens?.promptTokenSource ?? "undefined"} ` +
@@ -1231,7 +1231,7 @@ export async function runMemoryFlushIfNeeded(params: {
   sessionKey?: string;
   runtimePolicySessionKey?: string;
   storePath?: string;
-  isHeartbeat: boolean;
+
   replyOperation?: ReplyOperation;
   abortSignal?: AbortSignal;
   onSessionIdChanged?: (sessionId: string) => void;
@@ -1274,7 +1274,7 @@ export async function runMemoryFlushIfNeeded(params: {
   const isCli =
     followupUsesCliRuntime(runtimeParams, runtimeId) ||
     followupOwnsNativeCompaction(runtimeParams, runtimeId);
-  const canAttemptFlush = memoryFlushWritable && !params.isHeartbeat && !isCli;
+  const canAttemptFlush = memoryFlushWritable && !isCli;
   if (!canAttemptFlush) {
     return { sessionEntry: entry ?? params.sessionEntry, outcome: "skipped" };
   }
@@ -1444,7 +1444,7 @@ export async function runMemoryFlushIfNeeded(params: {
     `memoryFlush check: sessionKey=${params.sessionKey} ` +
       `tokenCount=${tokenCountForFlush ?? "undefined"} ` +
       `contextWindow=${contextWindowTokens} threshold=${flushThreshold} ` +
-      `isHeartbeat=${params.isHeartbeat} isCli=${isCli} memoryFlushWritable=${memoryFlushWritable} ` +
+      `isCli=${isCli} memoryFlushWritable=${memoryFlushWritable} ` +
       `compactionCount=${entry?.compactionCount ?? 0} memoryFlushCompactionCount=${entry?.memoryFlush?.compactionCount ?? "undefined"} ` +
       `persistedPromptTokens=${persistedPromptTokens ?? "undefined"} persistedFresh=${entry?.totalTokensFresh === true} ` +
       `promptTokensEst=${promptTokenEstimate ?? "undefined"} transcriptPromptTokens=${transcriptPromptTokens ?? "undefined"} transcriptOutputTokens=${transcriptOutputTokens ?? "undefined"} ` +

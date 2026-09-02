@@ -45,6 +45,10 @@ vi.mock("../status-overview-surface.ts", () => ({
   buildStatusOverviewSurfaceFromOverview: () => ({}),
 }));
 vi.mock("../status-runtime-shared.ts", () => ({
+  resolveStatusAutomations: vi.fn(async () => ({
+    ok: true,
+    value: { enabled: true, jobs: 0, nextWakeAtMs: null },
+  })),
   resolveStatusGatewayDiagnosticsSafe: mocks.resolveStatusGatewayDiagnosticsSafe,
   resolveStatusGatewayHealthSafe: mocks.resolveStatusGatewayHealthSafe,
 }));

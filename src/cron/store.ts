@@ -5,9 +5,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { expandHomePrefix } from "../infra/home-dir.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveConfigDir } from "../utils.js";
@@ -25,8 +27,11 @@ import {
   readCronJobsFingerprint,
   replaceCronRows,
   updateCronRuntimeRows,
+  upsertCronJobRow,
+  deleteCronJobRowInDatabase,
 } from "./store/row-codec.js";
 import type { CronJobFamilyIdentity } from "./store/row-codec.js";
+import { findActiveCronRunReceiptInDatabase } from "./store/run-receipt-store.js";
 import {
   loadCronRuntimeAuthorities,
   repairCronRuntimeAuthorityRows,
@@ -38,7 +43,7 @@ import type {
   LoadedCronStore,
   QuarantinedCronConfigJob,
 } from "./store/types.js";
-import type { CronStoreFile } from "./types.js";
+import type { CronJob, CronStoreFile } from "./types.js";
 export type {
   CronConfigJobRuntimeEntry,
   CronQuarantinedJob,
@@ -64,6 +69,113 @@ export function noteCronJobsStoreCommit(storeKey: string): void {
   pruneMapToMaxSize(cronStoreRevisions, MAX_TRACKED_CRON_STORE_REVISIONS);
 }
 
+const cronMutationListeners = new Map<string, Set<() => void>>();
+
+/** Only active in-process schedulers can acknowledge a local lifecycle commit. */
+export function hasCronJobsStoreMutationSubscriber(storePath: string): boolean {
+  return Boolean(cronMutationListeners.get(cronStoreKey(storePath))?.size);
+}
+
+/** Lifecycle-owned subscription; an empty scheduler has no timer to discover imports. */
+export function subscribeCronJobsStoreMutations(
+  storePath: string,
+  listener: () => void,
+): () => void {
+  const key = cronStoreKey(storePath);
+  const listeners = cronMutationListeners.get(key) ?? new Set();
+  cronMutationListeners.set(key, listeners);
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) {
+      cronMutationListeners.delete(key);
+    }
+  };
+}
+
+/** Publish only inside the transaction completing an explicit lifecycle adoption. */
+export function publishCronJobsStoreMutation(db: DatabaseSync, storeKey: string): void {
+  const publish = () => {
+    noteCronJobsStoreCommit(storeKey);
+    for (const listener of cronMutationListeners.get(storeKey) ?? []) {
+      listener();
+    }
+  };
+  // A nested Claw provenance transaction can still roll back the job and receipt.
+  // Never expose that speculative job to an already-running scheduler.
+  if (!deferSqlitePostCommitPublication(db, publish)) {
+    publish();
+  }
+}
+
+export function readCronJobsStoreFingerprint(storePath: string): string {
+  return readCronJobsFingerprint(openOpenClawStateDatabase().db, cronStoreKey(storePath));
+}
+
+/** Targeted lifecycle mutations share the normal store's commit/publication boundary. */
+export function mutateCronJobsStore<T>(
+  storePath: string,
+  mutate: (context: {
+    db: DatabaseSync;
+    upsert: (job: CronJob) => CronJob;
+    remove: (jobId: string) => void;
+  }) => T,
+  options: OpenClawStateDatabaseOptions = {},
+): T {
+  const storeKey = cronStoreKey(storePath);
+  return runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      const before = readCronJobsFingerprint(db, storeKey);
+      const assertUnclaimed = (jobId: string) => {
+        if (findActiveCronRunReceiptInDatabase({ database: db, storePath, jobId })) {
+          throw new Error(
+            `Automation ${jobId} has an active run receipt; retry the lifecycle change after it settles.`,
+          );
+        }
+        const job = loadedCronStoreFromRows(loadCronRows(db, storeKey)).store.jobs.find(
+          (candidate) => candidate.id === jobId,
+        );
+        if (job?.state.runningAtMs !== undefined || job?.state.queuedAtMs !== undefined) {
+          throw new Error(
+            `Automation ${jobId} is running or queued; retry the lifecycle change after it settles.`,
+          );
+        }
+      };
+      const result = mutate({
+        db,
+        upsert: (job) => {
+          assertUnclaimed(job.id);
+          const rows = loadCronRows(db, storeKey);
+          const written = upsertCronJobRow(
+            db,
+            storeKey,
+            job,
+            rows.find((row) => row.job_id === job.id)?.sort_order ??
+              rows.reduce((max, row) => Math.max(max, row.sort_order + 1), 0),
+          );
+          replaceCronRuntimeAuthorityRows({
+            db,
+            storeKey,
+            jobs: [job],
+            preserveExistingForJobIds: new Set(rows.map((row) => row.job_id)),
+          });
+          return written;
+        },
+        remove: (jobId) => {
+          assertUnclaimed(jobId);
+          deleteCronJobRowInDatabase(db, storeKey, jobId);
+        },
+      });
+      if (readCronJobsFingerprint(db, storeKey) !== before) {
+        publishCronJobsStoreMutation(db, storeKey);
+      }
+      return result;
+    },
+    options,
+    { operationLabel: "cron.lifecycle-mutation" },
+  );
+}
+
 function resolveDefaultCronDir(env: NodeJS.ProcessEnv): string {
   return path.join(resolveConfigDir(env), "cron");
 }
@@ -73,8 +185,12 @@ function resolveDefaultCronStorePath(env: NodeJS.ProcessEnv): string {
 }
 
 /** Resolves the cron jobs store path, expanding home-relative user input. */
-export function resolveCronJobsStorePath(storePath?: string, env: NodeJS.ProcessEnv = process.env) {
-  const selected = storePath?.trim() || readCronStoreStatePath(env);
+export function resolveCronJobsStorePath(
+  storePath?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  database?: DatabaseSync,
+) {
+  const selected = storePath?.trim() || readCronStoreStatePath(env, database);
   if (selected) {
     const raw = selected.trim();
     if (raw.startsWith("~")) {
@@ -89,9 +205,10 @@ export function resolveCronJobsStorePath(storePath?: string, env: NodeJS.Process
 export function resolveCronJobsStorePathFromConfig(
   cfg: { cron?: unknown },
   env: NodeJS.ProcessEnv = process.env,
+  database?: DatabaseSync,
 ): string {
   const store = (cfg.cron as { store?: unknown } | undefined)?.store;
-  return resolveCronJobsStorePath(typeof store === "string" ? store : undefined, env);
+  return resolveCronJobsStorePath(typeof store === "string" ? store : undefined, env, database);
 }
 
 /** Loads cron jobs plus config/runtime sidecars from the SQLite-backed store. */
@@ -218,16 +335,21 @@ export async function loadCronJobsStoreWithConfigJobsReadOnly(
     if (!tableExists(db, "cron_jobs")) {
       return emptyLoadedCronStore();
     }
-    const rows = loadCronRows(db, storeKey);
-    if (rows.length > 0) {
-      const loaded = loadedCronStoreFromRows(rows);
-      loadCronRuntimeAuthorities({ db, storeKey, jobs: loaded.store.jobs });
-      return loaded;
-    }
-    return emptyLoadedCronStore();
+    return loadCronJobsStoreFromDatabase(db, storeKey);
   } finally {
     db.close();
   }
+}
+
+/** Reads canonical rows and authority facts from an already-owned database snapshot. */
+export function loadCronJobsStoreFromDatabase(db: DatabaseSync, storeKey: string): LoadedCronStore {
+  const rows = loadCronRows(db, storeKey);
+  if (!rows.length) {
+    return emptyLoadedCronStore();
+  }
+  const loaded = loadedCronStoreFromRows(rows);
+  loadCronRuntimeAuthorities({ db, storeKey, jobs: loaded.store.jobs });
+  return loaded;
 }
 
 /** Loads only the persisted cron job store payload. */
@@ -341,11 +463,14 @@ export async function saveCronJobsStore(
     }
     replaceCronStoreRows(database.db, storeKey, store, opts?.preserveRuntimeState === true);
     opts?.transactionHooks?.afterWrite?.(database.db);
+    publishCronJobsStoreMutation(database.db, storeKey);
   });
   // Timeout outcomes may commit before their runner settles. Only after this
   // commit may a deferred receipt terminal request become externally visible.
   opts?.transactionHooks?.afterCommit?.();
-  noteCronJobsStoreCommit(storeKey);
+  if (stateOnly) {
+    noteCronJobsStoreCommit(storeKey);
+  }
 }
 
 /** Atomically acquire doctor migration metadata and replace cron rows only for the winner. */
@@ -378,11 +503,9 @@ export async function saveCronJobsStoreWithMetadata(
       });
     }
     replaceCronStoreRows(database.db, storeKey, store, opts?.preserveRuntimeState === true);
+    publishCronJobsStoreMutation(database.db, storeKey);
     return true;
   });
-  if (committed) {
-    noteCronJobsStoreCommit(storeKey);
-  }
   return committed;
 }
 

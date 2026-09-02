@@ -2,10 +2,7 @@
 import { z, type ZodRawShape, type ZodTypeAny } from "zod";
 import { NativeExecApprovalEnableModeSchema } from "./zod-schema.approvals.js";
 import { ChannelBotLoopProtectionSchema } from "./zod-schema.channels-config.js";
-import {
-  ChannelHealthMonitorSchema,
-  ChannelHeartbeatVisibilitySchema,
-} from "./zod-schema.channels.js";
+import { ChannelHealthMonitorSchema } from "./zod-schema.channels.js";
 import {
   BlockStreamingChunkSchema,
   ChannelDeliveryStreamingConfigSchema,
@@ -125,7 +122,6 @@ function createCommonChannelAccountShape<
     dms: z.record(z.string(), DmConfigSchema.optional()).optional(),
     textChunkLimit: z.number().int().positive().optional(),
     streaming: (options.streaming ?? CommonStreamingSchema) as TStreaming,
-    heartbeatVisibility: ChannelHeartbeatVisibilitySchema,
     healthMonitor: ChannelHealthMonitorSchema,
     responsePrefix: z.string().optional(),
     mediaMaxMb: (options.mediaMaxMb ?? CommonMediaMaxMbSchema) as TMediaMaxMb,

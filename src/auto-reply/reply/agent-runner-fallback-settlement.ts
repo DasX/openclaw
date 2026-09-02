@@ -142,7 +142,7 @@ export async function settleAgentFallbackCycle(params: {
       sourceReplyDeliveryMode: sourceReplyPolicy?.sourceReplyDeliveryMode,
       sendPolicyDenied: sourceReplyPolicy?.sendPolicyDenied === true,
       successfulSourceReplyDelivery,
-      isHeartbeat: turn.isHeartbeat,
+
       isRoomEvent: turn.sessionCtx.InboundEventKind === "room_event",
       finalText,
     }) === "short"

@@ -5,7 +5,6 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
-import type { ChatRunStartupPhase } from "../../../packages/gateway-protocol/src/index.js";
 import type {
   AdmittedRunContext,
   PreparedAgentRunAdmission,
@@ -16,7 +15,6 @@ import {
   classifyFailoverReason,
   isContextOverflowError,
 } from "../../agents/embedded-agent-helpers.js";
-import type { EmbeddedAgentExecutionPhase } from "../../agents/embedded-agent-runner/execution-phase.js";
 import {
   createDeferredEmbeddedRunLifecycleManager,
   type DeferredEmbeddedRunLifecycleManager,
@@ -30,6 +28,7 @@ import { isAgentRunRestartAbortReason } from "../../agents/run-termination.js";
 import { createAgentPatchedSessionModelRunGuard } from "../../agents/session-model-auto-revert.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { resolveCronJobConfigRevision } from "../../cron/config-revision.js";
 import { logVerbose } from "../../globals.js";
 import {
   captureAgentRunLifecycleGeneration,
@@ -37,6 +36,7 @@ import {
 } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
+import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { logSessionTurnCreated } from "../../logging/diagnostic.js";
@@ -69,6 +69,7 @@ import {
 } from "./agent-runner-fallback-cycle.js";
 import { recordMessageToolOnlyRunOutcome } from "./agent-runner-message-tool-outcome.js";
 import { createAgentTurnPresentation } from "./agent-runner-presentation.js";
+import { resolveRunStartupPhase } from "./agent-runner-startup-phase.js";
 import { createAgentTurnTimingTracker } from "./agent-runner-turn-timing.js";
 import { resolveQueuedReplyRuntimeConfig } from "./agent-runner-utils.js";
 import { prepareChannelRunAdmission } from "./channel-run-admission.js";
@@ -89,32 +90,6 @@ type InternalFollowupRun = FollowupRun & {
   currentTurnImagesPrepared?: true;
   mediaImageLayout?: CurrentTurnImages["mediaImageLayout"];
 };
-
-function resolveRunStartupPhase(
-  phase: EmbeddedAgentExecutionPhase,
-): ChatRunStartupPhase | undefined {
-  switch (phase) {
-    case "runner_entered":
-    case "workspace":
-    case "runtime_plugins":
-      return "preparing_workspace";
-    case "before_agent_reply":
-    case "model_resolution":
-    case "auth":
-    case "context_engine":
-    case "attempt_dispatch":
-    case "context_assembled":
-      return "preparing_context";
-    case "turn_accepted":
-    case "process_spawned":
-    case "model_call_started":
-      return "starting_model";
-    case "tool_execution_started":
-    case "assistant_output_started":
-      return undefined;
-  }
-  return undefined;
-}
 
 async function executeAgentTurnInternalLoop(
   params: AgentTurnParams,
@@ -179,7 +154,29 @@ async function executeAgentTurnInternalLoop(
       agentId: params.followupRun.run.agentId,
       lifecycleGeneration,
       verboseLevel: params.resolvedVerboseLevel,
-      isHeartbeat: params.isHeartbeat,
+
+      ...(params.followupRun.run.scheduledAutomation
+        ? {
+            cronRunsByJobId: new Map([
+              [
+                params.followupRun.run.scheduledAutomation.job.id,
+                {
+                  pacingEnabled: Boolean(params.followupRun.run.scheduledAutomation.job.pacing),
+                  assertCurrent: () => {
+                    params.followupRun.run.scheduledAutomation?.assertCurrent();
+                    if (
+                      !params.replyOperation ||
+                      params.replyOperation.result ||
+                      params.replyOperation.abortSignal.aborted
+                    ) {
+                      throw new Error("Automation reply owner has closed");
+                    }
+                  },
+                },
+              ],
+            ]),
+          }
+        : {}),
       isControlUiVisible: shouldSurfaceToControlUi,
     });
   }
@@ -193,7 +190,11 @@ async function executeAgentTurnInternalLoop(
         params.followupRun.run.messageProvider ??
         params.sessionCtx.Surface ??
         params.sessionCtx.Provider,
-      trigger: params.isHeartbeat ? "heartbeat" : "user",
+      trigger: params.followupRun.run.scheduledAutomation
+        ? "cron"
+        : params.followupRun.run.internalEventExecution
+          ? "event"
+          : "user",
     });
   }
   let replyMediaContext: ReplyMediaContext;
@@ -254,6 +255,7 @@ async function executeAgentTurnInternalLoop(
     if (params.replyOperation) {
       markReplyOperationExecutionStarted(params.replyOperation);
     }
+    params.followupRun.run.internalEventExecution?.onStarted(runId);
     params.opts?.onAgentRunStart?.(runId, admittedRunContext.current?.executionIdentityToken);
   };
   const signalExecutionPhaseForTyping = (
@@ -488,7 +490,6 @@ async function executeAgentTurnInternalLoop(
   await modelPatch.finish(!terminalRunFailed && !patchedModelNeedsRevert);
   const terminalFailurePayload = terminalRunFailed
     ? buildTerminalAgentRunFailureReplyPayload({
-        isHeartbeat: params.isHeartbeat,
         visibleReplyDelivered: (await params.resolveVisibleReplyDelivery?.()) === true,
         sessionCtx: params.sessionCtx,
         cfg: params.followupRun.run.config,
@@ -569,12 +570,10 @@ async function executeAgentTurnOutcome(params: AgentTurnParams): Promise<AgentTu
     params.opts?.runId === runId ? params : { ...params, opts: { ...params.opts, runId } };
   // Gateway writes require exact view identity against this bare session runtime;
   // requester-scoped and combined runtimes cannot cross the App view boundary.
-  const runtime = executionParams.isHeartbeat
-    ? undefined
-    : peekSessionMcpRuntime({
-        sessionId: executionParams.followupRun.run.sessionId,
-        sessionKey: executionParams.sessionKey ?? executionParams.followupRun.run.sessionKey,
-      });
+  const runtime = peekSessionMcpRuntime({
+    sessionId: executionParams.followupRun.run.sessionId,
+    sessionKey: executionParams.sessionKey ?? executionParams.followupRun.run.sessionKey,
+  });
   const modelContextLease = runtime
     ? leaseMcpAppModelContextForTurn({
         runtime,
@@ -695,6 +694,21 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<AgentTu
   const runId = params.opts?.runId ?? crypto.randomUUID();
   const executionParams =
     params.opts?.runId === runId ? params : { ...params, opts: { ...params.opts, runId } };
+  const automation = executionParams.followupRun.run.scheduledAutomation;
+  const beforeStart = executionParams.followupRun.run.internalEventExecution?.beforeStart;
+  if (beforeStart) {
+    await beforeStart();
+  }
+  automation?.assertCurrent();
+  const releaseCronSource = automation
+    ? registerCronRunExecSource(runId, {
+        agentId: executionParams.followupRun.run.agentId,
+        jobId: automation.job.id,
+        jobName: automation.job.name,
+        jobConfigRevision: resolveCronJobConfigRevision(automation.job),
+      })
+    : undefined;
+  let terminalRecorded = false;
   try {
     const result = await executeAgentTurnOutcome(executionParams);
     const terminalOutcome =
@@ -706,11 +720,22 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<AgentTu
     if (terminalOutcome) {
       executionParams.opts?.onAgentRunTerminalOutcome?.(terminalOutcome);
     }
+    terminalRecorded = true;
+    await executionParams.followupRun.run.internalEventExecution?.onTerminal(
+      runId,
+      terminalOutcome ?? "aborted",
+      result.outcome.kind === "settled" ? result.outcome.result : undefined,
+    );
     recordMessageToolOnlyRunOutcome(executionParams, result);
     return result;
   } catch (error) {
     executionParams.opts?.onAgentRunTerminalOutcome?.("failed");
+    if (!terminalRecorded) {
+      await executionParams.followupRun.run.internalEventExecution?.onTerminal(runId, "failed");
+    }
     recordMessageToolOnlyRunOutcome(executionParams, undefined);
     throw error;
+  } finally {
+    releaseCronSource?.();
   }
 }

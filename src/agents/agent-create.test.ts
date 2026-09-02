@@ -1,3 +1,6 @@
+vi.mock("../gateway/cron-lifecycle-publication.js", () => ({
+  publishProvisionedCronJob: vi.fn(async () => {}),
+}));
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FsSafeError } from "../infra/fs-safe.js";
 

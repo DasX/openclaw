@@ -92,7 +92,7 @@ semantics, use [Tools and custom providers](/gateway/config-tools).
 | Operator UI             | Arrange connected Control UI panes, panels, and navigation                                   | `screen`                                                                                                            | [Screen](/tools/screen)                                                                                                |
 | Messaging and channels  | Send replies or channel actions                                                              | `message`                                                                                                           | [Agent send](/tools/agent-send)                                                                                        |
 | Sessions and agents     | Inspect sessions, delegate work, orchestrate collectors, steer another run, or report status | `sessions_*`, `agents_wait`, `subagents`, `agents_list`, `session_status`, `get_goal`, `create_goal`, `update_goal` | [Goal](/tools/goal), [Swarm](/tools/swarm), [Sub-agents](/tools/subagents), [Session tool](/concepts/session-tool)     |
-| Automation              | Schedule work or respond to background events                                                | `cron`, `heartbeat_respond`                                                                                         | [Automation](/automation)                                                                                              |
+| Automation              | Schedule work, maintain job scratch, or record a scheduled run's result                      | `automations`                                                                                                       | [Automation](/automation)                                                                                              |
 | Gateway and nodes       | Inspect Gateway state or paired target devices                                               | `gateway`, `nodes`                                                                                                  | [Gateway configuration](/gateway/configuration), [Nodes](/nodes)                                                       |
 | Media                   | Analyze, generate, or speak media                                                            | `view_image`, `image_generate`, `music_generate`, `video_generate`, `tts`                                           | [Media overview](/tools/media-overview)                                                                                |
 | Large OpenClaw catalogs | Search, call, and combine many eligible tools without sending every schema to the model      | `exec`, `wait`, `tool_search_code`, `tool_search`, `tool_describe`                                                  | [Code Mode](/tools/code-mode), [Tool Search](/tools/tool-search)                                                       |
@@ -196,7 +196,7 @@ the current turn:
 
 ## Related
 
-- [Automation](/automation) for cron, tasks, heartbeat, hooks,
+- [Automation](/automation) for cron, monitoring, tasks, hooks,
   standing orders, and Task Flow
 - [Agents](/concepts/agent) for the agent model, sessions, memory, and
   multi-agent coordination

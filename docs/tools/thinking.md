@@ -125,8 +125,12 @@ Malformed local-model reasoning tags are handled conservatively. Closed `<think>
 
 ## Heartbeats
 
-- Heartbeat probe body is the configured heartbeat prompt (default: `Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.`). Inline directives in a heartbeat message apply as usual (but avoid changing session defaults from heartbeats).
-- Heartbeat delivery uses the last outbound-capable non-reasoning payload. Separate reasoning or `Thinking` payloads remain internal, and a reasoning-only heartbeat result produces no alert.
+Scheduled monitoring now uses ordinary [cron jobs](/automation/cron-jobs), not a
+separate heartbeat prompt or execution engine. Set the job's `payload.thinking`
+for its reasoning level; monitoring must not change the stored session default.
+Only outbound reply content should become an alert, not separate reasoning or
+`Thinking` payloads. Use `NO_REPLY` when the run should finish quietly. See
+[Heartbeat migration](/gateway/heartbeat) for existing monitors.
 
 ## Web chat UI
 

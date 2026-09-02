@@ -30,7 +30,7 @@ const subCliCommandCatalog = defineCommandDescriptorCatalog([
   { name: "logs", description: "Tail gateway file logs via RPC", hasSubcommands: false },
   {
     name: "system",
-    description: "System tools (events, heartbeat, presence)",
+    description: "System tools (session events, presence)",
     hasSubcommands: true,
     machineOutput: ({ argv }) => isSystemMachineOutput(argv),
   },

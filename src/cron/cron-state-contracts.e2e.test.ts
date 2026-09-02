@@ -17,16 +17,17 @@ installCronTestHooks({ logger, baseTimeIso: BASE_TIME_ISO });
 function createService(params: {
   storePath: string;
   enqueueSystemEvent?: CronServiceDeps["enqueueSystemEvent"];
-  requestHeartbeat?: CronServiceDeps["requestHeartbeat"];
+  enqueueSessionEvent?: CronServiceDeps["enqueueSessionEvent"];
   runIsolatedAgentJob?: CronServiceDeps["runIsolatedAgentJob"];
   onEvent?: CronServiceDeps["onEvent"];
 }) {
   return new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: params.storePath,
     cronEnabled: true,
     log: logger,
     enqueueSystemEvent: params.enqueueSystemEvent ?? vi.fn(),
-    requestHeartbeat: params.requestHeartbeat ?? vi.fn(),
+    enqueueSessionEvent: params.enqueueSessionEvent ?? vi.fn(),
     runIsolatedAgentJob:
       params.runIsolatedAgentJob ?? vi.fn(async () => ({ status: "ok" as const })),
     ...(params.onEvent ? { onEvent: params.onEvent } : {}),
@@ -43,13 +44,13 @@ describe("cron state contracts", () => {
         const baseTimeMs = Date.parse(BASE_TIME_ISO);
         const atMs = baseTimeMs + 1_000;
         const enqueueSystemEvent = vi.fn();
-        const requestHeartbeat = vi.fn();
+        const enqueueSessionEvent = vi.fn();
         let first: CronService | undefined;
         let restarted: CronService | undefined;
         let reloaded: CronService | undefined;
 
         try {
-          first = createService({ storePath, enqueueSystemEvent, requestHeartbeat });
+          first = createService({ storePath, enqueueSystemEvent, enqueueSessionEvent });
           await first.start();
 
           const atJob = await first.add({
@@ -112,7 +113,7 @@ describe("cron state contracts", () => {
           first.stop();
           first = undefined;
 
-          restarted = createService({ storePath, enqueueSystemEvent, requestHeartbeat });
+          restarted = createService({ storePath, enqueueSystemEvent, enqueueSessionEvent });
           await restarted.start();
           const afterRestart = await restarted.list({ includeDisabled: true });
           expect(afterRestart).toEqual(
@@ -155,7 +156,7 @@ describe("cron state contracts", () => {
           restarted.stop();
           restarted = undefined;
 
-          reloaded = createService({ storePath, enqueueSystemEvent, requestHeartbeat });
+          reloaded = createService({ storePath, enqueueSystemEvent, enqueueSessionEvent });
           await reloaded.start();
           expect(
             (await reloaded.list({ includeDisabled: true })).map((job) => job.id).toSorted(),

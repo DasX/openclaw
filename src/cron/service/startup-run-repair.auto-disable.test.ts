@@ -1,17 +1,5 @@
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it, vi } from "vitest";
-import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { HeartbeatRunOptions } from "../../infra/heartbeat-runner-execution.js";
-import { resolveHeartbeatRunPrompt } from "../../infra/heartbeat-runner-prompt.js";
-import { startHeartbeatRunner } from "../../infra/heartbeat-runner-scheduler.js";
-import { resolveHeartbeatWakePayloadFlags } from "../../infra/heartbeat-wake-policy.js";
-import { requestHeartbeat as requestHeartbeatWake } from "../../infra/heartbeat-wake.js";
-import {
-  drainSystemEvents,
-  enqueueSystemEvent as queueSystemEvent,
-  peekSystemEventEntries,
-} from "../../infra/system-events.js";
 import * as cronSchedule from "../schedule.js";
 import type { CronJob } from "../types.js";
 import { markInterruptedStartupRun, restoreFinalizedStartupRun } from "./startup-run-repair.js";
@@ -22,8 +10,9 @@ describe("startup run repair auto-disable", () => {
     const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
     const nowMs = runningAtMs + 30_000;
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/startup-run-repair-auto-disable.json",
       cronEnabled: true,
       log: {
@@ -34,7 +23,7 @@ describe("startup run repair auto-disable", () => {
       },
       nowMs: () => nowMs,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(),
     });
     const job: CronJob = {
@@ -78,16 +67,16 @@ describe("startup run repair auto-disable", () => {
     });
     expect(enqueueSystemEvent).not.toHaveBeenCalled();
     expect(job.state.deliverySuppressionReason).toBeUndefined();
-    expect(requestHeartbeat).not.toHaveBeenCalled();
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
     expect(deferredNotifications).toHaveLength(1);
 
     deferredNotifications[0]?.();
-    expect(enqueueSystemEvent).toHaveBeenCalledOnce();
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain(
+    expect(enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).toContain(
       "Check automation history for details.",
     );
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).not.toContain("timeout");
-    expect(requestHeartbeat).toHaveBeenCalledOnce();
+    expect(enqueueSessionEvent.mock.calls[0]?.[0]).not.toContain("timeout");
+    expect(enqueueSessionEvent).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -105,70 +94,18 @@ describe("startup run repair auto-disable", () => {
     vi.useFakeTimers();
     const nowMs = Date.parse("2026-08-01T16:00:00.000Z");
     vi.setSystemTime(nowMs);
-    const cfg: OpenClawConfig = {
-      agents: {
-        defaults: { heartbeat: { every: "0m" } },
-        list: [{ id: "main" }, { id: "other" }],
-      },
-    };
-    const sessionKey =
-      testCase.creatorSessionKey ?? resolveAgentMainSessionKey({ cfg, agentId: "main" });
-    const prompts: string[] = [];
-    const runOnce = vi.fn(async (options: HeartbeatRunOptions) => {
-      const pendingEventEntries = peekSystemEventEntries(options.sessionKey ?? "");
-      const preflight = {
-        ...resolveHeartbeatWakePayloadFlags(options),
-        session: {
-          sessionKey,
-          storePath: "/tmp/auto-disable-notification-proof.json",
-          suppressOriginatingContext: false,
-          entry: undefined,
-        },
-        pendingEventEntries,
-        turnSourceDeliveryContext: undefined,
-        hasTaggedCronEvents: pendingEventEntries.some((event) =>
-          event.contextKey?.startsWith("cron:"),
-        ),
-        shouldInspectPendingEvents: true,
-        authoritativeScheduledTick: false,
-      };
-      prompts.push(
-        resolveHeartbeatRunPrompt({
-          cfg,
-          preflight,
-          canRelayToUser: true,
-          startedAt: nowMs,
-          scheduledTasks: [],
-          useHeartbeatResponseTool: false,
-        }).prompt,
-      );
-      return { status: "ran" as const, durationMs: 1 };
-    });
-    const runner = startHeartbeatRunner({
-      cfg,
-      readCurrentConfig: () => cfg,
-      runOnce,
+    const enqueueSessionEvent = vi.fn();
+    const state = createCronServiceState({
+      storePath: "/tmp/startup-run-repair-auto-disable-notification.json",
+      cronEnabled: false,
+      defaultAgentId: "main",
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      nowMs: () => nowMs,
+      enqueueSystemEvent: vi.fn(),
+      enqueueSessionEvent,
+      runIsolatedAgentJob: vi.fn(),
     });
     try {
-      const state = createCronServiceState({
-        storePath: "/tmp/startup-run-repair-auto-disable-notification.json",
-        cronEnabled: true,
-        defaultAgentId: "main",
-        log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-        nowMs: () => nowMs,
-        enqueueSystemEvent: (text, options) =>
-          queueSystemEvent(text, {
-            sessionKey: options?.sessionKey ?? sessionKey,
-            contextKey: options?.contextKey,
-          }),
-        requestHeartbeat: (wake) =>
-          requestHeartbeatWake({
-            ...wake,
-            sessionKey: wake.sessionKey ?? sessionKey,
-            coalesceMs: 0,
-          }),
-        runIsolatedAgentJob: vi.fn(),
-      });
       const job: CronJob = {
         id: "restart-auto-disable-notification",
         name: "Important report",
@@ -197,23 +134,19 @@ describe("startup run repair auto-disable", () => {
       deferredNotifications[0]?.();
       await vi.advanceTimersByTimeAsync(1);
 
-      expect(runOnce).toHaveBeenCalledOnce();
-      expect(runOnce).toHaveBeenCalledWith(
-        expect.objectContaining({
+      expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining('Automation "Important report" was auto-disabled'),
+        {
           agentId: "main",
-          sessionKey,
-          source: "notifications-event",
-          intent: "immediate",
-          reason: "wake",
-        }),
+          sessionKey: testCase.creatorSessionKey,
+          contextKey: "cron:restart-auto-disable-notification:auto-disabled",
+          deliveryContext: undefined,
+        },
       );
-      expect(prompts[0]).toContain('Automation "Important report" was auto-disabled');
-      expect(prompts[0]).toContain("10 consecutive run failures");
-      expect(prompts[0]).toContain("openclaw automations enable restart-auto-disable-notification");
-      expect(prompts[0]).toContain("Please relay this reminder to the user");
+      const text = enqueueSessionEvent.mock.calls[0]?.[0];
+      expect(text).toContain("10 consecutive run failures");
+      expect(text).toContain("openclaw automations enable restart-auto-disable-notification");
     } finally {
-      runner.stop();
-      drainSystemEvents(sessionKey);
       vi.useRealTimers();
     }
   });
@@ -221,6 +154,7 @@ describe("startup run repair auto-disable", () => {
   it("disables a job instead of restoring an invalid finalized next run", () => {
     const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/startup-run-repair-invalid-next-run.json",
       cronEnabled: true,
       log: {
@@ -231,7 +165,7 @@ describe("startup run repair auto-disable", () => {
       },
       nowMs: () => runningAtMs + 1_000,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
     const job: CronJob = {
@@ -272,12 +206,12 @@ describe("startup run repair auto-disable", () => {
       consecutiveErrors: 1,
     });
     expect(state.deps.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(state.deps.requestHeartbeat).not.toHaveBeenCalled();
+    expect(state.deps.enqueueSessionEvent).not.toHaveBeenCalled();
     expect(deferredNotifications).toHaveLength(1);
 
     deferredNotifications[0]?.();
-    expect(state.deps.enqueueSystemEvent).toHaveBeenCalledOnce();
-    expect(state.deps.requestHeartbeat).toHaveBeenCalledOnce();
+    expect(state.deps.enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(state.deps.enqueueSessionEvent).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -316,12 +250,13 @@ describe("startup run repair auto-disable", () => {
     const runningAtMs = Date.parse("2026-08-01T17:00:00.000Z");
     const deferredNotifications: Array<() => void> = [];
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/startup-run-repair-completion.json",
       cronEnabled: true,
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       nowMs: () => runningAtMs + 1_000,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
       sendCronFailureAlert: vi.fn(async () => undefined),
     });
@@ -383,14 +318,15 @@ describe("startup run repair auto-disable", () => {
   it("buffers quiet-trigger repair notifications until the recovery commit", () => {
     const runningAtMs = Date.parse("2026-08-01T16:30:00.000Z");
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: "/tmp/startup-run-repair-quiet-trigger.json",
       cronEnabled: true,
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       nowMs: () => runningAtMs + 1_000,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(),
     });
     const job: CronJob = {
@@ -436,7 +372,7 @@ describe("startup run repair auto-disable", () => {
 
     expect(job.state.autoDisabled?.reason).toBe("schedule-errors");
     expect(enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(requestHeartbeat).not.toHaveBeenCalled();
+    expect(enqueueSessionEvent).not.toHaveBeenCalled();
     expect(deferredNotifications).toHaveLength(1);
   });
 
@@ -446,12 +382,13 @@ describe("startup run repair auto-disable", () => {
       const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
       const warn = vi.fn();
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath: "/tmp/startup-run-repair-invalid-history.json",
         cronEnabled: true,
         log: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
         nowMs: () => runningAtMs + 1_000,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(),
       });
       const job: CronJob = {

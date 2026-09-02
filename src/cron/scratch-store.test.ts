@@ -6,7 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
-import { CRON_JOB_SCRATCH_MAX_BYTES } from "./scratch-contract.js";
+import { CRON_JOB_SCRATCH_MAX_BYTES, isCronScratchEffectivelyEmpty } from "./scratch-contract.js";
 import {
   hashCronScratchSource,
   readCronJobScratchState,
@@ -51,6 +51,16 @@ async function createFixture() {
 }
 
 describe("cron job scratch store", () => {
+  it.each([
+    [undefined, false],
+    ["", true],
+    ["# Checklist\n\n<!-- nothing pending -->\n- [ ]\n", true],
+    ["# Checklist\n- [ ] Check the backup\n", false],
+    ["Inspect the alert", false],
+  ])("preserves missing-versus-empty execution semantics for %j", (content, empty) => {
+    expect(isCronScratchEffectivelyEmpty(content)).toBe(empty);
+  });
+
   it("distinguishes no row from present-empty content", async () => {
     const fixture = await createFixture();
     expect(readCronJobScratchState(fixture.storePath, "job-1", fixture.options)).toEqual({

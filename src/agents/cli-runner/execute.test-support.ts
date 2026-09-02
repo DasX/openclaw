@@ -1,16 +1,12 @@
 /** Test doubles and setup for CLI execution supervisor and event seams. */
 import type { Mock } from "vitest";
 import { vi } from "vitest";
-import type { requestHeartbeat } from "../../infra/heartbeat-wake.js";
-import type { enqueueSystemEvent } from "../../infra/system-events.js";
 import type { getProcessSupervisor } from "../../process/supervisor/index.js";
 import { executeDeps } from "./execute-deps.js";
 export { buildCliExecLogLine } from "./execute-logging.js";
 
 type ProcessSupervisor = ReturnType<typeof getProcessSupervisor>;
 type SupervisorSpawnFn = ProcessSupervisor["spawn"];
-type EnqueueSystemEventFn = typeof enqueueSystemEvent;
-type RequestHeartbeatFn = typeof requestHeartbeat;
 type UnknownMock = Mock<(...args: unknown[]) => unknown>;
 
 export function setCliRunnerExecuteTestDeps(overrides: Partial<typeof executeDeps>): void {
@@ -18,8 +14,29 @@ export function setCliRunnerExecuteTestDeps(overrides: Partial<typeof executeDep
 }
 
 export const supervisorSpawnMock: UnknownMock = vi.fn();
-export const enqueueSystemEventMock: UnknownMock = vi.fn();
-export const requestHeartbeatMock: UnknownMock = vi.fn();
+const sessionEventMocks = vi.hoisted(() => ({
+  enqueue: vi.fn<
+    typeof import("../../auto-reply/reply/session-event-handoff.js").enqueueSessionEventForHost
+  >(() => ({
+    id: "watchdog-event",
+    cancel: () => true,
+    settled: Promise.resolve({
+      status: "completed" as const,
+      executionStarted: true,
+      delivered: false,
+    }),
+  })),
+}));
+export const enqueueSessionEventMock = sessionEventMocks.enqueue;
+vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: (agentId: string, sessionKey: string) => ({
+    agentId,
+    sessionKey,
+    sessionId: sessionKey,
+    generation: "test",
+  }),
+  enqueueSessionEventForHost: sessionEventMocks.enqueue,
+}));
 
 setCliRunnerExecuteTestDeps({
   getProcessSupervisor: () => {
@@ -82,12 +99,6 @@ setCliRunnerExecuteTestDeps({
       getRecord: vi.fn(),
     };
   },
-  enqueueSystemEvent: (
-    text: Parameters<EnqueueSystemEventFn>[0],
-    options: Parameters<EnqueueSystemEventFn>[1],
-  ) => enqueueSystemEventMock(text, options) as ReturnType<EnqueueSystemEventFn>,
-  requestHeartbeat: (options?: Parameters<RequestHeartbeatFn>[0]) =>
-    requestHeartbeatMock(options) as ReturnType<RequestHeartbeatFn>,
 });
 
 type MockRunExit = {

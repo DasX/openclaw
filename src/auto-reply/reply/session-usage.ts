@@ -122,7 +122,7 @@ export async function persistSessionUsageUpdate(params: {
   contextTokensSource?: SessionEntry["contextTokensSource"];
   contextBudgetStatus?: SessionEntry["contextBudgetStatus"];
   promptTokens?: number;
-  isHeartbeat?: boolean;
+
   systemPromptReport?: SessionSystemPromptReport;
   cliSessionId?: string;
   cliSessionBinding?: import("../../config/sessions.js").CliSessionBinding;
@@ -180,7 +180,6 @@ export async function persistSessionUsageUpdate(params: {
           }
           const updatedAt = Date.now();
           const preserveSessionModelState =
-            params.isHeartbeat === true ||
             params.preserveRuntimeModel === true ||
             params.preserveUserFacingSessionModelState === true;
           const preserveUserFacingRunState = params.preserveUserFacingSessionModelState === true;

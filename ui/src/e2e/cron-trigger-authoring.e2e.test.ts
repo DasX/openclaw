@@ -97,6 +97,214 @@ async function selectSeconds(page: Page) {
 }
 
 suite.define(() => {
+  it("edits a converted monitor as an ordinary shared-session automation and saves scratch with CAS", async () => {
+    await suite.withPage(
+      { locale: "en-US", serviceWorkers: "block", viewport: { height: 1_050, width: 1_440 } },
+      async ({ page }) => {
+        const monitor = {
+          ...scriptJob,
+          id: "converted-monitor",
+          name: "Proactive check",
+          sessionTarget: "session:agent:main:main",
+          wakeMode: "now",
+          activeHours: { start: "22:00", end: "06:00", timezone: "Europe/Vienna" },
+          idleOnly: true,
+          payload: { kind: "agentTurn", message: "Check job scratch", skipIfScratchEmpty: true },
+          delivery: { mode: "announce", target: "owner", directPolicy: "block" },
+        };
+        const gateway = await installMockGateway(page, {
+          methodResponses: {
+            ...cronMethodResponses([monitor]),
+            "cron.update": {
+              ...monitor,
+              configRevision: "updated-monitor-revision",
+              name: "Evening check",
+            },
+            "cron.scratch.get": {
+              scratch: { content: "- Review synthetic alerts", revision: 4, updatedAtMs: 1 },
+              currentRevision: 4,
+              maxBytes: 262144,
+            },
+            "cron.scratch.set": { ok: false, reason: "revision-conflict", currentRevision: 5 },
+          },
+        });
+        await page.goto(`${suite.server.baseUrl}cron`);
+        await page.locator('[data-test-id="cron-row-converted-monitor"]').click();
+        await page.locator("#cron-name").fill("Evening check");
+        await page.locator("details.cron-advanced > summary").click();
+        expect(await page.locator("#cron-active-hours-start").inputValue()).toBe("22:00");
+        await page.locator("#cron-active-hours-end").fill("07:00");
+        await page
+          .locator(".settings-row--toggle")
+          .filter({ hasText: "Skip empty scratch" })
+          .click();
+        await page.locator('[data-test-id="cron-submit"]').click();
+        const update = await gateway.waitForRequest("cron.update");
+        expect(update.params).toMatchObject({
+          id: monitor.id,
+          expectedConfigRevision: monitor.configRevision,
+          patch: {
+            name: "Evening check",
+            sessionTarget: monitor.sessionTarget,
+            activeHours: { ...monitor.activeHours, end: "07:00" },
+            idleOnly: true,
+            payload: { ...monitor.payload, skipIfScratchEmpty: false },
+            delivery: monitor.delivery,
+          },
+        });
+        expect(JSON.stringify(update.params)).not.toContain('"channel":"last"');
+        expect(await gateway.getRequests("cron.scratch.get")).toHaveLength(0);
+        expect(await gateway.getRequests("config.set")).toHaveLength(0);
+        expect(await gateway.getRequests("set-heartbeats")).toHaveLength(0);
+
+        const scratch = page.locator("openclaw-cron-scratch-editor");
+        await scratch.locator("summary").click();
+        await scratch.getByRole("button", { name: "Load scratch", exact: true }).click();
+        const editor = scratch.getByRole("textbox", { name: "Scratch content" });
+        await expect.poll(() => editor.inputValue()).toBe("- Review synthetic alerts");
+        await editor.fill("- Updated operator checklist");
+        await scratch.getByRole("button", { name: "Save scratch", exact: true }).click();
+        const firstSave = await gateway.waitForRequest("cron.scratch.set");
+        expect(firstSave.params).toEqual({
+          id: monitor.id,
+          content: "- Updated operator checklist",
+          expectedRevision: 4,
+        });
+        await scratch
+          .getByRole("status")
+          .filter({ hasText: "Scratch changed during editing" })
+          .waitFor();
+        expect(await editor.inputValue()).toBe("- Updated operator checklist");
+        expect(
+          await scratch.getByRole("button", { name: "Save scratch", exact: true }).isDisabled(),
+        ).toBe(true);
+
+        expect(
+          await scratch.getByRole("button", { name: "Remove scratch", exact: true }).isDisabled(),
+        ).toBe(true);
+        await gateway.setMethodResponse("cron.scratch.get", {
+          scratch: { content: "- Another writer's checklist", revision: 5, updatedAtMs: 2 },
+          currentRevision: 5,
+          maxBytes: 262144,
+        });
+        await scratch.getByRole("button", { name: "Reload scratch", exact: true }).click();
+        await expect.poll(() => editor.inputValue()).toBe("- Another writer's checklist");
+        await gateway.setMethodResponse("cron.scratch.set", {
+          ok: true,
+          scratch: { content: "", revision: 6, updatedAtMs: 3 },
+          currentRevision: 6,
+          maxBytes: 262144,
+        });
+        await editor.fill("");
+        await scratch.getByRole("button", { name: "Save scratch", exact: true }).click();
+        const emptySave = await gateway.waitForRequest("cron.scratch.set", { after: 1 });
+        expect(emptySave.params).toEqual({ id: monitor.id, content: "", expectedRevision: 5 });
+        await scratch.getByRole("status").filter({ hasText: "Scratch saved." }).waitFor();
+        await gateway.setMethodResponse("cron.scratch.set", {
+          ok: true,
+          scratch: null,
+          currentRevision: 7,
+          maxBytes: 262144,
+        });
+        await scratch.getByRole("button", { name: "Remove scratch", exact: true }).click();
+        const removal = await gateway.waitForRequest("cron.scratch.set", { after: 2 });
+        expect(removal.params).toEqual({ id: monitor.id, content: null, expectedRevision: 6 });
+        await scratch.getByText("No scratch saved.", { exact: false }).waitFor();
+
+        // A multi-byte draft can exceed the byte limit without exceeding textarea maxlength.
+        await gateway.setMethodResponse("cron.scratch.get", {
+          scratch: { content: "notes", revision: 8, updatedAtMs: 4 },
+          currentRevision: 8,
+          maxBytes: 8,
+        });
+        await scratch.getByRole("button", { name: "Reload scratch", exact: true }).click();
+        await expect.poll(() => editor.inputValue()).toBe("notes");
+        await editor.fill("é".repeat(8));
+        expect(
+          await scratch.getByRole("button", { name: "Save scratch", exact: true }).isDisabled(),
+        ).toBe(true);
+        expect(
+          await scratch.getByRole("button", { name: "Remove scratch", exact: true }).isEnabled(),
+        ).toBe(true);
+        await gateway.setMethodResponse("cron.scratch.set", {
+          ok: true,
+          scratch: null,
+          currentRevision: 9,
+          maxBytes: 8,
+        });
+        await scratch.getByRole("button", { name: "Remove scratch", exact: true }).click();
+        const oversizedRemoval = await gateway.waitForRequest("cron.scratch.set", { after: 3 });
+        expect(oversizedRemoval.params).toEqual({
+          id: monitor.id,
+          content: null,
+          expectedRevision: 8,
+        });
+        await scratch.getByText("No scratch saved.", { exact: false }).waitFor();
+        await captureProof(page, "monitor-scratch-cas");
+      },
+    );
+  });
+
+  it("fences stale scratch reads and allows CAS deletion of redacted scratch without enabling overwrite", async () => {
+    await suite.withPage({ locale: "en-US", serviceWorkers: "block" }, async ({ page }) => {
+      const jobs = ["first", "second"].map((id) =>
+        Object.assign({}, scriptJob, {
+          id,
+          name: id,
+          payload: { kind: "agentTurn", message: "Check scratch" },
+        }),
+      );
+      const gateway = await installMockGateway(page, {
+        methodResponses: {
+          ...cronMethodResponses(jobs),
+          "cron.scratch.get": {
+            scratch: { content: "token=synthetic-private-token", revision: 2, updatedAtMs: 2 },
+            currentRevision: 2,
+            maxBytes: 262144,
+          },
+        },
+      });
+      await page.goto(`${suite.server.baseUrl}cron`);
+      await page.locator('[data-test-id="cron-row-first"]').click();
+      let scratch = page.locator("openclaw-cron-scratch-editor");
+      await scratch.locator("summary").click();
+      await gateway.deferNext("cron.scratch.get");
+      await scratch.getByRole("button", { name: "Load scratch", exact: true }).click();
+      await gateway.waitForRequest("cron.scratch.get");
+      await page.locator('[data-test-id="cron-back"]').click();
+      await page.locator('[data-test-id="cron-row-second"]').click();
+      scratch = page.locator("openclaw-cron-scratch-editor");
+      await gateway.resolveDeferred("cron.scratch.get", {
+        scratch: { content: "Private first job notes", revision: 1, updatedAtMs: 1 },
+        currentRevision: 1,
+        maxBytes: 262144,
+      });
+      await scratch.locator("summary").click();
+      await scratch.getByRole("button", { name: "Load scratch", exact: true }).click();
+      await scratch.getByText("Sensitive content was redacted.", { exact: false }).waitFor();
+      const editor = scratch.getByRole("textbox", { name: "Scratch content" });
+      expect(await editor.inputValue()).toContain("[redacted]");
+      expect(await editor.inputValue()).not.toContain("synthetic-private-token");
+      expect(await scratch.textContent()).not.toContain("Private first job notes");
+      expect(
+        await scratch.getByRole("button", { name: "Save scratch", exact: true }).isDisabled(),
+      ).toBe(true);
+      expect(await editor.getAttribute("readonly")).not.toBeNull();
+      expect(await gateway.getRequests("cron.scratch.set")).toHaveLength(0);
+      await gateway.setMethodResponse("cron.scratch.set", {
+        ok: true,
+        scratch: null,
+        currentRevision: 3,
+        maxBytes: 262144,
+      });
+      await scratch.getByRole("button", { name: "Remove scratch", exact: true }).click();
+      const removal = await gateway.waitForRequest("cron.scratch.set");
+      expect(removal.params).toEqual({ id: "second", content: null, expectedRevision: 2 });
+      await scratch.getByText("No scratch saved.", { exact: false }).waitFor();
+      expect(await editor.inputValue()).toBe("");
+    });
+  });
+
   it("prevents unsupported condition triggers while preserving valid interval submissions", async () => {
     await suite.withPage(
       { locale: "en-US", serviceWorkers: "block", viewport: { height: 1_050, width: 1_440 } },

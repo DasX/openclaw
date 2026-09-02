@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { makeCronJob } from "../../cron/delivery.test-helpers.js";
 import type { TemplateContext } from "../templating.js";
 import {
   setupAgentRunnerExecutionTestState,
@@ -136,7 +137,6 @@ describe("executeAgentTurn: runtime selection", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -291,7 +291,7 @@ describe("executeAgentTurn: runtime selection", () => {
     });
   });
 
-  it("keeps catalog-adopted Codex sessions on Codex during heartbeat model overrides", async () => {
+  it("keeps catalog-adopted Codex sessions on Codex during scheduled model overrides", async () => {
     state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
       result: await params.run(
@@ -304,7 +304,7 @@ describe("executeAgentTurn: runtime selection", () => {
       attempts: [],
     }));
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "heartbeat" }],
+      payloads: [{ text: "scheduled result" }],
       meta: {},
     });
 
@@ -312,6 +312,7 @@ describe("executeAgentTurn: runtime selection", () => {
     const followupRun = createFollowupRun();
     followupRun.run.provider = "anthropic";
     followupRun.run.model = "claude-opus-4-6";
+    followupRun.run.scheduledAutomation = { job: makeCronJob({}), assertCurrent: () => {} };
     followupRun.run.config = {
       agents: {
         defaults: {
@@ -324,7 +325,6 @@ describe("executeAgentTurn: runtime selection", () => {
 
     const result = await executeAgentTurn({
       ...createMinimalRunAgentTurnParams({ followupRun }),
-      isHeartbeat: true,
       getActiveSessionEntry: () =>
         ({
           sessionId: "catalog-adopted-session",
@@ -347,8 +347,8 @@ describe("executeAgentTurn: runtime selection", () => {
     expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "embedded run params", {
       provider: "anthropic",
       model: "claude-opus-4-6",
-      trigger: "heartbeat",
-      lane: "cron-nested",
+      trigger: "cron",
+      lane: "main",
       agentHarnessId: "codex",
       agentHarnessRuntimeOverride: "codex",
     });

@@ -268,7 +268,7 @@ describe("normalizeCompatibilityConfigValues", () => {
     expect(res.changes.some((change) => change.includes("workspace"))).toBe(false);
   });
 
-  it("removes invalid heartbeat active-hours windows so saved config can load", () => {
+  it("retains invalid heartbeat windows for explicit Doctor cutover diagnostics", () => {
     const res = normalizeCompatibilityConfigValues(
       legacyConfig({
         agents: {
@@ -290,15 +290,16 @@ describe("normalizeCompatibilityConfigValues", () => {
       }),
     );
 
-    expect(res.config.agents?.defaults?.heartbeat).toEqual({ every: "30m" });
-    expect(res.config.agents?.entries?.ops?.heartbeat).toEqual({ prompt: "Check alerts" });
-    expect(res.changes).toContain(
-      "Removed invalid agents.defaults.heartbeat.activeHours; heartbeats will use unrestricted hours until it is reconfigured.",
-    );
-    expect(res.changes).toContain(
-      "Removed invalid agents.entries.ops.heartbeat.activeHours; heartbeats will use unrestricted hours until it is reconfigured.",
-    );
-    expect(validateConfigObject(res.config).ok).toBe(true);
+    expect(res.config.agents?.defaults?.heartbeat?.activeHours).toEqual({
+      start: "99:99",
+      end: "17:00",
+    });
+    expect(res.config.agents?.entries?.ops?.heartbeat?.activeHours).toEqual({
+      start: "09:00",
+      end: "not-a-time",
+    });
+    expect(res.changes.some((change) => change.includes("activeHours"))).toBe(false);
+    expect(validateConfigObject(res.config).ok).toBe(false);
   });
 
   it("preserves valid heartbeat active-hours windows", () => {

@@ -53,7 +53,6 @@ struct HealthSnapshot: Codable {
     let channels: [String: ChannelSummary]
     let channelOrder: [String]?
     let channelLabels: [String: String]?
-    let heartbeatSeconds: Int?
     let sessions: Sessions
 }
 

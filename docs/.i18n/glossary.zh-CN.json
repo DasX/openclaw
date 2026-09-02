@@ -1874,5 +1874,29 @@
   {
     "source": "Node and tsx startup errors",
     "target": "Node 和 tsx 启动错误"
+  },
+  {
+    "source": "Heartbeat migration",
+    "target": "Heartbeat 迁移"
+  },
+  {
+    "source": "Automations CLI",
+    "target": "自动化 CLI"
+  },
+  {
+    "source": "Command queue",
+    "target": "命令队列"
+  },
+  {
+    "source": "System CLI",
+    "target": "系统 CLI"
+  },
+  {
+    "source": "Database schemas",
+    "target": "数据库架构"
+  },
+  {
+    "source": "Retired heartbeat configuration",
+    "target": "已弃用的 Heartbeat 配置"
   }
 ]

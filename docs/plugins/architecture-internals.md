@@ -723,7 +723,7 @@ plugin fields. See [Channel plugins](/plugins/sdk-channel-plugins).
 
 Runtime and config helpers live under matching focused `*-runtime` subpaths
 (`approval-runtime`, `agent-runtime`, `lazy-runtime`, `directory-runtime`,
-`text-utility-runtime`, `runtime-store`, `system-event-runtime`, `heartbeat-runtime`,
+`text-utility-runtime`, `runtime-store`,
 `channel-activity-runtime`, etc.). Prefer `config-contracts`,
 `plugin-config-runtime`, `runtime-config-snapshot`, and `config-mutation`
 instead of the broad `config-runtime` compatibility barrel.
@@ -734,6 +734,14 @@ instead of the broad `config-runtime` compatibility barrel.
 are deprecated compatibility shims for older plugins. New code should import
 narrower generic primitives instead.
 </Info>
+
+The private-local `openclaw/plugin-sdk/heartbeat-runtime` and
+`openclaw/plugin-sdk/system-event-runtime` subpaths are not public plugin
+authoring APIs. Scheduled monitoring belongs to ordinary cron jobs; immediate
+follow-ups belong to ordinary session admission. Stable external heartbeat SDK
+contracts remain deprecated boundary adapters during their deprecation window,
+not a separate execution engine. See
+[Heartbeat SDK migration](/plugins/sdk-migration#heartbeat-retirement).
 
 Repo-internal entry points (per bundled plugin package root):
 
@@ -784,8 +792,10 @@ outbound host generic and use the messaging adapter surface for provider rules:
 
 - `messaging.inferTargetChatType({ to })` decides whether a normalized target
   should be treated as `direct`, `group`, or `channel` before directory lookup.
-  Implicit owner heartbeat delivery requires this direct classification; without
-  it, Gateway status reports `waiting for route`.
+  A cron job with `delivery.target: "owner"` requires a positively identified
+  direct route. An unproven owner target is unavailable; never substitute the
+  last conversation, which may be a group. Core owns the job's delivery policy,
+  while the channel supplies target classification and native routing facts.
 - `messaging.targetResolver.looksLikeId(raw, normalized)` tells core whether an
   input should skip straight to id-like resolution instead of directory search.
 - `messaging.targetResolver.reservedLiterals` lists bare words that are

@@ -4,14 +4,14 @@ summary: "Automations: scheduled jobs, webhooks, and Gmail PubSub triggers for t
 read_when:
   - Scheduling background jobs or wakeups
   - Wiring external triggers (webhooks, Gmail) into OpenClaw
-  - Deciding between heartbeat and automations for scheduled work
+  - Migrating heartbeat monitoring to ordinary scheduled jobs
 title: "Automations"
 sidebarTitle: "Automations"
 ---
 
 Automations are OpenClaw's built-in scheduler. The scheduler persists jobs, wakes the agent at the right time, and can deliver output to a chat channel, a webhook, or nowhere.
 
-Manage automations with the `openclaw automations` CLI; `openclaw cron` remains an alias for the same commands.
+Manage automations with `openclaw automations` or `openclaw cron`; both spellings expose the same commands.
 
 ## Quick start
 
@@ -85,13 +85,93 @@ Timestamps without a timezone are treated as UTC. Add `--tz America/New_York` to
 
 Recurring top-of-hour expressions (minute `0` with a wildcard hour field) are automatically staggered by up to 5 minutes to reduce load spikes. Use `--exact` to force precise timing, or `--stagger 30s` for an explicit window (cron schedules only).
 
-### Heartbeat task migration
+### Heartbeat migration
 
-Older heartbeat scratch supported a structured `tasks:` block. Run `openclaw doctor --fix` after upgrading to convert each entry into an ordinary editable main-session automation job. Doctor preserves the interval and previous last-run timing, creates the jobs before removing the block, and safely converges the same declaration keys on rerun.
+Older installations used system-owned heartbeat monitors and structured `tasks:`
+blocks in monitor scratch. Run `openclaw doctor --fix` after upgrading to convert
+these into ordinary editable jobs. Doctor preserves job identity, history,
+scratch revisions, disabled state, scheduling anchors, and pending slots before
+removing legacy configuration or task blocks.
 
-These migrated jobs carry public `systemEvent` payloads, so `openclaw automations list`, `get`, `edit`, and `remove` plus the `automations` agent tool manage them like other jobs (the tool still accepts its legacy `cron` name as a compatibility alias). Their execution uses the guarded heartbeat task wake: active hours, minimum spacing, flood control, and busy retries still apply, while the scheduler owns each task's independent cadence. Jobs due in the same coalescing window can share one heartbeat turn. A scheduled occurrence outside heartbeat active hours is skipped and retried at the job's next occurrence.
+The job becomes authoritative: subsequent config reloads, restarts, and Doctor
+runs do not recreate deleted monitors or overwrite operator edits. Immediate
+exec, task, hook, and restart follow-ups use normal session execution rather
+than a periodic monitor. See [Heartbeat migration](/gateway/heartbeat).
 
-Heartbeat scratch is now monitor prose only. Runtime heartbeats do not parse `tasks:` text as schedules; create new recurring work as automations.
+### Monitoring policies
+
+Any agent-turn job can use these optional policies. They are stored with the
+job, not under agent-wide heartbeat configuration.
+
+| Field                                    | Behavior                                                                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `activeHours: { start, end, timezone? }` | Restricts execution to a timezone-aware window. Start is inclusive and end is exclusive; overnight windows are supported. |
+| `idleOnly: true`                         | Gives foreground work priority through normal scheduler/session admission without occupying a running slot while waiting. |
+| `delivery.target: "owner"`               | Resolves an explicitly identified owner DM dynamically; it does not follow a group conversation.                          |
+| `delivery.directPolicy: "block"`         | Blocks direct/DM delivery for this job. The default is `allow`.                                                           |
+| `payload.skipIfScratchEmpty: true`       | Skips a check with explicitly empty scratch. Missing scratch is not treated as an empty checklist.                        |
+
+Omitting these fields preserves ordinary automation defaults. A manual run can
+bypass the recurring cadence, but it still respects the execution window,
+authorization, lifecycle, and delivery restrictions. Starting foreground work
+does not authorize replaying a job's already-started side effects.
+
+`activeHours.start` and `end` use `HH:MM`; only `end` accepts `24:00`.
+Equal start and end times define an empty window. `timezone` accepts `user`
+(the default, using the configured user timezone), `local` (Gateway host), or an
+IANA timezone. Window checks use local wall-clock time, including across daylight
+saving changes. This is separate from the cron expression's schedule timezone.
+
+Use the job editor to set these policies. They belong to the job schema; do not
+put them under `agents.defaults` or `channels.defaults`.
+
+Keep monitoring instructions explicit: check the job's named sources or scratch,
+do not infer or repeat old tasks from prior chats, and report only changes that
+need attention. A human check-in is a separate scheduled job with an intentional
+cadence and active window, not a reason to revive stale conversation work.
+
+### Job scratch and quiet results
+
+Each job can keep private task context in scratch stored in the shared state
+database. Present scratch is injected into that job's bounded run context;
+it is not included in job lists or run-history responses.
+
+<Warning>
+Do not put API keys, tokens, or other secrets in scratch. It becomes model prompt
+context, even though it is omitted from job-list and history responses.
+</Warning>
+
+```bash
+openclaw automations scratch <job-id> --set "Check only for newly blocked work."
+```
+
+```bash
+openclaw automations scratch <job-id> --json
+```
+
+Scratch updates use revision compare-and-swap; `--expected-revision <n>` pins a
+known revision. During an automation turn, the existing automations tool exposes
+self-scoped `scratch_get`, `scratch_set`, and `record_result` actions. These do
+not grant access to another job's scratch or settings.
+
+`scratch_get` returns the content and current revision. `scratch_set` replaces
+the complete content (or clears it with `null`) and requires `expectedRevision`
+from that read. On a revision conflict, read again and reconcile the content
+instead of overwriting another edit.
+
+Use a normal final reply for a visible result and `NO_REPLY` for silence.
+`record_result` takes `outcome` (`no_change`, `progress`, `done`, `blocked`, or
+`needs_attention`) and a nonempty `summary` capped at 2000 characters. It records
+that result without sending a notification by itself. Meaningful results go to
+ordinary run history and bounded session context, including when the final reply
+is silent; this is not a delivery retry queue. Adaptive scheduling still uses `next_check` on a
+paced job. Scratch is context, not another scheduler; runtime does not interpret
+`tasks:` blocks or read `HEARTBEAT.md`.
+
+With `payload.skipIfScratchEmpty: true`, blank text, comments, headings, fence
+markers, and empty checklist stubs count as an empty checklist. Removing scratch
+with `--unset` is different: missing scratch does not suppress the run. Disable
+the job when you want it to stop regardless of scratch content.
 
 ### Stream sources
 
@@ -231,7 +311,7 @@ Every job carries exactly one payload kind, chosen by flag:
 | Command       | `--command <shell>` or `--command-argv <json>` | A shell/process on the Gateway host, no model call         |
 | Script        | `--script <file\|->`                           | A headless code-mode script using the owning agent's tools |
 
-System-owned payload kinds are gateway-converged and cannot be created or edited through the CLI or API. The `heartbeat` kind creates one heartbeat monitor job per heartbeat-enabled agent (see [Heartbeat](/gateway/heartbeat)). The `skillCollectionReview` kind creates one Skill Workshop review job per writable workspace. Both appear in `openclaw cron list`; use `--all` to include disabled rows.
+System-owned payload kinds are gateway-converged and cannot be created or edited through the CLI or API. The `skillCollectionReview` kind creates one Skill Workshop review job per writable workspace. Former heartbeat monitors migrate to ordinary editable agent-turn jobs; their legacy report-only payload shape remains in protocol v4 for compatibility, not runtime execution. Jobs appear in `openclaw automations list`; use `--all` to include disabled rows.
 
 Skill collection review runs every 7 days. It is enabled when `skills.workshop.autonomous.mode` is `auto`; `propose` and `off` keep the system-owned job disabled. The Gateway converges these jobs at startup and after config reload. Scheduled reviews require automations. When `cron.enabled` is `false` or `OPENCLAW_SKIP_CRON=1`, the Gateway logs a startup warning and does not run scheduled reviews. There is no separate weekly Gateway timer.
 
@@ -336,7 +416,7 @@ Use `--script <file|->` to read JavaScript from a file or stdin. The timeout def
 The script may return an object with these optional fields:
 
 - `notify`: Text delivered through the job's `announce`, `webhook`, or `none` delivery mode. If omitted, nothing is delivered. For a `main` job, the text becomes a system event.
-- `wake`: `"now"` requests an immediate heartbeat after enqueueing `notify` (or a compact completion event); `"next-heartbeat"` enqueues the event for the next heartbeat.
+- `wake`: `"now"` requests immediate session processing of `notify` (or a compact completion event). The legacy `"next-heartbeat"` value defers to a valid scheduled target; it does not start a separate heartbeat engine.
 - `state`: JSON state, capped at 16 KB and persisted only after a successful run. The next run receives a frozen copy as `trigger.state`, matching trigger scripts. Because that namespace has one persisted owner, a script payload cannot be combined with a condition trigger on the same job.
 - `nextCheck`: A duration such as `"15m"`. It is valid only for jobs with pacing enabled and uses the same pacing clamp as agent-turn proposals.
 
@@ -363,13 +443,13 @@ only when it needs Codex app access. See
 | Current session | `current`           | Detached; commits to the creation-bound conversation | Context-aware recurring work    |
 | Custom session  | `session:custom-id` | Persistent named session                             | Workflows that build on history |
 
-Agent-turn jobs default to the creating conversation when the create request carries session context. Callers without a session key, including CLI and API callers that do not supply one, fall back to `isolated`. System events and heartbeats still default to `main`; command and script payloads still default to `isolated`.
+Agent-turn jobs default to the creating conversation when the create request carries session context. Callers without a session key, including CLI and API callers that do not supply one, fall back to `isolated`. System events default to `main`; command and script payloads default to `isolated`.
 
 <AccordionGroup>
   <Accordion title="Main session vs current vs isolated vs custom">
-    **Main session** jobs enqueue a system event into the owning agent's main session and optionally wake the heartbeat (`--wake now` or `--wake next-heartbeat`). The event is processed with that session's existing context and last delivery context. Internal automation turns do not extend daily or idle reset freshness; only visible user activity updates session freshness. **Current-session** jobs execute in a detached run session, read a bounded tail of the conversation captured when the job was created, and commit the final visible assistant result back to that exact conversation. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
+    **Main session** jobs submit their system event through the owning agent's normal session execution. With `--wake now`, execution is settled before the job reports its final result; no periodic monitor is required. The legacy `--wake next-heartbeat` mode remains a deprecated deferred-delivery interface for a valid scheduled target. Internal automation turns do not extend daily or idle reset freshness; only visible user activity updates session freshness. **Current-session** jobs execute in a detached run session, read a bounded tail of the conversation captured when the job was created, and commit the final visible assistant result back to that exact conversation. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
 
-    Main-session automation events are self-contained system-event reminders. They do not automatically include the default heartbeat prompt or the heartbeat monitor scratch; say it explicitly in the automation event text if a reminder should consult that context.
+    Main-session automation events are self-contained reminders. They do not borrow another job's prompt or scratch. Put the required instructions in the job itself.
 
     Main-session jobs use the owning session's delivery context, not a separate chat announce target. Edits that enable announce delivery, or set a chat target without explicitly choosing no delivery, are rejected without changing the job. Use an isolated job with `--message` and `--announce` for chat delivery. Primary webhook delivery remains supported for main-session jobs.
 
@@ -496,7 +576,7 @@ For template files, keep the language instruction in the rendered prompt and ver
       --name "Calendar check" \
       --at "20m" \
       --session main \
-      --system-event "Next heartbeat: check calendar." \
+      --system-event "Check the calendar for upcoming events." \
       --wake now
     ```
   </Tab>
@@ -597,7 +677,15 @@ Archiving a session (Control UI, or `sessions.patch { key, archived: true, expec
 
 Run history keeps payload execution in `status` (`ok`, `error`, or `skipped`) and whole-run completion in `completionStatus` (`succeeded`, `failed`, or `unknown`). Requested delivery is required unless the admitted job explicitly sets `delivery.bestEffort: true`; delivery-only failure leaves execution `status: "ok"`, does not increment execution error counters or enter retry backoff, and records `completionStatus: "failed"`. An adapter send without a delivery identity stays `unknown`, without an automatic resend that could duplicate the message.
 
-Intentional silence (`NO_REPLY`), intentionally empty output, heartbeat acknowledgments, and channel reply transforms record `deliverySuppressionReason` without claiming delivery or triggering delivery-failure alerts. These successful non-outcomes and successful executions with explicit `delivery.bestEffort: true` delete one-shots normally. A transport hook veto instead records a delivery error without an intentional-suppression reason. Active descendants without a final reply, stale interim output, and output emptied by TTS instead record a delivery error. Retained one-shot jobs do not automatically rerun; inspect their history and delivery outcome before retrying or removing them.
+A preflight skip outside active hours or with explicitly empty scratch records
+`status: "skipped"` and keeps the existing `completionStatus: "failed"` contract
+(and non-zero `--wait` exit). It records known nondelivery for requested chat
+announcements, or `not-requested` for delivery mode `none`. A webhook can still
+deliver the skip summary; its actual result takes precedence. This does not
+resolve an already-started run's genuinely ambiguous delivery, change one-shot
+retention, or turn a skip into an execution error.
+
+Intentional silence (`NO_REPLY`), intentionally empty output, legacy heartbeat acknowledgments, and channel reply transforms record `deliverySuppressionReason` without claiming delivery or triggering delivery-failure alerts. These successful non-outcomes and successful executions with explicit `delivery.bestEffort: true` delete one-shots normally. A transport hook veto instead records a delivery error without an intentional-suppression reason. Active descendants without a final reply, stale interim output, and output emptied by TTS instead record a delivery error. Retained one-shot jobs do not automatically rerun; inspect their history and delivery outcome before retrying or removing them.
 
 Direct Gateway event sources can use `cron.run` with `mode: "if-enabled"` to run immediately without overriding an operator-disabled or auto-disabled job. Explicit operator run-now commands continue to use `force`.
 
@@ -726,7 +814,7 @@ limits, routing policy, and error responses.
 
 <AccordionGroup>
   <Accordion title="POST /hooks/wake">
-    Enqueue a trusted notification for the selected agent's main session and optionally request an immediate heartbeat:
+    Enqueue a trusted notification for the selected agent's main session and optionally request immediate session processing:
 
     ```bash
     curl --include http://127.0.0.1:18789/hooks/wake \
@@ -735,7 +823,7 @@ limits, routing policy, and error responses.
       --data '{"text":"The sample import completed","mode":"now","agentId":"main"}'
     ```
 
-    HTTP `200` includes `eventOutcome: "queued"` when the queue accepts the wake or `eventOutcome: "coalesced"` when the same wake is already the queue's most recent pending event. With `mode: "now"`, a wake is requested in either case; the response does not mean a heartbeat completed. Use `mode: "next-heartbeat"` to avoid requesting an immediate wake.
+    HTTP `200` includes `eventOutcome: "queued"` when the queue accepts the wake or `eventOutcome: "coalesced"` when the same wake is already the queue's most recent pending event. With `mode: "now"`, normal session processing is requested in either case, even when cron is disabled; the response does not prove execution or delivery. The deprecated `mode: "next-heartbeat"` defers to a valid scheduled monitor job. If no such target is available, the request returns an actionable result before enqueueing instead of waiting indefinitely for a user message.
 
     A supplied `agentId` must name a configured agent. Supply it explicitly when the fleet has no implicit or retained legacy owner. A caller-selected `sessionKey` requires `mode: "now"`, `hooks.allowRequestSessionKey: true`, and the configured prefix policy; deferred wakes use the main session.
 
@@ -1002,7 +1090,10 @@ when omitted. Prefer narrow `allowedHostnames` entries over the broad
 
 Automation jobs, run history, and quarantined malformed jobs live in the shared SQLite state database. Use the CLI or Gateway API to change jobs; `cron.store` is retired.
 
-Disable automations: `cron.enabled: false` or `OPENCLAW_SKIP_CRON=1`.
+Disable automations: `cron.enabled: false` or `OPENCLAW_SKIP_CRON=1`. This stops
+scheduled monitoring too, but does not disable immediate exec, task, hook, or
+restart follow-ups through normal session admission. To pause only one monitor,
+disable that job rather than the entire scheduler.
 
 <AccordionGroup>
   <Accordion title="Retry behavior">
@@ -1029,7 +1120,6 @@ openclaw gateway status
 openclaw automations status
 openclaw automations list
 openclaw automations runs --id <jobId> --limit 20
-openclaw system heartbeat last
 openclaw logs --follow
 openclaw doctor
 ```
@@ -1039,12 +1129,14 @@ openclaw doctor
     - Check `cron.enabled` and the `OPENCLAW_SKIP_CRON` env var.
     - Confirm the Gateway is running continuously.
     - For `cron` schedules, verify timezone (`--tz`) vs the host timezone.
+    - Check the job's `activeHours`, `idleOnly`, and `payload.skipIfScratchEmpty` policies and its recorded outcome. Include disabled jobs with `openclaw automations list --all`.
     - `reason: not-due` in run output means the manual run was checked with `openclaw automations run <jobId> --due` and the job was not due yet.
 
   </Accordion>
   <Accordion title="Job fired but no delivery">
     - Delivery mode `none` means no runner fallback send is expected. The agent can still send directly with the `message` tool when a chat route is available.
     - Delivery target missing/invalid (`channel`/`to`) means outbound was skipped.
+    - `delivery.target: "owner"` needs a positively identified owner DM; it does not substitute a recent group route. Check the owner allowlist and channel/account route. `delivery.directPolicy: "block"` intentionally disallows DM delivery.
     - For Matrix, copied or legacy jobs with lowercased `delivery.to` room IDs can fail because Matrix room IDs are case-sensitive. Edit the job to the exact `!room:server` or `room:!room:server` value from Matrix.
     - Channel auth errors (`unauthorized`, `Forbidden`) mean delivery was blocked by credentials.
     - When the dispatcher records intentional suppression, job state, run history, and finished events include `deliverySuppressionReason` (`empty`, `silent`, `heartbeat`, or `channel_transform`). This is separate from `lastDeliveryError` / `deliveryError`; required delivery failures also log an error when they happen.
@@ -1052,16 +1144,16 @@ openclaw doctor
     - If the agent should message the user itself, check that the job has a usable route (`channel: "last"` with a previous chat, or an explicit channel/target).
 
   </Accordion>
-  <Accordion title="Automations or heartbeat appear to prevent /new-style rollover">
+  <Accordion title="Background work appears to prevent /new-style rollover">
     - Daily and idle reset freshness is not based on `updatedAt`; see [Session management](/concepts/session#session-lifecycle).
-    - Automation wakeups, heartbeat runs, exec notifications, and gateway bookkeeping may update the session row for routing/status, but they do not extend `sessionStartedAt` or `lastInteractionAt`.
+    - Automation runs, exec notifications, and gateway bookkeeping may update the session row for routing/status, but they do not extend `sessionStartedAt` or `lastInteractionAt`.
     - For legacy rows created before those fields existed, OpenClaw can recover `sessionStartedAt` from the transcript JSONL session header when the file is still available. Legacy idle rows without `lastInteractionAt` use that recovered start time as their idle baseline.
 
   </Accordion>
   <Accordion title="Timezone gotchas">
     - Cron expressions without `--tz` use the gateway host timezone.
     - `at` schedules without timezone are treated as UTC.
-    - Heartbeat `activeHours` uses configured timezone resolution.
+    - A job's `activeHours.timezone` is independent of its schedule timezone; see [Monitoring policies](/automation/cron-jobs#monitoring-policies).
 
   </Accordion>
 </AccordionGroup>
@@ -1070,5 +1162,5 @@ openclaw doctor
 
 - [Automation](/automation) — all automation mechanisms at a glance
 - [Background Tasks](/automation/tasks) — task ledger for automation runs
-- [Heartbeat](/gateway/heartbeat) — periodic main-session turns
+- [Heartbeat migration](/gateway/heartbeat) — upgrade older monitors and integrations
 - [Timezone](/concepts/timezone) — timezone configuration

@@ -50,13 +50,20 @@ Behavior:
 
 ### Config (preferred over env overrides)
 
-| Key                                   | Default | Effect                                                                          |
-| ------------------------------------- | ------- | ------------------------------------------------------------------------------- |
-| `tools.exec.backgroundMs`             | 10000   | Same as `OPENCLAW_BASH_YIELD_MS`.                                               |
-| `tools.exec.timeoutSeconds`           | 1800    | Default per-call timeout.                                                       |
-| `tools.exec.cleanupMs`                | 1800000 | Same as `OPENCLAW_BASH_JOB_TTL_MS`.                                             |
-| `tools.exec.notifyOnExit`             | true    | Enqueue a system event + request heartbeat when a backgrounded exec exits.      |
-| `tools.exec.notifyOnExitEmptySuccess` | false   | Also enqueue completion events for successful backgrounded runs with no output. |
+| Key                                   | Default | Effect                                                                                  |
+| ------------------------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `tools.exec.backgroundMs`             | 10000   | Same as `OPENCLAW_BASH_YIELD_MS`.                                                       |
+| `tools.exec.timeoutSeconds`           | 1800    | Default per-call timeout.                                                               |
+| `tools.exec.cleanupMs`                | 1800000 | Same as `OPENCLAW_BASH_JOB_TTL_MS`.                                                     |
+| `tools.exec.notifyOnExit`             | true    | Admit a completion follow-up in the originating session when a backgrounded exec exits. |
+| `tools.exec.notifyOnExitEmptySuccess` | false   | Also enqueue completion events for successful backgrounded runs with no output.         |
+
+Completion follow-ups use ordinary session admission, not a monitoring job. They
+remain available when cron or monitoring is disabled, and queue behind active
+session work instead of interrupting it. The follow-up stays bound to the
+originating session generation and delivery route; it must not enter a reset or
+replacement session. Polling a completion cancels its queued, unstarted follow-up
+so the same completion is not reported again.
 
 ## Worker environments
 

@@ -78,7 +78,6 @@ describe("createBlockReplyDeliveryHandler", () => {
       await handler({ text: "Same answer", [flag]: true });
       const { replyPayloads } = await buildReplyPayloads({
         payloads: [{ text: "Same answer" }],
-        isHeartbeat: false,
         didLogHeartbeatStrip: false,
         blockStreamingEnabled,
         blockReplyPipeline: null,
@@ -118,7 +117,6 @@ describe("createBlockReplyDeliveryHandler", () => {
     );
     const { replyPayloads } = await buildReplyPayloads({
       payloads: [finalPayload],
-      isHeartbeat: false,
       didLogHeartbeatStrip: false,
       blockStreamingEnabled: true,
       blockReplyPipeline: null,

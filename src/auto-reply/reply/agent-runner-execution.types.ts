@@ -127,7 +127,7 @@ export type AgentTurnParams = {
   shouldEmitToolOutput: () => boolean;
   pendingToolTasks: Set<Promise<void>>;
   resetSessionAfterRoleOrderingConflict: (reason: string) => Promise<boolean>;
-  isHeartbeat: boolean;
+
   sessionKey?: string;
   runtimePolicySessionKey?: string;
   getActiveSessionEntry: () => SessionEntry | undefined;

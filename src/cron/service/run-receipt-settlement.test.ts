@@ -32,11 +32,12 @@ function makeService(
   runCommandJob: NonNullable<ConstructorParameters<typeof CronService>[0]["runCommandJob"]>,
 ) {
   return new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath,
     cronEnabled: true,
     log: logger,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     runCommandJob,
   });

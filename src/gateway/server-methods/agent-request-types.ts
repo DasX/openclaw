@@ -33,7 +33,7 @@ export type AgentRunRequest = {
   modelRun?: boolean;
   promptMode?: "full" | "minimal" | "none";
   bootstrapContextMode?: "full" | "lightweight";
-  bootstrapContextRunKind?: "default" | "heartbeat" | "cron";
+  bootstrapContextRunKind?: "default" | "cron";
   acpTurnSource?: "manual_spawn";
   internalRuntimeHandoffId?: string;
   internalExecutionIdentityRetry?: boolean;

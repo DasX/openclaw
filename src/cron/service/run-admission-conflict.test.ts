@@ -52,12 +52,13 @@ it("recovers an ownerless queued lease on a live sibling without restart", async
   const job = createDueIsolatedJob({ id: "queued-owner-exit", nowMs: now, nextRunAtMs: now });
   await saveCronStore(store.storePath, { version: 1, jobs: [job] });
   const owner = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: store.storePath,
     log: noopLogger,
     nowMs: () => now,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
   await list(owner);
@@ -74,12 +75,13 @@ it("recovers an ownerless queued lease on a live sibling without restart", async
 
   const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
   const sibling = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: store.storePath,
     log: noopLogger,
     nowMs: () => now + 1,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob,
   });
   await onTimer(sibling);
@@ -103,12 +105,13 @@ it("recovers a dead running owner on timer refresh without an admission conflict
   releaseLocalCronRunReceiptOwnership(receipt);
   const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
   const sibling = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: store.storePath,
     log: noopLogger,
     nowMs: () => now + 1,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob,
   });
 
@@ -156,12 +159,13 @@ it("preserves foreign state while retrying an unrelated reservation", async () =
   });
   await saveCronStore(store.storePath, { version: 1, jobs: [foreignJob, pendingJob] });
   const state = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: store.storePath,
     log: noopLogger,
     nowMs: () => now,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
   await list(state);
@@ -239,12 +243,13 @@ it("rejects a stale reservation plan after the job already finalized", async () 
   });
   await saveCronStore(store.storePath, { version: 1, jobs: [planned] });
   const state = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: store.storePath,
     log: noopLogger,
     nowMs: () => now + 1,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
   await list(state);
@@ -281,12 +286,13 @@ it("terminalizes an owned reservation after another gateway deletes the job", as
   });
   await saveCronStore(store.storePath, { version: 1, jobs: [job] });
   const state = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: store.storePath,
     log: noopLogger,
     nowMs: () => now,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(),
   });
   await list(state);
@@ -327,12 +333,13 @@ it("retires a reservation when its row disappears during the post-commit reload"
   });
   await saveCronStore(store.storePath, { version: 1, jobs: [job] });
   const state = createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     cronEnabled: true,
     storePath: store.storePath,
     log: noopLogger,
     nowMs: () => now,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(),
   });
   await list(state);

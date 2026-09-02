@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { coerceErrorMessage, stableStringify } from "@openclaw/normalization-core";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import {
   CLAW_CRON_REF_SCHEMA_VERSION,
+  CLAW_PORTABLE_HEARTBEAT_ID,
   clawCronGatewayJobMatchesRef,
   clawCronGatewayInput,
   clawCronSchedulerJobFromResult,
@@ -12,13 +14,16 @@ import {
   type ClawCronGateway,
   type PersistedClawCronRef,
 } from "./cron.js";
-import type { ClawCronJob, ClawManifest } from "./types.js";
+import { applyPortableHeartbeatUpdate } from "./portable-heartbeat-update.js";
+import type { ClawAddPlan, ClawCronJob, ClawManifest } from "./types.js";
 import type { ClawUpdatePlan } from "./update-plan.js";
 import { collectClawRollbackFailures } from "./update-rollback.js";
 
 export type ClawCronUpdateExecution = {
   appliedIds: string[];
   rollback: () => Promise<void>;
+  commit?: () => void;
+  publish?: () => Promise<void>;
 };
 
 export class ClawCronUpdateError extends Error {
@@ -60,6 +65,8 @@ export async function applyClawCronUpdate(
   targetManifest: ClawManifest,
   options: OpenClawStateDatabaseOptions & {
     cronGateway?: ClawCronGateway;
+    targetAddPlan?: ClawAddPlan;
+    config?: OpenClawConfig;
     nowMs?: number;
     readRefs?: typeof readClawCronRefs;
     upsertRef?: typeof upsertClawCronRef;
@@ -67,10 +74,17 @@ export async function applyClawCronUpdate(
   },
 ): Promise<ClawCronUpdateExecution> {
   const actions = updatePlan.actions.filter(
-    (action) => action.kind === "cronJob" && action.action !== "unchanged",
+    (action) =>
+      action.kind === "cronJob" &&
+      action.id !== CLAW_PORTABLE_HEARTBEAT_ID &&
+      action.action !== "unchanged",
   );
+  const portable = (): Promise<ClawCronUpdateExecution> =>
+    options.targetAddPlan && options.config
+      ? applyPortableHeartbeatUpdate(updatePlan, options.targetAddPlan, options.config, options)
+      : Promise.resolve({ appliedIds: [], rollback: async () => {} });
   if (actions.length === 0) {
-    return { appliedIds: [], rollback: async () => undefined };
+    return portable();
   }
   if (!options.cronGateway) {
     throw new ClawCronUpdateError("Claw cron updates require the gateway cron API.");
@@ -88,6 +102,8 @@ export async function applyClawCronUpdate(
   const targetJobs = new Map(targetManifest.cronJobs.map((job) => [job.id, job]));
   const undo: Array<() => Promise<void>> = [];
   const appliedIds: string[] = [];
+  let commit: (() => void) | undefined;
+  let publish: (() => Promise<void>) | undefined;
   const nowMs = options.nowMs ?? Date.now();
 
   const add = async (ref: PersistedClawCronRef): Promise<string> => {
@@ -186,6 +202,11 @@ export async function applyClawCronUpdate(
       upsertRef({ ...pending, schedulerJobId, status: "complete" }, options);
       appliedIds.push(action.id);
     }
+    const portableExecution = await portable();
+    undo.push(portableExecution.rollback);
+    commit = portableExecution.commit;
+    publish = portableExecution.publish;
+    appliedIds.push(...portableExecution.appliedIds);
   } catch (error) {
     try {
       await rollback();
@@ -200,5 +221,5 @@ export async function applyClawCronUpdate(
       error instanceof ClawCronUpdateError && error.partial,
     );
   }
-  return { appliedIds, rollback };
+  return { appliedIds, rollback, ...(commit ? { commit } : {}), ...(publish ? { publish } : {}) };
 }

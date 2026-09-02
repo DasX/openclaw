@@ -82,12 +82,13 @@ describe("CronService startup catch-up repair scoping", () => {
 
     const createState = () =>
       createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
     const state = createState();
@@ -143,12 +144,13 @@ describe("CronService startup catch-up repair scoping", () => {
     });
 
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => startNow,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -201,25 +203,15 @@ describe("CronService startup catch-up repair scoping", () => {
         order.push("notify");
       }
     });
-    const requestHeartbeat = vi.fn(
-      (request: { source?: string; intent?: string; reason?: string }) => {
-        if (
-          order.at(-1) === "notify" &&
-          request.source === "notifications-event" &&
-          request.intent === "immediate" &&
-          request.reason === "wake"
-        ) {
-          order.push("heartbeat");
-        }
-      },
-    );
+    const enqueueSessionEvent = enqueueSystemEvent;
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
       nowMs: () => now,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       maxMissedJobsPerRestart: 1,
       missedJobStaggerMs: 5_000,
@@ -239,7 +231,7 @@ describe("CronService startup catch-up repair scoping", () => {
           consecutiveErrors: 1,
         });
       }
-      expect(order).toEqual(["persist", "notify", "heartbeat", "notify", "heartbeat"]);
+      expect(order).toEqual(["persist", "notify", "notify"]);
       expect((await loadCronStore(store.storePath)).jobs).toEqual(
         expect.arrayContaining(
           deferred.map((job) =>

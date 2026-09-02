@@ -446,7 +446,7 @@ describe("persisted implicit-main roster migration", () => {
 
       expect(snapshot.valid).toBe(true);
       expect(snapshot.sourceConfig.agents?.entries).toMatchObject({ ops: {}, research: {} });
-      expect(snapshot.sourceConfig.agents?.defaults?.heartbeat?.agentId).toBe("research");
+      expect(snapshot.sourceConfig.agents?.defaults?.heartbeat).toBeUndefined();
       expect(snapshot.sourceConfig.agents?.defaults?.systemAgent?.agentId).toBe("research");
       expect(snapshot.sourceConfig.agents?.defaults?.authInheritance?.agentId).toBe("research");
       expect(snapshot.sourceConfig.talk?.agentId).toBe("research");

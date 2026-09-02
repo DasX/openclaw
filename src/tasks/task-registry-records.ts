@@ -57,6 +57,7 @@ export function normalizeTaskTimestamps(task: TaskRecord): TaskRecord {
 export function cloneTaskDeliveryState(state: TaskDeliveryState): TaskDeliveryState {
   return {
     ...state,
+    ...(state.requesterTarget ? { requesterTarget: structuredClone(state.requesterTarget) } : {}),
     ...(state.requesterOrigin ? { requesterOrigin: { ...state.requesterOrigin } } : {}),
   };
 }

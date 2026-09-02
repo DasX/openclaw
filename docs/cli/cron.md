@@ -8,14 +8,15 @@ title: "Automations (cron)"
 
 # `openclaw automations`
 
-Manage automation jobs for the Gateway scheduler. `openclaw automations` is the primary command; `openclaw cron` remains an alias, and every subcommand below works with either spelling.
+Manage automation jobs for the Gateway scheduler. Every subcommand below works
+with either `openclaw automations` or `openclaw cron`.
 
 <Tip>
 Run `openclaw automations --help` for the full command surface. See [Automations](/automation/cron-jobs) for the conceptual guide.
 </Tip>
 
 <Note>
-All automation mutations (`add`/`create`, `update`/`edit`, `remove`, `run`) require `operator.admin`. Command-payload runs execute directly in the Gateway process, not as an agent `tools.exec` tool call; `tools.exec.*` and exec approvals still govern model-visible exec tools.
+All automation mutations (`add`/`create`, `edit`, `remove`, `run`) require `operator.admin`. Command-payload runs execute directly in the Gateway process, not as an agent `tools.exec` tool call; `tools.exec.*` and exec approvals still govern model-visible exec tools.
 </Note>
 
 Every automation subcommand accepts the shared Gateway connection options. Use
@@ -74,7 +75,7 @@ Agent-turn jobs default to the creating conversation when session context is ava
   <Accordion title="Session keys">
     - `main` binds to the agent's main session.
     - `isolated` creates a fresh transcript and session id for each run.
-    - `current` binds to the active session at creation time.
+    - `current` runs detached with bounded context from the conversation captured at creation time, then commits its result back there. It is not execution inside that shared session.
     - `session:<id>` pins to an explicit persistent session key.
 
   </Accordion>
@@ -135,6 +136,60 @@ Required completion delivery is separate: `status: "ok"` with `completionStatus:
 If an isolated run times out before the first model request, `openclaw automations show` and `openclaw automations runs` include a phase-specific error such as `setup timed out before runner start` or a stall message naming the last-known startup phase (for example `context-engine`). For CLI-backed providers, the pre-model watchdog stays active until the external CLI turn starts, so session lookup, hook, auth, prompt, and CLI setup stalls are reported as pre-model automation failures.
 
 ## Scheduling
+
+### Monitoring policies
+
+Scheduled monitoring uses ordinary editable jobs. The optional job fields
+`activeHours`, `idleOnly`, `delivery.target: "owner"`,
+`delivery.directPolicy`, and `payload.skipIfScratchEmpty` control execution and
+delivery per job. Author them with `add`/`create` or `edit`:
+
+```bash
+openclaw automations create "every 30m" "Review the checklist and report actionable changes." \
+  --name "Proactive check" --agent ops \
+  --active-hours-start 09:00 --active-hours-end 17:00 \
+  --active-hours-timezone user --idle-only \
+  --delivery-target owner --direct-policy allow --skip-if-scratch-empty
+```
+
+| Option                                                   | Behavior                                                                                                           |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `--active-hours-start <HH:MM>`                           | Inclusive window start. A new window requires both start and end.                                                  |
+| `--active-hours-end <HH:MM>`                             | Exclusive window end; `24:00` is allowed. Overnight windows are supported.                                         |
+| `--active-hours-timezone <zone>`                         | IANA timezone, `user`, or `local`; independent of schedule `--tz`. Omitted on a new window uses the user timezone. |
+| `--idle-only` / `--no-idle-only`                         | Set the per-job idle policy to explicit `true` / `false`.                                                          |
+| `--delivery-target owner`                                | Resolve a positively identified owner DM at execution time, never a last-chat or group fallback.                   |
+| `--direct-policy allow` / `--direct-policy block`        | Set the job's direct-message delivery policy.                                                                      |
+| `--skip-if-scratch-empty` / `--no-skip-if-scratch-empty` | Set agent-turn scratch suppression to explicit `true` / `false`. Missing scratch still runs.                       |
+
+Omitting these flags leaves ordinary defaults unchanged on create and preserves
+stored policies on edit. Partial window edits preserve omitted bounds and timezone
+from a revision-guarded job read; the complete window must validate before update.
+Use `edit --clear-active-hours` to remove the entire window, including its timezone.
+`--clear-idle-only`, `--clear-delivery-target`, and `--clear-direct-policy` remove
+those optional fields; clear flags cannot accompany their matching set flags.
+Scratch suppression uses `--no-skip-if-scratch-empty` to disable it, not a null clear.
+
+Switching to owner delivery clears the stored recipient/thread or primary webhook
+URL while preserving channel/account constraints, compatible secondary destinations,
+and the direct-message policy.
+It preserves `none` delivery; switching from webhook delivery selects `announce`
+unless you explicitly pass `--no-deliver`. Do not combine owner targeting with
+`--to`, `--thread-id`, or `--webhook`. Editing an explicit recipient/thread or webhook
+clears an existing owner target. Owner and direct-message policies require a
+non-main job; direct-message policy cannot be set on webhook delivery.
+
+`list` and `show` display configured policies, including explicit `false`, without
+reading private scratch. See [Monitoring policies](/automation/cron-jobs#monitoring-policies)
+for the schema and window semantics. A manual run bypasses cadence, not an explicit active
+window, lifecycle, authorization, or delivery restrictions.
+
+For an older installation, run `openclaw doctor --fix`, then inspect
+`openclaw automations list --all`. Converted monitors keep their IDs, history,
+scratch revisions, disabled state, and pending schedule. Editing or deleting
+one is permanent across restart and repeated Doctor runs; do not recreate
+retired `agents.*.heartbeat` configuration. See
+[Heartbeat migration](/gateway/heartbeat).
 
 ### One-shot jobs
 
@@ -197,8 +252,8 @@ The automation `--model` is a **job primary**, not a chat-session `/model` overr
 
 Isolated automation runs resolve the active model in this order:
 
-1. Gmail-hook override.
-2. Per-job `--model`.
+1. Per-job `--model`.
+2. Gmail-hook override (when allowed).
 3. Stored automation-session model override (when the user selected one).
 4. Agent or default model selection.
 
@@ -220,7 +275,7 @@ Isolated automation turns suppress stale acknowledgement-only replies. If the fi
 
 If an isolated automation run returns only the silent token (`NO_REPLY` or `no_reply`), the scheduler suppresses both direct outbound delivery and the fallback queued summary path, so nothing is posted back to chat.
 
-Human-readable `automations list` and `automations show` label successful intentional suppression as `ok (suppressed)`, not a delivery warning. `automations show` includes `last delivery suppression` with the recorded reason (`empty`, `silent`, `heartbeat`, or `channel_transform`). JSON keeps `deliveryStatus: "not-delivered"` and the separate `deliverySuppressionReason`; genuine delivery failures without an intentional reason still show `ok (not delivered)` when execution succeeded.
+Human-readable `automations list` and `automations show` label successful intentional suppression as `ok (suppressed)`, not a delivery warning. `automations show` includes `last delivery suppression` with the recorded reason (`empty`, `silent`, legacy `heartbeat`, or `channel_transform`). JSON keeps `deliveryStatus: "not-delivered"` and the separate `deliverySuppressionReason`; genuine delivery failures without an intentional reason still show `ok (not delivered)` when execution succeeded.
 
 ### Structured denials
 
@@ -332,7 +387,7 @@ openclaw automations runs --id <job-id> --run-id <run-id>
 
 `automations runs` entries include delivery diagnostics with the intended automation target, the resolved target, message-tool sends, fallback use, and delivered state.
 
-Private per-job scratch (heartbeat checklists and similar monitor context):
+Private per-job scratch (checklists and other task-specific context):
 
 ```bash
 openclaw automations scratch <job-id>                  # print current scratch content
@@ -342,7 +397,7 @@ openclaw automations scratch <job-id> --file notes.md  # replace scratch from a 
 openclaw automations scratch <job-id> --unset          # remove the scratch row
 ```
 
-Scratch is stored in the shared state database, capped at 256 KiB, and never included in `automations list`/`automations get`/`automations runs` output. Writes are compare-and-swap guarded against the revision read at command start; pass `--expected-revision <n>` to pin an explicit revision instead. See [Heartbeat](/gateway/heartbeat#monitor-scratch-optional) for how heartbeat monitors use scratch.
+Scratch is stored in the shared state database, capped at 256 KiB, and never included in `automations list`/`automations get`/`automations runs` output. Writes are compare-and-swap guarded against the revision read at command start; pass `--expected-revision <n>` to pin an explicit revision instead. A job's present scratch is included in its bounded run context. During an automation turn, self-scoped scratch actions let the agent update that job's checklist without granting access to other jobs. See [Job scratch and quiet results](/automation/cron-jobs#job-scratch-and-quiet-results) for the tool actions and [Monitor scratch](/gateway/heartbeat#monitor-scratch) for migration from older checklists.
 
 Agent and session retargeting:
 

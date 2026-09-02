@@ -761,40 +761,62 @@ Related:
 - [Telegram](/channels/telegram)
 - [WhatsApp](/channels/whatsapp)
 
-## Cron and heartbeat delivery
+<a id="cron-and-heartbeat-delivery" />
 
-If cron or heartbeat did not run or did not deliver, verify scheduler state first, then delivery target.
+## Cron and monitoring delivery
+
+Monitoring uses ordinary cron jobs. If a scheduled check did not run or deliver,
+inspect the job and its run history first, then its delivery target.
 
 ```bash
 openclaw cron status
-openclaw cron list
+openclaw cron list --all
+openclaw cron get <jobId>
 openclaw cron runs --id <jobId> --limit 20
-openclaw system heartbeat last
 openclaw logs --follow
 ```
 
 Look for:
 
-- Cron enabled and next wake present.
-- Job run history status (`ok`, `skipped`, `error`).
-- Heartbeat skip reasons (`quiet-hours`, `requests-in-flight`, `cron-in-progress`, `alerts-disabled`, `empty-heartbeat-file`).
+- Cron and the individual job enabled, with a future scheduled run.
+- Job run history status (`ok`, `skipped`, `error`) and the recorded summary.
+- The job's `activeHours`, `idleOnly`, and `payload.skipIfScratchEmpty` policies.
+- The job's delivery mode, target, account, and `delivery.directPolicy`.
 
 <AccordionGroup>
   <Accordion title="Common signatures">
     - `cron: scheduler disabled; jobs will not run automatically` → cron disabled.
-    - `cron: timer tick failed` → scheduler tick failed; check file/log/runtime errors.
-    - `heartbeat skipped` with `reason=quiet-hours` → outside active hours window.
-    - `heartbeat skipped` with `reason=empty-heartbeat-file` → heartbeat monitor scratch only contains blank, comment, header, fence, or empty-checklist scaffolding, so OpenClaw skips the model call.
-    - `heartbeat skipped` with `reason=no-route` → the default `owner` target has no concrete owner in `commands.ownerAllowFrom` or channel `allowFrom`, the owner cannot resolve to a DM, or no channel is configured. Explicit `last` also needs a session conversation route.
-    - `heartbeat: unknown accountId` → invalid account id for heartbeat delivery target.
-    - `heartbeat skipped` with `reason=dm-blocked` → heartbeat target resolved to a DM-style destination while `agents.defaults.heartbeat.directPolicy` (or per-agent override) is set to `block`.
+    - `cron: timer tick failed` → scheduler tick failed; inspect the associated storage or runtime error.
+    - A skipped run outside `activeHours` → check the job's time window and timezone; overnight windows are supported and the end is exclusive.
+    - A pending `idleOnly` run → foreground or same-agent work, or session recovery, has priority. The unstarted occurrence remains pending rather than consuming a running slot.
+    - A skipped run with explicitly empty scratch → `payload.skipIfScratchEmpty` suppresses the model call when scratch contains only blank, comment, header, fence, or empty-checklist scaffolding. Missing scratch is not the same as explicitly empty scratch.
+    - No owner delivery route → `delivery.target: "owner"` needs a positively identified owner DM and a configured channel/account. Check `commands.ownerAllowFrom` or channel `allowFrom`; OpenClaw does not substitute a possibly group-valued last route. A job explicitly using the last route still needs a session conversation route.
+    - Account resolution failure → fix the job's delivery account rather than changing retired heartbeat config.
+    - Direct-message delivery blocked → the job's `delivery.directPolicy: "block"` forbids a DM destination.
 
   </Accordion>
 </AccordionGroup>
 
+An `ok` run does not necessarily send a message: `NO_REPLY` requests quiet
+completion. Delivery mode `none` disables runner fallback delivery, but does not
+prevent direct sends through the message tool. Inspect the run result and
+delivery outcome before treating silence as a failed schedule.
+
+Exec/task completions, hooks, and restart follow-ups are not scheduled monitoring.
+They use ordinary session admission even when cron or monitoring is disabled.
+For a missing follow-up, inspect the originating session and producer result,
+including whether the session was reset, deleted, or replaced. Enabling a monitor
+is not a repair for a failed session follow-up.
+
+After an upgrade, run `openclaw doctor --fix` to convert legacy monitors and
+heartbeat task blocks in place. Inspect the converted job by its existing ID;
+do not recreate it just because a deprecated heartbeat control shows no recent
+event. Deprecated controls affect only converted/default monitoring jobs, never
+all cron jobs. See [Heartbeat migration](/gateway/heartbeat).
+
 Related:
 
-- [Heartbeat](/gateway/heartbeat)
+- [Heartbeat migration](/gateway/heartbeat)
 - [Scheduled tasks](/automation/cron-jobs)
 - [Scheduled tasks: troubleshooting](/automation/cron-jobs#troubleshooting)
 

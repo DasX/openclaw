@@ -1,7 +1,6 @@
 /**
  * Shared result and attempt types for embedded-agent run internals.
  */
-import type { HeartbeatToolResponse } from "../../../auto-reply/heartbeat-tool-response.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import type {
   SessionContextBudgetStatus,
@@ -340,7 +339,6 @@ export type EmbeddedRunAttemptResult = {
   messagingToolSentMediaUrls: string[];
   messagingToolSentTargets: MessagingToolSend[];
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
-  heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
   /**
    * Native artifacts produced and owned by the harness, never model-selected

@@ -58,18 +58,19 @@ function makeJob(id: string, startedAtMs: number): CronJob {
 type RecoveryStateOverrides = Partial<
   Pick<
     Parameters<typeof createCronServiceState>[0],
-    "cronConfig" | "enqueueSystemEvent" | "requestHeartbeat" | "sendCronFailureAlert"
+    "cronConfig" | "enqueueSystemEvent" | "enqueueSessionEvent" | "sendCronFailureAlert"
   >
 >;
 
 function makeState(storePath: string, nowMs: number, overrides: RecoveryStateOverrides = {}) {
   return createCronServiceState({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath,
     cronEnabled: true,
     log: logger,
     nowMs: () => nowMs,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     ...overrides,
   });
@@ -537,9 +538,9 @@ describe("atomic cron run recovery", () => {
     job.failureAlert = { after: 10, cooldownMs: 0 };
     job.state.consecutiveErrors = 9;
     await writeCronStoreSnapshot({ storePath, jobs: [job] });
-    const enqueueSystemEvent = vi.fn();
+    const enqueueSessionEvent = vi.fn();
     const sendCronFailureAlert = vi.fn(async () => undefined);
-    const state = makeState(storePath, nowMs, { enqueueSystemEvent, sendCronFailureAlert });
+    const state = makeState(storePath, nowMs, { enqueueSessionEvent, sendCronFailureAlert });
 
     const result = recoverCronRunProposal(state, {
       jobId: job.id,
@@ -561,7 +562,7 @@ describe("atomic cron run recovery", () => {
     });
 
     runPostPersistCronNotifications(state, result.notifications);
-    expect(enqueueSystemEvent).toHaveBeenCalledOnce();
+    expect(enqueueSessionEvent).toHaveBeenCalledOnce();
     expect(sendCronFailureAlert).not.toHaveBeenCalled();
   });
 

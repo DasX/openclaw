@@ -6,7 +6,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { extractText } from "../../ui/src/lib/chat/message-extract.ts";
 import { buildChatMarkdown } from "../../ui/src/pages/chat/export.ts";
 import * as embeddedAgent from "../agents/embedded-agent.js";
-import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
+import { getReplyFromConfigCore as getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
 import { clearConfigCache, getRuntimeConfig } from "../config/config.js";
 import {
   listSessionParticipantsReadOnly,

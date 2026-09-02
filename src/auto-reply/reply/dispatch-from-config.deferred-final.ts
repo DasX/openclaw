@@ -6,11 +6,11 @@ import type { PrepareDispatchExecutionReadyState } from "./dispatch-from-config.
 /** Sends the deferred block text when execution exits before normal finalization. */
 export async function flushDispatchDeferredFinalText(params: {
   deferFinalTtsText: boolean;
-  isHeartbeat: boolean;
+
   state: PrepareDispatchExecutionReadyState;
 }): Promise<boolean> {
   try {
-    if (!params.deferFinalTtsText || params.isHeartbeat) {
+    if (!params.deferFinalTtsText) {
       return false;
     }
     const deferredVisibleText = params.state.cleanBlockTtsDirectiveText

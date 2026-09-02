@@ -235,10 +235,14 @@ extension CronSettings {
                                 self.advancedDeliveryPills(delivery)
                                 if delivery.mode == .announce {
                                     StatusPill(text: "announce", tint: .secondary)
-                                    if let channel = delivery.channel, !channel.isEmpty {
-                                        StatusPill(text: channel, tint: .secondary)
+                                    if delivery.target == "owner" {
+                                        StatusPill(text: "Owner direct message", tint: .secondary)
+                                    } else {
+                                        if let channel = delivery.channel, !channel.isEmpty {
+                                            StatusPill(text: channel, tint: .secondary)
+                                        }
+                                        if let to = delivery.to, !to.isEmpty { StatusPill(text: to, tint: .secondary) }
                                     }
-                                    if let to = delivery.to, !to.isEmpty { StatusPill(text: to, tint: .secondary) }
                                 } else {
                                     StatusPill(text: "no delivery", tint: .secondary)
                                 }

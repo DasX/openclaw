@@ -120,7 +120,6 @@ function createTurnParams(opts: GetReplyOptions, blockStreamingEnabled: boolean)
     shouldEmitToolOutput: () => false,
     pendingToolTasks: new Set<Promise<void>>(),
     resetSessionAfterRoleOrderingConflict: async () => false,
-    isHeartbeat: false,
     sessionKey: "main",
     getActiveSessionEntry: () => undefined,
     resolvedVerboseLevel: "off" as const,

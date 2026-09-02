@@ -295,15 +295,6 @@ final class AppState {
     var earBoostActive: Bool = false
     var blinkTick: Int = 0
     var sendCelebrationTick: Int = 0
-    var heartbeatsEnabled: Bool {
-        didSet {
-            self.ifNotPreview {
-                AppDefaults.standard.set(self.heartbeatsEnabled, forKey: heartbeatsEnabledKey)
-                Task { _ = await GatewayConnection.shared.setHeartbeatsEnabled(self.heartbeatsEnabled) }
-            }
-        }
-    }
-
     var connectionMode: ConnectionMode {
         didSet {
             self.ifNotPreview { AppDefaults.standard.set(self.connectionMode.rawValue, forKey: connectionModeKey) }
@@ -538,12 +529,6 @@ final class AppState {
         }
         self.seamColorHex = nil
         self.profileAccentHex = nil
-        if let storedHeartbeats = AppDefaults.standard.object(forKey: heartbeatsEnabledKey) as? Bool {
-            self.heartbeatsEnabled = storedHeartbeats
-        } else {
-            self.heartbeatsEnabled = true
-            AppDefaults.standard.set(true, forKey: heartbeatsEnabledKey)
-        }
         if let storedOverride = AppDefaults.standard.string(forKey: iconOverrideKey),
            let selection = IconOverrideSelection(rawValue: storedOverride)
         {

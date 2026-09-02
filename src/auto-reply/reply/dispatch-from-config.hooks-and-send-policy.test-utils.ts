@@ -1975,7 +1975,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     {
       label: "system event",
       context: {
-        InputProvenance: { kind: "internal_system" as const, sourceTool: "heartbeat" },
+        InputProvenance: { kind: "internal_system" as const, sourceTool: "cron" },
       },
     },
   ])("keeps a restart tombstone terminal for a $label parent-fork turn", async ({ context }) => {

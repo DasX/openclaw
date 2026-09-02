@@ -17,7 +17,7 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
-import { getReplyFromConfig } from "./get-reply.js";
+import { getReplyFromConfigCore as getReplyFromConfig } from "./get-reply.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 
 vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({

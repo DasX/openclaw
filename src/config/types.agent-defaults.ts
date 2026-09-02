@@ -204,7 +204,7 @@ export type AgentDefaultsConfig = {
    */
   /**
    * Optional IANA timezone for model-visible timestamps, prompt context, system events,
-   * and heartbeat active hours. Defaults to the host timezone.
+   * and automation active hours. Defaults to the host timezone.
    */
   userTimezone?: string;
   /** Runtime-owned first-turn startup context for bare /new and /reset. */
@@ -280,50 +280,8 @@ export type AgentDefaultsConfig = {
   typingIntervalSeconds?: number;
   /** Typing indicator start mode (never|instant|thinking|message). */
   typingMode?: TypingMode;
-  /** Periodic background heartbeat runs. */
-  heartbeat?: {
-    /** Agent that owns ambient heartbeat runs when no per-agent heartbeat is configured. */
-    agentId?: string;
-    /** Heartbeat interval (duration string, default unit: minutes; default: 30m). */
-    every?: string;
-    /** Optional active-hours window (local time); heartbeats run only inside this window. */
-    activeHours?: {
-      /** Start time (24h, HH:MM). Inclusive. */
-      start?: string;
-      /** End time (24h, HH:MM). Exclusive. Use "24:00" for end-of-day. */
-      end?: string;
-      /** Timezone for the window ("user", "local", or IANA TZ id). Default: "user". */
-      timezone?: string;
-    };
-    /** Heartbeat model override (provider/model). */
-    model?: string;
-    /** Session key for heartbeat runs ("main" or explicit session key). */
-    session?: string;
-    /** Delivery target. Default "owner" uses explicit ownerAllowFrom/allowFrom; "last" may follow groups. */
-    target?: string;
-    /** Direct/DM delivery policy. Default: "allow". */
-    directPolicy?: "allow" | "block";
-    /** Explicit channel destination; ignored for target "owner" or an unset target. */
-    to?: string;
-    /** Optional account id for multi-account channels. */
-    accountId?: string;
-    /** Override the heartbeat prompt body. The default treats scratch as monitor prose and directs recurring work to cron jobs. */
-    prompt?: string;
-    /** Run timeout in seconds for heartbeat agent turns. Unset uses global timeout or heartbeat cadence capped at 600 seconds. */
-    timeoutSeconds?: number;
-    /**
-     * If true, run heartbeat turns with lightweight bootstrap context.
-     * Lightweight mode skips workspace bootstrap files; monitor scratch is
-     * injected by the heartbeat runner either way.
-     */
-    lightContext?: boolean;
-    /**
-     * If true, run heartbeat turns in an isolated session with no prior
-     * conversation history. Dramatically reduces per-heartbeat token cost by
-     * avoiding the full session transcript.
-     */
-    isolatedSession?: boolean;
-  };
+  /** @deprecated Doctor input only; proactive checks are ordinary automation jobs. */
+  heartbeat?: LegacyHeartbeatConfig;
   /** Owner for ambient system-agent/Custodian inference and unscoped operator-read fallbacks. */
   systemAgent?: {
     agentId?: string;
@@ -447,4 +405,49 @@ export type AgentCompactionMemoryFlushConfig = {
    * (bytes, or byte-size string like "2mb"). Set to 0 to disable.
    */
   forceFlushTranscriptBytes?: number | string;
+};
+
+/** @deprecated Stable input boundary for one-way Doctor migration only. */
+export type LegacyHeartbeatConfig = {
+  /** Agent that owns ambient heartbeat runs when no per-agent heartbeat is configured. */
+  agentId?: string;
+  /** Heartbeat interval (duration string, default unit: minutes; default: 30m). */
+  every?: string;
+  /** Optional active-hours window (local time); heartbeats run only inside this window. */
+  activeHours?: {
+    /** Start time (24h, HH:MM). Inclusive. */
+    start?: string;
+    /** End time (24h, HH:MM). Exclusive. Use "24:00" for end-of-day. */
+    end?: string;
+    /** Timezone for the window ("user", "local", or IANA TZ id). Default: "user". */
+    timezone?: string;
+  };
+  /** Heartbeat model override (provider/model). */
+  model?: string;
+  /** Session key for heartbeat runs ("main" or explicit session key). */
+  session?: string;
+  /** Delivery target. Default "owner" uses explicit ownerAllowFrom/allowFrom; "last" may follow groups. */
+  target?: string;
+  /** Direct/DM delivery policy. Default: "allow". */
+  directPolicy?: "allow" | "block";
+  /** Explicit channel destination; ignored for target "owner" or an unset target. */
+  to?: string;
+  /** Optional account id for multi-account channels. */
+  accountId?: string;
+  /** Override the heartbeat prompt body. The default treats scratch as monitor prose and directs recurring work to cron jobs. */
+  prompt?: string;
+  /** Run timeout in seconds for heartbeat agent turns. Unset uses global timeout or heartbeat cadence capped at 600 seconds. */
+  timeoutSeconds?: number;
+  /**
+   * If true, run heartbeat turns with lightweight bootstrap context.
+   * Lightweight mode skips workspace bootstrap files; monitor scratch is
+   * injected by the heartbeat runner either way.
+   */
+  lightContext?: boolean;
+  /**
+   * If true, run heartbeat turns in an isolated session with no prior
+   * conversation history. Dramatically reduces per-heartbeat token cost by
+   * avoiding the full session transcript.
+   */
+  isolatedSession?: boolean;
 };

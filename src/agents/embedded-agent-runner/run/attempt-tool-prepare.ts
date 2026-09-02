@@ -370,8 +370,6 @@ export function prepareEmbeddedAttemptToolBase(params: {
             inboundEventKind: attempt.currentInboundEventKind,
             disableMessageTool: attempt.disableMessageTool,
             forceMessageTool: attempt.forceMessageTool,
-            enableHeartbeatTool: attempt.enableHeartbeatTool,
-            forceHeartbeatTool: attempt.forceHeartbeatTool,
             runtimeToolAllowlist: effectiveToolsAllow,
             inheritedToolAllowlistRef: inheritedToolAllowlist,
             cronCreatorToolAllowlistRef: cronCreatorToolAllowlist,

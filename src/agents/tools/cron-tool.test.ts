@@ -28,6 +28,11 @@ import {
   revokeCronCreatorAuthorityRunScope,
   type CronCreatorAuthorityGrant,
 } from "../../gateway/cron-creator-authority-grant.js";
+import {
+  clearAgentRunContext,
+  getAgentRunContext,
+  registerAgentRunContext,
+} from "../../infra/agent-run-registry.js";
 import { buildAgentPeerSessionKey } from "../../routing/session-key.js";
 import {
   bindActiveCronCreatorAuthorityResolver,
@@ -299,6 +304,102 @@ describe("cron tool", () => {
 
     const params = expectSingleGatewayCallMethod("cron.remove");
     expect(params).toEqual({ id: "job-current" });
+  });
+
+  it("reads self scratch and forwards its CAS token without broadening job scope", async () => {
+    const runId = "scratch-current-run";
+    registerAgentRunContext(runId, {
+      cronRunsByJobId: new Map([
+        ["job-current", { pacingEnabled: false, assertCurrent: () => {} }],
+      ]),
+    });
+    const tool = createTestCronTool({ selfRemoveOnlyJobId: "job-current", runId });
+    callGatewayMock.mockResolvedValueOnce({
+      currentRevision: 7,
+      scratch: { content: "before", revision: 7 },
+    });
+    await tool.execute("scratch-read", { action: "scratch_get" });
+    await tool.execute("scratch-write", {
+      action: "scratch_set",
+      content: "after",
+      expectedRevision: 7,
+    });
+    expect(readGatewayCall(0)).toEqual({
+      method: "cron.scratch.get",
+      params: { id: "job-current" },
+    });
+    expect(readGatewayCall(1)).toEqual({
+      method: "cron.scratch.set",
+      params: { id: "job-current", content: "after", expectedRevision: 7 },
+    });
+    await expect(
+      tool.execute("scratch-no-cas", { action: "scratch_set", content: "stale" }),
+    ).rejects.toThrow("expectedRevision");
+    await expect(
+      tool.execute("scratch-other", { action: "scratch_get", jobId: "job-other" }),
+    ).rejects.toThrow("restricted to the current automation");
+    expect(callGatewayMock).toHaveBeenCalledTimes(2);
+    clearAgentRunContext(runId);
+    await expect(
+      tool.execute("stale-scratch", {
+        action: "scratch_set",
+        content: "late",
+        expectedRevision: 7,
+      }),
+    ).rejects.toThrow("no longer active");
+  });
+
+  it("records one result only while the exact automation run remains registered", async () => {
+    const runId = "automation-result-test";
+    registerAgentRunContext(runId, {
+      cronRunsByJobId: new Map([
+        ["job-current", { pacingEnabled: false, assertCurrent: () => {} }],
+      ]),
+    });
+    const tool = createTestCronTool({ selfRemoveOnlyJobId: "job-current", runId });
+    try {
+      await tool.execute("record-result", {
+        action: "record_result",
+        outcome: "progress",
+        summary: "Completed the check",
+      });
+      expect(getAgentRunContext(runId)?.cronRunsByJobId?.get("job-current")?.result).toEqual({
+        outcome: "progress",
+        summary: "Completed the check",
+      });
+      await expect(
+        tool.execute("duplicate-result", {
+          action: "record_result",
+          outcome: "done",
+          summary: "Again",
+        }),
+      ).rejects.toThrow("already accepted");
+    } finally {
+      clearAgentRunContext(runId);
+    }
+    await expect(
+      tool.execute("late-result", { action: "record_result", outcome: "done", summary: "Late" }),
+    ).rejects.toThrow("no longer active");
+    registerAgentRunContext(runId, {
+      cronRunsByJobId: new Map([
+        ["job-current", { pacingEnabled: false, assertCurrent: () => {} }],
+      ]),
+    });
+    try {
+      await expect(
+        tool.execute("reused-run-id", {
+          action: "record_result",
+          outcome: "done",
+          summary: "Wrong execution",
+        }),
+      ).rejects.toThrow("no longer active");
+      expect(
+        getAgentRunContext(runId)?.cronRunsByJobId?.get("job-current")?.result,
+      ).toBeUndefined();
+    } finally {
+      clearAgentRunContext(runId);
+    }
+    expect(callGatewayMock).not.toHaveBeenCalled();
   });
 
   it("denies scoped isolated cron runs from removing another job", async () => {

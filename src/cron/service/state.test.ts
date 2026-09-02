@@ -7,8 +7,8 @@ describe("cron service state seam coverage", () => {
   it("threads heartbeat and session-store dependencies into internal state", () => {
     const nowMs = vi.fn(() => 123_456);
     const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
-    const runHeartbeatOnce = vi.fn();
+    const enqueueSessionEvent = vi.fn();
+    const runSessionEvent = vi.fn();
     const resolveSessionStorePath = vi.fn((agentId?: string) => `/tmp/${agentId ?? "main"}.json`);
 
     const state = createCronServiceState({
@@ -25,8 +25,8 @@ describe("cron service state seam coverage", () => {
       sessionStorePath: "/tmp/sessions.json",
       resolveSessionStorePath,
       enqueueSystemEvent,
-      requestHeartbeat,
-      runHeartbeatOnce,
+      enqueueSessionEvent,
+      runSessionEvent,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -43,8 +43,8 @@ describe("cron service state seam coverage", () => {
     expect(state.deps.sessionStorePath).toBe("/tmp/sessions.json");
     expect(state.deps.resolveSessionStorePath).toBe(resolveSessionStorePath);
     expect(state.deps.enqueueSystemEvent).toBe(enqueueSystemEvent);
-    expect(state.deps.requestHeartbeat).toBe(requestHeartbeat);
-    expect(state.deps.runHeartbeatOnce).toBe(runHeartbeatOnce);
+    expect(state.deps.enqueueSessionEvent).toBe(enqueueSessionEvent);
+    expect(state.deps.runSessionEvent).toBe(runSessionEvent);
     expect(state.deps.nowMs()).toBe(123_456);
   });
 
@@ -52,6 +52,7 @@ describe("cron service state seam coverage", () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(789_000);
 
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       log: {
         debug: vi.fn(),
         info: vi.fn(),
@@ -61,7 +62,7 @@ describe("cron service state seam coverage", () => {
       storePath: "/tmp/cron/jobs.json",
       cronEnabled: false,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -74,11 +75,12 @@ describe("cron service state seam coverage", () => {
   it("projects store-private job provenance before emitting events", () => {
     const onEvent = vi.fn();
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       storePath: "/tmp/cron/jobs.json",
       cronEnabled: false,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       onEvent,
     });

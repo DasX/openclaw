@@ -26,10 +26,9 @@ import {
 import type { CronServiceState } from "./state.js";
 import { tryUpdateCronTaskRunSession } from "./task-runs.js";
 import { resolveCronJobTimeoutMs } from "./timeout-policy.js";
-import {
-  type CronJobRunResult,
-  type IsolatedAgentSetupTimeoutSignal,
-  runsDetachedFromMainSession,
+import type {
+  CronJobRunResult,
+  IsolatedAgentSetupTimeoutSignal,
 } from "./timer-execution-timeout.js";
 import { executeJobCore } from "./timer-execution.js";
 import {
@@ -44,6 +43,7 @@ type CronCoreRunOutcome = Awaited<ReturnType<typeof executeJobCore>> & {
   isolatedAgentSetupTimeout?: IsolatedAgentSetupTimeoutSignal;
 };
 type CronCoreRunOptions = {
+  assertRunCurrent?: () => void;
   runId?: string;
   activeJobMarker?: CronActiveJobMarker;
   owningCronLaneTaskMarker?: CommandLaneTaskMarker;
@@ -193,9 +193,15 @@ async function executeJobCoreWithTimeoutUnfinalized(
   opts?: CronCoreRunOptions,
 ): Promise<CronCoreRunOutcome> {
   const runAbortController = new AbortController();
-  const assertRunCurrent = opts?.runReceipt
-    ? () => assertServiceCronRunReceiptCurrent(state, opts.runReceipt!)
-    : undefined;
+  const assertRunCurrent =
+    opts?.runReceipt || opts?.assertRunCurrent
+      ? () => {
+          opts.assertRunCurrent?.();
+          if (opts.runReceipt) {
+            assertServiceCronRunReceiptCurrent(state, opts.runReceipt);
+          }
+        }
+      : undefined;
   // Timeout/cancel returns a projected outcome before an abort-ignoring core
   // settles; keep its durable receipt lease tied to the underlying promise.
   const trackRunSettlement = (settlement: Promise<unknown>) => {
@@ -235,14 +241,12 @@ async function executeJobCoreWithTimeoutUnfinalized(
     runAbortController.abort("Gateway restarting.");
     return createOperatorCancellationOutcome();
   }
-  const releaseCronTaskRun = runsDetachedFromMainSession(job)
-    ? registerActiveCronTaskRun({
-        runId: opts?.runId ?? `cron-active:${job.id}`,
-        controller: runAbortController,
-        activeJobMarker: opts?.activeJobMarker,
-        onCancel: () => resolveOperatorCancellation?.(operatorCancellationMarker),
-      })
-    : undefined;
+  const releaseCronTaskRun = registerActiveCronTaskRun({
+    runId: opts?.runId ?? `cron-active:${job.id}`,
+    controller: runAbortController,
+    activeJobMarker: opts?.activeJobMarker,
+    onCancel: () => resolveOperatorCancellation?.(operatorCancellationMarker),
+  });
   const recordTaskExecutionStart = (info?: CronAgentExecutionStarted) => {
     tryUpdateCronTaskRunSession(state, opts?.runId, info?.sessionKey);
   };
@@ -321,7 +325,7 @@ async function executeJobCoreWithTimeoutUnfinalized(
     // Detached agent runs report setup phases separately; defer the wall-clock
     // timeout until the runner starts so cold setup gets a clearer failure reason.
     const deferTimeoutUntilExecutionStart =
-      job.sessionTarget !== "main" && job.payload.kind === "agentTurn";
+      job.payload.kind === "agentTurn" || job.payload.kind === "systemEvent";
     const triggerTimeout = (reason: string) => {
       timeoutReason = reason;
       if (!runAbortController.signal.aborted) {

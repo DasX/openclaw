@@ -1,96 +1,31 @@
 // Owns process-local agent run context, ownership, and projection state.
 import { randomUUID } from "node:crypto";
-import type { VerboseLevel } from "../auto-reply/thinking.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { registerListener } from "../shared/listeners.js";
 import {
   AgentRunApprovalLeases,
   type AgentRunApprovalClosureReason,
 } from "./agent-run-approval-leases.js";
 import type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
+import {
+  getAgentRunRegistryState,
+  bumpAgentRunIndexVersion,
+  readAgentRunIndexVersion,
+} from "./agent-run-registry-state.js";
+import type {
+  AgentRunContext,
+  AgentRunContextOwnership,
+  AgentRunRegistryState,
+  AutomationResult,
+  ProjectedAgentRunState,
+  ProjectedAgentRunIndex,
+} from "./agent-run-registry-state.js";
 import { clearAgentRunUsage, resetAgentRunUsageForTest } from "./agent-run-usage.js";
-
 export type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
+export type { ProjectedAgentRunIndex } from "./agent-run-registry-state.js";
+export type { AutomationResult } from "./agent-run-registry-state.js";
 
-/** Per-run metadata used to stamp events and gate Control UI visibility. */
-type AgentRunContext = {
-  sessionKey?: string;
-  /** Resolved agent owner, including for unscoped session keys. */
-  agentId?: string;
-  /** Owning run's sessionId; stamped onto lifecycle events. */
-  sessionId?: string;
-  /** Gateway lifecycle generation captured when the run was registered. */
-  lifecycleGeneration?: string;
-  /** Producer-owned start captured from this run's accepted lifecycle event. */
-  lifecycleStartedAt?: number;
-  verboseLevel?: VerboseLevel;
-  isHeartbeat?: boolean;
-  /** Whether control UI clients should receive chat/agent updates for this run. */
-  isControlUiVisible?: boolean;
-  projectSessionActive?: boolean;
-  /** Exact scheduler wait leases; absent during ordinary runtime preparation. */
-  capacityWaits?: Set<symbol>;
-  /** Whether hidden events may reach exact sessions.messages subscribers.
-   * Internal maintenance sharing a foreground key disables this to prevent selected-chat leaks. */
-  projectSessionMessages?: boolean;
-  /** Whether lifecycle events may update the shared session row. */
-  projectSessionLifecycle?: boolean;
-  /** Sticky diagnostic provenance only; never authorization for recovery work. */
-  mainSessionRestartRecovery?: true;
-  /** Active cadence state by job; admission permits one invocation per job. */
-  cronRunsByJobId?: Map<string, { pacingEnabled: boolean; nextCheckMs?: number }>;
-  /** Timestamp when this context was first registered (for TTL-based cleanup). */
-  registeredAt?: number;
-  /** Timestamp of last activity (updated on every emitAgentEvent). */
-  lastActiveAt?: number;
-  /** Exact approval authority owned by this operational execution. */
-  delegatedAuthority?: AgentRunDelegatedAuthority;
-  approvalLeases?: AgentRunApprovalLeases;
-};
-
-type AgentRunContextOwnership = {
-  lifecycleGeneration: string;
-  claimIds: Set<string>;
-  /** Live execution claims are lifecycle-owned and must not be expired by the projection sweeper. */
-  sweepProtectedClaimIds: Set<string>;
-  preserveAfterRelease: boolean;
-  clearRequested: boolean;
-  exclusiveClaimId?: string;
-  clearListeners?: Map<string, (claimId: string) => void>;
-};
-
-type AgentRunRegistryState = {
-  contexts: Map<string, AgentRunContext>;
-  owners: Map<string, AgentRunContextOwnership>;
-  queuedRunContextLeases?: WeakMap<AgentRunContext, number>;
-  lifecycleGeneration: string;
-  sequenceResetHandler?: (runId: string) => void;
-  delegatedAuthorityClosedHandlers?: Set<
-    (authority: AgentRunDelegatedAuthority, approvalReason?: AgentRunApprovalClosureReason) => void
-  >;
-  version: number;
-};
-
-const AGENT_RUN_REGISTRY_STATE_KEY = Symbol.for("openclaw.agentRunRegistry.state");
-
-function getAgentRunRegistryState(): AgentRunRegistryState {
-  return resolveGlobalSingleton<AgentRunRegistryState>(AGENT_RUN_REGISTRY_STATE_KEY, () => ({
-    contexts: new Map<string, AgentRunContext>(),
-    owners: new Map<string, AgentRunContextOwnership>(),
-    lifecycleGeneration: randomUUID(),
-    version: 0,
-  }));
-}
-
-function bumpAgentRunIndexVersion(): void {
-  getAgentRunRegistryState().version += 1;
-}
-
-/** Reads the process-local version of the active-run projection inputs. */
-export function readAgentRunIndexVersion(): number {
-  return getAgentRunRegistryState().version;
-}
+export { readAgentRunIndexVersion } from "./agent-run-registry-state.js";
 
 export function getAgentRunLifecycleGeneration(): string {
   return getAgentRunRegistryState().lifecycleGeneration;
@@ -222,9 +157,6 @@ export function registerAgentRunContext(
     for (const [jobId, cronRun] of context.cronRunsByJobId) {
       existing.cronRunsByJobId.set(jobId, cronRun);
     }
-  }
-  if (context.isHeartbeat !== undefined && existing.isHeartbeat !== context.isHeartbeat) {
-    existing.isHeartbeat = context.isHeartbeat;
   }
   if (context.registeredAt !== undefined) {
     existing.registeredAt = context.registeredAt;
@@ -392,6 +324,61 @@ export function recordCronNextCheckProposal(runId: string, jobId: string, delayM
   cronRun.nextCheckMs = delayMs;
 }
 
+/** One meaningful result belongs to this invocation, never to a later run of the job. */
+export function createAutomationResultRecorder(
+  runId: string,
+  jobId: string,
+): (result: AutomationResult) => void {
+  const context = getAgentRunContext(runId);
+  const run = context?.cronRunsByJobId?.get(jobId);
+  const assertCurrent = createAutomationRunGuard(runId, jobId);
+  return (result) => {
+    assertCurrent();
+    if (
+      !run ||
+      !context ||
+      getAgentRunContext(runId) !== context ||
+      context.cronRunsByJobId?.get(jobId) !== run ||
+      context.lifecycleGeneration !== getAgentRunRegistryState().lifecycleGeneration
+    ) {
+      throw new Error("record_result is only available to the currently running automation");
+    }
+    if (run.result) {
+      throw new Error("record_result already accepted for this automation run");
+    }
+    if (!result.summary.trim() || result.summary.length > 2000) {
+      throw new Error("record_result summary must contain 1–2000 characters");
+    }
+    run.result = { ...result, summary: result.summary.trim() };
+  };
+}
+
+/** Capture the actual invocation, not a reusable run/job-id bearer pair. */
+export function createAutomationRunGuard(runId: string, jobId: string): () => void {
+  const context = getAgentRunContext(runId);
+  const run = context?.cronRunsByJobId?.get(jobId);
+  const owners = getAgentRunContextOwnership(runId);
+  const claims = new Set(owners?.claimIds);
+  return () => {
+    if (
+      !context ||
+      !run ||
+      !run.assertCurrent ||
+      run.closed ||
+      getAgentRunContext(runId) !== context ||
+      context.cronRunsByJobId?.get(jobId) !== run ||
+      context.lifecycleGeneration !== getAgentRunRegistryState().lifecycleGeneration ||
+      (owners &&
+        (getAgentRunContextOwnership(runId) !== owners ||
+          owners.clearRequested ||
+          ![...claims].some((claim) => owners.claimIds.has(claim))))
+    ) {
+      throw new Error("Automation invocation is no longer active");
+    }
+    run.assertCurrent?.();
+  };
+}
+
 /** Consumes one successful cron run's proposal so it cannot affect a later run. */
 export function consumeCronNextCheckProposal(runId: string, jobId: string): number | undefined {
   const context = getAgentRunContext(runId);
@@ -552,15 +539,6 @@ export function listAgentRunsForSession(params: {
   }
   return runs.toSorted((a, b) => a.runId.localeCompare(b.runId));
 }
-
-type ProjectedAgentRunState = "queued" | "running" | "capacity-wait";
-
-export type ProjectedAgentRunIndex = {
-  sessionKeys: ReadonlyMap<string, ProjectedAgentRunState>;
-  sessionIds: ReadonlyMap<string, ProjectedAgentRunState>;
-  ownerlessSessionKeys: ReadonlyMap<string, ProjectedAgentRunState>;
-  ownerlessSessionIds: ReadonlyMap<string, ProjectedAgentRunState>;
-};
 
 function projectedRunIdentity(agentId: string, value: string): string {
   return `${normalizeAgentId(agentId)}\0${value}`;

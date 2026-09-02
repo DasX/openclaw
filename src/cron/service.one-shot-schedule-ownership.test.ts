@@ -31,11 +31,12 @@ function createCron(params: {
   onEvent?: (event: CronEvent) => void;
 }) {
   return new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: params.storePath,
     cronEnabled: true,
     log: logger,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: params.runIsolatedAgentJob,
     ...(params.onEvent ? { onEvent: params.onEvent } : {}),
   });
@@ -472,24 +473,29 @@ describe("cron one-shot schedule ownership", () => {
       };
       await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
-      const enqueueSystemEvent = vi.fn();
-      const requestHeartbeat = vi.fn();
+      const runSessionEvent = vi.fn(async () => ({
+        status: "ok" as const,
+        executionStarted: true,
+      }));
+      const enqueueSessionEvent = vi.fn();
       const onEvent = vi.fn((event: CronEvent) => event);
       const cron = new CronService({
+        runSessionEvent,
         storePath: store.storePath,
         cronEnabled: true,
         log: logger,
-        enqueueSystemEvent,
-        requestHeartbeat,
+        enqueueSystemEvent: vi.fn(),
+        enqueueSessionEvent,
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
         onEvent,
       });
 
       try {
         await cron.start();
-        expect(enqueueSystemEvent).toHaveBeenCalledTimes(1);
-        expect(enqueueSystemEvent.mock.calls[0]?.[0]).toBe("run the overdue replacement once");
-        expect(requestHeartbeat).toHaveBeenCalledTimes(1);
+        expect(runSessionEvent).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ text: "run the overdue replacement once" }),
+        );
+        expect(enqueueSessionEvent).not.toHaveBeenCalled();
 
         const listed = await cron.list({ includeDisabled: true });
         const durable = await loadCronStore(store.storePath);

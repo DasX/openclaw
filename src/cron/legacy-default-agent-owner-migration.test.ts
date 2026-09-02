@@ -70,12 +70,13 @@ it("materializes before scheduler startup", async () => {
   vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
   closeOpenClawStateDatabaseForTest();
   const cron = new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath,
     cronEnabled: true,
     legacyDefaultAgentId: "ops",
     log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
   try {
@@ -114,12 +115,13 @@ it("owns rows imported from a JSON-only store on first startup load", async () =
     });
 
   const cron = new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath,
     cronEnabled: true,
     legacyDefaultAgentId: "ops",
     log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
   try {

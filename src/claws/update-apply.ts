@@ -5,7 +5,10 @@ import { transformConfigFileWithRetry } from "../config/config.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
-import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import {
+  runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabaseOptions,
+} from "../state/openclaw-state-db.js";
 import { clawTargetPackages } from "./application-provenance.js";
 import {
   applyClawCronUpdate,
@@ -481,7 +484,7 @@ export async function applyClawUpdatePlan(
   const applyCron = options.applyCron ?? applyClawCronUpdate;
   let cronExecution: ClawCronUpdateExecution;
   try {
-    cronExecution = await applyCron(fresh, params.targetManifest, options);
+    cronExecution = await applyCron(fresh, params.targetManifest, { ...options, targetAddPlan });
   } catch (error) {
     if (error instanceof ClawCronUpdateError && error.partial) {
       try {
@@ -516,10 +519,16 @@ export async function applyClawUpdatePlan(
 
   let installRecord: PersistedClawInstall;
   try {
-    installRecord = persistInstall(targetAddPlan, {
-      ...options,
-      expectedClaw: fresh.currentClaw,
-    });
+    const persist = () =>
+      persistInstall(targetAddPlan, { ...options, expectedClaw: fresh.currentClaw });
+    // A newly adopted automation and its install provenance must either both
+    // commit or both remain absent; rollback must never delete/recreate a job.
+    installRecord = cronExecution.commit
+      ? runOpenClawStateWriteTransaction(() => {
+          cronExecution.commit!();
+          return persist();
+        }, options)
+      : persist();
   } catch (error) {
     const rollbackFailures = await collectClawRollbackFailures([
       ["agent rollback failed", () => rollbackAgent()],
@@ -537,6 +546,13 @@ export async function applyClawUpdatePlan(
       );
     }
     throw new ClawUpdateMutationError("provenance_update_failed", coerceErrorMessage(error));
+  }
+  try {
+    await cronExecution.publish?.();
+  } catch (error) {
+    throw partialMutation(
+      `Update committed but Gateway adoption was not acknowledged: ${coerceErrorMessage(error)}`,
+    );
   }
   return {
     schemaVersion: CLAW_UPDATE_RESULT_SCHEMA_VERSION,

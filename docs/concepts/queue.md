@@ -142,7 +142,8 @@ Host sleep that preserves the process can continue the existing queue normally.
 
 - Applies to auto-reply agent runs across all inbound channels that use the gateway reply pipeline (WhatsApp web, Telegram, Slack, Discord, Signal, iMessage, webchat, etc.).
 - Default lane (`main`) is process-wide for inbound turns; set `agents.defaults.maxConcurrent` to allow multiple sessions in parallel.
-- Heartbeat embedded runs use the bounded `cron-nested` lane for global admission so slow background work does not block inbound replies, while their configured heartbeat session lane still serializes work for that session.
+- Scheduled monitoring uses ordinary cron admission. A job with `idleOnly: true` yields to foreground or same-agent work and session recovery before execution starts, retaining its pending occurrence without occupying a running slot.
+- Immediate exec, task, hook, and restart follow-ups use ordinary session admission, even when cron or scheduled monitoring is disabled. They queue behind active work and cannot resume a reset, deleted, or replaced destination session.
 - Additional lanes may exist (e.g. `cron`, `cron-nested`, `nested`, `subagent`) so background jobs can run in parallel without blocking inbound replies. Isolated cron agent turns hold a `cron` slot while their inner agent execution uses `cron-nested`. Shared non-cron `nested` flows keep their own lane behavior. These detached runs are tracked as [background tasks](/automation/tasks).
 - Per-session lanes guarantee that only one agent run touches a given session at a time.
 - No external dependencies or background worker threads; pure TypeScript + promises.
@@ -156,7 +157,7 @@ Host sleep that preserves the process can continue the existing queue normally.
   - Active work with no recent progress logs as `session.stalled`; owned model calls, blocked tool calls, and stalled embedded runs switch to `session.stalled` at or after the abort threshold. Ownerless stale model/tool activity is not hidden as long-running.
   - `session.stuck` is reserved for recoverable stale session bookkeeping, including idle queued sessions with stale ownerless model/tool activity.
   - `session.stuck` always triggers recovery that can release the affected session lane. A `session.stalled` classification past the abort threshold (blocked tool call, stalled model call, or stalled embedded run) can also trigger active-abort recovery, so both classifications can unstick a queue, not only `session.stuck`.
-  - Repeated `session.stuck` and `session.long_running` warning log lines back off exponentially while the session remains unchanged; recovery attempts still run on every heartbeat tick regardless of that backoff.
+  - Repeated `session.stuck` and `session.long_running` warning log lines back off exponentially while the session remains unchanged; recovery attempts still run on every diagnostics tick regardless of that backoff. This liveness tick is independent of scheduled monitoring.
 
 ## Related
 

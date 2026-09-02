@@ -172,7 +172,6 @@ export async function executeFollowupTurn(params: {
   const baseTypingSignals = createTypingSignaler({
     typing: defaults.typing,
     mode: progressAllowed() ? defaults.typingMode : "never",
-    isHeartbeat: defaults.opts?.isHeartbeat === true,
   });
   const typingSignals: TypingSignaler = {
     ...baseTypingSignals,
@@ -356,7 +355,7 @@ export async function executeFollowupTurn(params: {
               onNewSession: () => undefined,
             });
           },
-          isHeartbeat: sourceOpts?.isHeartbeat === true,
+
           sessionKey: turn.session.kind === "session" ? turn.session.key : undefined,
           runtimePolicySessionKey: turn.queued.run.runtimePolicySessionKey,
           getActiveSessionEntry: turn.session.current,
@@ -400,7 +399,6 @@ export async function executeFollowupTurn(params: {
         outcome: {
           kind: "rejected",
           payload: buildTerminalAgentRunFailureReplyPayload({
-            isHeartbeat: sourceOpts?.isHeartbeat,
             visibleReplyDelivered: false,
             sessionCtx,
             cfg: turn.config,

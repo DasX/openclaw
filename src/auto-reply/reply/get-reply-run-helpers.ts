@@ -182,13 +182,10 @@ export function resolvePromptSessionContextForSystemEvent(params: {
   sessionCtx: TemplateContext;
   sessionEntry?: SessionEntry;
   ctx?: Pick<MsgContext, "InternalTurnSource">;
-  isHeartbeat?: boolean;
 }): TemplateContext {
   const { sessionCtx, sessionEntry } = params;
   const isSystemEvent =
-    params.isHeartbeat === true ||
-    params.ctx?.InternalTurnSource !== undefined ||
-    sessionCtx.InternalTurnSource !== undefined;
+    params.ctx?.InternalTurnSource !== undefined || sessionCtx.InternalTurnSource !== undefined;
   if (!isSystemEvent || !sessionEntry) {
     return sessionCtx;
   }

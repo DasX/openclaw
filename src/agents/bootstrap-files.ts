@@ -160,8 +160,7 @@ function applyContextModeFilter(params: {
   if (contextMode !== "lightweight") {
     return params.files;
   }
-  // Heartbeat scratch is injected by the heartbeat runner, not bootstrap files.
-  // Cron/default lightweight mode also keeps bootstrap context empty on purpose.
+  // Lightweight runs omit workspace bootstrap; automation scratch has its own bounded owner.
   return [];
 }
 

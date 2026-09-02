@@ -6,14 +6,17 @@ import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-e
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveMainSessionKey } from "../config/sessions/main-session.js";
 import { enqueueRoutedSystemEvent } from "../plugin-sdk/system-event-runtime.js";
-import { isCronSystemEvent } from "./heartbeat-events-filter.js";
 import {
   resolveSystemEventOwnerAgentId,
   selectAgentSystemEvents,
   withSystemEventOwner,
 } from "./system-event-ownership.js";
 import {
+  enqueueAutomationSystemEvent,
+  prepareAutomationSystemEvents,
   consumeSelectedSystemEventEntries,
+  claimSystemEventTurn,
+  isSystemEventTurnOwned,
   consumeSystemEventEntries,
   drainSystemEventEntries,
   enqueueSystemEvent,
@@ -64,6 +67,71 @@ async function drainFormattedEvents(
 }
 
 describe("system events (session routing)", () => {
+  it("does not transfer another agent's occurrence in a shared session", () => {
+    const event = enqueueSystemEventEntry(
+      "owned",
+      withSystemEventOwner({ sessionKey: "global" }, "alpha"),
+    )!;
+    expect(claimSystemEventTurn("global", event, vi.fn(), "beta")).toBeUndefined();
+    const owner = claimSystemEventTurn("global", event, vi.fn(), "alpha");
+    expect(owner).toBeDefined();
+    owner!.start();
+    expect(peekSystemEvents("global")).toEqual([]);
+  });
+
+  it("settles every reserved occurrence when a reentrant drain cancels its owners", () => {
+    const key = "agent:main:reentrant-drain";
+    const cancelled = vi.fn();
+    for (const text of ["first", "second", "third"]) {
+      const occurrence = enqueueSystemEventEntry(text, { sessionKey: key })!;
+      const owner = claimSystemEventTurn(key, occurrence, () => {
+        cancelled(text);
+        owner!.cancel();
+      });
+    }
+    expect(drainSystemEventEntries(key).map((event) => event.text)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    expect(cancelled.mock.calls).toEqual([["first"], ["second"], ["third"]]);
+    expect(peekSystemEvents(key)).toEqual([]);
+  });
+
+  it("publishes a replacement before cancelling the previous queued occurrence", () => {
+    const options = { sessionKey: "agent:main:replace-owned", contextKey: "progress" };
+    const occurrence = enqueueSystemEventEntry("old", options)!;
+    const owner = claimSystemEventTurn(options.sessionKey, occurrence, () => owner!.cancel());
+    enqueueSystemEvent("new", { ...options, replace: true });
+    expect(peekSystemEvents(options.sessionKey)).toEqual(["new"]);
+    expect(() => owner!.start()).toThrow();
+  });
+
+  it("reserves an exact occurrence until admission and lets polling cancel only that occurrence", async () => {
+    const key = "agent:main:receipt";
+    const occurrence = enqueueSystemEventEntry("completion", { sessionKey: key })!;
+    const cancelled = vi.fn();
+    const owner = claimSystemEventTurn(key, occurrence, cancelled)!;
+    enqueueSystemEvent("passive notice", { sessionKey: key });
+    expect(isSystemEventTurnOwned(key, occurrence)).toBe(true);
+    expect(await drainFormattedEvents(key)).toContain("passive notice");
+    expect(peekSystemEvents(key)).toEqual(["completion"]);
+    expect(owner.cancel()).toBe(true);
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(() => owner.start()).toThrow();
+    expect(owner.cancel()).toBe(false);
+  });
+
+  it("commits occurrence consumption without cancelling an admitted execution", () => {
+    const key = "agent:main:adopted";
+    const occurrence = enqueueSystemEventEntry("completion", { sessionKey: key })!;
+    const cancelled = vi.fn();
+    const owner = claimSystemEventTurn(key, occurrence, cancelled)!;
+    owner.start();
+    expect(peekSystemEvents(key)).toEqual([]);
+    expect(owner.cancel()).toBe(false);
+    expect(cancelled).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     resetSystemEventsForTest();
   });
@@ -451,40 +519,51 @@ describe("system events (session routing)", () => {
     firstEvents.resetSystemEventsForTest();
   });
 
-  it("filters heartbeat/noise lines, returning undefined", async () => {
-    const key = "agent:main:test-heartbeat-filter";
-    enqueueSystemEvent("Read HEARTBEAT.md before continuing", { sessionKey: key });
-    enqueueSystemEvent("heartbeat poll: pending", { sessionKey: key });
-    enqueueSystemEvent("reason periodic: 5m", { sessionKey: key });
-
+  it("does not discard producer notices based on retired heartbeat wording", async () => {
+    const key = "agent:main:test-retired-wording";
+    const notices = [
+      "Read HEARTBEAT.md to review archived instructions",
+      "heartbeat poll was retired",
+      "reason periodic: inspect the scheduler",
+    ];
+    for (const text of notices) {
+      enqueueSystemEvent(text, { sessionKey: key });
+    }
     const result = await drainFormattedEvents(key);
-    expect(result).toBeUndefined();
+    for (const text of notices) {
+      expect(result).toContain(text);
+    }
     expect(peekSystemEvents(key)).toStrictEqual([]);
   });
 
-  it("leaves exec completion events queued for the dedicated heartbeat", async () => {
+  it("consumes unowned exec completion notices through ordinary session context", async () => {
     const key = "agent:main:test-exec-completion-filter";
     enqueueSystemEvent("Exec failed (abc12345, signal SIGTERM) :: browser auth timed out", {
       sessionKey: key,
     });
 
     const result = await drainFormattedEvents(key);
-    expect(result).toBeUndefined();
-    expect(peekSystemEvents(key)).toEqual([
-      "Exec failed (abc12345, signal SIGTERM) :: browser auth timed out",
-    ]);
+    expect(result).toContain("Exec failed (abc12345, signal SIGTERM) :: browser auth timed out");
+    expect(peekSystemEvents(key)).toEqual([]);
   });
 
-  it("drains generic events without consuming pending exec completions", async () => {
+  it("drains generic notices while preserving an occurrence reserved by its producer", async () => {
     const key = "agent:main:test-exec-completion-prefix";
     enqueueSystemEvent("Model switched to gpt-5.5", { sessionKey: key });
-    enqueueSystemEvent("Exec finished (gateway id=abc12345, code 0)", { sessionKey: key });
+    const occurrence = enqueueSystemEventEntry("Exec finished (gateway id=abc12345, code 0)", {
+      sessionKey: key,
+    })!;
+    const cancelled = vi.fn();
+    const owner = claimSystemEventTurn(key, occurrence, cancelled)!;
     enqueueSystemEvent("Node connected", { sessionKey: key });
 
     const result = await drainFormattedEvents(key);
     expect(result).toContain("Model switched to gpt-5.5");
     expect(result).toContain("Node connected");
     expect(peekSystemEvents(key)).toEqual(["Exec finished (gateway id=abc12345, code 0)"]);
+    expect(cancelled).not.toHaveBeenCalled();
+    owner.start();
+    expect(peekSystemEvents(key)).toEqual([]);
   });
 
   it("prefixes every line of a multi-line event", async () => {
@@ -747,26 +826,48 @@ describe("system events (session routing)", () => {
   });
 });
 
-describe("isCronSystemEvent", () => {
-  it.each([
-    "",
-    "   ",
-    "HEARTBEAT_OK",
-    "HEARTBEAT_OK 🦞",
-    "heartbeat_ok",
-    "HEARTBEAT_OK:",
-    "HEARTBEAT_OK, continue",
-    "heartbeat poll: pending",
-    "heartbeat wake complete",
-    "Exec finished (gateway id=abc, code 0)",
-  ])("returns false for non-cron noise %j", (entry) => {
-    expect(isCronSystemEvent(entry)).toBe(false);
+describe("scheduled event ownership", () => {
+  it("retains notices until execution and consumes only the selected job", () => {
+    const key = "agent:main:scheduled-notices";
+    enqueueAutomationSystemEvent(
+      "first",
+      { sessionKey: key },
+      { jobId: "one", assertCurrent: () => {} },
+    );
+    enqueueAutomationSystemEvent(
+      "second",
+      { sessionKey: key },
+      { jobId: "two", assertCurrent: () => {} },
+    );
+    const abandoned = prepareAutomationSystemEvents(key, "one");
+    expect(abandoned.events.map((event) => event.text)).toEqual(["first"]);
+    expect(peekSystemEvents(key)).toEqual(["first", "second"]);
+    const admitted = prepareAutomationSystemEvents(key, "one");
+    admitted.start();
+    expect(peekSystemEvents(key)).toEqual(["second"]);
+    expect(() => abandoned.start()).toThrow("cancelled");
+    resetSystemEventsForTest();
   });
 
-  it.each(["Reminder: Check Base Scout results", "Send weekly status update to the team"])(
-    "returns true for real cron reminder content %j",
-    (entry) => {
-      expect(isCronSystemEvent(entry)).toBe(true);
-    },
-  );
+  it("rejects a polled or lifecycle-invalidated notice before execution", () => {
+    const key = "agent:main:cancelled-notice";
+    let current = true;
+    enqueueAutomationSystemEvent(
+      "notice",
+      { sessionKey: key },
+      {
+        jobId: "one",
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("producer session reset");
+          }
+        },
+      },
+    );
+    const pending = prepareAutomationSystemEvents(key, "one");
+    current = false;
+    expect(() => pending.start()).toThrow("producer session reset");
+    expect(drainSystemEventEntries(key).map((event) => event.text)).toEqual(["notice"]);
+    expect(() => pending.start()).toThrow("cancelled");
+  });
 });

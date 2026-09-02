@@ -25,7 +25,6 @@ describe("buildSessionsYieldAcknowledgmentPayload", () => {
     { label: "non-yielded turn", overrides: { yielded: false } },
     { label: "missing acknowledgment", overrides: { yieldAcknowledgment: undefined } },
     { label: "internal turn", overrides: { isInteractive: false } },
-    { label: "heartbeat", overrides: { isHeartbeat: true } },
     { label: "silent turn", overrides: { silentExpected: true } },
     { label: "subagent session", overrides: { isSubagentSession: true } },
     { label: "explicit silent reply", overrides: { hasExplicitSilentReply: true } },

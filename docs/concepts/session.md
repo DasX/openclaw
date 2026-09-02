@@ -25,7 +25,7 @@ DM channels, with group activity and background work flowing into it — see
 | Direct messages | Shared session by default     |
 | Group chats     | Isolated per group by default |
 | Rooms/channels  | Isolated per room by default  |
-| Cron jobs       | Fresh session per run         |
+| Cron jobs       | Job-selected session target   |
 | Webhooks        | Isolated per hook             |
 
 With `session.scope: "global"`, the selected agent still owns its session.
@@ -156,13 +156,13 @@ Sessions are reused until you reset them manually or opt into an automatic reset
   metadata writes.
 - **Idle reset** (`mode: "idle"`) - opt into a new session after `session.reset.idleMinutes`
   of inactivity. Idle freshness is based on the last real user/channel
-  interaction, so heartbeat, cron, and exec system events do not keep the
+  interaction, so scheduled monitoring, cron, and exec system events do not keep the
   session alive.
 - **Manual reset** - type `/new` or `/reset` in chat. `/new <model>` also
   switches the model.
 
 When both daily and idle resets are configured, whichever expires first wins.
-Heartbeat, cron, exec, and other system-event turns may write session metadata,
+Scheduled monitoring, cron, exec, and other system-event turns may write session metadata,
 but those writes do not extend daily or idle reset freshness. When a reset
 rolls the session, queued system-event notices for the old session are
 discarded so stale background updates are not prepended to the first prompt in
@@ -270,18 +270,20 @@ Gateway model-run probe sessions are short-lived by default. Rows matching
 `agent:*:explicit:model-run-<uuid>` use fixed `24h` retention, but cleanup is
 pressure-gated: it only removes stale probe rows when session-entry
 maintenance/cap pressure is reached, and runs before the broader stale-entry
-age cutoff and entry cap. Normal direct, group, thread, cron, hook, heartbeat,
-ACP, and sub-agent sessions do not inherit this 24h retention.
+age cutoff and entry cap. Normal direct, group, thread, cron, hook,
+ACP, and sub-agent sessions, including retained legacy heartbeat sessions, do
+not inherit this 24h retention.
 
 Maintenance preserves durable external conversation pointers, including group
 sessions and thread-scoped chat sessions, while still allowing synthetic cron,
-hook, heartbeat, ACP, and sub-agent entries to age out.
+hook, ACP, and sub-agent entries to age out. Retained legacy heartbeat entries
+remain eligible under the same cleanup rules.
 
 Shared or high-volume installations can set `preserveRecent` to protect
 recently active interactive sessions and every SQLite history generation owned
 by those sessions. The option is disabled when omitted or set to `false`, so
 personal installations keep the normal oldest-first policy. Synthetic
-model-run, cron, hook, heartbeat, ACP, and sub-agent sessions remain eligible
+model-run, cron, hook, ACP, sub-agent, and legacy heartbeat sessions remain eligible
 for bounded cleanup. Protection can temporarily keep the store above its entry
 or disk target; it expires after the configured inactivity window.
 

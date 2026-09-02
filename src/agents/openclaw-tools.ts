@@ -57,7 +57,6 @@ import {
   createGetGoalTool,
   createUpdateGoalTool,
 } from "./tools/goal-tools.js";
-import { createHeartbeatResponseTool } from "./tools/heartbeat-response-tool.js";
 import { createImageGenerateTool } from "./tools/image-generate-tool.js";
 import { createImageTool } from "./tools/image-tool.js";
 import { callAgentToolGatewayRequest } from "./tools/in-process-gateway.js";
@@ -272,7 +271,6 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
         conversationReadOrigin: options?.conversationReadOrigin,
         workspaceDir,
       });
-  const heartbeatTool = options?.enableHeartbeatTool ? createHeartbeatResponseTool() : null;
   options?.recordToolPrepStage?.("openclaw-tools:message-tool");
   const nodesToolBase = createNodesTool({
     agentSessionKey: options?.agentSessionKey,
@@ -418,7 +416,6 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             presenterContext: widgetPresentation.context,
           }),
         ]),
-    ...collectPresentOpenClawTools([heartbeatTool]),
     createTtsTool({
       agentChannel: options?.agentChannel,
       config: resolvedConfig,

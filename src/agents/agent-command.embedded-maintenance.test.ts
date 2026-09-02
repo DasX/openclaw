@@ -329,7 +329,7 @@ describe("agentCommand embedded maintenance", () => {
     { name: "already completed in-run compaction", compactionCount: 1 },
     { name: "a yielded turn", meta: { yielded: true } },
     { name: "an aborted turn", meta: { aborted: true } },
-    { name: "a heartbeat", opts: { bootstrapContextRunKind: "heartbeat" } },
+    { name: "a scheduled run", opts: { bootstrapContextRunKind: "cron" } },
     { name: "a raw model run", opts: { modelRun: true } },
     { name: "preserved user-facing state", opts: { preserveUserFacingSessionModelState: true } },
     { name: "hidden session effects", opts: { sessionEffects: "internal" } },

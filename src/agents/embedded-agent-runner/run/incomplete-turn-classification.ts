@@ -17,7 +17,6 @@ export type IncompleteTurnAttempt = Pick<
   | "currentAttemptAssistant"
   | "yieldDetected"
   | "didSendDeterministicApprovalPrompt"
-  | "heartbeatToolResponse"
   | "toolMediaUrls"
   | "toolAudioAsVoice"
   | "toolTrustedLocalMedia"

@@ -3,13 +3,6 @@
 import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { computeBackoffMs } from "../infra/delivery-recovery.shared.js";
-import {
-  resolveHeartbeatAgents,
-  startHeartbeatRunner,
-  type HeartbeatRunner,
-  runHeartbeatOnce,
-} from "../infra/heartbeat-runner.js";
-import { resolveHeartbeatIntervalMs } from "../infra/heartbeat-summary.js";
 import type { DeliverOutboundPayloadsParams } from "../infra/outbound/deliver.js";
 import {
   schedulePendingSessionDeliveries,
@@ -23,16 +16,13 @@ import { startSessionUpstreamMonitor } from "../sessions/session-upstream-monito
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
 import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
 import { resolveGatewayPluginConfig } from "./runtime-plugin-config.js";
-import {
-  fenceScheduledGatewayContextResolver,
-  runWithScheduledGatewayContext,
-} from "./scheduled-run-gateway-context.js";
 import type { GatewayCronReconciliation } from "./server-cron-reconciled.js";
 import type { GatewayCronState } from "./server-cron.js";
 import type { startGatewayMaintenanceTimers } from "./server-maintenance.js";
 import type { GatewayContextResolver } from "./server-methods/types.js";
 import {
-  createNoopHeartbeatRunner,
+  createNoopSessionServices,
+  type SessionServices,
   type GatewayRuntimeServiceLogger,
 } from "./server-runtime-service-shared.js";
 export { scheduleGatewayIdleTask, type GatewayIdleTaskHandle } from "./server-idle-task.js";
@@ -354,26 +344,14 @@ export function activateGatewayScheduledServices(params: {
   logCron: { error: (message: string) => void };
   log: GatewayRuntimeServiceLogger;
   resolveGatewayContext?: GatewayContextResolver;
-}): { heartbeatRunner: HeartbeatRunner; stopOutboundDeliveryRecovery: () => Promise<void> } {
+}): { sessionServices: SessionServices; stopOutboundDeliveryRecovery: () => Promise<void> } {
   if (params.minimalTestGateway) {
     // Minimal gateways keep handles callable but inert so tests can share shutdown paths with
     // production starts without launching background loops.
     return {
-      heartbeatRunner: createNoopHeartbeatRunner(),
+      sessionServices: createNoopSessionServices(),
       stopOutboundDeliveryRecovery: async () => {},
     };
-  }
-  if (
-    !params.cronState.cronEnabled &&
-    resolveHeartbeatAgents(params.cfgAtStart).some((agent) =>
-      Boolean(resolveHeartbeatIntervalMs(params.cfgAtStart, undefined, agent.heartbeat)),
-    )
-  ) {
-    params.log
-      .child("heartbeat")
-      .warn(
-        "scheduled heartbeats are disabled because the cron scheduler is disabled; enable cron and restart the gateway",
-      );
   }
   if (
     !params.cronState.cronEnabled &&
@@ -385,24 +363,6 @@ export function activateGatewayScheduledServices(params: {
         "scheduled skill collection reviews are disabled because the cron scheduler is disabled; enable cron and restart the gateway",
       );
   }
-  // Scheduled heartbeat wakes fire from a timer with no Gateway request, so
-  // without this the turn runs contextless and trusted built-in tools fail.
-  const heartbeatGatewayContextResolver = fenceScheduledGatewayContextResolver(
-    params.resolveGatewayContext,
-  );
-  const heartbeatRunner = startHeartbeatRunner({
-    cfg: params.cfgAtStart,
-    readCurrentConfig: getRuntimeConfig,
-    ...(heartbeatGatewayContextResolver
-      ? {
-          runOnce: async (opts: Parameters<typeof runHeartbeatOnce>[0]) =>
-            await runWithScheduledGatewayContext({
-              resolveGatewayContext: heartbeatGatewayContextResolver,
-              run: async () => await runHeartbeatOnce(opts),
-            }),
-        }
-      : {}),
-  });
   const sessionUpstreamMonitor = startSessionUpstreamMonitor();
   const stopSessionDeliveryRuntime = startPendingSessionDeliveryRuntime({
     deps: params.deps,
@@ -425,17 +385,15 @@ export function activateGatewayScheduledServices(params: {
     cfg: params.cfgAtStart,
     log: params.log,
   });
-  const heartbeatRunnerWithUpstreamMonitor: HeartbeatRunner = {
-    updateConfig: heartbeatRunner.updateConfig,
+  const sessionServices: SessionServices = {
     stop: () => {
       void stopOutboundDeliveryRecovery();
       stopSessionDeliveryRuntime();
       sessionUpstreamMonitor.stop();
-      heartbeatRunner.stop();
     },
   };
   return {
-    heartbeatRunner: heartbeatRunnerWithUpstreamMonitor,
+    sessionServices,
     stopOutboundDeliveryRecovery,
   };
 }

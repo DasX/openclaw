@@ -47,7 +47,6 @@ import {
 } from "../../utils/delivery-context.shared.js";
 import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
-import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../heartbeat.js";
 import type { ReplyPayload } from "../reply-payload.js";
 import type { RuntimeMsgContext as MsgContext } from "../templating.js";
 import { normalizeThinkLevel, normalizeVerboseLevel } from "../thinking.js";
@@ -81,10 +80,6 @@ import {
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createFastTestModelSelectionState, createModelSelectionState } from "./model-selection.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
-import {
-  PENDING_FINAL_DELIVERY_CLEAR_PATCH,
-  sanitizePendingFinalDeliveryText,
-} from "./pending-final-delivery.js";
 import { getPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
 import { attachProgressNarratorToReplyOptions } from "./progress-narrator.js";
 import { createReplyTimingTracker } from "./reply-timing-tracker.js";
@@ -92,7 +87,6 @@ import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js"
 import { initSessionState, resolveReplySessionPreprocessingState } from "./session.js";
 import { mergeSkillFilters } from "./skill-filter.js";
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
-import { isStaleHeartbeatAutoFallbackOverride } from "./stored-model-override.js";
 import { createTypingController } from "./typing.js";
 
 type ResetCommandAction = "new" | "reset";
@@ -101,17 +95,6 @@ type RuntimeInternalGetReplyOptions = BaseInternalGetReplyOptions & {
   onSessionPrepared?: (binding: ReplySessionBinding) => void;
   extractedFileImages?: ExtractedFileImage[];
 };
-
-function classifyHeartbeatPendingFinalDelivery(text: string, ackMaxChars: number) {
-  const stripped = stripHeartbeatToken(text, {
-    mode: "heartbeat",
-    maxAckChars: ackMaxChars,
-  });
-  return {
-    shouldClear: stripped.shouldSkip,
-    replayText: stripped.didStrip && stripped.text ? stripped.text : text,
-  };
-}
 
 const sessionResetModelRuntimeLoader = createLazyImportLoader(
   () => import("./session-reset-model.runtime.js"),
@@ -311,9 +294,9 @@ async function applyLinkUnderstandingIfNeeded(params: {
   }
 }
 
-export async function getReplyFromConfig(
+export async function getReplyFromConfigCore(
   ctx: MsgContext,
-  opts?: GetReplyOptions,
+  opts?: BaseInternalGetReplyOptions,
   configOverride?: OpenClawConfig,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
   const isFastTestEnv = isFastTestRuntimeEnv();
@@ -386,7 +369,7 @@ export async function getReplyFromConfig(
   const traceAttributes = resolverTiming.measureSync("reply.resolve_trace_context", () => ({
     surface: normalizeOptionalString(finalized.Surface ?? finalized.Provider) ?? "unknown",
     hasSessionKey: Boolean(agentSessionKey),
-    isHeartbeat: opts?.isHeartbeat === true,
+
     hasMedia: hasInboundMedia(finalized),
   }));
   const messageId = finalized.MessageSid ?? finalized.MessageSidFirst ?? finalized.MessageSidLast;
@@ -440,27 +423,22 @@ export async function getReplyFromConfig(
   );
   let provider = defaultProvider;
   let model = defaultModel;
-  let hasResolvedHeartbeatModelOverride = false;
-  if (opts?.isHeartbeat) {
-    // Prefer the resolved per-agent heartbeat model passed from the heartbeat runner,
-    // fall back to the global defaults heartbeat model for backward compatibility.
-    const heartbeatRaw =
-      normalizeOptionalString(opts.heartbeatModelOverride) ??
-      normalizeOptionalString(agentCfg?.heartbeat?.model) ??
-      "";
-    const heartbeatRef = heartbeatRaw
+  let hasResolvedTurnModelOverride = false;
+  if (internalOptsWithSkillFilter?.modelOverride) {
+    const turnModelRaw = normalizeOptionalString(internalOptsWithSkillFilter.modelOverride) ?? "";
+    const turnModelRef = turnModelRaw
       ? resolveModelRefFromString({
           cfg,
           agentId,
-          raw: heartbeatRaw,
+          raw: turnModelRaw,
           defaultProvider,
           aliasIndex,
         })
       : null;
-    if (heartbeatRef) {
-      provider = heartbeatRef.ref.provider;
-      model = heartbeatRef.ref.model;
-      hasResolvedHeartbeatModelOverride = true;
+    if (turnModelRef) {
+      provider = turnModelRef.ref.provider;
+      model = turnModelRef.ref.model;
+      hasResolvedTurnModelOverride = true;
     }
   }
 
@@ -711,12 +689,12 @@ export async function getReplyFromConfig(
     bodyStripped,
   } = sessionState;
   const sessionModelSelectionLocked = isModelSelectionLocked(sessionEntry);
-  if (sessionModelSelectionLocked && hasResolvedHeartbeatModelOverride) {
+  if (sessionModelSelectionLocked && hasResolvedTurnModelOverride) {
     // Heartbeat routing is turn-local. A native harness lock owns the durable
-    // model selection, so heartbeat.model must not retarget its AppServer turn.
+    // model selection, so a scheduled model override must not retarget its AppServer turn.
     provider = defaultProvider;
     model = defaultModel;
-    hasResolvedHeartbeatModelOverride = false;
+    hasResolvedTurnModelOverride = false;
   }
   // Utility-model narration is turn-local decoration. Initialize the durable
   // session first, then keep it completely outside model-locked native runs.
@@ -745,37 +723,6 @@ export async function getReplyFromConfig(
     sessionId,
     storePath,
   });
-
-  if (sessionEntry?.pendingFinalDelivery?.kind === "replayable") {
-    const text = sanitizePendingFinalDeliveryText(sessionEntry.pendingFinalDelivery.text);
-
-    // Heartbeats may safely clear ack-only pending state, but must not replay
-    // user-facing pending finals through a different delivery target.
-    if (opts?.isHeartbeat) {
-      const heartbeatPending = classifyHeartbeatPendingFinalDelivery(
-        text,
-        DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
-      );
-      if (heartbeatPending.shouldClear) {
-        Object.assign(sessionEntry, PENDING_FINAL_DELIVERY_CLEAR_PATCH);
-        sessionEntryHandle.replaceCurrent(sessionEntry);
-        if (sessionKey && sessionStore) {
-          sessionStore[sessionKey] = sessionEntry;
-        }
-        if (sessionKey && storePath) {
-          const { updateSessionEntry } = await import("../../config/sessions/session-accessor.js");
-          await updateSessionEntry(
-            { storePath, sessionKey },
-            () => ({ ...PENDING_FINAL_DELIVERY_CLEAR_PATCH }),
-            {
-              skipMaintenance: true,
-              takeCacheOwnership: true,
-            },
-          );
-        }
-      }
-    }
-  }
 
   if (resetTriggered && normalizeOptionalString(bodyStripped)) {
     const { applyResetModelOverride } = await loadSessionResetModelRuntime();
@@ -838,7 +785,7 @@ export async function getReplyFromConfig(
       })
     : null;
   const resolvedChannelModelOverride =
-    channelModelOverride && !hasResolvedHeartbeatModelOverride && !sessionModelSelectionLocked
+    channelModelOverride && !hasResolvedTurnModelOverride && !sessionModelSelectionLocked
       ? resolveModelRefFromString({
           cfg,
           agentId,
@@ -863,35 +810,20 @@ export async function getReplyFromConfig(
       sessionCtx.ParentSessionKey,
     defaultProvider,
   });
-  const staleHeartbeatAutoFallbackOverride =
-    !sessionModelSelectionLocked &&
-    isStaleHeartbeatAutoFallbackOverride({
-      isHeartbeat: opts?.isHeartbeat === true,
-      hasResolvedHeartbeatModelOverride,
-      sessionEntry,
-      storedOverride: storedModelOverride,
-      defaultProvider,
-      defaultModel,
-      primaryProvider,
-      primaryModel,
-    });
   const staleLegacyAutoFallbackWithoutOrigin =
     !sessionModelSelectionLocked &&
     storedModelOverride?.source === "session" &&
     hasLegacyAutoFallbackWithoutOrigin(sessionEntry);
   if (
     storedModelOverride?.model &&
-    !hasResolvedHeartbeatModelOverride &&
-    !staleHeartbeatAutoFallbackOverride &&
+    !hasResolvedTurnModelOverride &&
     !staleLegacyAutoFallbackWithoutOrigin
   ) {
     provider = storedModelOverride.provider ?? defaultProvider;
     model = storedModelOverride.model;
   }
   const canApplyAutoFallbackPrimaryProbe =
-    !sessionModelSelectionLocked &&
-    !hasResolvedHeartbeatModelOverride &&
-    !staleHeartbeatAutoFallbackOverride;
+    !sessionModelSelectionLocked && !hasResolvedTurnModelOverride;
   const autoFallbackPrimaryProbe = canApplyAutoFallbackPrimaryProbe
     ? resolveAutoFallbackPrimaryProbe({
         entry: sessionEntry,
@@ -902,10 +834,9 @@ export async function getReplyFromConfig(
     : undefined;
   const hasEffectiveStoredModelOverride =
     Boolean(storedModelOverride || hasSessionModelOverride) &&
-    !staleHeartbeatAutoFallbackOverride &&
     !staleLegacyAutoFallbackWithoutOrigin;
   if (
-    !hasResolvedHeartbeatModelOverride &&
+    !hasResolvedTurnModelOverride &&
     !hasEffectiveStoredModelOverride &&
     resolvedChannelModelOverride
   ) {
@@ -917,7 +848,7 @@ export async function getReplyFromConfig(
     shouldUseReplyFastDirectiveExecution({
       isFastTestBootstrap: useFastTestRuntime,
       isGroup,
-      isHeartbeat: opts?.isHeartbeat === true,
+
       resetTriggered,
       triggerBodyNormalized,
     })
@@ -1036,7 +967,7 @@ export async function getReplyFromConfig(
       aliasIndex,
       provider,
       model,
-      hasResolvedHeartbeatModelOverride,
+      hasResolvedTurnModelOverride,
       typing,
       opts: withExtractedFileImages(resolvedOpts, extractedFileImages),
       skillFilter: mergedSkillFilter,
@@ -1205,8 +1136,8 @@ export async function getReplyFromConfig(
         model: runModel,
         hasModelDirective: false,
         skipStoredModelOverride: true,
-        hasResolvedHeartbeatModelOverride,
-        isHeartbeat: opts?.isHeartbeat === true,
+        hasResolvedTurnModelOverride,
+
         preparedModelCatalog,
       });
     } catch (error) {

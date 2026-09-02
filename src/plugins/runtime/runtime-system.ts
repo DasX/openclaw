@@ -4,6 +4,7 @@ import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { createLazyRuntimeMethod, createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { formatNativeDependencyHint } from "./native-deps.js";
+import { captureSessionEventTarget, enqueueSessionEvent } from "./runtime-session-events.js";
 import type { RunHeartbeatOnceOptions } from "./types-core.js";
 import type { PluginRuntime } from "./types.js";
 
@@ -22,15 +23,36 @@ export function createRuntimeSystem(): PluginRuntime["system"] {
       source: opts?.source ?? "other",
       intent: opts?.intent ?? "immediate",
       reason: opts?.reason,
-      coalesceMs: opts?.coalesceMs,
       agentId: opts?.agentId,
       sessionKey: opts?.sessionKey,
-      heartbeat: opts?.heartbeat,
+      heartbeat: opts?.heartbeat
+        ? {
+            target: opts.heartbeat.target,
+            to: opts.heartbeat.to,
+            accountId: opts.heartbeat.accountId,
+          }
+        : undefined,
     });
 
   return {
+    captureSessionEventTarget,
+    enqueueSessionEvent,
     enqueueSystemEvent,
-    requestHeartbeat,
+    requestHeartbeat: (opts) =>
+      requestHeartbeat({
+        source: opts.source,
+        intent: opts.intent,
+        reason: opts.reason,
+        agentId: opts.agentId,
+        sessionKey: opts.sessionKey,
+        heartbeat: opts.heartbeat
+          ? {
+              target: opts.heartbeat.target,
+              to: opts.heartbeat.to,
+              accountId: opts.heartbeat.accountId,
+            }
+          : undefined,
+      }),
     requestHeartbeatNow,
     runHeartbeatOnce: (opts?: RunHeartbeatOnceOptions) => {
       // Destructure to forward only the plugin-safe subset; prevent cfg/deps injection at runtime.

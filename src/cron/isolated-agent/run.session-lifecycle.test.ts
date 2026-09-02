@@ -169,7 +169,6 @@ describe("runCronIsolatedAgentTurn session lifecycle", () => {
             promptError: false,
             aborted: false,
             yieldAborted: false,
-            isHeartbeat: false,
           };
           runParams.onContextEngineTurnCandidate(facts);
           candidates.push(facts);
@@ -199,7 +198,6 @@ describe("runCronIsolatedAgentTurn session lifecycle", () => {
                 expect.objectContaining({ role: "user" }),
                 expect.objectContaining({ role: "assistant", content: "Cron answer" }),
               ],
-              isHeartbeat: false,
             }),
           );
         } else {

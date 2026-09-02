@@ -1,4 +1,5 @@
 // Defines channel heartbeat and health visibility configuration types.
+/** @deprecated Doctor and external compatibility input only. */
 export type ChannelHeartbeatVisibilityConfig = {
   /** Show HEARTBEAT_OK acknowledgments in chat (default: false). */
   showOk?: boolean;

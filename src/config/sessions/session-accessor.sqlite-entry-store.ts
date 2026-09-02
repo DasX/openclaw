@@ -25,17 +25,16 @@ import {
   type SqliteLifecycleTargetSnapshot,
 } from "./session-accessor.sqlite-entry-equality.js";
 import {
+  parseReadableSqliteSessionEntryRow,
+  readExactSessionEntryRow,
+} from "./session-accessor.sqlite-entry-read.js";
+import {
   clearSessionCollaborationForKey,
   copySessionNodeArtifactsForRepair,
   deleteSessionDeliveryArtifacts,
   deleteSessionNodeArtifacts,
 } from "./session-accessor.sqlite-node-artifacts.js";
-import {
-  hasSqliteSessionOwnerColumns,
-  projectSqliteSessionOwner,
-  type SqliteSessionOwnerRow,
-} from "./session-accessor.sqlite-owner-projection.js";
-import { projectSqliteSessionParticipants } from "./session-accessor.sqlite-participant-projection.js";
+import { hasSqliteSessionOwnerColumns } from "./session-accessor.sqlite-owner-projection.js";
 import { resolveSessionEntryProvenanceRow } from "./session-accessor.sqlite-provenance.js";
 import { collectSessionStateIdsForEntry } from "./session-accessor.sqlite-references.js";
 import { getSessionKysely, normalizeSqliteSessionKey } from "./session-accessor.sqlite-scope.js";
@@ -56,14 +55,18 @@ import {
   assertCanonicalSessionKeyWriteMatchesDatabase,
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
-import { parseSqliteSessionEntryRecord } from "./session-entry-json.js";
 import { preserveCreationStamp } from "./session-entry-provenance.js";
-import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
 import {
   collectSessionEntryLookupKeys,
   resolveDeliveryProvenCanonicalSessionKey,
 } from "./store-entry.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
+export {
+  parseReadableSqliteSessionEntryRow,
+  readExactSessionEntryRow,
+  readExactSessionEntryRowValidated,
+} from "./session-accessor.sqlite-entry-read.js";
+
 export { collectSessionEntryLookupKeys } from "./store-entry.js";
 
 type OpenClawAgentDatabaseReader = Pick<OpenClawAgentDatabase, "agentId" | "db">;
@@ -72,45 +75,6 @@ export type ResolvedSessionEntryRow = {
   entry: SessionEntry;
   row: SessionEntryRow;
 };
-
-/** Decodes a fresh owned entry, including its nested JSON, owner and participant values. */
-export function parseReadableSqliteSessionEntryRow(
-  database: Pick<OpenClawAgentDatabase, "db">,
-  row: Pick<SessionEntryRow, "current_session_id" | "entry_json" | "session_key" | "updated_at"> &
-    SqliteSessionOwnerRow,
-): SessionEntry | null {
-  const record = parseSqliteSessionEntryRecord(row);
-  if (record) {
-    const entry = projectSqliteSessionParticipants(
-      database.db,
-      row.session_key,
-      projectSqliteSessionOwner(projectCanonicalSessionEntryShape(record), row),
-    );
-    if (resolveDeliveryProvenCanonicalSessionKey(row.session_key, entry) !== row.session_key) {
-      throw canonicalSessionKeyMigrationRequiredError(
-        `non-canonical persisted row resolves to session key ${row.session_key}`,
-      );
-    }
-    return entry;
-  }
-  const retainedWindow =
-    row.entry_json === "{}"
-      ? executeSqliteQueryTakeFirstSync(
-          database.db,
-          getSessionKysely(database.db)
-            .selectFrom("session_windows")
-            .select("session_id")
-            .where("session_id", "=", row.current_session_id)
-            .where("session_key", "=", row.session_key),
-        )
-      : undefined;
-  if (retainedWindow) {
-    return null;
-  }
-  throw canonicalSessionKeyMigrationRequiredError(
-    `invalid persisted session row requires repair for ${row.session_key}`,
-  );
-}
 
 /** Exact reads already own nested values; retain them through identity publication. */
 export function readSessionIdentitySnapshot(
@@ -176,22 +140,6 @@ export function readSessionEntrySelectionSnapshot(
   return selected ? [{ entry: selected.entry, sessionKey: selected.row.session_key }] : [];
 }
 
-export function readExactSessionEntryRow(
-  database: OpenClawAgentDatabaseReader,
-  sessionKey: string,
-): ResolvedSessionEntryRow | undefined {
-  const db = getSessionKysely(database.db);
-  const row = executeSqliteQueryTakeFirstSync(
-    database.db,
-    db.selectFrom("session_nodes").selectAll().where("session_key", "=", sessionKey),
-  );
-  if (!row) {
-    return undefined;
-  }
-  const entry = parseReadableSqliteSessionEntryRow(database, row);
-  return entry ? { entry, row } : undefined;
-}
-
 export function readExactSessionEntryJson(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionKey: string,
@@ -201,14 +149,6 @@ export function readExactSessionEntryJson(
     database.db,
     db.selectFrom("session_nodes").select("entry_json").where("session_key", "=", sessionKey),
   )?.entry_json;
-}
-
-export function readExactSessionEntryRowValidated(
-  database: OpenClawAgentDatabaseReader,
-  sessionKey: string,
-): ResolvedSessionEntryRow | undefined {
-  assertCanonicalSqliteSessionKeysCurrent(database);
-  return readExactSessionEntryRow(database, sessionKey);
 }
 
 export function readSessionEntryStore(

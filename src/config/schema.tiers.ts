@@ -19,9 +19,7 @@ const COMMON_TIER_PATHS = `
 bindings commands messages session
 acp.allowedAgents
 agents.defaults.elevatedDefault agents.defaults.embeddedAgent.projectSettingsPolicy
-agents.defaults.fastModeDefault agents.defaults.heartbeat.accountId
-agents.defaults.heartbeat.activeHours agents.defaults.heartbeat.directPolicy
-agents.defaults.heartbeat.model agents.defaults.heartbeat.target agents.defaults.heartbeat.to
+agents.defaults.fastModeDefault
 agents.defaults.compaction.memoryFlush.model agents.defaults.compaction.model
 agents.defaults.imageModel.primary agents.defaults.model
 agents.defaults.mediaModels agents.defaults.model.primary agents.defaults.modelPolicy.allow
@@ -37,7 +35,7 @@ agents.defaults.workspace agents.entries.*.groupChat.mentionPatterns
 agents.entries.*.groupChat.unmentionedInbound agents.entries.*.identity
 agents.entries.*.memory.search.enabled agents.entries.*.memory.search.provider
 agents.entries.*.memory.search.rememberAcrossConversations agents.entries.*.memory.search.model
-agents.entries.*.memory.search.remote.apiKey agents.entries.*.heartbeat.model
+agents.entries.*.memory.search.remote.apiKey
 agents.entries.*.model agents.entries.*.model.primary agents.entries.*.name
 agents.entries.*.runtime.acp.agent agents.entries.*.runtime.type
 agents.entries.*.sandbox.ssh.workspaceRoot agents.entries.*.sandbox.workspaceRoot
@@ -168,10 +166,7 @@ wizard.accessMode wizard.appRecommendations
   .trim()
   .split(/\s+/);
 
-const ADVANCED_TUNING_PATHS = new Set([
-  "agents.defaults.heartbeat.every",
-  "session.maintenance.preserveRecent",
-]);
+const ADVANCED_TUNING_PATHS = new Set(["session.maintenance.preserveRecent"]);
 const CHANNEL_KERNEL_TIER_PREFIXES = ["channels.defaults", "channels.modelByChannel"] as const;
 
 function isPluginOwnedChannelTierPath(path: string): boolean {

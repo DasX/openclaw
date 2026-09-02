@@ -334,6 +334,21 @@ function tryBeginGatewayIndependentRootWorkAdmission(
   return createGatewayRootWorkAdmission(origin);
 }
 
+// Reopen and abort both wake the admission loop, which rechecks cancellation.
+// Neither registration may retain cancelled work until a suspended host reopens.
+function waitForGatewayAdmissionOpen(signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const finish = () => {
+      GATEWAY_WORK_ADMISSION_STATE.suspendOpenWaiters.delete(finish);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    signal?.throwIfAborted();
+    GATEWAY_WORK_ADMISSION_STATE.suspendOpenWaiters.add(finish);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+}
+
 /** Waits through a prepared lease, then joins the root-work set atomically. */
 export async function beginGatewayRootWorkAdmissionWhenOpen(
   origin = "gateway",
@@ -346,17 +361,19 @@ export async function beginGatewayRootWorkAdmissionWhenOpen(
     if (admission) {
       return admission;
     }
-    await new Promise<void>((resolve) => {
-      GATEWAY_WORK_ADMISSION_STATE.suspendOpenWaiters.add(resolve);
-    });
+    await waitForGatewayAdmissionOpen();
   }
 }
 
+// The signal cancels admission waiting, not acquired work: the existing
+// event/operation owner must settle execution and delivery before root release.
 export async function runWithGatewayIndependentRootWorkAdmission<T>(
   run: () => Promise<T>,
   origin?: string,
+  signal?: AbortSignal,
 ): Promise<T> {
   while (true) {
+    signal?.throwIfAborted();
     if (GATEWAY_WORK_ADMISSION_STATE.restartDraining) {
       throw new GatewayDrainingError("gateway is draining for restart");
     }
@@ -368,9 +385,7 @@ export async function runWithGatewayIndependentRootWorkAdmission<T>(
         admission.release();
       }
     }
-    await new Promise<void>((resolve) => {
-      GATEWAY_WORK_ADMISSION_STATE.suspendOpenWaiters.add(resolve);
-    });
+    await waitForGatewayAdmissionOpen(signal);
   }
 }
 
@@ -389,10 +404,11 @@ export const runWithGatewayRootWorkReadmission = <T>(run: () => Promise<T>): Pro
 export function runWithGatewayIndependentRootWorkContinuation<T>(
   run: () => Promise<T>,
   origin = "independent",
+  signal?: AbortSignal,
 ): Promise<T> {
   const parent = GATEWAY_WORK_ADMISSION_STATE.currentRootWork.getStore();
-  if (!parent || parent.released) {
-    return runWithGatewayIndependentRootWorkAdmission(run, origin);
+  if (!parent || parent.released || signal?.aborted) {
+    return runWithGatewayIndependentRootWorkAdmission(run, origin, signal);
   }
   const admission = createGatewayRootWorkAdmission(origin);
   return admission.run(run).finally(admission.release);

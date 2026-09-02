@@ -16,14 +16,14 @@ import { createAgentTurnPresentation } from "./agent-runner-presentation.js";
 
 function normalizeStreamingTextReference(
   payload: ReplyPayload,
-  options: { isHeartbeat?: boolean; silentExpected?: boolean } = {},
+  options: { silentExpected?: boolean } = {},
 ): { text?: string; skip: boolean } {
   let text = payload.text;
   const reply = resolveSendableOutboundReplyParts(payload);
   if (options.silentExpected) {
     return { skip: true };
   }
-  if (!options.isHeartbeat && text?.includes("HEARTBEAT_OK")) {
+  if (text?.includes("HEARTBEAT_OK")) {
     const stripped = stripHeartbeatToken(text, { mode: "message" });
     if (stripped.shouldSkip && !reply.hasMedia) {
       return { skip: true };
@@ -50,11 +50,10 @@ function normalizeStreamingTextReference(
 }
 
 function createPresentation(
-  options: { isHeartbeat?: boolean; silentExpected?: boolean; conversationContext?: string } = {},
+  options: { silentExpected?: boolean; conversationContext?: string } = {},
 ) {
   const turn = {
     followupRun: { run: { silentExpected: options.silentExpected === true } },
-    isHeartbeat: options.isHeartbeat === true,
     sessionCtx: { agentText: options.conversationContext },
     opts: undefined,
   } as unknown as AgentTurnParams;
@@ -381,17 +380,17 @@ describe("agent runner streaming presentation", () => {
     }
   });
 
-  it("keeps silent-expected and heartbeat-run classification eager", () => {
+  it("keeps silent-expected classification eager", () => {
     const silentPresentation = createPresentation({ silentExpected: true });
     expect(silentPresentation.classifyStreamingPartial({ text: "visible" })).toEqual({
       skip: true,
     });
 
-    const heartbeatPresentation = createPresentation({ isHeartbeat: true });
+    const heartbeatPresentation = createPresentation({});
     expect(
       heartbeatPresentation.classifyStreamingPartial({ text: "HEARTBEAT_OK details" }),
     ).toEqual({
-      text: "HEARTBEAT_OK details",
+      text: "details",
       skip: false,
     });
   });

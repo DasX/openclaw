@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { McpServerConfig } from "../config/types.mcp.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { normalizeCronJobCreate } from "../cron/normalize.js";
+import { mutateCronJobsStore, resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { PLUGIN_ARTIFACT_ADAPTER_IDENTITY } from "../plugins/install-artifact-inspection.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { applyClawAddPlan } from "./add.js";
@@ -181,7 +183,20 @@ async function installedFixture(
           return { ok: true, path: "config", config, mcpServers: servers };
         },
       }),
-    cronGateway: { add: async () => ({ id: "scheduler-daily" }) },
+    cronGateway: {
+      add: async (input) => {
+        const job = normalizeCronJobCreate(input);
+        if (!job) {
+          throw new Error("Invalid fixture cron input");
+        }
+        return mutateCronJobsStore(
+          resolveCronJobsStorePathFromConfig(config, { OPENCLAW_STATE_DIR: join(root, "state") }),
+          ({ upsert }) =>
+            upsert({ ...job, id: "scheduler-daily", createdAtMs: 1, updatedAtMs: 1, state: {} }),
+          { env: { OPENCLAW_STATE_DIR: join(root, "state") } },
+        );
+      },
+    },
   });
   if (options.withPackage) {
     persistClawPackageRef(
@@ -287,6 +302,57 @@ describe("exportClawAgent", () => {
       code: "tool_profile_consent_required",
     });
   });
+
+  it.each(["deleted", "disabled", "message", "policy", "scratch"])(
+    "rejects %s cron state instead of exporting a stale declaration",
+    async (change) => {
+      const fixture = await installedFixture();
+      const storePath = resolveCronJobsStorePathFromConfig(fixture.config, fixture.env);
+      const { loadCronJobsStoreWithConfigJobsReadOnly } = await import("../cron/store.js");
+      const job = (await loadCronJobsStoreWithConfigJobsReadOnly(storePath, fixture.env)).store
+        .jobs[0]!;
+      if (change === "scratch") {
+        const { writeCronJobScratch } = await import("../cron/scratch-store.js");
+        expect(
+          writeCronJobScratch({
+            storePath,
+            jobId: job.id,
+            content: "Operator checklist",
+            expectedRevision: 0,
+            options: { env: fixture.env },
+          }),
+        ).toMatchObject({ ok: true });
+      } else {
+        mutateCronJobsStore(
+          storePath,
+          ({ upsert, remove }) => {
+            if (change === "deleted") {
+              remove(job.id);
+            } else {
+              upsert({
+                ...job,
+                ...(change === "disabled" ? { enabled: false } : {}),
+                ...(change === "message"
+                  ? { payload: { kind: "agentTurn", message: "Current operator instruction" } }
+                  : {}),
+                ...(change === "policy" ? { idleOnly: true } : {}),
+              });
+            }
+          },
+          { env: fixture.env },
+        );
+      }
+      const out = join(fixture.root, "stale-cron-export");
+      await expect(
+        exportClawAgent("worker", out, {
+          env: fixture.env,
+          config: fixture.config,
+          sourceMcpServers: fixture.sourceMcpServers,
+        }),
+      ).rejects.toMatchObject({ code: "cron_jobs_unavailable" });
+      await expect(stat(out)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 
   it("writes a grouped package from one installed agent", async () => {
     const fixture = await installedFixture({ withPackage: true });

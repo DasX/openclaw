@@ -104,7 +104,7 @@ First-run Q&A - install, onboard, auth routes, subscriptions, initial failures -
   <Accordion title="What are the top five everyday use cases for OpenClaw?">
     - **Personal briefings**: summaries of inbox, calendar, and news you care about.
     - **Research and drafting**: quick research, summaries, and first drafts for emails or docs.
-    - **Reminders and follow-ups**: cron- or heartbeat-driven nudges and checklists.
+    - **Reminders and follow-ups**: scheduled nudges, monitoring checklists, and event-driven updates.
     - **Browser automation**: filling forms, collecting data, repeating web tasks.
     - **Cross-device coordination**: send a task from your phone, let the Gateway run it on a server, get the result back in chat.
 
@@ -298,11 +298,14 @@ First-run Q&A - install, onboard, auth routes, subscriptions, initial failures -
   <Accordion title="Can OpenClaw run tasks on a schedule or continuously in the background?">
     Yes, via the Gateway scheduler:
 
-    - **Cron jobs** for scheduled or recurring tasks (persist across restarts).
-    - **Heartbeat** for main-session periodic checks.
-    - **Isolated jobs** for autonomous agents that post summaries or deliver to chats.
+    - **Cron jobs** for scheduled or recurring tasks, including monitoring (persist across restarts).
+    - **Session-targeted jobs** for checks that need an existing conversation's context.
+    - **Isolated jobs** for autonomous work with its own context and delivery settings.
 
-    Docs: [Cron jobs](/automation/cron-jobs), [Automation](/automation), [Heartbeat](/gateway/heartbeat).
+    Immediate exec, task, hook, and restart follow-ups use ordinary session admission
+    and remain available with cron disabled.
+
+    Docs: [Cron jobs](/automation/cron-jobs), [Automation](/automation), [Heartbeat migration](/gateway/heartbeat).
 
   </Accordion>
 
@@ -960,7 +963,7 @@ First-run Q&A - install, onboard, auth routes, subscriptions, initial failures -
   </Accordion>
 
   <Accordion title="Do sessions reset automatically if I never send /new?">
-    No, not by default. Sessions keep the same `sessionId`, and compaction bounds the active model context as conversations grow. `/new` and `/reset` remain available, or you can opt into automatic resets with `mode: "daily"` or `mode: "idle"`. Daily mode rolls over at `session.reset.atHour` (default `4`, 0-23) on the gateway host; idle mode uses `session.reset.idleMinutes` since the last real interaction, not heartbeat/cron/exec system events.
+    No, not by default. Sessions keep the same `sessionId`, and compaction bounds the active model context as conversations grow. `/new` and `/reset` remain available, or you can opt into automatic resets with `mode: "daily"` or `mode: "idle"`. Daily mode rolls over at `session.reset.atHour` (default `4`, 0-23) on the gateway host; idle mode uses `session.reset.idleMinutes` since the last real interaction, not scheduled jobs or internal follow-ups such as exec completion.
 
     ```json5
     {
@@ -1040,23 +1043,27 @@ First-run Q&A - install, onboard, auth routes, subscriptions, initial failures -
   </Accordion>
 
   <Accordion title="Why am I getting heartbeat messages every 30 minutes?">
-    Heartbeats run every **30m** by default, or **1h** when the resolved auth mode is Anthropic OAuth/token auth (including Claude CLI reuse) and `heartbeat.every` is unset. Tune or disable:
+    Heartbeat monitoring has moved to ordinary cron jobs. After migration, the
+    converted job keeps its cadence and instructions. Find that job, then edit or
+    disable it:
 
-    ```json5
-    {
-      agents: {
-        defaults: {
-          heartbeat: {
-            every: "2h", // or "0m" to disable recurring cadence
-          },
-        },
-      },
-    }
+    ```bash
+    openclaw cron list --all
+    openclaw cron show <jobId>
+    openclaw cron edit <jobId> --every 2h
+    openclaw cron disable <jobId>
     ```
 
-    Heartbeat instructions live in the monitor's cron scratch. Effectively empty scratch skips the heartbeat run to save API calls; without scratch, the heartbeat still runs and the model decides what to do. `0m` does not block targeted event-driven wakes, such as a background exec completion follow-up; those can still run one agent turn without enabling recurring cadence.
+    Keep monitoring instructions in the job's payload and scratch. With
+    `payload.skipIfScratchEmpty: true`, effectively empty scratch skips the run;
+    absent scratch does not. Use `NO_REPLY` for quiet completion. Disabling or
+    deleting this job does not disable other cron jobs or immediate event-driven
+    follow-ups, such as background exec completion. Deleted default monitors stay
+    deleted across restarts and repeated Doctor runs.
 
-    Per-agent overrides use `agents.entries.*.heartbeat`. Docs: [Heartbeat](/gateway/heartbeat).
+    Do not add `agents.defaults.heartbeat` or `agents.entries.*.heartbeat` to new
+    config. Run `openclaw doctor --fix` to migrate an older setup, then manage its
+    jobs normally. Docs: [Heartbeat migration](/gateway/heartbeat), [cron CLI](/cli/cron).
 
   </Accordion>
 

@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Model } from "openclaw/plugin-sdk/llm";
-import { resolveHeartbeatPromptForResponseTool } from "../../../src/auto-reply/heartbeat.js";
 import {
   buildDirectChatContext,
   buildGroupChatContext,
@@ -17,6 +16,7 @@ import type { TemplateContext } from "../../../src/auto-reply/templating.js";
 import { SILENT_REPLY_TOKEN } from "../../../src/auto-reply/tokens.js";
 import { normalizeChatType } from "../../../src/channels/chat-type.js";
 import type { OpenClawConfig } from "../../../src/config/types.openclaw.js";
+import { DEFAULT_PROACTIVE_PROMPT } from "../../../src/cron/default-proactive-job.js";
 import type {
   AnyAgentTool,
   EmbeddedRunAttemptParams,
@@ -61,7 +61,6 @@ const HAPPY_PATH_TOOL_NAMES = new Set([
   "nodes",
   "automations",
   "message",
-  "heartbeat_respond",
   "tts",
   "gateway",
   "agents_list",
@@ -138,7 +137,7 @@ type PromptScenario = {
   id: string;
   title: string;
   notes: string[];
-  trigger: "user" | "heartbeat";
+  trigger: "user" | "cron";
   ctx: TemplateContext;
   prompt: string;
   extraSystemPrompt: string;
@@ -297,11 +296,6 @@ const baseConfig: OpenClawConfig = {
     },
   },
   agents: {
-    defaults: {
-      heartbeat: {
-        every: "30m",
-      },
-    },
     entries: { main: { default: true } },
   },
 };
@@ -444,7 +438,7 @@ function createAttempt(params: {
 function createDynamicTools(params: {
   codexApi: CodexPromptSnapshotApi;
   ctx: TemplateContext;
-  trigger: "user" | "heartbeat";
+  trigger: "user" | "cron";
 }): CodexDynamicToolSpec[] {
   const tools = createOpenClawCodingTools({
     agentId: "main",
@@ -471,8 +465,6 @@ function createDynamicTools(params: {
     modelApi: "responses",
     modelContextWindowTokens: 272_000,
     forceMessageTool: true,
-    enableHeartbeatTool: params.trigger === "heartbeat",
-    forceHeartbeatTool: params.trigger === "heartbeat",
     trigger: params.trigger,
     config: dynamicToolsConfig,
     toolConstructionPlan: {
@@ -508,7 +500,7 @@ function createDynamicTools(params: {
 async function createScenarioDynamicTools(params: {
   codexApi: CodexPromptSnapshotApi;
   ctx: TemplateContext;
-  trigger: "user" | "heartbeat";
+  trigger: "user" | "cron";
 }): Promise<CodexDynamicToolSpec[]> {
   const provider = params.ctx.Provider;
   if (!provider) {
@@ -568,8 +560,8 @@ async function createScenarios(codexApi: CodexPromptSnapshotApi): Promise<Prompt
   const heartbeatCtx: TemplateContext = {
     ...telegramDirectCtx,
     MessageSid: "heartbeat-0001",
-    Body: resolveHeartbeatPromptForResponseTool(),
-    BodyStripped: resolveHeartbeatPromptForResponseTool(),
+    Body: DEFAULT_PROACTIVE_PROMPT,
+    BodyStripped: DEFAULT_PROACTIVE_PROMPT,
   };
   const telegramDirectTools = await createScenarioDynamicTools({
     codexApi,
@@ -584,7 +576,7 @@ async function createScenarios(codexApi: CodexPromptSnapshotApi): Promise<Prompt
   const heartbeatTools = await createScenarioDynamicTools({
     codexApi,
     ctx: heartbeatCtx,
-    trigger: "heartbeat",
+    trigger: "cron",
   });
 
   return [
@@ -641,12 +633,12 @@ async function createScenarios(codexApi: CodexPromptSnapshotApi): Promise<Prompt
     },
     {
       id: "telegram-heartbeat-codex-tool",
-      title: "Telegram Direct Codex Heartbeat Tool Turn",
+      title: "Telegram Direct Codex Scheduled Automation Turn",
       notes: [
-        "Heartbeat happy path: Codex receives the structured `heartbeat_respond` dynamic tool in the searchable catalog instead of the initial tool context.",
-        "The heartbeat tool still carries the notify/no-notify decision, outcome, summary, and optional notification text instead of relying only on final-text parsing.",
+        "Scheduled automation happy path: Codex receives an ordinary cron-triggered session turn.",
+        "Normal message delivery and NO_REPLY express visible output or intentional silence; no heartbeat response tool is registered.",
       ],
-      trigger: "heartbeat",
+      trigger: "cron",
       ctx: heartbeatCtx,
       prompt: createPrompt(heartbeatCtx, heartbeatCtx.BodyStripped ?? heartbeatCtx.Body ?? ""),
       extraSystemPrompt: createExtraSystemPrompt({
@@ -872,9 +864,7 @@ function renderScenarioSnapshot(
     turnScopedDeveloperInstructions: CODEX_WORKSPACE_TURN_SCOPED_DEVELOPER_INSTRUCTIONS,
   });
   const dynamicToolFunctions = flattenCodexDynamicToolSpecs(scenario.dynamicTools);
-  const criticalToolSpecs = dynamicToolFunctions.filter((tool) =>
-    ["message", "heartbeat_respond"].includes(tool.name),
-  );
+  const criticalToolSpecs = dynamicToolFunctions.filter((tool) => tool.name === "message");
   const dynamicToolsJson = stableJson(scenario.dynamicTools);
   return [
     `# ${scenario.title}`,
@@ -948,7 +938,7 @@ function renderReadme(scenarios: PromptScenario[]): string {
     "",
     "- OpenAI model through the Codex harness and Codex app-server runtime.",
     "- Codex harness default coverage for tool-only visible source replies.",
-    "- Telegram direct chat, Discord group chat, and a heartbeat turn with `heartbeat_respond` available through searchable dynamic tools.",
+    "- Telegram direct chat, Discord group chat, and an ordinary scheduled automation turn with normal message delivery.",
     "",
     "The materialized Markdown snapshots show selected app-server thread/turn params plus a reconstructed model-bound prompt layer stack: Codex `gpt-5.5` model instructions from a pinned Codex model catalog fixture, Codex permission developer instructions for the happy-path yolo profile, OpenClaw developer instructions, turn input with simulated OpenClaw workspace bootstrap runtime context, and references to the complete dynamic tool catalog.",
     "",

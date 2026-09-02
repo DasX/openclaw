@@ -263,6 +263,9 @@ export function upsertTaskDeliveryState(state: TaskDeliveryState): TaskDeliveryS
   const current = taskDeliveryStates.get(state.taskId);
   const next: TaskDeliveryState = {
     taskId: state.taskId,
+    ...(current?.requesterTarget
+      ? { requesterTarget: structuredClone(current.requesterTarget) }
+      : {}),
     ...(state.requesterOrigin
       ? { requesterOrigin: normalizeDeliveryContext(state.requesterOrigin) }
       : {}),
@@ -270,7 +273,12 @@ export function upsertTaskDeliveryState(state: TaskDeliveryState): TaskDeliveryS
       ? { lastNotifiedEventAt: state.lastNotifiedEventAt }
       : {}),
   };
-  if (!next.requesterOrigin && typeof next.lastNotifiedEventAt !== "number" && !current) {
+  if (
+    !next.requesterTarget &&
+    !next.requesterOrigin &&
+    typeof next.lastNotifiedEventAt !== "number" &&
+    !current
+  ) {
     return cloneTaskDeliveryState({ taskId: state.taskId });
   }
   if (!tryPersistTaskDeliveryStateUpsert(next)) {

@@ -2,7 +2,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
 import { hasAnyAuthProfileStoreSource } from "../../agents/auth-profiles/source-check.js";
-import { SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import type { CliDeps } from "../../cli/outbound-send-deps.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -12,11 +11,12 @@ import type {
   CronJob,
   CronStoredJob,
 } from "../types.js";
-import type { MutableCronSession } from "./run-session-state.js";
+import type { createPersistCronSessionEntry, MutableCronSession } from "./run-session-state.js";
 import { logWarn } from "./run.runtime.js";
 import type { RunCronAgentTurnResult } from "./run.types.js";
 
 export type RunCronAgentTurnParams = {
+  assertCurrent?: () => void;
   cfg: OpenClawConfig;
   deps: CliDeps;
   job: CronStoredJob;
@@ -51,8 +51,43 @@ const cronExternalContentRuntimeLoader = createLazyImportLoader(
 const cronAuthProfileRuntimeLoader = createLazyImportLoader(
   () => import("./run-auth-profile.runtime.js"),
 );
-export async function loadSessionAccessorRuntime() {
-  return await sessionAccessorRuntimeLoader.load();
+/** Revalidate the captured caller inside the session accessor's synchronous write edge. */
+export function createCronSessionRowPersister(
+  agentId: string,
+  assertCurrent?: () => void,
+): Parameters<typeof createPersistCronSessionEntry>[0]["persistSessionEntry"] {
+  return async ({ storePath, sessionKey, fallbackEntry, resetBoundaryReason, update }) => {
+    const { applySessionEntryLifecycleMutation, patchSessionEntryCore } =
+      await sessionAccessorRuntimeLoader.load();
+    if (resetBoundaryReason) {
+      await applySessionEntryLifecycleMutation({
+        activeSessionKey: sessionKey,
+        agentId,
+        storePath,
+        upserts: [
+          {
+            sessionKey,
+            resetBoundary: { context: "preserve-tail", reason: resetBoundaryReason },
+            buildEntry: ({ currentEntry }) => {
+              assertCurrent?.();
+              return update(currentEntry);
+            },
+          },
+        ],
+        skipMaintenance: true,
+      });
+      return;
+    }
+    // Guarded replace reads the freshest row so lifecycle claims reject stale owners.
+    await patchSessionEntryCore(
+      { storePath, sessionKey, agentId },
+      (_entry, context) => {
+        assertCurrent?.();
+        return update(context.existingEntry);
+      },
+      { fallbackEntry, replaceEntry: true },
+    );
+  };
 }
 
 export async function loadCronExternalContentRuntime() {
@@ -136,14 +171,4 @@ export async function retireRolledCronSessionMcpRuntime(params: {
       );
     },
   });
-}
-
-export function appendCronUnattendedRunPreamble(
-  commandBody: string,
-  opts: { externalHook: boolean },
-) {
-  const core = `This is an unattended scheduled run. Nobody is present to clarify or approve, so complete the task with what you have. Your final reply is the deliverable — not a plan, an acknowledgement, or a request for input. If nothing needs doing, reply exactly ${SILENT_REPLY_TOKEN}. If something failed, state plainly what failed and what you tried — the scheduler owns retries and failure alerts.`;
-  const trustedExtra =
-    " Where the job's own instructions conflict with this preamble, the job's instructions win (a question or plan the job explicitly requests is a valid deliverable). If this job is no longer needed, remove it if your available tools allow.";
-  return `${commandBody}\n\n${core}${opts.externalHook ? "" : trustedExtra}`;
 }

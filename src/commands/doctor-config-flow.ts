@@ -600,6 +600,23 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     note(sanitizeDoctorNote(mutableAllowlistWarnings.join("\n")), "Doctor warnings");
   }
 
+  if (shouldRepair) {
+    const { retireHeartbeatWithDoctor } = await import("./doctor-heartbeat-retirement.js");
+    const retiredConfig = await retireHeartbeatWithDoctor(state.candidate);
+    if (JSON.stringify(retiredConfig) !== JSON.stringify(state.candidate)) {
+      state = applyDoctorConfigMutation({
+        state,
+        shouldRepair,
+        mutation: {
+          config: retiredConfig,
+          changes: [
+            "Retired heartbeat configuration after ordinary automation data was committed.",
+          ],
+        },
+      });
+    }
+  }
+
   const unknownStep = applyUnknownConfigKeyStep({
     state,
     shouldRepair,

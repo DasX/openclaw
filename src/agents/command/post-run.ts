@@ -25,7 +25,6 @@ import {
   mergeAgentRunTerminalOutcome,
 } from "../agent-run-terminal-outcome.js";
 import { OPENCLAW_AGENT_RUNTIME_ID } from "../agent-runtime-id.js";
-import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compaction-successor.js";
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
@@ -110,7 +109,6 @@ export async function finalizeEmbeddedAgentCommand(params: {
   } = params.attempt;
   const { resolvedVerboseLevel, skillsSnapshot, runContext } = params.embeddedSessionState;
   const effectiveCwd = cwd ?? workspaceDir;
-  const isHeartbeatLifecycleRun = isHeartbeatLifecycleRunKind(params.opts.bootstrapContextRunKind);
   let sessionEntry = params.sessionEntry;
   let result = params.attempt.result;
   let deliveryResult: Awaited<ReturnType<typeof deliverAgentCommandResult>>;
@@ -168,17 +166,14 @@ export async function finalizeEmbeddedAgentCommand(params: {
         result,
         compactionAccounting: compactionFact,
         touchInteraction:
-          params.opts.bootstrapContextRunKind !== "cron" &&
-          !isHeartbeatLifecycleRun &&
-          !params.opts.internalEvents?.length,
+          params.opts.bootstrapContextRunKind !== "cron" && !params.opts.internalEvents?.length,
         // Cron output counts as unread-worthy activity; heartbeat and
         // internal-event turns must not re-flag the session unread.
-        touchActivity: !isHeartbeatLifecycleRun && !params.opts.internalEvents?.length,
+        touchActivity: !params.opts.internalEvents?.length,
         preserveRuntimeModel:
           fallbackExhausted ||
           fallbackProvider !== provider ||
           fallbackModel !== model ||
-          isHeartbeatLifecycleRun ||
           params.preserveUserFacingSessionModelState,
         preserveUserFacingSessionModelState: params.preserveUserFacingSessionModelState,
         clearRestartRecoveryForceSafeTools:
@@ -309,7 +304,6 @@ export async function finalizeEmbeddedAgentCommand(params: {
         sessionKey,
         runtimePolicySessionKey: sessionKey,
         storePath,
-        isHeartbeat: isHeartbeatLifecycleRun,
         abortSignal: params.opts.abortSignal,
         onSessionIdChanged: params.opts.onSessionIdChanged,
       });
@@ -373,7 +367,6 @@ export async function finalizeEmbeddedAgentCommand(params: {
       !result.meta.yielded &&
       !result.meta.aborted &&
       (compactionFact?.count ?? 0) === 0 &&
-      !isHeartbeatLifecycleRun &&
       cfg.agents?.defaults?.compaction?.enabled !== false &&
       !params.preserveUserFacingSessionModelState &&
       !sessionReboundDuringRun &&
@@ -418,7 +411,6 @@ export async function finalizeEmbeddedAgentCommand(params: {
               runtimePolicySessionKey: sessionKey,
               storePath,
               defaultModel: embeddedCompactionRun.run.model,
-              isHeartbeat: false,
               agentHarnessId: agentMeta?.agentHarnessId,
               abortSignal: params.opts.abortSignal,
               onSessionIdChanged: params.opts.onSessionIdChanged,

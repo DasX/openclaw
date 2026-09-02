@@ -22,7 +22,6 @@ import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import { createTestFollowupRun, withTestModelContextTokens } from "./agent-runner.test-fixtures.js";
 import type { QueueSettings } from "./queue.js";
-import { resolveReplyOperationAgentTurn } from "./reply-operation-agent-turn-state.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
@@ -648,14 +647,12 @@ describe("runReplyAgent runtime config", () => {
   );
 
   it.each(["abortByUser", "abortForRestart"] as const)(
-    "records %s during memory flush as cancellation without starting the main turn",
+    "returns the %s response during memory flush without starting the main turn",
     async (abortMethod) => {
       const { replyParams } = createDirectRuntimeReplyParams({
         shouldFollowup: false,
         isActive: false,
       });
-      const runState: ReplyOperationRunState = {};
-      replyParams.opts = { [REPLY_OPERATION_RUN_STATE]: runState };
       runSessionCompactionIfNeededMock.mockResolvedValue(undefined);
       runMemoryFlushIfNeededMock.mockImplementation(
         async (params: { replyOperation: ReplyOperation }) => {
@@ -672,31 +669,24 @@ describe("runReplyAgent runtime config", () => {
             ? SILENT_REPLY_TOKEN
             : "⚠️ Gateway is restarting. Please wait a few seconds and try again.",
       });
-      expect(resolveReplyOperationAgentTurn(runState)).toBe("cancelled");
       expect(executeAgentTurnMock).not.toHaveBeenCalled();
     },
   );
 
-  it.each(["user", "restart"] as const)(
-    "records an aborted %s agent turn as cancellation",
-    async (reason) => {
-      const { replyParams } = createDirectRuntimeReplyParams({
-        shouldFollowup: false,
-        isActive: false,
-      });
-      const runState: ReplyOperationRunState = {};
-      replyParams.opts = { [REPLY_OPERATION_RUN_STATE]: runState };
-      runSessionCompactionIfNeededMock.mockResolvedValue(undefined);
-      executeAgentTurnMock.mockResolvedValue({
-        runId: "cancelled-runtime-config-test",
-        outcome: { kind: "aborted", reason },
-      });
+  it.each(["user", "restart"] as const)("keeps an aborted %s agent turn silent", async (reason) => {
+    const { replyParams } = createDirectRuntimeReplyParams({
+      shouldFollowup: false,
+      isActive: false,
+    });
+    runSessionCompactionIfNeededMock.mockResolvedValue(undefined);
+    executeAgentTurnMock.mockResolvedValue({
+      runId: "cancelled-runtime-config-test",
+      outcome: { kind: "aborted", reason },
+    });
 
-      await runReplyAgent(replyParams);
-
-      expect(resolveReplyOperationAgentTurn(runState)).toBe("cancelled");
-    },
-  );
+    await expect(runReplyAgent(replyParams)).resolves.toEqual({ text: SILENT_REPLY_TOKEN });
+    expect(executeAgentTurnMock).toHaveBeenCalledOnce();
+  });
 
   it("surfaces known pre-run Codex usage-limit failures instead of dropping the reply", async () => {
     const { replyParams } = createDirectRuntimeReplyParams({

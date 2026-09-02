@@ -1,7 +1,7 @@
 ---
 summary: "Agent defaults, multi-agent routing, session, messages, and talk config"
 read_when:
-  - Tuning agent defaults (models, thinking, workspace, heartbeat, media, skills)
+  - Tuning agent defaults (models, thinking, workspace, media, skills)
   - Configuring multi-agent routing and bindings
   - Adjusting session, message delivery, and talk-mode behavior
 title: "Configuration — agents"
@@ -88,7 +88,7 @@ Disables automatic creation of workspace bootstrap files (`AGENTS.md`, `SOUL.md`
 
 ### `agents.defaults.skipOptionalBootstrapFiles`
 
-Skips creation of selected optional workspace files while still writing required bootstrap files (`AGENTS.md`, `BOOTSTRAP.md`). Valid values: `SOUL.md`, `USER.md`, and `IDENTITY.md` (`HEARTBEAT.md` is accepted but a no-op since heartbeat context moved to cron monitor scratch).
+Skips creation of selected optional workspace files while still writing required bootstrap files (`AGENTS.md`, `BOOTSTRAP.md`). Valid values: `SOUL.md`, `USER.md`, and `IDENTITY.md` (`HEARTBEAT.md` is accepted but a no-op; migrated checklists live in ordinary cron job scratch).
 
 ```json5
 {
@@ -104,8 +104,8 @@ Skips creation of selected optional workspace files while still writing required
 
 Controls when workspace bootstrap files are injected into the system prompt. Default: `"always"`.
 
-- `"continuation-skip"`: safe continuation turns (after a completed assistant response) skip workspace bootstrap re-injection, reducing prompt size. Heartbeat runs and post-compaction retries still rebuild context.
-- `"never"`: disable workspace bootstrap and context-file injection on every turn. Use this only for agents that fully own their prompt lifecycle (custom context engines, native runtimes that build their own context, or specialized bootstrap-free workflows). Heartbeat and compaction-recovery turns also skip injection.
+- `"continuation-skip"`: safe continuation turns (after a completed assistant response) skip workspace bootstrap re-injection, reducing prompt size. Post-compaction retries still rebuild context.
+- `"never"`: disable workspace bootstrap and context-file injection on every turn. Use this only for agents that fully own their prompt lifecycle (custom context engines, native runtimes that build their own context, or specialized bootstrap-free workflows). Compaction-recovery turns also skip injection.
 
 ```json5
 {
@@ -570,48 +570,34 @@ The bundled OpenAI plugin owns the GPT-5 friendly interaction-style setting. Mat
 
 See [OpenAI GPT-5 prompt contribution](/providers/openai#gpt-5-prompt-contribution) for provider and native Codex behavior.
 
-### `agents.defaults.heartbeat`
+<a id="agentsdefaultsheartbeat" />
 
-Periodic heartbeat runs.
+### Retired heartbeat configuration
 
-```json5
-{
-  agents: {
-    defaults: {
-      heartbeat: {
-        agentId: "ops", // ambient owner when no per-agent heartbeat is configured
-        every: "30m", // 0m disables recurring cadence
-        activeHours: { start: "08:00", end: "24:00" },
-        model: "openai/gpt-5.4-mini",
-        session: "main",
-        target: "owner", // default | options: last | none | whatsapp | telegram | discord | ...
-        directPolicy: "allow", // allow (default) | block
-        to: "+15555550123",
-        accountId: "ops-bot",
-        prompt: "Follow the heartbeat monitor scratch context...",
-        timeoutSeconds: 45,
-        lightContext: false, // default: false; true skips workspace bootstrap files for heartbeat runs
-        isolatedSession: false, // default: false; true runs each heartbeat in a fresh session (no conversation history)
-      },
-    },
-  },
-}
-```
+`agents.defaults.heartbeat` and `agents.entries.*.heartbeat` are legacy migration
+inputs, not runtime configuration. Run `openclaw doctor --fix` after upgrading
+to convert existing monitors to ordinary [automation jobs](/automation/cron-jobs).
+Doctor persists and verifies each conversion before removing its legacy settings.
 
-- `every`: duration string (ms/s/m/h). Default: `30m` (API-key auth) or `1h` (OAuth auth). Set to `0m` to disable recurring cadence. Targeted event-driven wakes, including background exec completion follow-ups, can still run one agent turn.
-- `agentId`: explicit owner for ambient heartbeat runs when no `agents.entries.*.heartbeat` block exists. A shared heartbeat block without `agentId` keeps the existing all-agent enrollment behavior.
-- Cadence is written into a system-owned cron monitor row. Run `openclaw doctor --fix` to materialize a missing or stale row. If cron is disabled, scheduled heartbeats do not run and the gateway logs a startup warning.
-- The heartbeat object is strict. Its supported fields are `agentId`, `every`, `activeHours`, `model`, `session`, `target`, `directPolicy`, `to`, `accountId`, `prompt`, `timeoutSeconds`, `lightContext`, and `isolatedSession`.
-- `timeoutSeconds`: maximum time in seconds allowed for a heartbeat agent turn before it is aborted. Leave unset to use `agents.defaults.timeoutSeconds` when set, otherwise the heartbeat cadence capped at 600 seconds.
-- `directPolicy`: direct/DM delivery policy. `allow` (default) permits direct-target delivery. `block` suppresses direct-target delivery and emits `reason=dm-blocked`.
-- `target`: `owner` (default) sends only to a direct-message identity from `commands.ownerAllowFrom` or channel `allowFrom`. `last` explicitly follows the latest conversation, including groups. `none` keeps results internal.
-- `to`: used only with an explicit channel target. `owner` and an unset target ignore it.
-- `lightContext`: when true, heartbeat runs use lightweight bootstrap context and skip workspace bootstrap files. Monitor scratch is injected by the heartbeat runner either way.
-- `isolatedSession`: when true, each heartbeat runs in a fresh session with no prior conversation history. Same isolation pattern as cron `sessionTarget: "isolated"`. Reduces per-heartbeat token cost from ~100K to ~2-5K tokens.
-- Busy deferral is automatic: scheduled heartbeats wait for main/cron activity, same-agent active runs, and target-session work. Immediate and manual wakes bypass only the broad same-agent active-run precheck.
-- Heartbeat runs use the ordinary agent system prompt. Acknowledgment suppression uses a fixed 300-character remainder budget, reasoning payloads remain internal, and tool error warnings remain enabled.
-- Per-agent: set `agents.entries.*.heartbeat`. When any agent defines `heartbeat`, **only those agents** run heartbeats.
-- Heartbeats run full agent turns — shorter intervals burn more tokens.
+| Legacy setting                                      | Automation owner                                               |
+| --------------------------------------------------- | -------------------------------------------------------------- |
+| `agentId` and per-agent enrollment                  | The job's agent                                                |
+| `every`                                             | The job's interval schedule; disabled cadence remains disabled |
+| `activeHours`                                       | The job's execution window                                     |
+| `prompt`, `model`, `timeoutSeconds`, `lightContext` | Agent-turn payload                                             |
+| `session`, `isolatedSession`                        | Shared named-session or isolated execution target              |
+| `target`, `to`, `accountId`, `directPolicy`         | Job delivery policy                                            |
+| Monitor checklist                                   | Per-job scratch in the shared state database                   |
+
+Job IDs, history, scratch revisions and tombstones, disabled state, schedule
+anchors, and pending scheduling slots survive conversion. Afterward, use the
+Automations UI or [the existing cron commands](/cli/cron) to edit, disable, or
+delete the job. A one-time provisioning receipt prevents config reloads and
+repeated Doctor runs from recreating deleted jobs or overwriting operator changes.
+
+Immediate exec/task/hook/restart follow-ups use normal session admission even
+when cron or monitoring is disabled. See [Heartbeat migration](/gateway/heartbeat)
+for upgrade, rollback, and legacy-client compatibility details.
 
 ### `agents.defaults.systemAgent`
 
@@ -1105,7 +1091,7 @@ Run multiple isolated agents inside one Gateway. See [Multi-Agent](/concepts/mul
 {
   agents: {
     ownership: "explicit",
-    defaults: { heartbeat: { agentId: "home" }, systemAgent: { agentId: "home" } },
+    defaults: { systemAgent: { agentId: "home" } },
     entries: {
       home: { workspace: "~/.openclaw/workspace-home" },
       work: { workspace: "~/.openclaw/workspace-work" },
@@ -1306,7 +1292,7 @@ See [Multi-Agent Sandbox & Tools](/tools/multi-agent-sandbox-tools) for preceden
   - `per-group` (default): keep each non-direct peer in its channel-scoped session.
   - `main`: route non-direct peers into the agent main session. Prefer a narrow `bindings[].session.groupScope` override when only selected trusted rooms should share main context.
 - **`identityLinks`**: map canonical ids to provider-prefixed peers for cross-channel session sharing.
-- **`reset`**: primary reset policy. `none` disables automatic reset and is the default; compaction bounds active context instead. `daily` resets at `atHour` local time; `idle` resets after `idleMinutes`. When both configured, whichever expires first wins. `/new` and `/reset` remain available in every mode. Daily reset freshness uses the session row's `sessionStartedAt`; idle reset freshness uses `lastInteractionAt`. Background/system-event writes such as heartbeat, cron wakeups, exec notifications, and gateway bookkeeping can update `updatedAt`, but they do not keep daily/idle sessions fresh.
+- **`reset`**: primary reset policy. `none` disables automatic reset and is the default; compaction bounds active context instead. `daily` resets at `atHour` local time; `idle` resets after `idleMinutes`. When both configured, whichever expires first wins. `/new` and `/reset` remain available in every mode. Daily reset freshness uses the session row's `sessionStartedAt`; idle reset freshness uses `lastInteractionAt`. Background/system-event writes such as scheduled monitoring, cron wakeups, exec notifications, and gateway bookkeeping can update `updatedAt`, but they do not keep daily/idle sessions fresh.
   - **`resetByType`**: per-type overrides (`direct`, `group`, `thread`). Doctor migrates legacy `dm` entries to `direct`; the schema rejects `dm`.
 - **`resetByChannel`**: per-channel reset overrides keyed by provider/channel id. When the session's channel has a matching entry, it wins outright over `resetByType`/`reset` for that session. Use only when one channel needs reset behavior different from the type-level policy.
 - **`mainKey`**: accepted but ignored. The per-agent main-session suffix is always `main`; omit this field. Global session scope uses `global` instead.
@@ -1316,8 +1302,8 @@ See [Multi-Agent Sandbox & Tools](/tools/multi-agent-sandbox-tools) for preceden
   - `pruneAfter`: age cutoff for stale entries (default `30d`).
   - `archiveDashboardAfter`: inactivity cutoff for archiving visible dashboard sessions (default `7d`); `false` or `0` disables automatic archiving.
   - `maxEntries`: maximum total number of live SQLite session entries (default `500`). Every row counts toward the cap, but archived or pinned sessions, active or admitted work, model-locked sessions, and durable external conversation pointers are never automatic eviction targets. Cleanup removes the oldest unprotected rows; if protection prevents reaching the cap, the store remains above it. Runtime writes batch cleanup with a small high-water buffer for production-sized caps; `openclaw sessions cleanup --enforce` applies the cap immediately but does not unprotect rows. Unarchive, unpin, wait for active work to finish, or explicitly delete protected sessions to reduce the total.
-  - `preserveRecent`: optional inactivity window that protects recently active interactive sessions and all of their SQLite history generations from automatic age, count, and disk-budget history eviction (for example `"7d"`). Unset or `false` disables this protection. Synthetic model-run, cron, hook, heartbeat, ACP, and sub-agent sessions remain eligible for bounded cleanup. Protection can temporarily keep the store above configured entry or disk targets and does not archive sessions.
-  - Short-lived gateway model-run probe sessions use fixed `24h` retention, but cleanup is pressure-gated: it only removes stale strict model-run probe rows when session-entry maintenance/cap pressure is reached. Only strict explicit probe keys matching `agent:*:explicit:model-run-<uuid>` are eligible; normal direct, group, thread, cron, hook, heartbeat, ACP, and sub-agent sessions do not inherit this 24h retention. When model-run cleanup runs, it runs before the broader `pruneAfter` stale-entry cleanup and `maxEntries` cap.
+  - `preserveRecent`: optional inactivity window that protects recently active interactive sessions and all of their SQLite history generations from automatic age, count, and disk-budget history eviction (for example `"7d"`). Unset or `false` disables this protection. Synthetic model-run, cron, hook, ACP, sub-agent, and retained legacy heartbeat sessions remain eligible for bounded cleanup. Protection can temporarily keep the store above configured entry or disk targets and does not archive sessions.
+  - Short-lived gateway model-run probe sessions use fixed `24h` retention, but cleanup is pressure-gated: it only removes stale strict model-run probe rows when session-entry maintenance/cap pressure is reached. Only strict explicit probe keys matching `agent:*:explicit:model-run-<uuid>` are eligible; normal direct, group, thread, cron, hook, ACP, sub-agent, and retained legacy heartbeat sessions do not inherit this 24h retention. When model-run cleanup runs, it runs before the broader `pruneAfter` stale-entry cleanup and `maxEntries` cap.
   - Legacy `rotateBytes` is rejected by the current schema; `openclaw doctor --fix` removes it from older configs.
   - `resetArchiveRetention`: age-based retention for reset/deleted transcript archives. By default, archives remain until disk-budget eviction; set a duration to opt into wall-clock deletion, or `false` to disable it explicitly.
   - `maxDiskBytes`: optional sessions-directory disk budget. In `warn` mode it logs warnings; in `enforce` mode it removes oldest artifacts/sessions first. Set `false`, `0`, or `"0"` to disable the budget entirely.

@@ -24,6 +24,8 @@ import type { AnyAgentTool } from "./common.js";
 type GatewayToolCallerIdentity = {
   agentId: string;
   sessionKey: string;
+  /** Restrict-only executable surface captured at tool assembly for internal follow-ups. */
+  sessionEventToolsAllow?: readonly string[];
   operationalRunInstance?: OperationalRunInstanceRef;
   /** Exact host-resolved owner of this individual approval request. */
   approvalOwnerPluginId?: string;
@@ -228,6 +230,12 @@ export async function withGatewayToolCallerIdentity<T>(
       agentId: inheritedOwner?.agentId ?? identity.agentId.trim(),
       sessionKey: inheritedOwner?.sessionKey ?? identity.sessionKey.trim(),
       ...(operationalRunInstance ? { operationalRunInstance } : {}),
+      sessionEventToolsAllow:
+        identity.sessionEventToolsAllow && inheritedOwner?.sessionEventToolsAllow
+          ? identity.sessionEventToolsAllow.filter((name) =>
+              inheritedOwner.sessionEventToolsAllow!.includes(name),
+            )
+          : (identity.sessionEventToolsAllow ?? inheritedOwner?.sessionEventToolsAllow),
       ...(identity.approvalOwnerPluginId?.trim()
         ? { approvalOwnerPluginId: identity.approvalOwnerPluginId.trim() }
         : inheritedOwner?.approvalOwnerPluginId

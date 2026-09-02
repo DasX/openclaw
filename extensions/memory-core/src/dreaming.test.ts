@@ -673,7 +673,7 @@ describe("gateway startup reconciliation", () => {
       liveConfigRunPayloadCase = {
         result: await beforeAgentReply(
           { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-          { trigger: "heartbeat", sessionKey },
+          { trigger: "cron", sessionKey },
         ),
         runtimeConfigCalled: runtimeCurrentConfig.mock.calls.length > 0,
         warnCalls: [...logger.warn.mock.calls],
@@ -832,7 +832,7 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: "." },
+        { trigger: "cron", workspaceDir: "." },
       );
 
       expect(harness.addCalls).toHaveLength(1);
@@ -919,7 +919,7 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: "." },
+        { trigger: "cron", workspaceDir: "." },
       );
 
       expect(startupHarness.updateCalls).toHaveLength(0);
@@ -1103,7 +1103,7 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: "." },
+        { trigger: "cron", workspaceDir: "." },
       );
 
       expect(harness.addCalls).toHaveLength(2);
@@ -1113,7 +1113,7 @@ describe("gateway startup reconciliation", () => {
     }
   });
 
-  it("does not reconcile managed cron on non-heartbeat runtime replies", async () => {
+  it("does not reconcile managed cron on non-scheduled runtime replies", async () => {
     clearInternalHooks();
     const { api, harness, onMock } = createDreamingTestContext({
       config: createDreamingConfig({ enabled: true, frequency: "0 2 * * *", timezone: "UTC" }),
@@ -1141,7 +1141,7 @@ describe("gateway startup reconciliation", () => {
     }
   });
 
-  it("does not reconcile managed cron on every repeated runtime heartbeat", async () => {
+  it("does not reconcile managed cron on every repeated scheduled turn", async () => {
     clearInternalHooks();
     const now = Date.parse("2026-04-10T12:00:00Z");
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
@@ -1161,11 +1161,11 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: "." },
+        { trigger: "cron", workspaceDir: "." },
       );
       await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: "." },
+        { trigger: "cron", workspaceDir: "." },
       );
 
       expect(harness.listCalls).toBe(2);
@@ -1175,7 +1175,7 @@ describe("gateway startup reconciliation", () => {
     }
   });
 
-  it("only triggers managed dreaming when the queued cron event is still pending", async () => {
+  it("only triggers managed dreaming from an admitted scheduled turn", async () => {
     clearInternalHooks();
     const { api, harness, onMock } = createDreamingTestContext({
       config: createDreamingConfig({ enabled: false }),
@@ -1197,7 +1197,7 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       const first = await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: ".", sessionKey },
+        { trigger: "cron", workspaceDir: ".", sessionKey },
       );
 
       expect(first).toEqual({
@@ -1209,43 +1209,10 @@ describe("gateway startup reconciliation", () => {
 
       const second = await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: ".", sessionKey },
+        { trigger: "user", workspaceDir: ".", sessionKey },
       );
 
       expect(second).toBeUndefined();
-    } finally {
-      clearInternalHooks();
-    }
-  });
-
-  it("resolves queued managed dreaming cron events from the base session for isolated heartbeats", async () => {
-    clearInternalHooks();
-    const { api, harness, onMock } = createDreamingTestContext({
-      config: createDreamingConfig({ enabled: false }),
-    });
-
-    try {
-      registerShortTermPromotionDreamingForTest(api);
-      await triggerGatewayStart(onMock, {
-        config: api.config,
-        getCron: () => harness.cron,
-      });
-
-      enqueueSystemEvent(constants.DREAMING_SYSTEM_EVENT_TEXT, {
-        sessionKey: "agent:main:main",
-        contextKey: "cron:memory-dreaming",
-      });
-
-      const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
-      const result = await beforeAgentReply(
-        { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: ".", sessionKey: "agent:main:main:heartbeat" },
-      );
-
-      expect(result).toEqual({
-        handled: true,
-        reason: "memory-core: short-term dreaming disabled",
-      });
     } finally {
       clearInternalHooks();
     }
@@ -1272,7 +1239,7 @@ describe("gateway startup reconciliation", () => {
     }
   });
 
-  it("keeps ordinary heartbeat reconciliation quiet when no gateway cron context is available", async () => {
+  it("keeps ordinary scheduled reconciliation quiet when no gateway cron context is available", async () => {
     clearInternalHooks();
     const { api, logger, onMock } = createDreamingTestContext();
 
@@ -1282,36 +1249,11 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       await beforeAgentReply(
         { cleanedBody: "" },
-        { trigger: "heartbeat", workspaceDir: ".", sessionKey: "agent:main:main:heartbeat" },
+        { trigger: "cron", workspaceDir: ".", sessionKey: "agent:main:cron:job-managed" },
       );
 
       expectLogNotContains(logger.warn, "cron service unavailable");
     } finally {
-      clearInternalHooks();
-    }
-  });
-
-  it("still warns on gateway runtime reconciliation when cron remains unavailable", async () => {
-    clearInternalHooks();
-    const { api, logger, onMock } = createDreamingTestContext();
-
-    try {
-      registerShortTermPromotionDreamingForTest(api);
-      await triggerGatewayStart(onMock, {
-        config: api.config,
-        getCron: () => undefined,
-      });
-      expect(logger.warn).not.toHaveBeenCalled();
-
-      const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
-      await beforeAgentReply(
-        { cleanedBody: "" },
-        { trigger: "heartbeat", workspaceDir: ".", sessionKey: "agent:main:main:heartbeat" },
-      );
-
-      expectLogContains(logger.warn, "cron service unavailable");
-    } finally {
-      await triggerGatewayStop(onMock);
       clearInternalHooks();
     }
   });
@@ -1557,7 +1499,7 @@ describe("gateway startup reconciliation", () => {
     }
   });
 
-  it("uses live runtime config for heartbeat dreaming reconciliation", async () => {
+  it("uses live runtime config for scheduled dreaming reconciliation", async () => {
     clearInternalHooks();
     const runtimeCurrentConfig = vi.fn(() => createDreamingConfig({ enabled: false }));
     const { api, harness, onMock } = createDreamingTestContext({
@@ -1580,7 +1522,7 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       const result = await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir: ".", sessionKey },
+        { trigger: "cron", workspaceDir: ".", sessionKey },
       );
 
       expect(runtimeCurrentConfig).toHaveBeenCalled();
@@ -1593,7 +1535,7 @@ describe("gateway startup reconciliation", () => {
     }
   });
 
-  it("uses live runtime config for the heartbeat dreaming run payload", async () => {
+  it("uses live runtime config for the scheduled dreaming run payload", async () => {
     expect(liveConfigRunPayloadCase.result).toEqual({
       handled: true,
       reason: "memory-core: short-term dreaming processed",
@@ -1636,7 +1578,7 @@ describe("gateway startup reconciliation", () => {
       const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
       const result = await beforeAgentReply(
         { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
-        { trigger: "heartbeat", workspaceDir, sessionKey },
+        { trigger: "cron", workspaceDir, sessionKey },
       );
 
       expect(runtimeCurrentConfig).toHaveBeenCalled();
@@ -1649,7 +1591,7 @@ describe("gateway startup reconciliation", () => {
     }
   });
 
-  it("handles managed dreaming cron triggers without a queued heartbeat event", async () => {
+  it("handles managed dreaming cron triggers without a queued system event", async () => {
     clearInternalHooks();
     const { api, harness, onMock } = createDreamingTestContext({
       config: createDreamingConfig({ enabled: false }),

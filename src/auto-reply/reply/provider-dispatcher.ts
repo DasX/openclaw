@@ -1,7 +1,7 @@
 // Dispatch adapters that bridge provider reply resolution into inbound dispatchers.
 import {
-  dispatchInboundMessageWithBufferedDispatcher,
-  dispatchInboundMessageWithDispatcher,
+  dispatchInboundMessageWithBufferedDispatcherCore as dispatchInboundMessageWithBufferedDispatcher,
+  dispatchInboundMessageWithDispatcherCore as dispatchInboundMessageWithDispatcher,
 } from "../dispatch.js";
 import type {
   DispatchReplyWithBufferedBlockDispatcher,

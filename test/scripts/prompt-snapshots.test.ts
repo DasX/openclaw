@@ -44,7 +44,7 @@ describe("happy path prompt snapshots", () => {
     const scenarios = [
       { name: "telegram-direct", replacements: [] },
       { name: "discord-group", replacements: ["sessions_spawn"] },
-      { name: "heartbeat-turn", replacements: ["openclaw_direct"] },
+      { name: "heartbeat-turn", replacements: [] },
     ];
 
     for (const { name, replacements } of scenarios) {
@@ -192,7 +192,7 @@ describe("happy path prompt snapshots", () => {
     expect(telegram).toContain("### Tools: Dynamic Tool Catalog");
   });
 
-  it("uses normal Codex collaboration instructions for every scheduled heartbeat", async () => {
+  it("uses cron collaboration inputs for scheduled turns and Default inputs for ordinary chat", async () => {
     const [direct, group, heartbeat] = await Promise.all([
       materializeCodexPromptSnapshot("telegram-direct"),
       materializeCodexPromptSnapshot("discord-group"),
@@ -213,7 +213,12 @@ describe("happy path prompt snapshots", () => {
     expect(group).not.toContain("This is an OpenClaw heartbeat turn.");
 
     expect(heartbeat).toContain('"collaborationMode": {');
-    expect(heartbeat).toContain('"developer_instructions": "# Collaboration Mode: Default');
+    expect(heartbeat).toContain(
+      '"developer_instructions": "This is an OpenClaw cron automation turn.',
+    );
+    expect(heartbeat).toContain('"trigger": "cron"');
+    expect(heartbeat).toContain("Use NO_REPLY when there is nothing to tell the user.");
+    expect(heartbeat).not.toContain("heartbeat_respond");
     expect(heartbeat).toContain(agentSoulHeading);
     const openClawRuntimeInstructions = renderedPromptSection(
       heartbeat,

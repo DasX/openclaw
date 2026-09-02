@@ -7,8 +7,8 @@ import type {
 } from "./reply-dispatcher.js";
 
 type BufferedDispatchFn =
-  typeof import("../dispatch.js").dispatchInboundMessageWithBufferedDispatcher;
-type PlainDispatchFn = typeof import("../dispatch.js").dispatchInboundMessageWithDispatcher;
+  typeof import("../dispatch.js").dispatchInboundMessageWithBufferedDispatcherCore;
+type PlainDispatchFn = typeof import("../dispatch.js").dispatchInboundMessageWithDispatcherCore;
 
 const hoisted = vi.hoisted(() => ({
   bufferedDispatchMock: vi.fn(),
@@ -16,9 +16,9 @@ const hoisted = vi.hoisted(() => ({
 }));
 
 vi.mock("../dispatch.js", () => ({
-  dispatchInboundMessageWithBufferedDispatcher: (...args: Parameters<BufferedDispatchFn>) =>
+  dispatchInboundMessageWithBufferedDispatcherCore: (...args: Parameters<BufferedDispatchFn>) =>
     hoisted.bufferedDispatchMock(...args),
-  dispatchInboundMessageWithDispatcher: (...args: Parameters<PlainDispatchFn>) =>
+  dispatchInboundMessageWithDispatcherCore: (...args: Parameters<PlainDispatchFn>) =>
     hoisted.plainDispatchMock(...args),
 }));
 

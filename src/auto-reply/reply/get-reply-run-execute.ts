@@ -30,6 +30,7 @@ import { buildChannelUserTurnSender } from "../../sessions/user-turn-transcript.
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { buildInboundMediaNoteProjection } from "../media-note.js";
 import type { OriginatingChannelType } from "../templating.js";
+import { resolveReplyScheduledToolPolicy } from "./agent-runner-run-params.js";
 import { resolveCurrentTurnImages } from "./current-turn-images.js";
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
 import type { PreparedReplyRunAdmission } from "./get-reply-run-admission.js";
@@ -86,7 +87,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   const {
     params,
     runtimePolicySessionKey,
-    isHeartbeat,
+
     traceRunPhase,
     promptSessionCtx,
     inboundEventKind,
@@ -297,10 +298,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
           text: userTurnTranscriptText,
           senderIsOwner: command.senderIsOwner,
           ...(sourceTurnId ? { idempotencyKey: sourceTurnId } : {}),
-          ...(inputProvenance && !isHeartbeat ? { provenance: inputProvenance } : {}),
-          ...(isHeartbeat
-            ? { provenance: { kind: "internal_system" as const, sourceTool: "heartbeat" } }
-            : {}),
+          ...(inputProvenance ? { provenance: inputProvenance } : {}),
           ...(transport ? { transport } : {}),
           ...(userTurnMediaForPersistence.length > 0 ? { media: userTurnMediaForPersistence } : {}),
           ...(mediaImageLayout ? { mediaImageLayout } : {}),
@@ -501,6 +499,11 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
         senderIsOwner: command.senderIsOwner,
       }),
       inputProvenance,
+      scheduledAutomation: opts?.scheduledAutomation,
+      scheduledToolPolicy: resolveReplyScheduledToolPolicy({
+        scheduledAutomation: opts?.scheduledAutomation,
+      }),
+      internalEventExecution: opts?.internalEventExecution,
       ...(opts?.suppressNextUserMessagePersistence
         ? { suppressNextUserMessagePersistence: true }
         : {}),
@@ -546,7 +549,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     senderIsOwner: command.senderIsOwner,
     messageProvider,
     senderId: sessionCtx.SenderId,
-    isHeartbeat,
+
     isRoomEvent,
     inputProvenance,
     spawnedBy: preparedSessionState.sessionEntry?.spawnedBy,

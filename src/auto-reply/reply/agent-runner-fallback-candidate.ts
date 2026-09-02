@@ -59,7 +59,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
   bindSourceReplyDeliveryRuntime(turn.followupRun.run, sourceReplyDeliveryRuntime);
   const sourceReplyDeliveryModeOrigin = sourceReplyDeliveryRuntime.origin;
   const preserveProgressCallbackStartOrder = turn.opts?.preserveProgressCallbackStartOrder === true;
-  const runLane = turn.isHeartbeat ? CommandLane.CronNested : CommandLane.Main;
+  const runLane = CommandLane.Main;
   let queuedUserMessagePersistedAcrossFallback = false;
   let assistantErrorPersistedAcrossFallback = false;
   const messageToolDeliveryState: MessageToolDeliveryState = {
@@ -73,8 +73,8 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
     offAnnounced: false,
     resetAnnounced: false,
   };
-  const bootstrapContextRunKind = turn.opts?.isHeartbeat
-    ? ("heartbeat" as const)
+  const bootstrapContextRunKind = turn.followupRun.run.scheduledAutomation
+    ? ("cron" as const)
     : ("default" as const);
   let githubPublicationAvailability: Promise<boolean> | undefined;
 

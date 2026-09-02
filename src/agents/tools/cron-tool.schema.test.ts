@@ -63,6 +63,7 @@ describe("createCronToolSchema", () => {
   it("job exposes the expected top-level fields", () => {
     expect(keysAt(schemaRecord, "job")).toEqual(
       [
+        "activeHours",
         "agentId",
         "declarationKey",
         "deleteAfterRun",
@@ -71,6 +72,7 @@ describe("createCronToolSchema", () => {
         "displayName",
         "enabled",
         "failureAlert",
+        "idleOnly",
         "name",
         "owner",
         "pacing",
@@ -130,8 +132,8 @@ describe("createCronToolSchema", () => {
     },
   );
 
-  it("exposes next_check with its relative duration parameter", () => {
-    expect(Value.Check(schema, { action: "next_check", in: "15m" })).toBe(true);
+  it("exposes pacing bounds but keeps next_check out of the unscoped schema", () => {
+    expect(Value.Check(schema, { action: "next_check", in: "15m" })).toBe(false);
     expect(propertyAt(schemaRecord, "in")?.description).toContain("next_check");
     const jobPacing = propertyAt(schemaRecord, "job.pacing");
     const pacingObject = (jobPacing?.anyOf as Array<Record<string, unknown>> | undefined)?.find(
@@ -263,8 +265,10 @@ describe("createCronToolSchema", () => {
         "bestEffort",
         "channel",
         "completionDestination",
+        "directPolicy",
         "failureDestination",
         "mode",
+        "target",
         "threadId",
         "to",
       ].toSorted(),
@@ -342,6 +346,7 @@ describe("createCronToolSchema", () => {
         "message",
         "model",
         "script",
+        "skipIfScratchEmpty",
         "text",
         "thinking",
         "toolBudget",

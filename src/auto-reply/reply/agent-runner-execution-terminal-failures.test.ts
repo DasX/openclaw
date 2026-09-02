@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { FailoverError } from "../../agents/failover-error.js";
-import {
-  formatBillingErrorMessage,
-  HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
-} from "../../agents/failover/user-copy.js";
+import { formatBillingErrorMessage } from "../../agents/failover/user-copy.js";
 import { AgentHarnessSessionSupersededError } from "../../agents/harness/errors.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
@@ -61,7 +58,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -112,7 +108,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -157,7 +152,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -213,7 +207,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -262,7 +255,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -316,7 +308,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -432,7 +423,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -542,7 +532,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "off",
@@ -597,26 +586,6 @@ describe("executeAgentTurn: terminal failures", () => {
       expect(result.payload.text).toBe(recoveryText);
       expect(result.payload.text).not.toBe(GENERIC_RUN_FAILURE_TEXT);
     }
-  });
-
-  it("uses heartbeat failure copy for raw external errors during heartbeat runs", async () => {
-    state.runEmbeddedAgentMock.mockRejectedValueOnce(
-      new Error('Command lane "main" task timed out after 120000ms'),
-    );
-
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
-    const result = await executeAgentTurn({
-      ...createMinimalRunAgentTurnParams(),
-      isHeartbeat: true,
-    });
-
-    expect(result.kind).toBe("final");
-    if (result.kind !== "final") {
-      throw new Error("expected final reply");
-    }
-    expect(result.payload.text).toBe(HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT);
-    expect(result.payload.text).not.toBe(GENERIC_RUN_FAILURE_TEXT);
-    expect(result.payload.text).not.toContain("/new");
   });
 
   it.each([
@@ -786,7 +755,6 @@ describe("executeAgentTurn: terminal failures", () => {
       shouldEmitToolOutput: () => false,
       pendingToolTasks: new Set(),
       resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
       sessionKey: "main",
       getActiveSessionEntry: () => undefined,
       resolvedVerboseLevel: "on",

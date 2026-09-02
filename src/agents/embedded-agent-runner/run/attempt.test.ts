@@ -161,42 +161,6 @@ describe("resolvePromptBuildHookResult", () => {
     expect(result.prependSystemContext).toBe(wrappedPluginSystemContext("prompt prepend"));
     expect(result.appendSystemContext).toBe(wrappedPluginSystemContext("prompt append"));
   });
-
-  it("applies heartbeat prompt contributions only during heartbeat turns", async () => {
-    const hookRunner = {
-      hasHooks: vi.fn((hookName: string) => hookName === "heartbeat_prompt_contribution"),
-      runHeartbeatPromptContribution: vi.fn(async () => ({
-        prependContext: "heartbeat prepend",
-        appendContext: "heartbeat append",
-      })),
-      runBeforePromptBuild: vi.fn(async () => undefined),
-    };
-
-    const heartbeatResult = await resolvePromptBuildHookResult({
-      config: {},
-      prompt: "hello",
-      messages: [],
-      hookCtx: { trigger: "heartbeat", sessionKey: "agent:main:main" },
-      hookRunner,
-    });
-
-    expect(hookRunner.runHeartbeatPromptContribution).toHaveBeenCalledTimes(1);
-    expect(heartbeatResult.prependContext).toBe("heartbeat prepend");
-    expect(heartbeatResult.appendContext).toBe("heartbeat append");
-
-    hookRunner.runHeartbeatPromptContribution.mockClear();
-    const userResult = await resolvePromptBuildHookResult({
-      config: {},
-      prompt: "hello",
-      messages: [],
-      hookCtx: { trigger: "user", sessionKey: "agent:main:main" },
-      hookRunner,
-    });
-
-    expect(hookRunner.runHeartbeatPromptContribution).not.toHaveBeenCalled();
-    expect(userResult.prependContext).toBeUndefined();
-    expect(userResult.appendContext).toBeUndefined();
-  });
 });
 
 describe("composeSystemPromptWithHookContext", () => {

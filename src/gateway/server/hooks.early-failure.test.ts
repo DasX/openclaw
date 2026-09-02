@@ -9,7 +9,10 @@ import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../../config/cron-limits.js";
 import type { HookMappingConfig } from "../../config/types.hooks.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { RunCronAgentTurnResult } from "../../cron/isolated-agent/run.types.js";
-import { resolveSystemEventOptionsOwnerAgentId } from "../../infra/system-event-ownership.js";
+import {
+  resolveSystemEventOptionsOwnerAgentId,
+  withSystemEventOwner,
+} from "../../infra/system-event-ownership.js";
 import { createSuiteLogPathTracker } from "../../logging/log-test-helpers.js";
 import {
   applyLoggingConfig,
@@ -31,9 +34,9 @@ import { resolveHooksConfig } from "../hooks.js";
 import { applyGatewayLaneConcurrency, resolveGatewayLaneConcurrency } from "../server-lanes.js";
 
 const mocks = vi.hoisted(() => ({
-  enqueueSystemEvent: vi.fn(),
+  enqueueEvent: vi.fn(),
   getRuntimeConfig: vi.fn<() => OpenClawConfig>(),
-  requestHeartbeat: vi.fn(),
+  enqueueSessionEvent: vi.fn(),
   runCronIsolatedAgentTurn: vi.fn(),
 }));
 
@@ -43,11 +46,26 @@ vi.mock("../../config/io.js", () => ({
 vi.mock("../../cron/isolated-agent.js", () => ({
   runCronIsolatedAgentTurn: mocks.runCronIsolatedAgentTurn,
 }));
-vi.mock("../../infra/heartbeat-wake.js", () => ({
-  requestHeartbeat: mocks.requestHeartbeat,
+vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: (_agentId: string, sessionKey: string) => ({
+    sessionId: sessionKey,
+    generation: "hook-generation",
+  }),
+  enqueueSessionEventForHost: (text: string, options: Record<string, unknown>) => {
+    mocks.enqueueEvent(
+      text,
+      withSystemEventOwner({ sessionKey: String(options.sessionKey) }, String(options.agentId)),
+    );
+    mocks.enqueueSessionEvent(text, options);
+    return {
+      id: "hook-event",
+      cancel: vi.fn(),
+      settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
+    };
+  },
 }));
 vi.mock("../../infra/system-events.js", () => ({
-  enqueueSystemEvent: mocks.enqueueSystemEvent,
+  enqueueSystemEvent: mocks.enqueueEvent,
 }));
 
 const { createGatewayHookDispatcher, createGatewayHooksRequestHandler } =
@@ -363,8 +381,8 @@ describe("gateway hook early-failure recovery", () => {
       expect(meta).not.toHaveProperty(key);
     }
     expect(result).toEqual(originalResult);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(testCase.events);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(testCase.events);
+    expect(mocks.enqueueEvent).toHaveBeenCalledTimes(testCase.events);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(testCase.events);
   });
 
   it.each([
@@ -494,8 +512,8 @@ describe("gateway hook early-failure recovery", () => {
         expect(line).toContain(message);
       }
       const events = outcome === "delivery" ? 0 : 1;
-      expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(events);
-      expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(events);
+      expect(mocks.enqueueEvent).toHaveBeenCalledTimes(events);
+      expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(events);
     },
   );
 
@@ -514,21 +532,25 @@ describe("gateway hook early-failure recovery", () => {
     });
     expect(mocks.runCronIsolatedAgentTurn).not.toHaveBeenCalled();
 
-    await vi.waitFor(() => expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1));
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(mocks.enqueueEvent).toHaveBeenCalledTimes(1));
+    expect(mocks.enqueueEvent).toHaveBeenCalledWith(
       "Hook Recovery (error): Error: required system config unavailable",
       { sessionKey: testCase.eventSessionKey },
     );
-    const eventOptions = mocks.enqueueSystemEvent.mock.calls[0]?.[1] as object;
-    expect(resolveSystemEventOptionsOwnerAgentId(eventOptions)).toBe(global ? "hooks" : null);
+    const eventOptions = mocks.enqueueEvent.mock.calls[0]?.[1] as object;
+    expect(
+      "agentId" in eventOptions
+        ? eventOptions.agentId
+        : resolveSystemEventOptionsOwnerAgentId(eventOptions),
+    ).toBe("hooks");
 
-    expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
-      source: "hook",
-      intent: "immediate",
-      reason: expect.stringMatching(/^hook:[0-9a-f-]+:error$/),
-      agentId: "hooks",
-      ...(global ? {} : { sessionKey: testCase.eventSessionKey }),
-    });
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        agentId: "hooks",
+        ...(global ? {} : { sessionKey: testCase.eventSessionKey }),
+      }),
+    );
     await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
   });
 
@@ -680,18 +702,17 @@ describe("gateway hook early-failure recovery", () => {
     ).resolves.toEqual({ ok: true, runId: expect.any(String) });
 
     await vi.waitFor(() =>
-      expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
-        "Hook IMAP fastmail: New email summarized",
-        { sessionKey: "agent:hooks:main" },
-      ),
+      expect(mocks.enqueueEvent).toHaveBeenCalledWith("Hook IMAP fastmail: New email summarized", {
+        sessionKey: "agent:hooks:main",
+      }),
     );
-    expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
-      source: "hook",
-      intent: "immediate",
-      reason: expect.stringMatching(/^hook:[0-9a-f-]+$/),
-      agentId: "hooks",
-      sessionKey: "agent:hooks:main",
-    });
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        agentId: "hooks",
+        sessionKey: "agent:hooks:main",
+      }),
+    );
   });
 
   it("reports plugin hook execution errors through the existing failure path", async () => {
@@ -708,17 +729,17 @@ describe("gateway hook early-failure recovery", () => {
       expect.stringMatching(/^hook agent run completed /),
       expect.objectContaining({ status: "error", summary: "Error: runner preparation failed" }),
     );
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueEvent).toHaveBeenCalledWith(
       "Hook IMAP fastmail (error): Error: runner preparation failed",
       { sessionKey: "agent:hooks:main" },
     );
-    expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
-      source: "hook",
-      intent: "immediate",
-      reason: expect.stringMatching(/^hook:[0-9a-f-]+:error$/),
-      agentId: "hooks",
-      sessionKey: "agent:hooks:main",
-    });
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        agentId: "hooks",
+        sessionKey: "agent:hooks:main",
+      }),
+    );
   });
 
   it.each([

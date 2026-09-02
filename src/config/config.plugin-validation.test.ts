@@ -751,22 +751,6 @@ describe("config plugin validation", () => {
       expectNoMissingCodexPluginWarning(res.warnings);
     });
 
-    it("warns when an effective heartbeat route needs Codex", () => {
-      const res = validateWithMissingCodexPlugin({
-        agents: {
-          defaults: {
-            model: { primary: "anthropic/claude-sonnet-4-6", fallbacks: [] },
-            heartbeat: { model: "openai/gpt-5.3-codex-spark" },
-          },
-          list: [{ id: "openclaw" }],
-        },
-        plugins: { entries: { codex: {} } },
-      });
-
-      expect(res.ok).toBe(true);
-      expectMissingCodexPluginWarning(res.warnings);
-    });
-
     it.each([
       {
         name: "compaction-only",
@@ -2443,54 +2427,12 @@ describe("config plugin validation", () => {
     expect(res.ok).toBe(true);
   });
 
-  it("accepts plugin heartbeat targets", () => {
+  it("rejects retired heartbeat input before runtime plugin target resolution", () => {
     const res = validateInSuite({
       agents: { defaults: { heartbeat: { target: "chat" } }, list: [{ id: "openclaw" }] },
       plugins: { enabled: false, load: { paths: [chatPluginDir] } },
     });
-    expect(res.ok).toBe(true);
-  });
-
-  it("accepts bundled channel aliases for heartbeat targets", () => {
-    const res = validateInSuite({
-      agents: { defaults: { heartbeat: { target: "gchat" } }, list: [{ id: "pi" }] },
-    });
-    expect(res.ok).toBe(true);
-  });
-
-  it("rejects unknown heartbeat targets", () => {
-    const res = validateInSuite({
-      agents: {
-        defaults: { heartbeat: { target: "not-a-channel" } },
-        list: [{ id: "openclaw" }],
-      },
-    });
     expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(
-        res.issues.filter((issue) => issue.path === "agents.defaults.heartbeat.target"),
-      ).toEqual([
-        {
-          path: "agents.defaults.heartbeat.target",
-          message: "unknown heartbeat target: not-a-channel",
-        },
-      ]);
-    }
-  });
-
-  it("rejects invalid heartbeat directPolicy values", () => {
-    const res = validateInSuite({
-      agents: {
-        defaults: { heartbeat: { directPolicy: "maybe" } },
-        list: [{ id: "openclaw" }],
-      },
-    });
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(
-        res.issues.some((issue) => issue.path === "agents.defaults.heartbeat.directPolicy"),
-      ).toBe(true);
-    }
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

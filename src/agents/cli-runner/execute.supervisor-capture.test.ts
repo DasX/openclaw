@@ -31,6 +31,19 @@ import { executePreparedCliRun } from "./execute.js";
 import { createManagedRun, supervisorSpawnMock } from "./execute.test-support.js";
 import type { PreparedCliRunContext } from "./types.js";
 
+const sessionEventMocks = vi.hoisted(() => ({
+  capture: vi.fn(() => ({ sessionId: "original-session", generation: "original-generation" })),
+  enqueue: vi.fn((_text: string, _options: Record<string, unknown>) => ({
+    id: "watchdog-event",
+    cancel: vi.fn(),
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
+  })),
+}));
+vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: sessionEventMocks.capture,
+  enqueueSessionEventForHost: sessionEventMocks.enqueue,
+}));
+
 // Gateway unit coverage owns quiet-admission timing. These integration cases only
 // need to drain calls already in flight, so skip the repeated 250 ms quiet window.
 vi.mock("../../gateway/mcp-http.loopback-runtime.js", async (importOriginal) => {
@@ -154,6 +167,12 @@ beforeEach(() => {
   resetAgentEventsForTest();
   resetDiagnosticEventsForTest();
   supervisorSpawnMock.mockReset();
+  sessionEventMocks.capture.mockReset();
+  sessionEventMocks.capture.mockReturnValue({
+    sessionId: "original-session",
+    generation: "original-generation",
+  });
+  sessionEventMocks.enqueue.mockClear();
   // These contexts bypass preparation, which normally loads the provider owner.
   // Unknown CLI errors must not materialize bundled plugins inside this fixture.
   const registry = createEmptyPluginRegistry();
@@ -171,6 +190,49 @@ beforeEach(() => {
 });
 
 describe("executePreparedCliRun supervisor output capture", () => {
+  it("pins watchdog follow-ups before the process waits and preserves the timeout error", async () => {
+    const processStarted = createDeferred();
+    const processFinished = createDeferred();
+    supervisorSpawnMock.mockImplementationOnce(async () => {
+      processStarted.resolve();
+      const run = createManagedRun({
+        reason: "no-output-timeout",
+        exitCode: null,
+        exitSignal: "SIGTERM",
+        durationMs: 1000,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+        noOutputTimedOut: true,
+      });
+      const result = await run.wait();
+      run.wait.mockImplementation(async () => {
+        await processFinished.promise;
+        return result;
+      });
+      return run;
+    });
+    const pending = executePreparedCliRun(buildPreparedCliRunContext({ output: "text" }));
+    const failure = expect(pending).rejects.toMatchObject({ code: "cli_no_output_timeout" });
+    await processStarted.promise;
+    expect(sessionEventMocks.capture).toHaveBeenCalledExactlyOnceWith("main", "agent:main:main");
+    sessionEventMocks.capture.mockReturnValue({
+      sessionId: "successor-session",
+      generation: "successor-generation",
+    });
+    processFinished.resolve();
+    await failure;
+    expect(sessionEventMocks.enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("produced no output"),
+      expect.objectContaining({
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        source: "exec",
+        expectedTarget: { sessionId: "original-session", generation: "original-generation" },
+      }),
+    );
+  });
+
   it("binds Claude image prompts to the persisted local transcript turn", async () => {
     const entryId = "persisted-image-turn";
     const recorder = createUserTurnTranscriptRecorder({

@@ -139,7 +139,7 @@ export type AgentConfig = {
   skillsLimits?: Pick<SkillsLimitsConfig, "maxSkillsPromptChars">;
   /** Optional per-agent overrides for selected context/token-heavy limits. */
   contextLimits?: AgentContextLimitsConfig;
-  /** Optional per-agent heartbeat overrides. */
+  /** @deprecated Doctor input only; per-agent checks are ordinary automation jobs. */
   heartbeat?: Omit<NonNullable<AgentDefaultsConfig["heartbeat"]>, "agentId">;
   identity?: IdentityConfig;
   groupChat?: Omit<GroupChatConfig, "visibleReplies">;

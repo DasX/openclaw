@@ -45,7 +45,8 @@ export function resolveCronSourceDeliveryPlan(params: {
     owner: "direct_fallback",
     reason: "cron_announce",
     target,
-    messageToolEnabled: true,
+    messageToolEnabled:
+      params.deliveryPlan.target !== "owner" || params.resolvedDelivery.ok === true,
     messageToolForced: false,
     requireExplicitMessageTarget: true,
     requireExplicitMessageTargetEvidence: true,

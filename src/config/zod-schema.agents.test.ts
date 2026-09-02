@@ -72,12 +72,6 @@ describe("explicit ambient agent targets", () => {
   it.each([
     {
       agents: {
-        defaults: { heartbeat: { agentId: "missing" } },
-        entries: { main: {} },
-      },
-    },
-    {
-      agents: {
         defaults: { systemAgent: { agentId: "missing" } },
         entries: { main: {} },
       },
@@ -91,12 +85,11 @@ describe("explicit ambient agent targets", () => {
     }
   });
 
-  it("accepts configured heartbeat, system-agent, compatibility, and Talk targets", () => {
+  it("accepts configured system-agent, compatibility, and Talk targets", () => {
     expect(
       OpenClawSchema.safeParse({
         agents: {
           defaults: {
-            heartbeat: { agentId: "ops" },
             systemAgent: { agentId: "ops" },
             authInheritance: { agentId: "ops" },
             sessionStore: { agentId: "ops" },
@@ -109,12 +102,6 @@ describe("explicit ambient agent targets", () => {
   });
 
   it.each([
-    {
-      agents: {
-        defaults: { heartbeat: { agentId: " " } },
-        entries: { main: {} },
-      },
-    },
     {
       agents: {
         defaults: { systemAgent: { agentId: " " } },

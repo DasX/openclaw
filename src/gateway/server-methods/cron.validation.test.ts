@@ -1,7 +1,10 @@
+import { execFile } from "node:child_process";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { expectDefined } from "@openclaw/normalization-core";
 // Cron validation tests cover channel target validation against plugin
 // prefixes/aliases and runtime config for cron delivery destinations.
-
-import { expectDefined } from "@openclaw/normalization-core";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -12,6 +15,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CronRuntimeAuthority } from "../../cron/runtime-authority.js";
 import { CronService, type CronEvent } from "../../cron/service.js";
 import { createCronStoreHarness, createNoopLogger } from "../../cron/service.test-harness.js";
+import { getCronJobsStoreRevision } from "../../cron/store.js";
 import type { CronDelivery, CronJob } from "../../cron/types.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
@@ -1608,7 +1612,7 @@ describe("cron method validation", () => {
       defaultAgentId: "main",
       log: cronLogger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob,
       onEvent: (event) => {
         if (event.jobId === "cron-1" && event.action === "finished") {
@@ -4490,3 +4494,62 @@ describe("cron method validation", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+it("acknowledges a separate-process provisioning commit and arms an empty scheduler through cron.get", async () => {
+  const { storePath } = await makeStorePath();
+  const runSessionEvent = vi.fn(async () => ({ status: "ok" as const, executionStarted: true }));
+  const finished = createDeferred();
+  const cron = new CronService({
+    storePath,
+    cronEnabled: true,
+    defaultAgentId: "main",
+    log: cronLogger,
+    enqueueSystemEvent: vi.fn(),
+    runSessionEvent,
+    isExecutionIdle: () => true,
+    runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    onEvent: (event) => {
+      if (event.action === "finished" && event.status === "ok") {
+        finished.resolve();
+      }
+    },
+  });
+  vi.useFakeTimers();
+  try {
+    await cron.start();
+    const revision = getCronJobsStoreRevision(storePath);
+    const source = pathToFileURL(path.resolve("src/cron/default-proactive-job.ts")).href;
+    const scratchSource = pathToFileURL(path.resolve("src/cron/scratch-store.ts")).href;
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [
+        "--import",
+        path.resolve("scripts/tsx.mjs"),
+        "--input-type=module",
+        "-e",
+        `const { provisionDefaultProactiveJob } = await import(${JSON.stringify(source)});
+       const { writeCronJobScratch } = await import(${JSON.stringify(scratchSource)});
+       const cfg = JSON.parse(process.argv[1]);
+       const job = provisionDefaultProactiveJob(cfg, "main", { cadenceMs: 60000 });
+       writeCronJobScratch({ storePath: cfg.cron.store, jobId: job.id, content: "Review queue", expectedRevision: 0 });
+       process.stdout.write(JSON.stringify(job));`,
+        JSON.stringify({ agents: { entries: { main: {} } }, cron: { store: storePath } }),
+      ],
+      { timeout: 30_000 },
+    );
+    const job = JSON.parse(stdout) as CronJob;
+    expect(getCronJobsStoreRevision(storePath)).toBe(revision);
+    expect(cron.getJob(job.id)).toBeUndefined();
+    const context = createCronContext();
+    context.cron.readJob.mockImplementation(async (id) => await cron.readJob(id));
+    const { respond } = await invokeCron("cron.get", { id: job.id }, { context });
+    expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ id: job.id }), undefined);
+    expect(cron.getJob(job.id)?.state.nextRunAtMs).toBe(job.state.nextRunAtMs);
+    await vi.advanceTimersByTimeAsync(job.state.nextRunAtMs! - Date.now());
+    await finished.promise;
+    expect(runSessionEvent).toHaveBeenCalledOnce();
+  } finally {
+    cron.stop();
+    vi.useRealTimers();
+  }
+});

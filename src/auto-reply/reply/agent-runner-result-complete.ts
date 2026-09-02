@@ -6,7 +6,6 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
-import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../heartbeat.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -60,7 +59,7 @@ export async function completeReplyAgentRun(input: {
     activeSessionStore,
     cfg,
     followupRun,
-    isHeartbeat,
+
     opts,
     preflightCompactionApplied,
     queueKey,
@@ -269,7 +268,7 @@ export async function completeReplyAgentRun(input: {
 
   // Capture only policy-visible final payloads in session store to support
   // durable delivery retries. Hidden reasoning, message-tool-only replies,
-  // and sendPolicy-denied replies must not become heartbeat-replayable text.
+  // and sendPolicy-denied replies must not become replayable text.
   const isStrandedReplyRetryRun = followupRun.strandedReplyRetry === true;
   if (sessionKey && storePath && (finalPayloads.length > 0 || isStrandedReplyRetryRun)) {
     const sourceReplyPolicy = resolveSourceReplyPolicy({
@@ -288,15 +287,13 @@ export async function completeReplyAgentRun(input: {
         ? runResult.meta.finalAssistantVisibleText
         : (rawAssistantText ?? ""),
     );
-    // Heartbeats already deliver fallback finals via sendDurableMessageBatch;
-    // recovering here would duplicate that message.
     const recovery = resolveStrandedReplyRecovery({
       base: followupRun,
       finalText: assistantFinalText,
       sourceReplyDeliveryMode: sourceReplyPolicy.sourceReplyDeliveryMode,
       sendPolicyDenied: sourceReplyPolicy.sendPolicyDenied,
       successfulSourceReplyDelivery: completedSourceReplyDelivery,
-      isHeartbeat,
+
       isRoomEvent: sessionCtx.InboundEventKind === "room_event",
     });
     if (recovery.kind === "retry" || (recovery.kind === "diagnostic" && recovery.warn)) {
@@ -332,16 +329,6 @@ export async function completeReplyAgentRun(input: {
     const pendingText = sourceReplyPolicy.suppressDelivery
       ? ""
       : (recoverablePendingFinalText ?? "");
-    const heartbeatAckMaxChars = DEFAULT_HEARTBEAT_ACK_MAX_CHARS;
-    const resolvedPendingText = isHeartbeat
-      ? (() => {
-          const stripped = stripHeartbeatToken(pendingText, {
-            mode: "heartbeat",
-            maxAckChars: heartbeatAckMaxChars,
-          });
-          return stripped.shouldSkip ? "" : stripped.text || pendingText;
-        })()
-      : pendingText;
     const sendableFinalPayloads = sourceReplyPolicy.suppressDelivery
       ? []
       : finalPayloads.filter(
@@ -382,8 +369,8 @@ export async function completeReplyAgentRun(input: {
           entry.sessionId === expectedSessionId
             ? {
                 pendingFinalDelivery: {
-                  ...(resolvedPendingText
-                    ? { kind: "replayable" as const, text: resolvedPendingText }
+                  ...(pendingText
+                    ? { kind: "replayable" as const, text: pendingText }
                     : { kind: "transport-only" as const }),
                   intentId: pendingFinalDeliveryIntentId,
                   deliveries: pendingFinalDeliveries,

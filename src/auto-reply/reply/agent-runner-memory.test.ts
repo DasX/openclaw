@@ -411,7 +411,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
       ...overrides,
     });
@@ -431,7 +430,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
       ...overrides,
     });
@@ -489,7 +487,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore: { [sessionKey]: entry },
         sessionKey,
         storePath,
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       });
     return { run, sessionEntry, storePath };
@@ -987,7 +984,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore,
       sessionKey,
       storePath,
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
@@ -1031,7 +1027,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore,
       sessionKey,
       storePath,
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
@@ -1083,7 +1078,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
@@ -1312,7 +1306,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore,
       sessionKey: "main",
       storePath,
-      isHeartbeat: false,
       replyOperation,
       onVisibleErrorPayloads: (payloads: ReplyPayload[]) => {
         visibleErrorPayloads.push(...payloads);
@@ -1486,7 +1479,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: false,
       replyOperation,
     });
 
@@ -1557,7 +1549,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
       runtimePolicySessionKey,
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
@@ -1610,7 +1601,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
@@ -1646,7 +1636,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
@@ -1710,7 +1699,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
@@ -1760,7 +1748,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore: { [sessionKey]: sessionEntry },
         sessionKey,
         runtimePolicySessionKey,
-        isHeartbeat: false,
         replyOperation: createReplyOperation(),
       });
 
@@ -1869,7 +1856,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore: { "agent:main:main": sessionEntry },
         sessionKey: "agent:main:main",
         storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
         onCompactionNotice,
       }),
@@ -1915,7 +1901,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore: { "agent:main:main": sessionEntry },
         sessionKey: "agent:main:main",
         storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       }),
     ).rejects.toThrow(
@@ -2016,7 +2001,6 @@ describe("runMemoryFlushIfNeeded", () => {
           sessionStore,
           sessionKey: "agent:main:telegram:group:redacted",
           storePath: path.join(rootDir, "sessions.json"),
-          isHeartbeat: false,
           ...createCompactionLifecycle(createReplyOperation()),
         }),
       ).rejects.toThrow(`Preflight compaction required but failed: ${reason}`);
@@ -2069,7 +2053,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore,
         sessionKey: "agent:main:telegram:group:redacted",
         storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       }),
     ).rejects.toThrow(
@@ -2124,7 +2107,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore,
         sessionKey: "agent:main:telegram:group:redacted",
         storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       }),
     ).rejects.toThrow("Preflight compaction required but failed: auth profile mismatch");
@@ -2159,7 +2141,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionEntry,
         sessionStore: { "agent:main:main": sessionEntry },
         sessionKey: "agent:main:main",
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       });
 
@@ -2445,7 +2426,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { "agent:main:main": sessionEntry },
       sessionKey: "agent:main:main",
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -2501,7 +2481,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore,
         sessionKey,
         storePath,
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       });
 
@@ -2566,7 +2545,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore,
         sessionKey,
         storePath,
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       });
 
@@ -2845,7 +2823,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore,
         sessionKey: "main",
         storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
         ...createCompactionLifecycle(replyOperation),
       }),
     ).rejects.toThrow("Preflight compaction required but failed: plugin already stored this turn");
@@ -2902,7 +2879,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -2949,7 +2925,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -2997,7 +2972,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -3042,7 +3016,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -3157,7 +3130,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore: { [sessionKey]: sessionEntry },
         sessionKey,
         storePath,
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       });
 
@@ -3200,7 +3172,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -3265,7 +3236,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore: { main: sessionEntry },
         sessionKey: "main",
         storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
       });
 
@@ -3585,7 +3555,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore,
       sessionKey: "main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(replyOperation),
     });
 
@@ -3701,7 +3670,6 @@ describe("runMemoryFlushIfNeeded", () => {
           sessionStore,
           sessionKey,
           storePath,
-          isHeartbeat: false,
           ...createCompactionLifecycle(replyOperation),
         });
       }
@@ -3783,7 +3751,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath,
-      isHeartbeat: false,
       ...createCompactionLifecycle(replyOperation),
     });
 
@@ -3851,7 +3818,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath,
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
     const preflightEntry = await runSessionCompactionIfNeeded({
@@ -3863,7 +3829,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath,
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -3943,7 +3908,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath,
-      isHeartbeat: false,
       ...createCompactionLifecycle(replyOperation),
     });
 
@@ -3990,7 +3954,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath: durableStorePath,
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -4081,7 +4044,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath,
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
     });
 
@@ -4125,7 +4087,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath,
-      isHeartbeat: false,
       replyOperation,
     });
 
@@ -4178,7 +4139,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
       onCompactionNotice,
     });
@@ -4231,7 +4191,6 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionStore: { main: sessionEntry },
         sessionKey: "main",
         storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
         ...createCompactionLifecycle(createReplyOperation()),
         onCompactionNotice,
       }),
@@ -4286,7 +4245,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 

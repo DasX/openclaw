@@ -139,10 +139,11 @@ export function createFollowupRunner(
       if (error instanceof FollowupRunDeferredError) {
         disposition = { kind: "deferred", reason: error.message };
       } else if (
-        operation?.result?.kind === "aborted" &&
-        operation.result.code === "aborted_by_user"
+        queued.run.internalEventExecution ||
+        (operation?.result?.kind === "aborted" && operation.result.code === "aborted_by_user")
       ) {
         disposition = { kind: "consumed" };
+        queued.run.internalEventExecution?.onFailed?.(error);
       } else if (disposition.kind === "consumed") {
         defaultRuntime.error?.(
           `followup queue: terminal handling failed after execution; refusing replay: ${formatErrorMessage(error)}`,

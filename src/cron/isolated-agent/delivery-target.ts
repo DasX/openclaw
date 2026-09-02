@@ -133,6 +133,8 @@ export async function resolveDeliveryTarget(
   cfg: OpenClawConfig,
   agentId: string,
   jobPayload: {
+    target?: "owner";
+    directPolicy?: "allow" | "block";
     channel?: ChannelId;
     to?: string;
     threadId?: string | number;
@@ -178,6 +180,39 @@ export async function resolveDeliveryTarget(
     : undefined;
   const mainEntry = loadSessionEntryReadOnly({ agentId, sessionKey: mainSessionKey, storePath });
   const main = storedDeliveryEntry ?? threadEntry ?? mainEntry;
+  if (jobPayload.target === "owner") {
+    const { resolveProactiveDeliveryTargetWithSessionRoute } = await targetsRuntimeLoader.load();
+    const resolved = await resolveProactiveDeliveryTargetWithSessionRoute({
+      cfg,
+      agentId,
+      entry: threadEntry ?? mainEntry,
+      currentSessionKey: threadSessionKey,
+      policy: {
+        target: "owner",
+        channel: requestedChannel === "last" ? undefined : requestedChannel,
+        accountId: jobPayload.accountId,
+        directPolicy: jobPayload.directPolicy,
+      },
+    });
+    return resolved.channel !== "none" && resolved.to
+      ? {
+          ok: true,
+          channel: resolved.channel,
+          to: resolved.to,
+          accountId: resolved.accountId,
+          threadId: resolved.threadId,
+          mode: "explicit",
+        }
+      : {
+          ok: false,
+          channel: resolved.channel,
+          accountId: resolved.accountId,
+          mode: "explicit",
+          error: new Error(
+            `Owner delivery unavailable (${resolved.reason ?? "no-route"}); configure an authorized owner DM or edit this automation's delivery`,
+          ),
+        };
+  }
   // True when the cron has no delivery identity of its own (no per-job target, no own
   // sessionKey, no stored/creation delivery context) and therefore fell back to the SHARED
   // agent-main session bucket. See the #91613 refusal below.
@@ -469,6 +504,22 @@ export async function resolveDeliveryTarget(
     });
   const threadId =
     explicitThreadId ?? route?.threadId ?? (canUseSessionThread ? resolved.threadId : undefined);
+  if (
+    jobPayload.directPolicy === "block" &&
+    (resolvedTarget.kind === "user" ||
+      route?.chatType === "direct" ||
+      route?.peer.kind === "direct")
+  ) {
+    return {
+      ok: false,
+      channel,
+      accountId,
+      mode,
+      error: new Error(
+        "Automation delivery to direct messages is blocked by delivery.directPolicy",
+      ),
+    };
+  }
   return {
     ok: true,
     channel,

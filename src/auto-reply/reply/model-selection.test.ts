@@ -961,7 +961,7 @@ describe("createModelSelectionState parent inheritance", () => {
     });
   }
 
-  async function resolveHeartbeatStoredOverrideState(hasResolvedHeartbeatModelOverride: boolean) {
+  async function resolveTurnStoredOverrideState(hasResolvedTurnModelOverride: boolean) {
     const cfg = {} as OpenClawConfig;
     const sessionKey = "agent:main:discord:channel:c1";
     const sessionEntry = makeEntry({
@@ -981,7 +981,7 @@ describe("createModelSelectionState parent inheritance", () => {
       provider: "anthropic",
       model: "claude-opus-4-6",
       hasModelDirective: false,
-      hasResolvedHeartbeatModelOverride,
+      hasResolvedTurnModelOverride,
     });
   }
 
@@ -1097,15 +1097,15 @@ describe("createModelSelectionState parent inheritance", () => {
     expect(state.model).toBe(defaultModel);
   });
 
-  it("applies stored override when heartbeat override was not resolved", async () => {
-    const state = await resolveHeartbeatStoredOverrideState(false);
+  it("applies stored override when per-turn override was not resolved", async () => {
+    const state = await resolveTurnStoredOverrideState(false);
 
     expect(state.provider).toBe("openai");
     expect(state.model).toBe("gpt-4o");
   });
 
-  it("skips stored override when heartbeat override was resolved", async () => {
-    const state = await resolveHeartbeatStoredOverrideState(true);
+  it("skips stored override when per-turn override was resolved", async () => {
+    const state = await resolveTurnStoredOverrideState(true);
 
     expect(state.provider).toBe("anthropic");
     expect(state.model).toBe("claude-opus-4-6");
@@ -1731,7 +1731,6 @@ describe("createModelSelectionState auto-failover overrides", () => {
     model?: string;
     primaryProvider?: string;
     primaryModel?: string;
-    isHeartbeat?: boolean;
     skipStoredModelOverride?: boolean;
   }) {
     const cfg = {} as OpenClawConfig;
@@ -1766,7 +1765,6 @@ describe("createModelSelectionState auto-failover overrides", () => {
       provider: params.provider ?? defaultProvider,
       model: params.model ?? defaultModel,
       hasModelDirective: false,
-      isHeartbeat: params.isHeartbeat,
       skipStoredModelOverride: params.skipStoredModelOverride,
     });
     return { state, sessionEntry, sessionStore };
@@ -2043,63 +2041,7 @@ describe("createModelSelectionState auto-failover overrides", () => {
     expect(sessionStore[sessionKey]?.authProfileOverrideSource).toBe("auto");
   });
 
-  it("clears stale heartbeat auto-failover override when the fallback origin changed", async () => {
-    const { state, sessionStore } = await resolveStateWithOverride({
-      providerOverride: "openrouter",
-      modelOverride: "minimax/minimax-m2.7",
-      modelOverrideSource: "auto",
-      modelOverrideFallbackOriginProvider: "openai",
-      modelOverrideFallbackOriginModel: "gpt-5.3",
-      provider: "openrouter",
-      model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
-    });
-
-    expect(state.provider).toBe(defaultProvider);
-    expect(state.model).toBe(defaultModel);
-    expect(state.resetModelOverride).toBe(true);
-    expect(state.resetModelOverrideRef).toBe("openrouter/minimax/minimax-m2.7");
-    expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverrideSource).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverrideFallbackOriginProvider).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverrideFallbackOriginModel).toBeUndefined();
-  });
-
-  it("preserves user auth profile when clearing a stale heartbeat auto-failover override", async () => {
-    authProfileStoreMock.store = {
-      version: 1,
-      profiles: {
-        "mac-studio:local": {
-          type: "api_key",
-          provider: defaultProvider,
-          key: "test-key",
-        },
-      },
-    };
-    const { state, sessionStore } = await resolveStateWithOverride({
-      providerOverride: "openrouter",
-      modelOverride: "minimax/minimax-m2.7",
-      modelOverrideSource: "auto",
-      modelOverrideFallbackOriginProvider: "openai",
-      modelOverrideFallbackOriginModel: "gpt-5.3",
-      authProfileOverride: "mac-studio:local",
-      authProfileOverrideSource: "user",
-      provider: "openrouter",
-      model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
-    });
-
-    expect(state.provider).toBe(defaultProvider);
-    expect(state.model).toBe(defaultModel);
-    expect(state.resetModelOverride).toBe(true);
-    expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.authProfileOverride).toBe("mac-studio:local");
-    expect(sessionStore[sessionKey]?.authProfileOverrideSource).toBe("user");
-  });
-
-  it("keeps heartbeat auto-failover override when the fallback origin still matches default", async () => {
+  it("keeps auto-failover override when the fallback origin still matches default", async () => {
     const { state, sessionStore } = await resolveStateWithOverride({
       providerOverride: "openrouter",
       modelOverride: "minimax/minimax-m2.7",
@@ -2108,7 +2050,6 @@ describe("createModelSelectionState auto-failover overrides", () => {
       modelOverrideFallbackOriginModel: defaultModel,
       provider: "openrouter",
       model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
     });
 
     expect(state.provider).toBe("openrouter");
@@ -2118,7 +2059,7 @@ describe("createModelSelectionState auto-failover overrides", () => {
     expect(sessionStore[sessionKey]?.modelOverride).toBe("minimax/minimax-m2.7");
   });
 
-  it("keeps heartbeat auto-failover override when the origin matches the channel primary", async () => {
+  it("keeps auto-failover override when the origin matches the channel primary", async () => {
     const { state, sessionStore } = await resolveStateWithOverride({
       providerOverride: "openrouter",
       modelOverride: "minimax/minimax-m2.7",
@@ -2129,7 +2070,6 @@ describe("createModelSelectionState auto-failover overrides", () => {
       primaryModel: "gpt-4o",
       provider: "openrouter",
       model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
     });
 
     expect(state.provider).toBe("openrouter");
@@ -2139,7 +2079,7 @@ describe("createModelSelectionState auto-failover overrides", () => {
     expect(sessionStore[sessionKey]?.modelOverride).toBe("minimax/minimax-m2.7");
   });
 
-  it("keeps recovered heartbeat auto-failover override without modelOverrideSource", async () => {
+  it("keeps recovered auto-failover override without modelOverrideSource", async () => {
     const { state, sessionStore } = await resolveStateWithOverride({
       providerOverride: "openrouter",
       modelOverride: "minimax/minimax-m2.7",
@@ -2150,7 +2090,6 @@ describe("createModelSelectionState auto-failover overrides", () => {
       primaryModel: "gpt-4o",
       provider: "openrouter",
       model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
     });
 
     expect(state.provider).toBe("openrouter");
@@ -2161,25 +2100,7 @@ describe("createModelSelectionState auto-failover overrides", () => {
     expect(sessionStore[sessionKey]?.modelOverrideSource).toBeUndefined();
   });
 
-  it("clears legacy heartbeat auto-failover override when no origin metadata exists", async () => {
-    const { state, sessionStore } = await resolveStateWithOverride({
-      providerOverride: "openrouter",
-      modelOverride: "minimax/minimax-m2.7",
-      modelOverrideSource: "auto",
-      provider: "openrouter",
-      model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
-    });
-
-    expect(state.provider).toBe(defaultProvider);
-    expect(state.model).toBe(defaultModel);
-    expect(state.resetModelOverride).toBe(true);
-    expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverrideSource).toBeUndefined();
-  });
-
-  it("uses fallback notice metadata for legacy heartbeat auto-failover overrides", async () => {
+  it("uses fallback notice metadata for legacy auto-failover overrides", async () => {
     const { state, sessionStore } = await resolveStateWithOverride({
       providerOverride: "openrouter",
       modelOverride: "minimax/minimax-m2.7",
@@ -2187,7 +2108,6 @@ describe("createModelSelectionState auto-failover overrides", () => {
       fallbackNoticeSelectedModel: `${defaultProvider}/${defaultModel}`,
       provider: "openrouter",
       model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
     });
 
     expect(state.provider).toBe("openrouter");

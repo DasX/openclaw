@@ -76,9 +76,11 @@ For group/thread conversations, keys are channel-specific group IDs, topic IDs, 
 
 DM-specific keys only match in direct-message conversations; they do not affect group/thread routing.
 
-### Channel defaults and heartbeat
+<a id="channel-defaults-and-heartbeat"></a>
 
-Use `channels.defaults` for shared group-policy, implicit-mention, and heartbeat behavior across providers:
+### Channel defaults
+
+Use `channels.defaults` for shared group-policy, context visibility, and implicit-mention behavior across providers:
 
 ```json5
 {
@@ -91,11 +93,6 @@ Use `channels.defaults` for shared group-policy, implicit-mention, and heartbeat
         quotedBot: true,
         threadParticipation: true,
       },
-      heartbeatVisibility: {
-        showOk: false,
-        showAlerts: true,
-        useIndicator: true,
-      },
     },
   },
 }
@@ -104,9 +101,13 @@ Use `channels.defaults` for shared group-policy, implicit-mention, and heartbeat
 - `channels.defaults.groupPolicy`: fallback group policy when a provider-level `groupPolicy` is unset.
 - `channels.defaults.contextVisibility`: default supplemental context visibility mode for all channels. Values: `all` (default, include all quoted/thread/history context), `allowlist` (only include context from allowlisted senders), `allowlist_quote` (same as allowlist but keep explicit quote/reply context). Per-channel override: `channels.<channel>.contextVisibility`.
 - `channels.defaults.implicitMentions`: controls which supported inbound facts count as mentions. `replyToBot`, `quotedBot`, and `threadParticipation` each default to `true`, preserving current behavior. The names are positive: set a flag to `false` to stop that fact from bypassing mention gating. Among bundled channels, Mattermost, Slack, and Tlon read this policy; on those channels you can also override it per channel with `channels.<channel>.implicitMentions` or per account with `channels.<channel>.accounts.<id>.implicitMentions`, and each flag resolves account -> channel -> defaults independently. Other bundled channels that produce implicit mention facts do not currently read these settings, so on those channels the facts always count as mentions and the override has no effect. Native explicit mentions are always allowed, and a flag has no effect when the channel does not produce that fact. See [Mention gating](/channels/groups#mention-gating-default) for the current producer matrix. These settings do not change outbound reply/thread modes or authorized command handling.
-- `channels.defaults.heartbeatVisibility.showOk`: deliver legacy `HEARTBEAT_OK` acknowledgments when the monitor has nothing to report (default `false`).
-- `channels.defaults.heartbeatVisibility.showAlerts`: deliver user-facing heartbeat monitor alerts (default `true`).
-- `channels.defaults.heartbeatVisibility.useIndicator`: emit heartbeat status indicator events (default `true`).
+
+Periodic check-ins use each [cron job's delivery policy](/automation/cron-jobs),
+not channel heartbeat visibility settings. `openclaw doctor --fix` migrates the
+effective legacy policy before removing `heartbeatVisibility` and older
+channel/account `heartbeat` blocks. Quiet job completion uses `NO_REPLY`; run
+results remain in ordinary automation history. See
+[Heartbeat migration](/gateway/heartbeat).
 
 ### WhatsApp
 
@@ -356,7 +357,7 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
 - OpenClaw additionally attempts voice receive recovery by leaving/rejoining a voice session after repeated decrypt failures.
 - `channels.discord.streaming` is the canonical stream mode key. Discord preview streaming defaults to `off`; set `streaming.mode: "progress"` to opt into one edited tool/work progress message, or choose `partial` or `block` for answer previews. Legacy flat keys (`streamMode`, `chunkMode`, `blockStreaming`, `draftChunk`, `blockStreamingCoalesce`) are no longer read at runtime; run `openclaw doctor --fix` to migrate persisted config.
 - `channels.discord.autoPresence` maps runtime availability to bot presence (healthy => online, degraded => idle, exhausted => dnd) and allows optional status text overrides.
-- `channels.discord.guilds.<id>.presenceEvents` routes human availability arrivals into one configured Discord channel as agent system events. Eligible members must be able to view `channelId`; public threads inherit parent visibility, while private threads additionally require membership or Manage Threads. `users` can further narrow that audience. It seeds current online members from complete `GUILD_CREATE` snapshots, routes observed offline-to-online transitions, and treats a first later online signal for an unseen member as newly available without asserting whether they came online or joined after the snapshot. Guilds above Discord's 75,000-member snapshot limit require an explicit offline update first. Throttling knobs: `reconnectSuppressSeconds` (quiet window after a new Gateway session while guild presence state is rebuilt, default 300, `0` disables) and `burstLimit`/`burstWindowSeconds` (per-guild successfully queued event rate limit, default 8 events per 60s sliding window). Resumed sessions do not start the reconnect suppression window. The existing per-user re-greet cooldown remains eight hours. It requires `channels.discord.intents.presence=true`, the privileged Presence Intent in Discord's Developer Portal, and an enabled agent heartbeat.
+- `channels.discord.guilds.<id>.presenceEvents` routes human availability arrivals into one configured Discord channel as agent system events. Eligible members must be able to view `channelId`; public threads inherit parent visibility, while private threads additionally require membership or Manage Threads. `users` can further narrow that audience. It seeds current online members from complete `GUILD_CREATE` snapshots, routes observed offline-to-online transitions, and treats a first later online signal for an unseen member as newly available without asserting whether they came online or joined after the snapshot. Guilds above Discord's 75,000-member snapshot limit require an explicit offline update first. Throttling knobs: `reconnectSuppressSeconds` (quiet window after a new Gateway session while guild presence state is rebuilt, default 300, `0` disables) and `burstLimit`/`burstWindowSeconds` (per-guild successfully queued event rate limit, default 8 events per 60s sliding window). Resumed sessions do not start the reconnect suppression window. The existing per-user re-greet cooldown remains eight hours. It requires `channels.discord.intents.presence=true` and the privileged Presence Intent in Discord's Developer Portal. Events use normal session admission; they do not require a monitoring job or enabled cron.
 - `channels.discord.intents.messageContent` defaults to `true`. Set it to `false` only for mention-only operation when Discord cannot grant the privileged Message Content intent; DMs and explicit bot mentions still carry message content, while other guild messages do not. Keep `requireMention: true` on every configured guild channel in this mode.
 - `channels.discord.dangerouslyAllowNameMatching` re-enables mutable name/tag matching (break-glass compatibility mode).
 - `channels.discord.execApprovals`: Discord-native exec approval delivery and approver authorization.

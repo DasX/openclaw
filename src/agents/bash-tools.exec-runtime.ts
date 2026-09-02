@@ -2,12 +2,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import {
+  captureSessionEventTargetForHost as captureSessionEventTarget,
+  enqueueSessionEventForHost as enqueueSessionEvent,
+} from "../auto-reply/reply/session-event-handoff.js";
 import { emitDiagnosticEventWithTrustedTraceContext } from "../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
   type EventSessionRoutingPolicy,
   resolveEventSessionKeyForPolicy,
-  scopedHeartbeatWakeOptionsForPolicy,
 } from "../infra/event-session-routing.js";
 import {
   DEFAULT_EXEC_APPROVAL_TIMEOUT_MS,
@@ -16,7 +19,6 @@ import {
   type ExecApprovalDecision,
   type ExecTarget,
 } from "../infra/exec-approvals.js";
-import { requestHeartbeat } from "../infra/heartbeat-wake.js";
 import { findPathKey, mergePathPrepend, removePathPrepend } from "../infra/path-prepend.js";
 import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEventWithReceipt } from "../infra/system-events.js";
@@ -25,6 +27,7 @@ import { redactToolPayloadText } from "../logging/redact.js";
 import type { ManagedRun } from "../process/supervisor/index.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
 import type { RunExit, SpawnInput, TerminationReason } from "../process/supervisor/types.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { isSubagentSessionKey } from "../sessions/session-key-utils.js";
 /**
  * Bash exec runtime.
@@ -397,6 +400,36 @@ function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "faile
     contextKey: `exec:${session.id}`,
     deliveryContext: session.notifyDeliveryContext,
   };
+  if (!isSubagentSessionKey(sessionKey)) {
+    const agentId = session.agentId ?? parseAgentSessionKey(eventSessionKey)?.agentId;
+    if (!agentId || !session.notifySessionTarget) {
+      logWarn(
+        `exec: completion ${session.id} has no admitted session destination; inspect its process result.`,
+      );
+      return;
+    }
+    try {
+      const receipt = enqueueSessionEvent(eventText, {
+        ...eventOptions,
+        agentId,
+        source: "exec",
+        expectedTarget: session.notifySessionTarget,
+      });
+      recordNotifyOnExitRemoval(session, receipt.cancel);
+      void receipt.settled.then((outcome) => {
+        if (outcome.status === "failed") {
+          logWarn(
+            `exec: completion delivery failed (${outcome.error}); inspect the process result.`,
+          );
+        }
+      });
+    } catch (error) {
+      logWarn(
+        `exec: completion was not admitted (${formatErrorMessage(error)}); inspect the process result.`,
+      );
+    }
+    return;
+  }
   const remove = enqueueSystemEventWithReceipt(
     eventText,
     eventSessionKey === "global" && session.agentId
@@ -406,25 +439,6 @@ function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "faile
   );
   if (remove) {
     recordNotifyOnExitRemoval(session, remove);
-  }
-  // Subagent sessions receive exec results via process poll and announce flow;
-  // the heartbeat would fall back to the main session and cause spurious wakes.
-  if (!isSubagentSessionKey(sessionKey)) {
-    const wakeOptions = scopedHeartbeatWakeOptionsForPolicy(
-      sessionKey,
-      {
-        source: "exec-event" as const,
-        intent: "event" as const,
-        reason: "exec-event",
-        coalesceMs: 0,
-      },
-      eventRouting,
-    );
-    requestHeartbeat(
-      sessionKey === "global" && session.agentId
-        ? { ...wakeOptions, agentId: session.agentId }
-        : wakeOptions,
-    );
   }
 }
 
@@ -749,6 +763,22 @@ export async function runExecProcess({
     cursorKeyMode: opts.usePty ? "unknown" : "normal",
   };
   withoutGatewayToolCallerIdentity(() => addSession(session));
+  if (opts.notifyOnExit && opts.sessionKey && !isSubagentSessionKey(opts.sessionKey)) {
+    const targetKey = resolveEventSessionKeyForPolicy(
+      opts.sessionKey,
+      opts.eventRouting ?? { mainKey: opts.mainKey, sessionScope: opts.sessionScope },
+    );
+    const owner = opts.agentId ?? parseAgentSessionKey(targetKey)?.agentId;
+    if (owner) {
+      try {
+        session.notifySessionTarget = captureSessionEventTarget(owner, targetKey);
+      } catch (error) {
+        logWarn(
+          `exec: automatic completion has no destination (${formatErrorMessage(error)}); use process poll.`,
+        );
+      }
+    }
+  }
 
   // Foreground delivery keeps its caller context only until yield, abort, or exit.
   // Clearing the callback also releases the completed turn's captured authority.
@@ -884,6 +914,7 @@ export async function runExecProcess({
         delete session.sessionScope;
         delete session.eventRouting;
         delete session.notifyDeliveryContext;
+        delete session.notifySessionTarget;
         delete session.notifyOnExit;
         delete session.notifyOnExitEmptySuccess;
       }

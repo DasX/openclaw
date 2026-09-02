@@ -61,12 +61,13 @@ describe("CronService - armTimer tight loop prevention", () => {
     runIsolatedAgentJob?: () => Promise<{ status: "ok" }>;
   }) {
     return createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath: params.storePath,
       cronEnabled: true,
       log: noopLogger,
       nowMs: () => params.now,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob:
         params.runIsolatedAgentJob ?? vi.fn().mockResolvedValue({ status: "ok" }),
     });

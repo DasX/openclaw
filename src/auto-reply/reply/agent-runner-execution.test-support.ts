@@ -328,6 +328,10 @@ vi.mock("./reply-media-paths.runtime.js", () => ({
   createReplyMediaPathNormalizer: () => (payload: unknown) => payload,
 }));
 
+// Collect the fixed fixture before tests can reset its mocks. A cold import inside
+// a timed-out test can otherwise resume against the next test's mock state.
+await import("./agent-runner-execution.js");
+
 export async function getExecuteAgentTurnForTest() {
   const execute = (await import("./agent-runner-execution.js")).executeAgentTurn;
   return async (...args: Parameters<typeof execute>) => {
@@ -641,7 +645,6 @@ export function createMinimalRunAgentTurnParams(overrides?: {
     shouldEmitToolOutput: () => false,
     pendingToolTasks: new Set<Promise<void>>(),
     resetSessionAfterRoleOrderingConflict: async () => false,
-    isHeartbeat: false,
     sessionKey: "main",
     getActiveSessionEntry: () => undefined,
     resolvedVerboseLevel: "off" as const,

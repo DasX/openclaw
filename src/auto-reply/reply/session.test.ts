@@ -5386,37 +5386,7 @@ describe("drainFormattedSystemEvents", () => {
     }
   });
 
-  it("leaves tagged cron events queued during heartbeat runs instead of re-rendering them (#44922)", async () => {
-    try {
-      // A `sessionTarget: "main"` cron systemEvent is enqueued tagged `cron:<jobId>`
-      // and is surfaced by the heartbeat's dedicated reminder prompt. The generic
-      // render must not also emit it as a raw `System:` line during that heartbeat
-      // run, or the model sees the same text twice.
-      enqueueSystemEvent("Reminder: rotate API keys", {
-        sessionKey: "agent:main:main",
-        contextKey: "cron:rotate-keys",
-      });
-      enqueueSystemEvent("Model switched.", { sessionKey: "agent:main:main" });
-
-      const result = await drainFormattedSystemEvents({
-        cfg: {} as OpenClawConfig,
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        isMainSession: true,
-        isNewSession: false,
-        suppressHeartbeatOwnedEvents: true,
-      });
-
-      expect(result).toContain("Model switched.");
-      expect(result).not.toContain("rotate API keys");
-      // The cron event stays queued so the heartbeat path remains its single owner.
-      expect(peekSystemEvents("agent:main:main")).toEqual(["Reminder: rotate API keys"]);
-    } finally {
-      resetSystemEventsForTest();
-    }
-  });
-
-  it("renders tagged cron events on normal turns so skipped heartbeats still have a fallback", async () => {
+  it("renders passive cron notices on the next normal turn", async () => {
     try {
       enqueueSystemEvent("Reminder: rotate API keys", {
         sessionKey: "agent:main:main",
@@ -5658,10 +5628,10 @@ describe("persistSessionUsageUpdate", () => {
 
   it.each([
     {
-      name: "preserves the displayed session model when heartbeat usage uses a heartbeat model",
+      name: "preserves the displayed session model when a turn-local model is used",
       seed: { modelProvider: "openai", model: "gpt-5.4" },
       update: {
-        isHeartbeat: true,
+        preserveRuntimeModel: true,
         usage: { input: 1_200, output: 100, cacheRead: 300, cacheWrite: 10 },
         lastCallUsage: { input: 900, output: 80, cacheRead: 200, cacheWrite: 5 },
         providerUsed: "openai",
@@ -5678,7 +5648,7 @@ describe("persistSessionUsageUpdate", () => {
       },
     },
     {
-      name: "persists heartbeat CLI binding while preserving displayed session model",
+      name: "persists turn-local CLI binding while preserving displayed session model",
       seed: {
         modelProvider: "openai",
         model: "gpt-5.4",
@@ -5687,7 +5657,7 @@ describe("persistSessionUsageUpdate", () => {
         claudeCliSessionId: "old-heartbeat-cli-session",
       },
       update: {
-        isHeartbeat: true,
+        preserveRuntimeModel: true,
         usage: { input: 1_200, output: 100 },
         lastCallUsage: { input: 1_200, output: 100 },
         providerUsed: "claude-cli",
@@ -5712,7 +5682,7 @@ describe("persistSessionUsageUpdate", () => {
       },
     },
     {
-      name: "honors heartbeat CLI binding clears while preserving displayed session model",
+      name: "honors turn-local CLI binding clears while preserving displayed session model",
       seed: {
         modelProvider: "openai",
         model: "gpt-5.4",
@@ -5727,7 +5697,7 @@ describe("persistSessionUsageUpdate", () => {
         claudeCliSessionId: "old-heartbeat-cli-session",
       },
       update: {
-        isHeartbeat: true,
+        preserveRuntimeModel: true,
         usage: { input: 1_200, output: 100 },
         lastCallUsage: { input: 1_200, output: 100 },
         providerUsed: "claude-cli",

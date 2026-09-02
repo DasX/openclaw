@@ -571,18 +571,12 @@ describe("resolveSourceReplyVisibilityPolicy", () => {
         InputProvenance: { kind: "internal_system" as const, sourceTool: "restart-sentinel" },
       },
     },
-    {
-      name: "heartbeat handoff",
-      ctx: { ChatType: "direct" },
-      isHeartbeat: true,
-    },
-  ])("keeps $name overrides out of session-stable policy", ({ ctx, isHeartbeat }) => {
+  ])("keeps $name overrides out of session-stable policy", ({ ctx }) => {
     expectPolicyFields(
       resolveSourceReplyVisibilityPolicy({
         cfg: emptyConfig,
         ctx,
         requested: "message_tool_only",
-        isHeartbeat,
         sendPolicy: "allow",
       }),
       {

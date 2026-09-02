@@ -13,30 +13,27 @@ import { DiscordPresenceBaselineCache } from "./presence-transition-cache.js";
 
 const mocks = vi.hoisted(() => ({
   canViewDiscordGuildChannel: vi.fn(async () => true),
-  enqueueSystemEvent: vi.fn((_text: unknown, _options: Record<string, unknown>) => true),
-  requestHeartbeat: vi.fn(),
+  captureSessionEventTarget: vi.fn(() => Object.freeze({})),
+  enqueueSessionEvent: vi.fn((_text: unknown, _options: Record<string, unknown>) => ({
+    id: "presence-event",
+    cancel: vi.fn(),
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
+  })),
   resolveAgentRoute: vi.fn(() => ({
     agentId: "molty",
     sessionKey: "agent:molty:discord:channel:channel-1",
   })),
 }));
 
-vi.mock("openclaw/plugin-sdk/heartbeat-runtime", () => ({
-  requestHeartbeat: mocks.requestHeartbeat,
+vi.mock("../runtime.js", () => ({
+  getDiscordRuntime: () => ({
+    system: {
+      enqueueSessionEvent: mocks.enqueueSessionEvent,
+      captureSessionEventTarget: mocks.captureSessionEventTarget,
+    },
+  }),
 }));
 vi.mock("openclaw/plugin-sdk/routing", () => ({ resolveAgentRoute: mocks.resolveAgentRoute }));
-vi.mock("openclaw/plugin-sdk/system-event-runtime", () => ({
-  enqueueRoutedSystemEvent: (
-    text: unknown,
-    route: { agentId: unknown; sessionKey: unknown },
-    options: Record<string, unknown>,
-  ) =>
-    mocks.enqueueSystemEvent(text, {
-      ...options,
-      agentId: route.agentId,
-      sessionKey: route.sessionKey,
-    }),
-}));
 vi.mock("../send.permissions.js", () => ({
   canViewDiscordGuildChannel: mocks.canViewDiscordGuildChannel,
 }));
@@ -142,7 +139,7 @@ describe("DiscordPresenceListener", () => {
       guildId: "guild-1",
       peer: { kind: "channel", id: "channel-1" },
     });
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="user-1"'),
       expect.objectContaining({
         agentId: "molty",
@@ -154,18 +151,6 @@ describe("DiscordPresenceListener", () => {
         },
       }),
     );
-    expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
-      source: "notifications-event",
-      intent: "immediate",
-      reason: "wake",
-      agentId: "molty",
-      sessionKey: "agent:molty:discord:channel:channel-1",
-      heartbeat: {
-        target: "discord",
-        to: "channel:channel-1",
-        accountId: "molty",
-      },
-    });
     expect(mocks.canViewDiscordGuildChannel).toHaveBeenCalledWith(
       "guild-1",
       "channel-1",
@@ -175,7 +160,14 @@ describe("DiscordPresenceListener", () => {
   });
 
   it("ignores guild members who cannot view the target channel", async () => {
-    mocks.canViewDiscordGuildChannel.mockResolvedValueOnce(false);
+    mocks.canViewDiscordGuildChannel.mockImplementationOnce(async () => {
+      // Pin the destination before visibility I/O; denial must still prevent all effects.
+      expect(mocks.captureSessionEventTarget).toHaveBeenCalledExactlyOnceWith(
+        "molty",
+        "agent:molty:discord:channel:channel-1",
+      );
+      return false;
+    });
     const store = cooldownStore();
     const registerIfAbsent = vi.spyOn(store, "registerIfAbsent");
     const listener = createPresenceListener({
@@ -193,14 +185,14 @@ describe("DiscordPresenceListener", () => {
       "user-1",
       expect.objectContaining({ accountId: "molty" }),
     );
-    expect(mocks.resolveAgentRoute).not.toHaveBeenCalled();
     expect(registerIfAbsent).not.toHaveBeenCalled();
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
   });
 
   it("retries when the queue rejects an event", async () => {
-    mocks.enqueueSystemEvent.mockReturnValueOnce(false);
+    mocks.enqueueSessionEvent.mockImplementationOnce(() => {
+      throw new Error("session admission unavailable");
+    });
     const store = cooldownStore();
     const registerIfAbsent = vi.spyOn(store, "registerIfAbsent");
     const listener = createPresenceListener({
@@ -213,12 +205,11 @@ describe("DiscordPresenceListener", () => {
     nowMs = 31_000;
     await listener.handle(presence("online"), client());
 
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
     nowMs += 1000;
     await listener.handle(presence("online"), client());
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(2);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(2);
+
     expect(registerIfAbsent).toHaveBeenCalledTimes(2);
   });
 
@@ -239,8 +230,7 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("online"), client());
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("cooldown persistence failed"));
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
   });
 
   it("uses the guild snapshot to classify the first live presence update", async () => {
@@ -250,16 +240,15 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("online", "already-online"), humanClient);
     await listener.handle(presence("online", "came-online"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="came-online"'),
       expect.anything(),
     );
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining("may have come online or joined after the snapshot"),
       expect.anything(),
     );
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
   });
 
   it("requires an explicit offline update after an incomplete large-guild snapshot", async () => {
@@ -270,8 +259,7 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("offline", "large-guild-member"), humanClient);
     await listener.handle(presence("online", "large-guild-member"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("disables snapshot-absence inference after bounded baseline eviction", async () => {
@@ -286,8 +274,7 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("offline", "unknown"), humanClient);
     await listener.handle(presence("online", "unknown"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("keeps complete snapshot inference isolated per guild", async () => {
@@ -305,8 +292,8 @@ describe("DiscordPresenceListener", () => {
     await listener.handle({ ...presence("online", "busy-2"), guild_id: "guild-2" }, humanClient);
     await listener.handle(presence("online", "quiet-arrival"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="quiet-arrival"'),
       expect.anything(),
     );
@@ -333,8 +320,7 @@ describe("DiscordPresenceListener", () => {
       await pending;
     }
 
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
   });
 
   it("detaches replacement-snapshot work from stale in-flight lookups", async () => {
@@ -360,8 +346,7 @@ describe("DiscordPresenceListener", () => {
     resolvers[0]?.({ bot: false });
     await stale;
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("detaches replacement-session work from stale in-flight lookups", async () => {
@@ -391,8 +376,7 @@ describe("DiscordPresenceListener", () => {
     resolvers[0]?.({ bot: false });
     await stale;
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("invalidates in-flight work when Discord deletes a guild", async () => {
@@ -413,8 +397,7 @@ describe("DiscordPresenceListener", () => {
     resolveFetch?.({ bot: false });
     await pending;
 
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
   });
 
   it("does not let excluded users consume bounded baseline state", async () => {
@@ -428,8 +411,8 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("online", "excluded-2"), humanClient);
     await listener.handle(presence("online", "allowed"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="allowed"'),
       expect.anything(),
     );
@@ -446,8 +429,8 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("online", "churn-2"), humanClient);
     await listener.handle(presence("online", "target"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="target"'),
       expect.anything(),
     );
@@ -475,12 +458,12 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("online", "human-1"), client());
 
     expect(fetchUser).toHaveBeenCalledWith("user-1");
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="human-1"'),
       expect.anything(),
     );
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+
     expect(registerIfAbsent).toHaveBeenCalledTimes(1);
   });
 
@@ -493,8 +476,7 @@ describe("DiscordPresenceListener", () => {
     nowMs += 1000;
     await listener.handle(presence("online"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses the presence replay burst after a gateway reconnect", async () => {
@@ -510,8 +492,8 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("online", "replayed-1"), humanClient);
     await listener.handle(presence("online", "replayed-2"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
+
     expect(info).toHaveBeenCalledTimes(1);
     expect(info).toHaveBeenCalledWith(
       "Discord presence events suppressed",
@@ -521,11 +503,11 @@ describe("DiscordPresenceListener", () => {
     // Post-window: replayed members stay marked online; a fresh transition emits.
     nowMs += 5 * 60 * 1000;
     await listener.handle(presence("online", "replayed-1"), humanClient);
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
     await listener.handle(presence("offline", "replayed-1"), humanClient);
     await listener.handle(presence("online", "replayed-1"), humanClient);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="replayed-1"'),
       expect.anything(),
     );
@@ -542,7 +524,7 @@ describe("DiscordPresenceListener", () => {
     nowMs += 1000;
     await listener.handle(presence("online", "came-online"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("rate-limits presence event bursts and logs the suppression once", async () => {
@@ -561,8 +543,8 @@ describe("DiscordPresenceListener", () => {
       await listener.handle(presence("online", userId), lookupClient);
     }
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(2);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(2);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(2);
+
     expect(fetchUser).toHaveBeenCalledTimes(2);
     expect(mocks.canViewDiscordGuildChannel).toHaveBeenCalledTimes(2);
     expect(info).toHaveBeenCalledTimes(1);
@@ -594,7 +576,7 @@ describe("DiscordPresenceListener", () => {
     nowMs += 1;
     await listener.handle(presence("online", "eligible"), humanClient);
     expect(mocks.canViewDiscordGuildChannel).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
 
     resolveFirstLookup(false);
     await unrelated;
@@ -602,7 +584,7 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(presence("online", "eligible"), humanClient);
 
     expect(mocks.canViewDiscordGuildChannel).toHaveBeenCalledTimes(2);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="eligible"'),
       expect.anything(),
     );
@@ -629,12 +611,12 @@ describe("DiscordPresenceListener", () => {
       await listener.handle({ ...presence("online", userId), guild_id: guildId }, humanClient);
     }
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(2);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="guild-1-first"'),
       expect.anything(),
     );
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="guild-2-first"'),
       expect.anything(),
     );
@@ -664,8 +646,8 @@ describe("DiscordPresenceListener", () => {
     nowMs += 1;
     await listener.handle(presence("online", "next"), client());
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledWith(
       expect.stringContaining('user_id="delayed"'),
       expect.anything(),
     );
@@ -681,8 +663,7 @@ describe("DiscordPresenceListener", () => {
     nowMs += 30_000;
     await listener.handle(presence("online"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
   });
 
   it("retries a partial-user transition after a transient lookup failure", async () => {
@@ -702,8 +683,7 @@ describe("DiscordPresenceListener", () => {
     await listener.handle(partialOnline, retryClient);
 
     expect(fetchUser).toHaveBeenCalledTimes(2);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("serializes rapid transitions while a partial-user lookup is pending", async () => {
@@ -720,8 +700,7 @@ describe("DiscordPresenceListener", () => {
     const secondOnline = listener.handle(partialOnline, humanClient);
     await Promise.all([firstOnline, offline, secondOnline]);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("atomically claims a cooldown across overlapping listener generations", async () => {
@@ -752,8 +731,7 @@ describe("DiscordPresenceListener", () => {
     resolveUser({ bot: false });
     await Promise.all([firstOnline, replacementOnline]);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the cooldown when the listener is recreated", async () => {
@@ -775,8 +753,7 @@ describe("DiscordPresenceListener", () => {
     nowMs += 1000;
     await secondListener.handle(presence("online"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("deduplicates repeated offline-to-online flaps during the cooldown", async () => {
@@ -791,8 +768,7 @@ describe("DiscordPresenceListener", () => {
     }
 
     expect(mocks.canViewDiscordGuildChannel).toHaveBeenCalledTimes(1);
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(1);
   });
 
   it("scopes persisted cooldowns by Discord account", async () => {
@@ -812,7 +788,6 @@ describe("DiscordPresenceListener", () => {
     await firstAccount.handle(presence("online"), humanClient);
     await secondAccount.handle(presence("online"), humanClient);
 
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledTimes(2);
-    expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(2);
+    expect(mocks.enqueueSessionEvent).toHaveBeenCalledTimes(2);
   });
 });

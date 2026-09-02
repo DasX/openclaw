@@ -752,25 +752,6 @@ export function abortEmbeddedAgentRun(
   return false;
 }
 
-type EmbeddedHeartbeatPreemptionResult = "not-heartbeat" | "drained" | "timed-out";
-
-export async function preemptAndDrainEmbeddedHeartbeatRun(
-  sessionId: string,
-  timeoutMs: number,
-): Promise<EmbeddedHeartbeatPreemptionResult> {
-  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
-  if (!handle?.preemptByVisibleTurn) {
-    return "not-heartbeat";
-  }
-  const drainPromise = waitForCurrentEmbeddedAgentRunEnd(sessionId, timeoutMs, handle);
-  try {
-    handle.preemptByVisibleTurn();
-  } catch (err) {
-    diag.warn(`heartbeat preemption failed: sessionId=${sessionId} err=${String(err)}`);
-  }
-  return (await drainPromise) ? "drained" : "timed-out";
-}
-
 export function isEmbeddedAgentRunActive(sessionId: string): boolean {
   const active = ACTIVE_EMBEDDED_RUNS.has(sessionId) || isReplyRunActiveForSessionId(sessionId);
   if (active) {

@@ -4,14 +4,20 @@ import { MAX_SAFE_TIMEOUT_DELAY_MS } from "../../packages/gateway-client/src/tim
 import type { ManagedRun } from "../process/supervisor/index.js";
 import type { SpawnInput } from "../process/supervisor/types.js";
 
-const requestHeartbeatMock = vi.hoisted(() => vi.fn());
+const enqueueSessionEventMock = vi.hoisted(() => vi.fn());
 const enqueueSystemEventWithReceiptMock = vi.hoisted(() => vi.fn());
 const supervisorMock = vi.hoisted(() => ({
   spawn: vi.fn(),
 }));
 
-vi.mock("../infra/heartbeat-wake.js", () => ({
-  requestHeartbeat: requestHeartbeatMock,
+vi.mock("../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: (agentId: string, sessionKey: string) => ({
+    agentId,
+    sessionKey,
+    sessionId: sessionKey,
+    generation: "test",
+  }),
+  enqueueSessionEventForHost: enqueueSessionEventMock,
 }));
 
 vi.mock("../infra/system-events.js", () => ({
@@ -36,7 +42,11 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetProcessRegistryForTests();
-  requestHeartbeatMock.mockClear();
+  enqueueSessionEventMock.mockReset().mockReturnValue({
+    id: "exec-event",
+    cancel: vi.fn(() => true),
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
+  });
   enqueueSystemEventWithReceiptMock.mockReset();
   enqueueSystemEventWithReceiptMock.mockReturnValue(vi.fn(() => true));
   supervisorMock.spawn.mockReset();
@@ -85,19 +95,11 @@ function runtimeManagedRun(input: SpawnInput): ManagedRun {
 }
 
 function requireSystemEventCall(): [string, Record<string, unknown>] {
-  const call = enqueueSystemEventWithReceiptMock.mock.calls[0];
+  const call = enqueueSessionEventMock.mock.calls[0];
   if (!call) {
     throw new Error("expected system event call");
   }
   return call as [string, Record<string, unknown>];
-}
-
-function requireHeartbeatCall(): Record<string, unknown> {
-  const call = requestHeartbeatMock.mock.calls[0];
-  if (!call) {
-    throw new Error("expected heartbeat call");
-  }
-  return call[0] as Record<string, unknown>;
 }
 
 describe("exec notifyOnExit suppression", () => {
@@ -156,7 +158,7 @@ describe("exec notifyOnExit suppression", () => {
 
     expect(outcome.status).toBe("failed");
     expect(enqueueSystemEventWithReceiptMock).not.toHaveBeenCalled();
-    expect(requestHeartbeatMock).not.toHaveBeenCalled();
+    expect(enqueueSessionEventMock).not.toHaveBeenCalled();
   });
 
   it("notifies for manual-cancelled background execs with output", async () => {
@@ -165,11 +167,11 @@ describe("exec notifyOnExit suppression", () => {
     const [message, options] = requireSystemEventCall();
     expect(message).toContain("partial output");
     expect(options.sessionKey).toBe("agent:main:main");
-    expect(requestHeartbeatMock).toHaveBeenCalledTimes(1);
-    const heartbeat = requireHeartbeatCall();
-    expect(heartbeat.coalesceMs).toBe(0);
-    expect(heartbeat.reason).toBe("exec-event");
-    expect(heartbeat.sessionKey).toBe("agent:main:main");
+    expect(enqueueSessionEventMock).toHaveBeenCalledTimes(1);
+    expect(options).toMatchObject({
+      source: "exec",
+      expectedTarget: expect.objectContaining({ sessionKey: "agent:main:main" }),
+    });
   });
 
   it("still notifies for no-output background exec timeouts", async () => {
@@ -181,11 +183,11 @@ describe("exec notifyOnExit suppression", () => {
     expect(message).toContain("Verify the resulting state before retrying");
     expect(message).toContain("Do not automatically rerun non-idempotent commands");
     expect(options.sessionKey).toBe("agent:main:main");
-    expect(requestHeartbeatMock).toHaveBeenCalledTimes(1);
-    const heartbeat = requireHeartbeatCall();
-    expect(heartbeat.coalesceMs).toBe(0);
-    expect(heartbeat.reason).toBe("exec-event");
-    expect(heartbeat.sessionKey).toBe("agent:main:main");
+    expect(enqueueSessionEventMock).toHaveBeenCalledTimes(1);
+    expect(options).toMatchObject({
+      source: "exec",
+      expectedTarget: expect.objectContaining({ sessionKey: "agent:main:main" }),
+    });
   });
 
   it("keeps background exec exit-notification snippets on a UTF-16 boundary", async () => {

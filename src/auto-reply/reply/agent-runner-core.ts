@@ -77,13 +77,12 @@ export function markBeforeAgentRunBlockedPayloads(payloads: ReplyPayload[]): Rep
 export function buildSilentFallbackFailurePayload(params: {
   fallbackTransition: ReturnType<typeof resolveFallbackTransition>;
   fallbackFailureKnown: boolean;
-  isHeartbeat: boolean;
+
   hasSuccessfulTerminalDelivery: boolean;
   allowEmptyAssistantReplyAsSilent?: boolean;
   silentExpected?: boolean;
 }): ReplyPayload | undefined {
   if (
-    params.isHeartbeat ||
     params.allowEmptyAssistantReplyAsSilent === true ||
     params.silentExpected === true ||
     params.hasSuccessfulTerminalDelivery ||
@@ -287,7 +286,7 @@ export async function handleReplyAgentRunError(
   context: {
     cfg: OpenClawConfig;
     resolveVisibleReplyDelivery: () => Promise<boolean>;
-    isHeartbeat: boolean;
+
     isRestartRecoveryArmed: () => boolean;
     replyOperation: ReplyOperation;
     resolvedVerboseLevel: VerboseLevel;
@@ -298,7 +297,7 @@ export async function handleReplyAgentRunError(
   const {
     cfg,
     resolveVisibleReplyDelivery,
-    isHeartbeat,
+
     isRestartRecoveryArmed,
     replyOperation,
     resolvedVerboseLevel,
@@ -355,7 +354,7 @@ export async function handleReplyAgentRunError(
     return returnWithQueuedFollowupDrain(knownFailurePayload);
   }
   const visibleReplyDelivered = await resolveVisibleReplyDelivery();
-  if (!isHeartbeat && visibleReplyDelivered && !replyOperation.abortSignal.aborted) {
+  if (visibleReplyDelivered && !replyOperation.abortSignal.aborted) {
     replyOperation.fail("run_failed", error);
     return returnWithQueuedFollowupDrain(
       buildTerminalAgentRunFailureReplyPayload({

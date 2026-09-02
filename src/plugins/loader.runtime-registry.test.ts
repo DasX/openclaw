@@ -10,7 +10,6 @@ import {
 } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
-import { requestHeartbeat, setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
 import { drainSystemEvents } from "../infra/system-events.js";
 import { resetPluginStateStoreForTests } from "../plugin-state/plugin-state-store.js";
 import { runCommandWithTimeout } from "../process/exec.js";
@@ -57,6 +56,10 @@ import {
   setActivePluginRegistry,
   stageActivePluginRegistry,
 } from "./runtime.js";
+import {
+  captureSessionEventTarget,
+  enqueueSessionEvent,
+} from "./runtime/runtime-session-events.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import * as sdkAlias from "./sdk-alias.js";
 
@@ -78,7 +81,6 @@ it.each(["cjs", "ts"])(
       const entries = sync.entries();
       const system = api.runtime.system;
       system.enqueueSystemEvent("registration", { sessionKey: "prepared-runtime-system" });
-      system.requestHeartbeat({ source: "other", intent: "immediate", reason: "registration", coalesceMs: 0 });
       const asyncStore = api.runtime.state.openKeyedStore({ namespace: "registration", maxEntries: 2 });
       fs.writeFileSync(${JSON.stringify(observed)}, JSON.stringify({ entries, config: api.runtime.config.current() }));
       api.registerCli(({ program }) => program.command("state-proof").action(async () => {
@@ -86,7 +88,6 @@ it.each(["cjs", "ts"])(
         const chunks = api.runtime.channel.text.chunkText("channel runtime works", 100);
         const version = api.runtime.version;
         api.runtime.system.enqueueSystemEvent("materialized", { sessionKey: "prepared-runtime-system" });
-        api.runtime.system.requestHeartbeat({ source: "other", intent: "immediate", reason: "materialized", coalesceMs: 0 });
         const row = await asyncStore.lookup("before");
         fs.writeFileSync(${JSON.stringify(observed)}, JSON.stringify({ chunks, version, row }));
       }), { commands: ["state-proof"] });
@@ -109,8 +110,6 @@ it.each(["cjs", "ts"])(
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: undefined,
       },
       async () => {
-        const heartbeat = vi.fn(async () => ({ status: "skipped" as const, reason: "disabled" }));
-        const disposeHeartbeat = setHeartbeatWakeHandler(heartbeat);
         try {
           const resolveRuntime = vi.spyOn(
             sdkAlias,
@@ -185,14 +184,11 @@ it.each(["cjs", "ts"])(
           expect(configApi.current()).toBe(refreshedConfig);
           const state = runtime.state;
           const system = runtime.system;
-          expect(system.requestHeartbeat).toBe(requestHeartbeat);
+          expect(system.captureSessionEventTarget).toBe(captureSessionEventTarget);
+          expect(system.enqueueSessionEvent).toBe(enqueueSessionEvent);
           expect(system.runCommandWithTimeout).toBe(runCommandWithTimeout);
           expect(drainSystemEvents("prepared-runtime-system")).toEqual(["registration"]);
-          await vi.waitFor(() =>
-            expect(heartbeat).toHaveBeenCalledWith(
-              expect.objectContaining({ reason: "registration" }),
-            ),
-          );
+
           const command = await system.runCommandWithTimeout(
             [process.execPath, "-e", 'process.stdout.write("system-ready")'],
             { timeoutMs: 1_000, killProcessTree: true },
@@ -240,13 +236,30 @@ it.each(["cjs", "ts"])(
             "retained method",
           );
           expect(drainSystemEvents("prepared-runtime-system")).toEqual(["materialized"]);
-          await vi.waitFor(() =>
-            expect(heartbeat).toHaveBeenCalledWith(
-              expect.objectContaining({ reason: "materialized" }),
-            ),
-          );
+
           expect(runtime.hooks).toBe(hooks);
-          expect(runtime.channel.reply.dispatchReplyFromConfig).toBe(dispatchReplyFromConfig);
+          const replyParams = {
+            ctx: { Body: "probe", CommandAuthorized: false },
+            cfg: config,
+            dispatcher: {
+              sendToolResult: vi.fn(() => true),
+              sendBlockReply: vi.fn(() => true),
+              sendFinalReply: vi.fn(() => true),
+              waitForIdle: vi.fn(async () => {}),
+              getQueuedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
+              getFailedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
+              markComplete: vi.fn(),
+            },
+            replyOptions: {
+              suppressTyping: true,
+              internalEventExecution: { onStarted() {}, onTerminal() {} },
+            },
+          };
+          await runtime.channel.reply.dispatchReplyFromConfig(replyParams);
+          expect(dispatchReplyFromConfig).toHaveBeenCalledExactlyOnceWith({
+            ...replyParams,
+            replyOptions: { suppressTyping: true },
+          });
           for (const [key, prepared] of [
             ["config", configApi],
             ["state", state],
@@ -280,7 +293,6 @@ it.each(["cjs", "ts"])(
           }
           expect(resolveRuntime).toHaveBeenCalledTimes(1);
         } finally {
-          disposeHeartbeat();
           drainSystemEvents("prepared-runtime-system");
         }
       },

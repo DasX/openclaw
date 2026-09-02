@@ -22,7 +22,9 @@ vi.mock("./reply/dispatch-from-config.js", () => ({
     hoisted.dispatchReplyFromConfigMock(...args),
 }));
 
-const { dispatchInboundMessageWithBufferedDispatcher } = await import("./dispatch.js");
+const {
+  dispatchInboundMessageWithBufferedDispatcherCore: dispatchInboundMessageWithBufferedDispatcher,
+} = await import("./dispatch.js");
 
 type Delivery = {
   kind: "tool" | "block" | "final";

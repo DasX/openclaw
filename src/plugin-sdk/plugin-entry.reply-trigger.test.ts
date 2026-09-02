@@ -35,7 +35,7 @@ void registerAuthorizedPromptHook;
 describe("plugin entry hook option contracts", () => {
   it("exposes scoped reply and prompt authority options through the public plugin API", () => {
     expectTypeOf<OpenClawPluginApi["on"]>().toBeFunction();
-    expectTypeOf<PluginHookAgentTrigger>().toEqualTypeOf<"cron" | "heartbeat" | "user">();
+    expectTypeOf<PluginHookAgentTrigger>().toEqualTypeOf<"cron" | "heartbeat" | "user" | "event">();
     expectTypeOf<WorkerMachineOption>().toEqualTypeOf<{
       readonly id: string;
       readonly label: string;

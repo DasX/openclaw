@@ -23,7 +23,10 @@ import {
 } from "./agent-runner-cli-dispatch.js";
 import { buildCommandOutputFromToolResultEvent } from "./agent-runner-command-output.js";
 import type { AgentFallbackCandidateCommonParams } from "./agent-runner-fallback-cycle.types.js";
-import { resolveRunModelHasVision } from "./agent-runner-run-params.js";
+import {
+  resolveRunModelHasVision,
+  resolveReplyScheduledToolPolicy,
+} from "./agent-runner-run-params.js";
 import { shouldBridgeCliPreambleEvents } from "./get-reply.types.js";
 import { hasInboundAudio } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
@@ -312,7 +315,13 @@ export async function runCliFallbackCandidate(
             runtimePolicySessionKey:
               turn.followupRun.run.runtimePolicySessionKey ?? turn.runtimePolicySessionKey,
             agentId: turn.followupRun.run.agentId,
-            trigger: turn.isHeartbeat ? "heartbeat" : "user",
+            trigger: turn.followupRun.run.scheduledAutomation
+              ? "cron"
+              : turn.opts?.internalEventExecution
+                ? "event"
+                : "user",
+            jobId: turn.followupRun.run.scheduledAutomation?.job.id,
+            scheduledToolPolicy: resolveReplyScheduledToolPolicy(turn.followupRun.run),
             sessionFile: turn.followupRun.run.sessionFile,
             workspaceDir: turn.followupRun.run.workspaceDir,
             cwd: turn.followupRun.run.cwd,
@@ -367,8 +376,9 @@ export async function runCliFallbackCandidate(
             extraSystemPrompt: turn.followupRun.run.extraSystemPrompt,
             sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
             taskSuggestionDeliveryMode: turn.followupRun.run.taskSuggestionDeliveryMode,
-            // Heartbeat ambient routes are never implicit message recipients.
-            ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+            ...(turn.followupRun.run.scheduledAutomation
+              ? { requireExplicitMessageTarget: true }
+              : {}),
             silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
             allowEmptyAssistantReplyAsSilent: turn.followupRun.run.allowEmptyAssistantReplyAsSilent,
             extraSystemPromptStatic: turn.followupRun.run.extraSystemPromptStatic,

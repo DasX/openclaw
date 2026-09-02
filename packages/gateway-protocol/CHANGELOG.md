@@ -19,6 +19,18 @@ each entry stays here until an owner approves the bump and lands it together wit
 client follow-through. Add an entry whenever you defer a shape change; remove it
 in the commit that bumps the version.
 
+- **Protocol v5 TODO: remove legacy heartbeat wire contracts.** Retire
+  `last-heartbeat`, `set-heartbeats`, the `heartbeat` event and its status
+  payload, the `next-heartbeat` wake-mode value, and the report-only heartbeat
+  cron payload variant after their automation/session replacements are available.
+  Keep v4 request/response shapes valid during the transition; adapters must use
+  canonical job and session outcomes, never recreate the retired heartbeat
+  scheduler or return successful no-ops. Update independently installed native
+  clients and external callers with the version change. Coordinate deprecated
+  heartbeat CLI/plugin SDK removal with the same migration, respecting the SDK's
+  separate deprecation window. Tracked in
+  [heartbeat retirement](https://github.com/openclaw/openclaw/issues/134994).
+  This is deferred work, not a v5 bump in this change.
 - **Remove `execSecurity` / `execAsk` from `SessionsPatchMutation`.** Retired in
   favour of `permissionMode` (PR #132740, landed `a151c1e0d35`). The properties
   remain declared in the closed v4 mutation schema so existing v4 callers keep a

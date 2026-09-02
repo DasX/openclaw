@@ -132,6 +132,9 @@ async function withTaskExecutorStateDir(run: (stateDir: string) => Promise<void>
     resetTaskFlowRegistryForTests({ persist: false });
     setTaskRegistryDeliveryRuntimeForTests({
       sendMessage: hoisted.sendMessageMock,
+      deliverTaskSessionEvent: async () => {
+        throw new Error("Unexpected session event delivery in task executor test");
+      },
     });
     setTaskRegistryControlRuntimeForTests({
       cancelActiveCronTaskRun: () => false,

@@ -14,7 +14,7 @@ When `agents.defaults.typingMode` is **unset**:
 - **Direct chats**: typing starts immediately once the model loop begins.
 - **Group chats with a mention**: typing starts immediately.
 - **Group chats without a mention**: typing starts when the admitted run has user-visible activity, such as harness execution activity or message text.
-- **Heartbeat runs**: typing starts when the heartbeat run begins, if the resolved heartbeat target is a typing-capable chat and typing is not disabled.
+- **Internal system-event turns**: typing is suppressed; a background follow-up is not an inbound chat message.
 
 ## Modes
 
@@ -60,8 +60,7 @@ Override the policy for one agent:
 
 - `message` mode does not start from silent reply tokens, but active execution can still show typing before any assistant text is available.
 - `thinking` still reacts to streamed reasoning (`reasoningLevel: "stream"`), and can also start from active execution before reasoning deltas arrive.
-- Heartbeat typing is a liveness signal for the resolved delivery target. It starts at heartbeat run start instead of following `message` or `thinking` stream timing. Set `typingMode: "never"` to disable it.
-- Heartbeats do not show typing when the heartbeat target is `"none"`, when the target cannot be resolved, when chat delivery is disabled for the heartbeat, or when the channel does not support typing.
+- Scheduled monitoring uses ordinary cron delivery, with no heartbeat-specific typing override. A job's delivery policy is separate from chat typing configuration.
 - `agents.defaults.typingIntervalSeconds` controls the **refresh cadence** for every agent, not the start time. Default: 6 seconds.
 
 ## Related

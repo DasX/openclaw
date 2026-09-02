@@ -362,7 +362,7 @@ Contract notes:
   verify that different requester endpoints serve identical tool schemas; a
   resolver must point every requester at the same logical service, or tool
   schemas (and prompt-cache stability) diverge per requester.
-- Runs without a trusted `requesterSenderId` (cron, subagent, heartbeat, public
+- Runs without a trusted `requesterSenderId` (scheduled jobs, subagent, public
   gateway) never materialize requester-scoped servers. There is no shared
   fallback connection.
 - `resolve` is bounded at 10 seconds per server; a timeout or throw omits that
@@ -548,17 +548,24 @@ The contracts intentionally split authority:
 - Reserved command ownership is bundled-only. External plugins should use their
   own command names or aliases.
 - `allowPromptInjection=false` disables prompt-mutating hooks including
-  `agent_turn_prepare`, `before_prompt_build`, `heartbeat_prompt_contribution`,
-  and `enqueueNextTurnInjection`.
+  `agent_turn_prepare`, `before_prompt_build`, and `enqueueNextTurnInjection`.
+  It also blocks the deprecated `heartbeat_prompt_contribution` boundary hook.
 
 Examples of non-Plan consumers:
 
-| Plugin archetype             | Hooks used                                                                                                                             |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Approval workflow            | Session extension, command continuation, next-turn injection, UI descriptor                                                            |
-| Budget/workspace policy gate | Trusted tool policy, tool metadata, session projection                                                                                 |
-| Background lifecycle monitor | Runtime lifecycle cleanup, agent event subscription, session scheduler ownership/cleanup, heartbeat prompt contribution, UI descriptor |
-| Setup or onboarding wizard   | Session extension, scoped commands, Control UI descriptor                                                                              |
+| Plugin archetype             | Hooks used                                                                                                                              |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Approval workflow            | Session extension, command continuation, next-turn injection, UI descriptor                                                             |
+| Budget/workspace policy gate | Trusted tool policy, tool metadata, session projection                                                                                  |
+| Background lifecycle monitor | Ordinary cron job, runtime lifecycle cleanup, agent event subscription, scoped prompt context, session scheduler cleanup, UI descriptor |
+| Setup or onboarding wizard   | Session extension, scoped commands, Control UI descriptor                                                                               |
+
+Monitoring uses ordinary editable cron jobs for schedule, content, model,
+session, and delivery. Scope plugin prompt additions to the relevant job or
+session using host-provided context; do not register heartbeat-only hooks for
+all cron jobs. Immediate event follow-ups belong to session admission, not the
+monitoring schedule. See [Heartbeat SDK migration](/plugins/sdk-migration#heartbeat-retirement)
+for retained external adapters.
 
 <Note>
   Reserved core admin namespaces (`config.*`, `exec.approvals.*`, `wizard.*`,

@@ -93,12 +93,13 @@ async function runPersistedDiagnosticCase(params: {
       const events: CronEvent[] = [];
       const storePath = state.path("cron", "jobs.json");
       const cron = new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath,
         cronEnabled: true,
         cronConfig: { triggers: { enabled: true } },
         log: createNoopLogger(),
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         onEvent: (event) => events.push(structuredClone(event)),
         runIsolatedAgentJob: async (runParams) =>
           await runCronIsolatedAgentTurn({

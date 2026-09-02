@@ -36,7 +36,6 @@ const SHARED_CHANNEL_FIELD_HELP: Record<string, string> = {
     'Who may use the agent in groups: "allowlist" trusts groupAllowFrom, "open" allows any group, "disabled" turns group chat off.',
   groups: "Per-group overrides, keyed by group id.",
   healthMonitor: "Per-channel opt-out for the health monitor that restarts stalled channels.",
-  heartbeatVisibility: "Which heartbeat results this channel shows.",
   historyLimit: "How many earlier messages to include as context. 0 disables history.",
   markdown: "Markdown rendering overrides for this channel.",
   mediaMaxMb: "Per-attachment media limit in MiB. Channel transport limits still apply.",

@@ -7,6 +7,7 @@ import {
   setActiveEmbeddedRun,
 } from "../../agents/embedded-agent-runner/runs.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { makeCronJob } from "../../cron/delivery.test-helpers.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
   interruptSessionWorkAdmissions,
@@ -383,7 +384,7 @@ describe("dispatchReplyFromConfig", () => {
     },
   );
 
-  it("skips a Telegram topic heartbeat turn while a reply operation is active", async () => {
+  it("defers an idle-only Telegram topic automation while a reply operation is active", async () => {
     setNoAbort();
     const sessionKey = "agent:main:telegram:group:-1003774691294:topic:3731";
     const activeOperation = createReplyOperation({
@@ -394,7 +395,7 @@ describe("dispatchReplyFromConfig", () => {
     activeOperation.setPhase("running");
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(
-      async () => ({ text: "heartbeat should not run" }) satisfies ReplyPayload,
+      async () => ({ text: "idle automation should not run" }) satisfies ReplyPayload,
     );
 
     const result = await dispatchReplyFromConfig({
@@ -405,15 +406,20 @@ describe("dispatchReplyFromConfig", () => {
         SessionKey: sessionKey,
         ChatType: "group",
         IsForum: true,
-        MessageSid: "heartbeat",
+        MessageSid: "scheduled-check",
         MessageThreadId: 3731,
         TransportThreadId: 3731,
         To: "telegram:-1003774691294:topic:3731",
-        BodyForAgent: "[OpenClaw heartbeat poll]",
+        BodyForAgent: "Check the automation state",
       }),
       cfg: automaticGroupReplyConfig,
       dispatcher,
-      replyOptions: { isHeartbeat: true },
+      replyOptions: {
+        scheduledAutomation: {
+          job: { ...makeCronJob({}), idleOnly: true },
+          assertCurrent: () => {},
+        },
+      },
       replyResolver,
     });
 
@@ -434,34 +440,34 @@ describe("dispatchReplyFromConfig", () => {
     activeOperation.complete();
   });
 
-  it("preempts a heartbeat before resolving a visible Telegram turn", async () => {
+  it("preempts background work before resolving a visible Telegram turn", async () => {
     setNoAbort();
-    const sessionKey = "agent:main:telegram:direct:heartbeat-preemption";
-    const heartbeatAdmission = await admitReplyTurn({
+    const sessionKey = "agent:main:telegram:direct:background-preemption";
+    const backgroundAdmission = await admitReplyTurn({
       sessionKey,
-      sessionId: "heartbeat-session",
-      kind: "heartbeat",
+      sessionId: "background-session",
+      kind: "background",
       resetTriggered: false,
     });
-    expect(heartbeatAdmission.status).toBe("owned");
-    if (heartbeatAdmission.status !== "owned") {
+    expect(backgroundAdmission.status).toBe("owned");
+    if (backgroundAdmission.status !== "owned") {
       return;
     }
-    const heartbeatOperation = heartbeatAdmission.operation;
-    const cancel = vi.fn(() => heartbeatOperation.complete());
-    heartbeatOperation.attachBackend({
+    const backgroundOperation = backgroundAdmission.operation;
+    const cancel = vi.fn(() => backgroundOperation.complete());
+    backgroundOperation.attachBackend({
       kind: "embedded",
       cancel,
       isStreaming: () => true,
     });
-    heartbeatOperation.setPhase("running");
+    backgroundOperation.setPhase("running");
     sessionStoreMocks.currentEntry = {
-      sessionId: "heartbeat-session",
+      sessionId: "background-session",
       updatedAt: Date.now(),
     };
-    let heartbeatWasAbortedBeforeReply = false;
+    let backgroundWasAbortedBeforeReply = false;
     const replyResolver = vi.fn(async () => {
-      heartbeatWasAbortedBeforeReply = heartbeatOperation.abortSignal.aborted;
+      backgroundWasAbortedBeforeReply = backgroundOperation.abortSignal.aborted;
       return { text: "visible reply" } satisfies ReplyPayload;
     });
 
@@ -488,8 +494,8 @@ describe("dispatchReplyFromConfig", () => {
     });
 
     expect(result.queuedFinal).toBe(true);
-    expect(heartbeatWasAbortedBeforeReply).toBe(true);
-    expect(heartbeatOperation.result).toEqual({
+    expect(backgroundWasAbortedBeforeReply).toBe(true);
+    expect(backgroundOperation.result).toEqual({
       kind: "aborted",
       code: "aborted_for_supersession",
     });
@@ -1671,10 +1677,10 @@ describe("dispatchReplyFromConfig", () => {
     },
   );
 
-  it("does not force-clear an active recovery operation for a heartbeat turn on a terminal session", async () => {
+  it("does not force-clear an active recovery operation for an idle-only automation on a terminal session", async () => {
     setNoAbort();
     const sessionKey = "agent:main:telegram:group:-1003774691296";
-    const sessionId = "failed-session-heartbeat";
+    const sessionId = "failed-session-automation";
     sessionStoreMocks.currentEntry = {
       sessionId,
       updatedAt: Date.now(),
@@ -1682,15 +1688,15 @@ describe("dispatchReplyFromConfig", () => {
     };
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(
-      async () => ({ text: "heartbeat should not run" }) satisfies ReplyPayload,
+      async () => ({ text: "idle automation should not run" }) satisfies ReplyPayload,
     );
 
     // A concurrent visible turn already cleared the failed leftover and admitted
     // a fresh recovery operation. Register it inside the fast-abort seam, which
-    // runs after the early heartbeat short-circuit but before admission, so the
-    // heartbeat reaches the terminal force-clear branch with this op active. The
+    // runs after the early idle-only short-circuit but before admission, so the
+    // automation reaches the terminal force-clear branch with this op active. The
     // op is intentionally NOT marked `terminalRecovery`, so only the visible-turn
-    // guard can stop the heartbeat from force-failing it.
+    // guard can stop the automation from force-failing it.
     let recoveryOperation: ReturnType<typeof createReplyOperation> | undefined;
 
     const result = await dispatchReplyFromConfig({
@@ -1700,13 +1706,18 @@ describe("dispatchReplyFromConfig", () => {
         OriginatingChannel: "telegram",
         ChatType: "group",
         SessionKey: sessionKey,
-        MessageSid: "heartbeat-after-failure",
+        MessageSid: "automation-after-failure",
         To: "telegram:-1003774691296",
-        BodyForAgent: "[OpenClaw heartbeat poll]",
+        BodyForAgent: "Check the automation state",
       }),
       cfg: automaticGroupReplyConfig,
       dispatcher,
-      replyOptions: { isHeartbeat: true },
+      replyOptions: {
+        scheduledAutomation: {
+          job: { ...makeCronJob({}), idleOnly: true },
+          assertCurrent: () => {},
+        },
+      },
       fastAbortResolver: async () => {
         recoveryOperation = createReplyOperation({
           sessionKey,
@@ -1720,7 +1731,7 @@ describe("dispatchReplyFromConfig", () => {
       replyResolver,
     });
 
-    // The heartbeat left the active visible recovery operation untouched and
+    // The automation left the active visible recovery operation untouched and
     // skipped itself instead of force-clearing the in-flight visible turn.
     expect(recoveryOperation).toBeDefined();
     expect(recoveryOperation?.result).toBeNull();

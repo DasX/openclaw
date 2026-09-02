@@ -58,6 +58,13 @@ export type QueuedSessionDeliveryPayload =
   | ({
       kind: "systemEvent";
       sessionKey: string;
+      expectedTarget?: Omit<
+        import("../auto-reply/reply/session-event-handoff.js").SessionEventTarget,
+        "generation"
+      >;
+      source?: "task" | "restart";
+      deliver?: boolean;
+      taskId?: string;
       /** Preserves ownership when a durable event targets the literal global session. */
       agentId?: string;
       text: string;
@@ -70,6 +77,11 @@ export type QueuedSessionDeliveryPayload =
       message: string;
       messageId: string;
       expectedSessionId?: string;
+      /** Admission-time destination and permission ceiling for restart continuations. */
+      expectedTarget?: Omit<
+        import("../auto-reply/reply/session-event-handoff.js").SessionEventTarget,
+        "generation"
+      >;
       route?: SessionDeliveryRoute;
       deliveryContext?: SessionDeliveryContext;
       inputProvenance?: InputProvenance;

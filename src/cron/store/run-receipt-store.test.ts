@@ -183,12 +183,13 @@ describe("cron run receipt store", () => {
     await saveCronStore(storePath, { version: 1, jobs: [job] });
     const foreign = makeForeignOwner(claim(storePath, job, startedAtMs));
     const state = createCronServiceState({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       log: logger,
       nowMs: () => Date.now(),
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
     const proposal = proposeCronRunRecovery(state, job.id, undefined, startedAtMs);

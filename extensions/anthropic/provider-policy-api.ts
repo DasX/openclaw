@@ -55,3 +55,5 @@ export function resolveThinkingProfile(params: {
       return null;
   }
 }
+
+export { resolveAnthropicProactiveCadenceMs as resolveProactiveCadenceMs } from "./config-defaults.js";

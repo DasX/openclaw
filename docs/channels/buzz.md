@@ -187,8 +187,7 @@ context when those fields are present. Diff content is not interpreted as an
 OpenClaw command or textual mention.
 
 Typing uses Buzz's ephemeral kind `20002` on the active authenticated Gateway
-connection. Ordinary replies refresh it every three seconds; heartbeat-driven
-replies use OpenClaw's shared typing interval, which defaults to six seconds.
+connection. Ordinary replies refresh it every three seconds.
 OpenClaw stops refreshing when the turn completes, is cancelled, fails, or the
 Gateway shuts down. Typing failures do not block the reply or reconnect the
 Gateway solely to send an ephemeral event.
@@ -394,7 +393,7 @@ messages can remain in the window; leaving does not erase conversation history.
 Buzz keeps automatic replies threaded by default (`channels.buzz.replyToMode: "all"`).
 Set `replyToMode: "off"` to send automatic replies at the top level of the room,
 including replies to messages inside existing threads. Typing indicators follow
-the same placement, including heartbeat typing.
+the same placement.
 
 This changes delivery only: inbound thread context and session identity remain
 intact. Explicit message-tool or CLI sends with a thread or reply target still

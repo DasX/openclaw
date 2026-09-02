@@ -1,7 +1,5 @@
 // Builds and validates the canonical OpenClaw configuration schema.
 import crypto from "node:crypto";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { CHANNEL_IDS } from "../channels/ids.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { parseConfigPathArrayIndex } from "../shared/path-array-index.js";
 import { GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA } from "./bundled-channel-config-metadata.generated.js";
@@ -353,48 +351,6 @@ function applyChannelHints(hints: ConfigUiHints, channels: ChannelUiMetadata[]):
   return next;
 }
 
-function listHeartbeatTargetChannels(channels: ChannelUiMetadata[]): string[] {
-  const seen = new Set<string>();
-  const ordered: string[] = [];
-  for (const id of CHANNEL_IDS) {
-    const normalized = normalizeLowercaseStringOrEmpty(id);
-    if (!normalized || seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    ordered.push(normalized);
-  }
-  for (const channel of channels) {
-    const normalized = normalizeLowercaseStringOrEmpty(channel.id);
-    if (!normalized || seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    ordered.push(normalized);
-  }
-  return ordered;
-}
-
-function applyHeartbeatTargetHints(
-  hints: ConfigUiHints,
-  channels: ChannelUiMetadata[],
-): ConfigUiHints {
-  const next: ConfigUiHints = { ...hints };
-  const channelList = listHeartbeatTargetChannels(channels);
-  const channelHelp = channelList.length ? ` Known channels: ${channelList.join(", ")}.` : "";
-  const help = `Delivery target ("owner", "last", "none", or a channel id).${channelHelp}`;
-  const paths = ["agents.defaults.heartbeat.target", "agents.entries.*.heartbeat.target"];
-  for (const path of paths) {
-    const current = next[path] ?? {};
-    next[path] = {
-      ...current,
-      help: current.help ?? help,
-      placeholder: current.placeholder ?? "owner",
-    };
-  }
-  return next;
-}
-
 function applyExtensionSchemas(
   schema: ConfigSchema,
   channels: ChannelUiMetadata[],
@@ -547,10 +503,7 @@ function buildBaseConfigSchema(): ConfigSchemaResponse {
   }
   const generated = computeBaseConfigSchemaResponse();
   const bundledChannels = getBundledChannelSchemaMetadata();
-  const mergedWithoutSensitiveHints = applyHeartbeatTargetHints(
-    applyChannelHints(generated.uiHints, bundledChannels),
-    bundledChannels,
-  );
+  const mergedWithoutSensitiveHints = applyChannelHints(generated.uiHints, bundledChannels);
   const mergedHints = applyDerivedTags(
     applySensitiveHints(
       mergedWithoutSensitiveHints,
@@ -588,8 +541,8 @@ export function buildConfigSchemaCore(params?: {
       return cached;
     }
   }
-  const mergedWithoutSensitiveHints = applyHeartbeatTargetHints(
-    applyChannelHints(applyPluginHints(base.uiHints, plugins), channels),
+  const mergedWithoutSensitiveHints = applyChannelHints(
+    applyPluginHints(base.uiHints, plugins),
     channels,
   );
   const extensionHintKeys = collectExtensionHintKeys(

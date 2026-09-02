@@ -65,7 +65,7 @@ export async function prepareReplyAgentPayloads(state: {
     blockStreamingEnabled,
     cfg,
     followupRun,
-    isHeartbeat,
+
     opts,
     replyMediaContext,
     replyOperation,
@@ -165,7 +165,7 @@ export async function prepareReplyAgentPayloads(state: {
         yielded: runResult.meta?.yielded === true,
         yieldAcknowledgment: runResult.meta?.yieldAcknowledgment,
         isInteractive,
-        isHeartbeat,
+
         silentExpected: followupRun.run.silentExpected,
         isSubagentSession: isSubagentSessionKey(sessionKey ?? followupRun.run.sessionKey),
         hasExplicitSilentReply: deliberateSilentTerminalReply,
@@ -180,7 +180,7 @@ export async function prepareReplyAgentPayloads(state: {
     ? undefined
     : buildEmptyInteractiveReplyPayload({
         isInteractive,
-        isHeartbeat,
+
         silentExpected: followupRun.run.silentExpected,
         allowEmptyAssistantReplyAsSilent: followupRun.run.allowEmptyAssistantReplyAsSilent,
         hasPendingContinuation: pendingContinuation,
@@ -213,7 +213,7 @@ export async function prepareReplyAgentPayloads(state: {
       sourceReplyDeliveryMode: sourceReplyPolicy.sourceReplyDeliveryMode,
       sendPolicyDenied: sourceReplyPolicy.sendPolicyDenied,
       successfulSourceReplyDelivery: completedSourceReplyDelivery,
-      isHeartbeat,
+
       isRoomEvent: false,
     });
     return recovery.kind === "diagnostic" ? recovery.payload : undefined;
@@ -259,7 +259,7 @@ export async function prepareReplyAgentPayloads(state: {
       config: cfg,
       payloads,
       conversationContext: sessionCtx.agentText ?? sessionCtx.BodyForAgent,
-      isHeartbeat,
+
       didLogHeartbeatStrip,
       silentExpected: followupRun.run.silentExpected,
       blockStreamingEnabled,
@@ -298,7 +298,7 @@ export async function prepareReplyAgentPayloads(state: {
     const silentFallbackFailurePayload = buildSilentFallbackFailurePayload({
       fallbackTransition,
       fallbackFailureKnown,
-      isHeartbeat,
+
       hasSuccessfulTerminalDelivery: successfulTerminalDelivery,
       allowEmptyAssistantReplyAsSilent: followupRun.run.allowEmptyAssistantReplyAsSilent,
       silentExpected: followupRun.run.silentExpected,

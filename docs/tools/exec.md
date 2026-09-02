@@ -81,7 +81,7 @@ Notes:
 - Important: sandboxing is **off by default**. If sandboxing is off, implicit `host=auto` resolves to `gateway`. Explicit `host=sandbox` still fails closed instead of silently running on the gateway host. Enable sandboxing or use `host=gateway` with approvals.
 - Script preflight checks (for common Python/Node shell-syntax mistakes) only inspect files inside the effective `workdir` boundary. If a script path resolves outside `workdir`, preflight is skipped for that file. Preflight also skips entirely when `host=gateway` and the effective policy is `security=full` with `ask=off`.
 - For long-running work that starts now, start it once and rely on automatic completion wake when it is enabled and the command emits output or fails. Use `process` for logs, status, input, or intervention; do not emulate scheduling with sleep loops, timeout loops, or repeated polling.
-- Agent-started background commands appear in the Web, iOS, and Android background-task views until they finish. The task ledger is finalized before the completion heartbeat wakes the agent again.
+- Agent-started background commands appear in the Web, iOS, and Android background-task views until they finish. The task ledger is finalized before the completion event resumes the agent through normal session admission. This follow-up does not depend on cron or monitoring being enabled.
 - For work that should happen later or on a schedule, use cron instead of `exec` sleep/delay patterns.
 
 ## Config
@@ -94,7 +94,7 @@ Notes:
 | `tools.exec.reviewer.model`          | configured agent primary | Optional provider/model override for `mode=auto` review.                                                                                                |
 | `tools.exec.reviewer.timeoutMs`      | `30000`                  | Per-stage timeout for reviewer model preparation and completion before human fallback.                                                                  |
 | `tools.exec.node`                    | unset                    |                                                                                                                                                         |
-| `tools.exec.notifyOnExit`            | `true`                   | When true, backgrounded exec sessions enqueue a system event and request a heartbeat on exit.                                                           |
+| `tools.exec.notifyOnExit`            | `true`                   | When true, eligible backgrounded exec completions enqueue a system event and request a follow-up in the originating session.                            |
 | `tools.exec.approvalRunningNoticeMs` | `10000`                  | Emit a single "running" notice when an approval-gated exec runs longer than this (`0` disables).                                                        |
 | `tools.exec.strictInlineEval`        | `false`                  | See [Inline eval](#inline-eval-strictinlineeval).                                                                                                       |
 | `tools.exec.commandHighlighting`     | `false`                  | When true, approval prompts can highlight parser-derived command spans in the command text. Set globally or per agent; does not change approval policy. |

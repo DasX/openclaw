@@ -39,7 +39,7 @@ Per-channel config keys live in [Configuration - channels](/gateway/config-chann
 
 See [Configuration - agents](/gateway/config-agents) for:
 
-- `agents.defaults.*` (workspace, model, thinking, heartbeat, memory, media, skills, sandbox)
+- `agents.defaults.*` (workspace, model, thinking, memory, media, skills, sandbox)
 - `multiAgent.*` (multi-agent routing and bindings)
 - `session.*` (session lifecycle, compaction, pruning)
 - `messages.*` (message delivery, TTS, markdown rendering)
@@ -1132,14 +1132,22 @@ Gmail-path mappings receive a larger derived allowance described below. Generic
 hooks parse JSON but do not require the JSON content-type header; the TaskFlow
 plugin does enforce it.
 
-| Endpoint             | Payload and result                                                                                                                                                                                                                                                                                                                                                                                     |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `POST /hooks/wake`   | Required nonempty `text`; optional `mode` (`"now"` default or `"next-heartbeat"`), `agentId`, `sessionKey`. Returns `200 { ok: true, mode, eventOutcome }`; `eventOutcome` is `"queued"` when the queue accepts the wake or `"coalesced"` when the same wake is already the queue's most recent pending event. `now` requests a heartbeat in either case; the result does not prove the heartbeat ran. |
-| `POST /hooks/agent`  | [Agent payload](/gateway/configuration-reference#hook-agent-payload). Returns `200 { ok: true, runId }` after session/global placement admission, not completion.                                                                                                                                                                                                                                      |
-| `POST /hooks/<name>` | First matching mapping produces wake/agent actions. No matching mapping returns `404`; no actions returns `204`. Agent fan-out has the [batch response contract](/gateway/configuration-reference#hook-retries-and-fan-out).                                                                                                                                                                           |
+| Endpoint             | Payload and result                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /hooks/wake`   | Required nonempty `text`; optional `mode` (`"now"` default or deprecated `"next-heartbeat"`), `agentId`, `sessionKey`. An accepted request returns `200 { ok: true, mode, eventOutcome }`; `eventOutcome` is `"queued"` when accepted or `"coalesced"` when the same wake is already pending. `now` requests normal session admission, not a heartbeat run. Acceptance does not prove execution or delivery. |
+| `POST /hooks/agent`  | [Agent payload](/gateway/configuration-reference#hook-agent-payload). Returns `200 { ok: true, runId }` after session/global placement admission, not completion.                                                                                                                                                                                                                                            |
+| `POST /hooks/<name>` | First matching mapping produces wake/agent actions. No matching mapping returns `404`; no actions returns `204`. Agent fan-out has the [batch response contract](/gateway/configuration-reference#hook-retries-and-fan-out).                                                                                                                                                                                 |
 
 The direct `/wake` and `/agent` endpoints take precedence over mappings with
 those names. `/hooks` itself has no action.
+
+Immediate hook follow-ups do not depend on cron or monitoring being enabled.
+The deprecated `next-heartbeat` mode defers untargeted requests to a valid
+ordinary scheduled job. Without such a target, the request returns an actionable
+result before enqueueing; it does not wait indefinitely for a user message.
+Legacy system-event clients with an explicit session key retain their historical
+immediate-admission behavior. The HTTP `/wake` endpoint's explicit-key rule
+below is unchanged.
 
 | Status | Meaning                                                                                                                                                                                                                      |
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1171,7 +1179,7 @@ or channel delivery. See [hook verification](/automation/cron-jobs#verify-and-tr
 | `sessionKey`     | default/generated key    | Subject to caller-key opt-in and prefix policy.                                                                                                                                                                                                              |
 | `sessionMode`    | `"isolated"`             | `"isolated"` creates a fresh run session; `"persistent"` reuses the resolved session.                                                                                                                                                                        |
 | `idempotencyKey` | unset                    | Optional replay key; headers take precedence. See retries below.                                                                                                                                                                                             |
-| `wakeMode`       | `"now"`                  | `"now"` or `"next-heartbeat"`; controls waking for completion events, not whether the agent is dispatched immediately.                                                                                                                                       |
+| `wakeMode`       | `"now"`                  | `"now"` or deprecated `"next-heartbeat"`; controls admission of completion events, not whether the hook agent is dispatched immediately. Untargeted deferred events require a valid scheduled target.                                                        |
 | `deliver`        | `true`                   | Only `false` opts out. With no direct destination, successful output can become a main-session completion event. `false` logs successful completion without an announcement and ignores destination fields. Non-ok execution results produce a status event. |
 | `channel`        | none for direct delivery | Registered concrete channel id; must be paired with `to`. Direct `/agent` cannot use `"last"`.                                                                                                                                                               |
 | `to`             | unset                    | Nonempty recipient for direct announce delivery, paired with `channel`.                                                                                                                                                                                      |
@@ -1223,7 +1231,7 @@ hook path.
 | `match.path`                 | any custom path             | Subpath after `hooks.path`, with leading/trailing slashes removed (`gmail` matches `/hooks/gmail`).                                               |
 | `match.source`               | any source                  | Exact match against the payload's string `source` field.                                                                                          |
 | `action`                     | `"agent"`                   | `"agent"` or `"wake"`.                                                                                                                            |
-| `wakeMode`                   | `"now"`                     | `"now"` or `"next-heartbeat"`; becomes `mode` for wake actions.                                                                                   |
+| `wakeMode`                   | `"now"`                     | `"now"` or deprecated `"next-heartbeat"`; becomes `mode` for wake actions under the same admission contract.                                      |
 | `name`                       | `"Hook"` at dispatch        | Templated agent-run label.                                                                                                                        |
 | `agentId`                    | resolved owner              | Static target agent id; subject to effective-agent allowlist.                                                                                     |
 | `sessionKey`                 | default/generated key       | Static or templated logical key; see session policy.                                                                                              |
@@ -1882,6 +1890,13 @@ Current builds no longer include the TCP bridge. Nodes connect over the Gateway 
 ---
 
 ## Automations (`cron`)
+
+Ordinary jobs own periodic monitoring as well as other scheduled work. A job's
+schedule, prompt, model, session target, scratch, `activeHours`, `idleOnly`, and
+delivery policy belong in the job, not this root config block. See
+[Cron jobs](/automation/cron-jobs) and [Heartbeat migration](/gateway/heartbeat).
+Immediate exec, task, hook, and restart follow-ups use normal session admission
+even when `cron.enabled` is `false`.
 
 ```json5
 {

@@ -28,13 +28,14 @@ describe("CronService.remove session cleanup", () => {
     const { storePath } = await makeStorePath();
     const sessionStorePath = path.join(path.dirname(storePath), "sessions.json");
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       defaultAgentId: "main",
       resolveSessionStorePath: () => sessionStorePath,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job = await cron.add({
@@ -67,13 +68,14 @@ describe("CronService.remove session cleanup", () => {
     const { storePath } = await makeStorePath();
     const sessionStorePath = path.join(path.dirname(storePath), "sessions.json");
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       defaultAgentId: "main",
       resolveSessionStorePath: () => sessionStorePath,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job = await cron.add({
@@ -118,13 +120,14 @@ describe("CronService.remove session cleanup", () => {
     const { storePath } = await makeStorePath();
     const sessionStorePath = path.join(path.dirname(storePath), "sessions.json");
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       defaultAgentId: "main",
       resolveSessionStorePath: () => sessionStorePath,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job = await cron.add({
@@ -187,13 +190,14 @@ describe("CronService.remove session cleanup", () => {
     const { storePath } = await makeStorePath();
     const sessionStorePath = path.join(path.dirname(storePath), "sessions.json");
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       defaultAgentId: "main",
       resolveSessionStorePath: () => sessionStorePath,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job = await cron.add({
@@ -232,13 +236,14 @@ describe("CronService.remove session cleanup", () => {
     const { storePath } = await makeStorePath();
     const sessionStorePath = path.join(path.dirname(storePath), "sessions.json");
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       defaultAgentId: "main",
       resolveSessionStorePath: () => sessionStorePath,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const original = await cron.add({
@@ -298,13 +303,14 @@ describe("CronService.remove session cleanup", () => {
     const sessionStorePath = path.join(path.dirname(storePath), "sessions.json");
     const createCron = () =>
       new CronService({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         storePath,
         cronEnabled: true,
         defaultAgentId: "main",
         resolveSessionStorePath: () => sessionStorePath,
         log: logger,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
     const removingCron = createCron();
@@ -362,13 +368,14 @@ describe("CronService.remove session cleanup", () => {
     const { storePath } = await makeStorePath();
     const sessionStorePath = path.join(path.dirname(storePath), "sessions.json");
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       defaultAgentId: "main",
       resolveSessionStorePath: () => sessionStorePath,
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job = await cron.add({

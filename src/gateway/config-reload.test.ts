@@ -137,19 +137,19 @@ describe("diffConfigPaths", () => {
     expect(diffConfigPaths(prev, next)).toContain("bindings");
   });
 
-  it("collapses changed agent heartbeat entries to agents.entries", () => {
+  it("identifies changed per-agent model settings", () => {
     const prev = {
       agents: {
-        entries: { ops: { heartbeat: { every: "5m", lightContext: false } } },
+        entries: { ops: { model: { primary: "provider/first" } } },
       },
     };
     const next = {
       agents: {
-        entries: { ops: { heartbeat: { every: "5m", lightContext: true } } },
+        entries: { ops: { model: { primary: "provider/second" } } },
       },
     };
 
-    expect(diffConfigPaths(prev, next)).toEqual(["agents.entries.ops.heartbeat.lightContext"]);
+    expect(diffConfigPaths(prev, next)).toEqual(["agents.entries.ops.model.primary"]);
   });
 
   it("can emit duplicate path strings for install timestamp and dotted install id add", () => {
@@ -373,7 +373,6 @@ describe("buildGatewayReloadPlan", () => {
       path: "agents.defaults.model",
       restart: false,
       hot: "agents.defaults.model",
-      restartHeartbeat: true,
     },
     {
       path: "unknownField",
@@ -389,9 +388,6 @@ describe("buildGatewayReloadPlan", () => {
     if (testCase.hot) {
       expect(plan.hotReasons).toContain(testCase.hot);
       expect(resolveConfigReloadMetadata(testCase.path).kind).toBe("hot");
-    }
-    if (testCase.restartHeartbeat) {
-      expect(plan.restartHeartbeat).toBe(true);
     }
   });
 
@@ -425,23 +421,23 @@ describe("buildGatewayReloadPlan", () => {
     },
     {
       path: "models.providers.openai.models",
-      expected: { restartHeartbeat: true },
+      expected: {},
     },
     {
       path: "agents.defaults.models",
-      expected: { restartHeartbeat: true },
+      expected: {},
     },
     {
-      path: "agents.defaults.heartbeat.every",
-      expected: { restartHeartbeat: true },
+      path: "agents.defaults.model",
+      expected: {},
     },
     {
       path: "agents.defaults.modelPolicy.allow",
-      expected: { restartHeartbeat: true },
+      expected: {},
     },
     {
       path: "agents.entries",
-      expected: { restartHeartbeat: true },
+      expected: {},
     },
     {
       path: "plugins.entries.lossless-claw.config.mode",
@@ -475,13 +471,13 @@ describe("buildGatewayReloadPlan", () => {
   });
 
   it.each([
-    { path: "agents.entries", restartHeartbeat: true },
-    { path: "agents.ownership", restartHeartbeat: false },
-    { path: "agents.defaults.sessionStore", restartHeartbeat: false },
-    { path: "agents.defaults.sessionStore.agentId", restartHeartbeat: false },
-    { path: "session.scope", restartHeartbeat: false },
-    { path: "session.store", restartHeartbeat: false },
-  ])("refreshes only hook target policy for $path", ({ path, restartHeartbeat }) => {
+    { path: "agents.entries" },
+    { path: "agents.ownership" },
+    { path: "agents.defaults.sessionStore" },
+    { path: "agents.defaults.sessionStore.agentId" },
+    { path: "session.scope" },
+    { path: "session.store" },
+  ])("refreshes only hook target policy for $path", ({ path }) => {
     const plan = buildGatewayReloadPlan([path]);
 
     expect(plan).toMatchObject({
@@ -489,7 +485,6 @@ describe("buildGatewayReloadPlan", () => {
       refreshHooksPolicy: true,
       reloadHooks: false,
       restartGmailWatcher: false,
-      restartHeartbeat,
     });
     expect(isNoopGatewayReloadPlan(plan)).toBe(false);
   });
@@ -528,7 +523,6 @@ describe("buildGatewayReloadPlan", () => {
       restartReasons: [],
       hotReasons: [path],
       noopPaths: [],
-      restartHeartbeat: false,
       restartCron: false,
       reloadHooks: false,
       reloadPlugins: false,

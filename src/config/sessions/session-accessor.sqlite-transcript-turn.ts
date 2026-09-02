@@ -180,7 +180,13 @@ export async function appendExpectedSessionTranscriptTurn(
         : undefined;
       const appendedMessages: TranscriptMessageAppendResult<unknown>[] = [];
       for (const append of messages) {
-        const { shouldAppend: _shouldAppend, shouldAppendInTransaction, ...appendOptions } = append;
+        const {
+          shouldAppend: _shouldAppend,
+          shouldAppendInTransaction,
+          assertCommitAllowed,
+          ...appendOptions
+        } = append;
+        assertCommitAllowed?.();
         if (shouldAppendInTransaction) {
           const latestAssistant = findTranscriptEventInDatabase(
             transactionDb,

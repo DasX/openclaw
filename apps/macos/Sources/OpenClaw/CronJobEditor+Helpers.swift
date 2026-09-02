@@ -62,6 +62,7 @@ extension CronJobEditor {
 
         if let delivery = job.delivery {
             self.deliveryMode = delivery.mode == .announce ? .announce : .none
+            self.deliveryTarget = delivery.target ?? ""
             let trimmed = (delivery.channel ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             self.channel = trimmed.isEmpty ? "last" : trimmed
             self.to = delivery.to ?? ""
@@ -139,10 +140,28 @@ extension CronJobEditor {
         let mode = self.deliveryMode == .announce ? "announce" : "none"
         var delivery: [String: Any] = ["mode": mode]
         if self.deliveryMode == .announce {
-            let trimmed = self.channel.trimmingCharacters(in: .whitespacesAndNewlines)
-            delivery["channel"] = trimmed.isEmpty ? "last" : trimmed
-            let to = self.to.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !to.isEmpty { delivery["to"] = to }
+            if self.deliveryTarget == "owner" {
+                delivery["target"] = "owner"
+                // Updates merge: omitted fields would retain the old group/thread destination.
+                if self.job?.delivery?.to != nil { delivery["to"] = NSNull() }
+                if self.job?.delivery?.threadId != nil { delivery["threadId"] = NSNull() }
+                if let channel = self.job?.delivery?.channel {
+                    if self.job?.delivery?.accountId != nil, channel != "last" {
+                        delivery["channel"] = channel
+                    } else {
+                        delivery["channel"] = NSNull()
+                    }
+                }
+            } else {
+                if self.job?.delivery?.target != nil { delivery["target"] = NSNull() }
+                let trimmed = self.channel.trimmingCharacters(in: .whitespacesAndNewlines)
+                delivery["channel"] = trimmed.isEmpty ? "last" : trimmed
+                let to = self.to.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !to.isEmpty { delivery["to"] = to }
+            }
+            if let directPolicy = self.job?.delivery?.directPolicy {
+                delivery["directPolicy"] = directPolicy
+            }
             if self.bestEffortDeliver {
                 delivery["bestEffort"] = true
             } else if self.job?.delivery?.bestEffort == true {
@@ -152,7 +171,21 @@ extension CronJobEditor {
                 delivery["completionDestination"] = destination.mapValues(\.value)
             }
         }
-        if let threadId = self.job?.delivery?.threadId { delivery["threadId"] = threadId.value }
+        if self.deliveryMode != .announce || self.deliveryTarget != "owner",
+           let threadId = self.job?.delivery?.threadId
+        {
+            delivery["threadId"] = threadId.value
+        }
+        if let accountId = self.job?.delivery?.accountId {
+            let channelChanged = self.deliveryMode == .announce && self.deliveryTarget != "owner"
+                && self.channel
+                .trimmingCharacters(in: .whitespacesAndNewlines) != (self.job?.delivery?.channel ?? "last")
+            if channelChanged {
+                delivery["accountId"] = NSNull()
+            } else {
+                delivery["accountId"] = accountId
+            }
+        }
         if let destination = self.job?.delivery?.failureDestination {
             delivery["failureDestination"] = destination.mapValues(\.value)
         }

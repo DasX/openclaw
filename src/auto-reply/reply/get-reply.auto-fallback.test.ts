@@ -24,12 +24,14 @@ const mocks = vi.hoisted(() => ({
 
 registerGetReplyRuntimeOverrides(mocks);
 
-let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
+let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfigCore;
 let resolveDefaultModelMock: typeof import("./directive-handling.defaults.js").resolveDefaultModel;
 let runPreparedReplyMock: typeof import("./get-reply-run.js").runPreparedReply;
 
 async function loadGetReplyRuntimeForTest() {
-  ({ getReplyFromConfig } = await loadGetReplyModuleForTest({ cacheKey: import.meta.url }));
+  ({ getReplyFromConfigCore: getReplyFromConfig } = await loadGetReplyModuleForTest({
+    cacheKey: import.meta.url,
+  }));
   ({ resolveDefaultModel: resolveDefaultModelMock } =
     await import("./directive-handling.defaults.js"));
   ({ runPreparedReply: runPreparedReplyMock } = await import("./get-reply-run.js"));
@@ -238,7 +240,7 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     await expect(
       getReplyFromConfig(
         buildGetReplyCtx(),
-        { isHeartbeat: true, heartbeatModelOverride: "openai/gpt-5.5" },
+        { modelOverride: "openai/gpt-5.5" },
         makeReasoningModelConfig(),
       ),
     ).resolves.toEqual({ text: "ok" });
@@ -247,7 +249,7 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     expect(mocks.resolveReplyDirectives.mock.calls[0]?.[0]).toMatchObject({
       provider: "anthropic",
       model: "claude-fallback",
-      hasResolvedHeartbeatModelOverride: false,
+      hasResolvedTurnModelOverride: false,
     });
   });
 

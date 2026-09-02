@@ -48,7 +48,7 @@ registerGetReplyRuntimeOverrides(mocks);
 
 let state: OpenClawTestState;
 
-let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
+let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfigCore;
 let resolveAgentWorkspaceDirMock: typeof import("../../agents/agent-scope.js").resolveAgentWorkspaceDir;
 let resolveDefaultModelMock: typeof import("./directive-handling.defaults.js").resolveDefaultModel;
 let resolveChannelModelOverrideMock: typeof import("../../channels/model-overrides.js").resolveChannelModelOverride;
@@ -120,8 +120,7 @@ async function observeReplySelection(params: {
     buildGetReplyCtx({ SessionKey: sessionKey, ...fixture.ctx }),
     fixture.heartbeat
       ? {
-          isHeartbeat: true,
-          heartbeatModelOverride: turnModelRefLabel(TURN_MODEL_OVERRIDE_REF),
+          modelOverride: turnModelRefLabel(TURN_MODEL_OVERRIDE_REF),
         }
       : undefined,
     cfg,
@@ -137,7 +136,9 @@ async function observeReplySelection(params: {
 }
 
 beforeAll(async () => {
-  ({ getReplyFromConfig } = await loadGetReplyModuleForTest({ cacheKey: import.meta.url }));
+  ({ getReplyFromConfigCore: getReplyFromConfig } = await loadGetReplyModuleForTest({
+    cacheKey: import.meta.url,
+  }));
   ({ resolveAgentWorkspaceDir: resolveAgentWorkspaceDirMock } =
     await import("../../agents/agent-scope.js"));
   ({ resolveDefaultModel: resolveDefaultModelMock } =

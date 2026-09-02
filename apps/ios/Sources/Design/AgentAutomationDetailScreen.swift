@@ -371,10 +371,12 @@ struct AgentAutomationDetailScreen: View {
                 String(localized: "Session target"),
                 text: draft.sessionTarget,
                 prompt: "main, isolated, current, or session:<id>")
-            self.labeledField(
-                String(localized: "Wake mode"),
-                text: draft.wakeMode,
-                prompt: "now or next-heartbeat")
+            Picker(selection: draft.wakeMode) {
+                Text("Now").font(OpenClawType.body).tag("now")
+                Text("Next scheduled run").font(OpenClawType.body).tag("next-heartbeat")
+            } label: {
+                Text("Wake mode").font(OpenClawType.body)
+            }
             if self.job.delivery != nil || self.job.failurealert != nil {
                 Text("Delivery and failure routing remain visible and editable in the Control UI.")
                     .font(OpenClawType.caption)

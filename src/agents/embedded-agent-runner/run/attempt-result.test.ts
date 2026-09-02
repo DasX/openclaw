@@ -51,7 +51,6 @@ function completeResult(params?: {
       getAcceptedSessionSpawns: () => [],
       getAssistantTurnCount: () => 0,
       getCompactionCount: () => 0,
-      getHeartbeatToolResponse: () => undefined,
       getItemLifecycle: () => undefined,
       getLastAssistantTextMessageIndex: () => undefined,
       getLastCompactionTokensAfter: () => undefined,

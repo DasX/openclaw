@@ -12,7 +12,7 @@ import type {
   CronToolsAllowExecTarget,
   CronToolsAllowExecTargetRequirement,
 } from "./scheduled-tool-policy.js";
-import type { CronJobBase, CronPacing } from "./types-shared.js";
+import type { CronActiveHours, CronJobBase, CronPacing } from "./types-shared.js";
 
 export type { CronPacing } from "./types-shared.js";
 export type {
@@ -61,7 +61,7 @@ export type CronSchedule =
 /** Runtime target that decides whether a job joins main, isolated, or a named session. */
 type CronSessionTarget = "main" | "isolated" | "current" | `session:${string}`;
 
-/** Wake policy for main-session jobs waiting on heartbeat/user activity. */
+/** Deprecated v4 wake input; scheduled runs always execute their ordinary payload. */
 type CronWakeMode = "next-heartbeat" | "now";
 
 /** Messaging channel id accepted by cron delivery settings. */
@@ -73,6 +73,9 @@ export type CronDeliveryMode = "none" | "announce" | "webhook";
 /** Completion delivery configuration for cron job output. */
 export type CronDelivery = {
   mode: CronDeliveryMode;
+  /** Resolve the owner's current direct-message route at execution time. */
+  target?: "owner";
+  directPolicy?: "allow" | "block";
   channel?: CronMessageChannel;
   to?: string;
   /** Explicit thread/topic id for channels that support threaded delivery. */
@@ -110,6 +113,8 @@ type CronFailureDestinationPatch = {
 
 /** Partial delivery update shape; null clears optional delivery destinations or fields. */
 export type CronDeliveryPatch = Partial<Pick<CronDelivery, "mode" | "bestEffort">> & {
+  target?: "owner" | null;
+  directPolicy?: "allow" | "block" | null;
   channel?: CronMessageChannel | null;
   to?: string | null;
   threadId?: string | number | null;
@@ -130,7 +135,7 @@ export type CronDeliveryTraceTarget = {
   to?: string | null;
   accountId?: string;
   threadId?: string | number;
-  source?: "explicit" | "last";
+  source?: "explicit" | "last" | "owner";
 };
 
 /** Message-tool target that already sent to the cron delivery destination. */
@@ -240,6 +245,8 @@ export type CronRunOutcome = {
   error?: string;
   /** True once agent execution begins; retries after this point can replay side effects. */
   executionStarted?: boolean;
+  /** Internal admission outcome; preserves the unstarted occurrence's scheduled slot. */
+  admissionDeferred?: boolean;
   /** Optional classifier for execution errors to guide fallback behavior. */
   errorKind?: "delivery-target";
   errorClassification?: CronRunErrorClassification;
@@ -307,8 +314,7 @@ export type CronPayload =
   | (CronAgentTurnPayload & CronPayloadToolAllow)
   | (CronCommandPayload & CronPayloadToolAllow)
   | (CronScriptPayload & CronPayloadToolAllow)
-  // System-owned heartbeat monitor: execution requests an interval heartbeat
-  // wake. Gateway-converged only; not accepted from client create/patch APIs.
+  // Deprecated v4 report-only payload. Doctor converts it; runtime never executes it.
   | ({ kind: "heartbeat" } & CronPayloadToolAllow)
   // System-owned skill collection review: execution invokes the workshop
   // runner. Gateway-converged only; not accepted from client create/patch APIs.
@@ -325,10 +331,8 @@ export type CronPayloadPatch =
   | ({ kind: "heartbeat" } & CronPayloadToolAllowPatch)
   | ({ kind: "skillCollectionReview" } & CronPayloadToolAllowPatch);
 
-export function isSystemOwnedCronPayloadKind(
-  kind: unknown,
-): kind is "heartbeat" | "skillCollectionReview" {
-  return typeof kind === "string" && (kind === "heartbeat" || kind === "skillCollectionReview");
+export function isSystemOwnedCronPayloadKind(kind: unknown): kind is "skillCollectionReview" {
+  return kind === "skillCollectionReview";
 }
 
 type CronPayloadToolAllow = {
@@ -356,6 +360,8 @@ type CronAgentTurnPayloadFields = {
   externalContentSource?: HookExternalContentSource;
   /** If true, run with lightweight bootstrap context. */
   lightContext?: boolean;
+  /** Skip a present, explicitly empty checklist; missing scratch still runs. */
+  skipIfScratchEmpty?: boolean;
 };
 
 type CronAgentTurnPayload = {
@@ -591,11 +597,15 @@ export type CronJobPatch = Partial<
     | "owner"
     | "scheduledToolPolicy"
     | "pacing"
+    | "activeHours"
+    | "idleOnly"
     | "trigger"
   >
 > & {
   displayName?: string | null;
   pacing?: CronPacing | null;
+  activeHours?: CronActiveHours | null;
+  idleOnly?: boolean | null;
   trigger?: CronTrigger | null;
   payload?: CronPayloadPatch;
   delivery?: CronDeliveryPatch;

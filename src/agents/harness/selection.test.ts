@@ -920,7 +920,7 @@ describe("runAgentHarnessAttempt", () => {
         sessionKey: admission.sessionKey,
         storePath: admission.storePath,
       };
-      params.bootstrapContextRunKind = "heartbeat";
+      params.bootstrapContextRunKind = "cron";
       params.userTurnTranscriptRecorder =
         boundary === "missing admission" ? undefined : createTranscriptRecorder(admission);
       params.onContextEngineTurnCandidate = onContextEngineTurnCandidate;
@@ -931,7 +931,6 @@ describe("runAgentHarnessAttempt", () => {
         expect(onContextEngineTurnCandidate).toHaveBeenCalledWith(
           expect.objectContaining({
             boundary: { admission, terminal },
-            isHeartbeat: true,
             promptError: false,
             aborted: false,
             yieldAborted: false,
@@ -1027,7 +1026,6 @@ describe("runAgentHarnessAttempt", () => {
       contextEngineTurnAttemptMocks.drainPendingContextEngineTurnsBeforeRun,
     ).toHaveBeenCalledWith({
       admission,
-      isHeartbeat: false,
       lease,
       recorder: params.userTurnTranscriptRecorder,
       sessionTarget: undefined,

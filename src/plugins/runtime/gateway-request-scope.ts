@@ -11,6 +11,8 @@ import type { PluginRegistry } from "../registry-types.js";
 import type { OpenClawPluginNodeWorkspace } from "../types.node-host.js";
 
 type PluginRuntimeGatewayRequestScope = {
+  /** Exact registration and Gateway owner, retained across awaited system operations. */
+  assertSystemOwnerCurrent?: () => void;
   /** Exact placement owner captured before the local harness begins. */
   assertNodeExecutionCurrent?: (request: {
     runId: string;

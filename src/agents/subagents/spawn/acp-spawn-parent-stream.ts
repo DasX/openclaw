@@ -9,6 +9,10 @@ import {
   type AcpProjectionSettings,
 } from "../../../auto-reply/reply/acp-stream-settings.js";
 import {
+  enqueueSessionEventForHost as enqueueSessionEvent,
+  type SessionEventTarget,
+} from "../../../auto-reply/reply/session-event-handoff.js";
+import {
   resolveChannelStreamingProgressCommentary,
   type StreamingCompatEntry,
 } from "../../../channels/streaming.js";
@@ -17,10 +21,7 @@ import { onAgentEventForRun } from "../../../infra/agent-events.js";
 import {
   type EventSessionRoutingPolicy,
   resolveEventSessionKeyForPolicy,
-  scopedHeartbeatWakeOptionsForPolicy,
 } from "../../../infra/event-session-routing.js";
-import { requestHeartbeat } from "../../../infra/heartbeat-wake.js";
-import { enqueueSystemEvent } from "../../../infra/system-events.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { resolveNormalizedAccountEntry } from "../../../routing/account-lookup.js";
 import { normalizeAccountId } from "../../../routing/session-key.js";
@@ -158,6 +159,8 @@ export function startAcpSpawnParentStreamRelay(params: {
   childSessionKey: string;
   childSessionId?: string;
   agentId: string;
+  requesterAgentId: string;
+  expectedTarget: SessionEventTarget;
   env?: NodeJS.ProcessEnv;
   /**
    * Optional `session.mainKey` from the runtime config. Used to remap
@@ -322,37 +325,37 @@ export function startAcpSpawnParentStreamRelay(params: {
     mainKey: params.mainKey,
     sessionScope: params.sessionScope,
   };
-  const wake = () => {
-    if (!shouldSurfaceUpdates) {
-      return;
-    }
-    requestHeartbeat(
-      scopedHeartbeatWakeOptionsForPolicy(
-        parentSessionKey,
-        {
-          source: "acp-spawn",
-          intent: "event",
-          reason: "acp:spawn:stream",
-        },
-        eventRouting,
-      ),
-    );
-  };
+  const eventSessionKey = resolveEventSessionKeyForPolicy(parentSessionKey, eventRouting);
+  // The caller captures before runtime initialization/thread binding can await.
+  // agentId names the child; only the explicit requester owns the parent turn.
+  const { requesterAgentId, expectedTarget } = params;
+  const deliveryContext = structuredClone(params.deliveryContext);
   const emit = (text: string, contextKey: string) => {
-    const cleaned = text.trim();
+    const cleaned = truncate(text.trim(), STREAM_BUFFER_MAX_CHARS);
     if (!cleaned) {
       return;
     }
     logEvent("system_event", { contextKey, text: cleaned });
-    if (!shouldSurfaceUpdates) {
+    if (!shouldSurfaceUpdates || !requesterAgentId || !expectedTarget) {
       return;
     }
-    enqueueSystemEvent(cleaned, {
-      sessionKey: resolveEventSessionKeyForPolicy(parentSessionKey, eventRouting),
-      contextKey,
-      deliveryContext: params.deliveryContext,
-    });
-    wake();
+    try {
+      const receipt = enqueueSessionEvent(cleaned, {
+        agentId: requesterAgentId,
+        sessionKey: eventSessionKey,
+        source: "task",
+        contextKey,
+        deliveryContext,
+        expectedTarget,
+      });
+      void receipt.settled.then((outcome) => {
+        if (outcome.status !== "completed") {
+          log.warn("ACP parent relay follow-up failed", { runId, contextKey, ...outcome });
+        }
+      });
+    } catch (error) {
+      log.warn("ACP parent relay follow-up rejected", { runId, contextKey, error: String(error) });
+    }
   };
   const emitStartNotice = () => {
     recordTaskRunProgressByRunId({

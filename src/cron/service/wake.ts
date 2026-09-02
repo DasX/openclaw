@@ -1,10 +1,11 @@
+import type { SessionEventTarget } from "../../auto-reply/reply/session-event-contract.js";
 /** Manual cron wake helper for queueing system events into sessions. */
-import type { HeartbeatWakeRequest } from "../../infra/heartbeat-wake.js";
 import {
   isSubagentSessionKey,
   normalizeOptionalAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
+import { isProactiveJobCutoverPending } from "../proactive-job-receipt.js";
 import { resolveCronDeliverySessionKey } from "../session-target.js";
 import type { CronJob } from "../types.js";
 import type { CronServiceState } from "./state.js";
@@ -15,18 +16,6 @@ export function enqueueCronSystemEvent(
   opts?: Parameters<CronServiceState["deps"]["enqueueSystemEvent"]>[1],
 ) {
   return state.deps.enqueueSystemEvent(text, opts);
-}
-
-export function requestCronHeartbeat(
-  state: CronServiceState,
-  opts: Omit<HeartbeatWakeRequest, "source"> & { source?: HeartbeatWakeRequest["source"] },
-  retry?: Parameters<CronServiceState["deps"]["requestHeartbeat"]>[1],
-) {
-  if (retry) {
-    state.deps.requestHeartbeat({ source: "cron", ...opts }, retry);
-    return;
-  }
-  state.deps.requestHeartbeat({ source: "cron", ...opts });
 }
 
 /** Keeps safety notices with their creator and limits failure routes to explicit origins. */
@@ -46,29 +35,24 @@ export function enqueueCronNotification(
     sessionKey || (kind === "auto-disabled" && agentId)
       ? state.deps.resolveOriginDeliveryContext?.({ agentId, sessionKey })
       : undefined;
-  enqueueCronSystemEvent(state, text, {
+  if (!state.deps.enqueueSessionEvent) {
+    throw new Error("Session event execution is unavailable; restart the Gateway and retry");
+  }
+  state.deps.enqueueSessionEvent(text, {
     agentId,
     sessionKey,
     contextKey: `cron:${job.id}:${kind}`,
-    ...(deliveryContext ? { deliveryContext } : {}),
+    deliveryContext,
   });
-  if (kind === "auto-disabled" || job.wakeMode === "now" || sessionKey) {
-    requestCronHeartbeat(state, {
-      source: "notifications-event",
-      intent: "immediate",
-      reason: "wake",
-      agentId,
-      sessionKey,
-    });
-  }
 }
 
-/** Enqueues a manual cron wake event and optionally pokes the targeted heartbeat loop. */
+/** v4 wake adapter. Deferred input belongs to a concrete ordinary job, never next-user. */
 export function wake(
   state: CronServiceState,
   opts: {
     mode: "now" | "next-heartbeat";
     text: string;
+    expectedTarget?: SessionEventTarget;
     /**
      * Internal session key to enqueue the system event against. When omitted,
      * the dep resolves the configured system-agent target — wakes from a non-main
@@ -78,12 +62,7 @@ export function wake(
      * originating conversation lane.
      */
     sessionKey?: string;
-    /**
-     * Agent id paired with `sessionKey`. Forwarded to `enqueueSystemEvent`
-     * and the heartbeat request so multi-agent setups route to the agent
-     * that owns the targeted session — fixes the related half of #46886
-     * ("always routes to default agent").
-     */
+    /** Agent paired with the original session, not the ambient default agent. */
     agentId?: string;
   },
 ) {
@@ -98,32 +77,61 @@ export function wake(
   }
   // Carry the originating session's channel-correct delivery context (e.g. the
   // bound Telegram topic/thread) so a wake routes back into that thread instead
-  // of the chat root. Only attempt this when an origin session is targeted; a
-  // A no-origin wake keeps the empty option shape so the Gateway adapter can
+  // of the chat root. A no-origin wake keeps the empty option shape so the Gateway adapter can
   // resolve the current system-agent owner and session atomically.
   const originDeliveryContext =
-    sessionKey || agentId
+    opts.expectedTarget?.deliveryContext ??
+    (sessionKey || agentId
       ? state.deps.resolveOriginDeliveryContext?.({ sessionKey, agentId })
-      : undefined;
+      : undefined);
   const enqueueOpts =
     sessionKey || agentId
       ? {
           ...(sessionKey ? { sessionKey } : {}),
           ...(agentId ? { agentId } : {}),
           ...(originDeliveryContext ? { deliveryContext: originDeliveryContext } : {}),
+          ...(opts.expectedTarget ? { expectedTarget: opts.expectedTarget } : {}),
         }
       : undefined;
-  enqueueCronSystemEvent(state, text, enqueueOpts);
   if (opts.mode === "now" || sessionKey) {
-    // Scheduled heartbeats only inspect the agent's main session, so a targeted
-    // next-heartbeat event needs an immediate wake to avoid being stranded.
-    requestCronHeartbeat(state, {
-      source: "manual",
-      intent: "immediate",
-      reason: "wake",
-      ...(sessionKey ? { sessionKey } : {}),
-      ...(agentId ? { agentId } : {}),
-    });
+    if (!state.deps.enqueueSessionEvent) {
+      return {
+        ok: false,
+        reason: "Session event execution is unavailable; restart the Gateway",
+      } as const;
+    }
+    state.deps.enqueueSessionEvent(text, enqueueOpts);
+    return { ok: true } as const;
   }
+  const target = state.deps.resolveSessionEventTarget?.({ agentId });
+  const job = state.store?.jobs.find((candidate) => {
+    if (
+      !target?.agentId ||
+      !target.sessionKey ||
+      !candidate.enabled ||
+      isProactiveJobCutoverPending(state.deps.storePath, candidate) ||
+      candidate.state.autoDisabled ||
+      !["agentTurn", "systemEvent"].includes(candidate.payload.kind) ||
+      !(candidate.sessionTarget === "main" || candidate.sessionTarget.startsWith("session:")) ||
+      !Number.isFinite(candidate.state.nextRunAtMs)
+    ) {
+      return false;
+    }
+    const jobTarget = state.deps.resolveSessionEventTarget?.({
+      agentId: candidate.agentId,
+      sessionKey: candidate.sessionTarget.startsWith("session:")
+        ? candidate.sessionTarget.slice(8)
+        : undefined,
+    });
+    return jobTarget?.agentId === target.agentId && jobTarget.sessionKey === target.sessionKey;
+  });
+  if (!state.deps.cronEnabled || state.stopped || !job || !state.deps.deferSessionEvent) {
+    return {
+      ok: false,
+      reason:
+        "No enabled ordinary scheduled session job can receive this wake. Choose mode now or create an automation with a scheduled session turn.",
+    } as const;
+  }
+  state.deps.deferSessionEvent(text, job, opts.expectedTarget);
   return { ok: true } as const;
 }

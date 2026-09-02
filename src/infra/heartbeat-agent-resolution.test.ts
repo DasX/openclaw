@@ -1,54 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { resolveHeartbeatAgents } from "../commands/doctor-heartbeat-legacy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
-import { isHeartbeatOwnerUnresolved, resolveHeartbeatAgents } from "./heartbeat-config.js";
-import { isHeartbeatEnabledForAgent } from "./heartbeat-summary.js";
-
-describe("tryResolveAmbientHeartbeatAgentId", () => {
-  it.each([
-    {
-      name: "explicit heartbeat owner",
-      cfg: {
-        agents: {
-          ownership: "explicit",
-          entries: { main: {}, ops: {} },
-          defaults: {
-            heartbeat: { agentId: "ops" },
-            systemAgent: { agentId: "main" },
-          },
-        },
-      } as OpenClawConfig,
-      expected: "ops",
-    },
-    {
-      name: "system owner",
-      cfg: {
-        agents: {
-          ownership: "explicit",
-          entries: { main: {}, ops: {} },
-          defaults: { systemAgent: { agentId: "ops" } },
-        },
-      } as OpenClawConfig,
-      expected: "ops",
-    },
-    {
-      name: "sole agent",
-      cfg: {
-        agents: { ownership: "explicit", entries: { solo: {} } },
-      } as OpenClawConfig,
-      expected: "solo",
-    },
-    {
-      name: "ownerless explicit multi-agent roster",
-      cfg: {
-        agents: { ownership: "explicit", entries: { main: {}, ops: {} } },
-      } as OpenClawConfig,
-      expected: undefined,
-    },
-  ])("resolves the $name", ({ cfg, expected }) => {
-    expect(tryResolveAmbientHeartbeatAgentId(cfg)).toBe(expected);
-  });
-});
 
 describe("resolveHeartbeatAgents", () => {
   const systemOwnedConfig = {
@@ -66,16 +18,10 @@ describe("resolveHeartbeatAgents", () => {
     expect(resolveHeartbeatAgents(systemOwnedConfig)).toEqual([
       { agentId: "ops", heartbeat: undefined },
     ]);
-    expect(isHeartbeatEnabledForAgent(systemOwnedConfig, "ops")).toBe(true);
-    expect(isHeartbeatEnabledForAgent(systemOwnedConfig, "main")).toBe(false);
-    expect(isHeartbeatOwnerUnresolved(systemOwnedConfig)).toBe(false);
   });
 
   it("disables ambient heartbeats when an explicit multi-agent roster has no owner", () => {
     expect(resolveHeartbeatAgents(ownerlessConfig)).toEqual([]);
-    expect(isHeartbeatEnabledForAgent(ownerlessConfig)).toBe(false);
-    expect(isHeartbeatEnabledForAgent(ownerlessConfig, "ops")).toBe(false);
-    expect(isHeartbeatOwnerUnresolved(ownerlessConfig)).toBe(true);
   });
 
   it.each([
@@ -138,8 +84,5 @@ describe("resolveHeartbeatAgents", () => {
   ])("enrolls exactly the runnable agents for the $name config", ({ cfg, expectedAgentIds }) => {
     const agents = resolveHeartbeatAgents(cfg);
     expect(agents.map((agent) => agent.agentId)).toEqual(expectedAgentIds);
-    for (const agentId of Object.keys(cfg.agents?.entries ?? {})) {
-      expect(isHeartbeatEnabledForAgent(cfg, agentId)).toBe(expectedAgentIds.includes(agentId));
-    }
   });
 });

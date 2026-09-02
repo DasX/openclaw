@@ -17,7 +17,7 @@ Under the hood the main session is an ordinary session with the canonical key
 `agent:<agentId>:main` (for example `agent:main:main`). The suffix is fixed;
 custom `session.mainKey` values are ignored. What makes it special
 is that the default DM scope collapses all direct messages into it, and that
-the rest of the system treats it as the agent's root: heartbeats wake it,
+the rest of the system treats it as the agent's root: scheduled jobs can target it,
 background work reports back to it, and activity elsewhere flows up to it.
 
 ## Home
@@ -58,15 +58,18 @@ world converges:
   group and room sessions stay isolated while the main session automatically watches them.
   Activity queues up as compact notices — coalesced per conversation, never
   one wake-up per message — and the agent sees them the next time it runs: on
-  your next message or on a scheduled heartbeat. Under the default `agent`
+  your next message, an admitted session follow-up, or a scheduled job targeting
+  the main session. Under the default `agent`
   visibility, the main session can use session tools across every session of
   the same agent; its system prompt names watched groups so it knows where
   recent activity happened.
 - **Background work.** Sub-agents and spawned sessions announce their results
   back to the session that started them, so work the agent kicked off from
   Home reports back to Home.
-- **Heartbeats.** Scheduled heartbeats target the main session, which is what
-  turns queued notices into awareness even when you have not written anything.
+- **Scheduled monitoring.** Ordinary cron jobs can target the main session to
+  review queued notices even when you have not written anything. Each job owns
+  its schedule and delivery settings; immediate background follow-ups do not
+  depend on monitoring or cron being enabled.
 
 ## Memory across resets and conversations
 

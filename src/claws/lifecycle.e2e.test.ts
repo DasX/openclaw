@@ -109,10 +109,10 @@ describe("claws lifecycle cli e2e", () => {
       summary: {
         totalActions: 5,
         agentActions: 1,
-        workspaceActions: 4,
+        workspaceActions: 3,
         packageActions: 0,
         mcpServerActions: 0,
-        cronJobActions: 0,
+        cronJobActions: 1,
         blockedActions: 0,
       },
       blockers: [],
@@ -198,7 +198,6 @@ describe("claws lifecycle cli e2e", () => {
       agent: { finalId: "workspace-agent", workspace },
       workspaceFiles: [
         expect.objectContaining({ path: "SOUL.md" }),
-        expect.objectContaining({ path: "HEARTBEAT.md" }),
         expect.objectContaining({ path: "reference/policy.md" }),
       ],
       installRecord: { agentId: "workspace-agent", status: "complete" },
@@ -206,9 +205,9 @@ describe("claws lifecycle cli e2e", () => {
     await expect(readFile(join(workspace, "SOUL.md"), "utf8")).resolves.toContain(
       "Incident Response",
     );
-    await expect(readFile(join(workspace, "HEARTBEAT.md"), "utf8")).resolves.toContain(
-      "Incident Heartbeat",
-    );
+    await expect(readFile(join(workspace, "HEARTBEAT.md"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     await expect(readFile(join(workspace, "reference", "policy.md"), "utf8")).resolves.toContain(
       "operator settings",
     );
@@ -278,7 +277,6 @@ describe("claws lifecycle cli e2e", () => {
     const canonicalStateDir = await realpath(added.stateDir);
     expect(config.agents).toEqual({
       defaults: {
-        heartbeat: { agentId: "main" },
         systemAgent: { agentId: "main" },
       },
       entries: { main: { workspace: join(canonicalStateDir, "workspace") } },
@@ -361,7 +359,6 @@ describe("claws lifecycle cli e2e", () => {
       agent: { finalId: "workspace-agent" },
       workspaceFiles: [
         expect.objectContaining({ path: "SOUL.md" }),
-        expect.objectContaining({ path: "HEARTBEAT.md" }),
         expect.objectContaining({ path: "reference/policy.md" }),
       ],
     });

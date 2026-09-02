@@ -1930,6 +1930,46 @@ describe("gateway/node-registry", () => {
     expect(onDispatchReady).not.toHaveBeenCalled();
   });
 
+  it("captures the requester generation before asynchronous pairing and consumes one exact terminal occurrence", async () => {
+    const pairing = createDeferred<{ identity: string; generation: string }>();
+    let sessionId = "original-session";
+    const captureSystemRunEventTarget = vi.fn((sessionKey) => ({
+      agentId: "main",
+      sessionKey,
+      sessionId,
+      lifecycleRevision: "original-revision",
+      generation: "process",
+    }));
+    const registry = createNodeRegistry({
+      resolveCurrentPairingState: () => pairing.promise,
+      captureSystemRunEventTarget,
+    });
+    const frames: string[] = [];
+    registerNodeSession(registry, makeClient("conn-1", "node-1", frames), {
+      pairingGeneration: "generation-a",
+    });
+    const pending = registry.invoke({
+      nodeId: "node-1",
+      command: "system.run",
+      params: {
+        runId: "captured-run",
+        sessionKey: "agent:main:main",
+      },
+    });
+    expect(captureSystemRunEventTarget).toHaveBeenCalledExactlyOnceWith("agent:main:main");
+    sessionId = "replacement-session";
+    pairing.resolve({ identity: "identity-a", generation: "generation-a" });
+    await vi.waitFor(() => expect(frames).toHaveLength(1));
+    const occurrence = authorizeSystemRun(registry, { runId: "captured-run" });
+    expect(occurrence).toMatchObject({
+      runId: "captured-run",
+      expectedTarget: { sessionId: "original-session", lifecycleRevision: "original-revision" },
+    });
+    expect(authorizeSystemRun(registry, { runId: "captured-run" })).toBe(false);
+    registry.unregister("conn-1");
+    await pending;
+  });
+
   it("matches pending system.run events to the issuing connection", async () => {
     const registry = createTestNodeRegistry();
     const frames = registerLinuxNode(registry);
@@ -1943,7 +1983,7 @@ describe("gateway/node-registry", () => {
         runId: "run-1",
         terminal: false,
       }),
-    ).toBe(true);
+    ).toMatchObject({ runId: expect.any(String), sessionKey: "agent:main:main" });
     expect(
       authorizeSystemRun(registry, {
         connId: "conn-other",
@@ -1975,7 +2015,7 @@ describe("gateway/node-registry", () => {
         runId: "run-1",
         terminal: true,
       }),
-    ).toBe(true);
+    ).toMatchObject({ runId: expect.any(String), sessionKey: "agent:main:main" });
     expect(
       authorizeSystemRun(registry, {
         runId: "run-1",
@@ -2011,7 +2051,7 @@ describe("gateway/node-registry", () => {
         authorizeSystemRun(registry, {
           runId: "run-timeout",
         }),
-      ).toBe(true);
+      ).toMatchObject({ runId: expect.any(String), sessionKey: "agent:main:main" });
     } finally {
       vi.useRealTimers();
     }
@@ -3197,7 +3237,10 @@ describe("gateway/node-registry", () => {
       sessionKey: "agent:main:main",
     });
 
-    expect(authorizeSystemRun(registry)).toBe(true);
+    expect(authorizeSystemRun(registry)).toMatchObject({
+      runId: expect.any(String),
+      sessionKey: "agent:main:main",
+    });
     registry.unregister("conn-1");
     void invoke.catch(() => {});
   });
@@ -3229,7 +3272,7 @@ describe("gateway/node-registry", () => {
       authorizeSystemRun(registry, {
         runId: forwarded.runId as string,
       }),
-    ).toBe(true);
+    ).toMatchObject({ runId: expect.any(String), sessionKey: "agent:main:main" });
     registry.unregister("conn-1");
     void invoke.catch(() => {});
   });
@@ -3277,7 +3320,7 @@ describe("gateway/node-registry", () => {
       authorizeSystemRun(registry, {
         runId: "legacy-runtime-run",
       }),
-    ).toBe(true);
+    ).toMatchObject({ runId: expect.any(String), sessionKey: "agent:main:main" });
     registry.unregister("conn-1");
     void invoke.catch(() => {});
   });
@@ -3310,7 +3353,12 @@ describe("gateway/node-registry", () => {
       authorizeSystemRun(registry, {
         runId: "run-without-session",
       }),
-    ).toBe(true);
+    ).toEqual({
+      runId: "run-without-session",
+      nodeId: "node-1",
+      connId: "conn-1",
+      expiresAtMs: null,
+    });
     registry.unregister("conn-1");
     void invoke.catch(() => {});
   });
@@ -3637,7 +3685,9 @@ describe("gateway/node-registry", () => {
     });
     const request = JSON.parse(frames[0] ?? "{}") as { payload?: { id?: string } };
     const invokeId = request.payload?.id ?? "";
-    expect(authorizeSystemRun(registry, { runId: "run-generation", terminal: false })).toBe(true);
+    expect(
+      authorizeSystemRun(registry, { runId: "run-generation", terminal: false }),
+    ).toMatchObject({ runId: expect.any(String), sessionKey: "agent:main:main" });
 
     registry.updateSurface(
       "node-1",

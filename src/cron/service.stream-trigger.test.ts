@@ -17,12 +17,13 @@ async function createHarness(fire: boolean) {
     async (): Promise<{ status: "ok" | "error"; error?: string }> => ({ status: "ok" }),
   );
   const cron = new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath,
     cronEnabled: true,
     cronConfig: { triggers: { enabled: true } },
     log: logger,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
+    enqueueSessionEvent: vi.fn(),
     evaluateCronTrigger,
     runIsolatedAgentJob,
   });
@@ -99,14 +100,15 @@ describe("cron stream trigger composition", () => {
 
   it("appends the gate message and batch to a main-session system event", async () => {
     const { storePath } = await makeStorePath();
-    const enqueueSystemEvent = vi.fn();
+    const runSessionEvent = vi.fn(async () => ({ status: "ok" as const, executionStarted: true }));
     const cron = new CronService({
+      runSessionEvent,
       storePath,
       cronEnabled: true,
       cronConfig: { triggers: { enabled: true } },
       log: logger,
-      enqueueSystemEvent,
-      requestHeartbeat: vi.fn(),
+      enqueueSystemEvent: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       evaluateCronTrigger: vi.fn(async () => ({
         kind: "evaluated" as const,
         fire: true,
@@ -130,9 +132,8 @@ describe("cron stream trigger composition", () => {
         streamBatch: "firing batch",
         payload: job.payload,
       });
-      expect(enqueueSystemEvent).toHaveBeenCalledWith(
-        "base\n\ngate message\n\nfiring batch",
-        expect.any(Object),
+      expect(runSessionEvent).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ text: "base\n\ngate message\n\nfiring batch" }),
       );
     } finally {
       cron.stop();
@@ -143,12 +144,13 @@ describe("cron stream trigger composition", () => {
     const { storePath } = await makeStorePath();
     const runScriptJob = vi.fn(async () => ({ status: "ok" as const }));
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       cronConfig: { triggers: { enabled: true } },
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       runScriptJob,
     });
@@ -199,6 +201,7 @@ describe("cron stream trigger composition", () => {
       async () => undefined,
     );
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       cronConfig: {
@@ -207,7 +210,7 @@ describe("cron stream trigger composition", () => {
       },
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "error" as const, error: "boom" })),
       sendCronFailureAlert,
     });
@@ -260,12 +263,13 @@ describe("cron stream trigger composition", () => {
     const { storePath } = await makeStorePath();
     const onTriggerDisposition = vi.fn();
     const cron = new CronService({
+      runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
       storePath,
       cronEnabled: true,
       cronConfig: { triggers: { enabled: true } },
       log: logger,
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
+      enqueueSessionEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({
         status: "skipped" as const,
         error: "runner unavailable",

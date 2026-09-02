@@ -6,7 +6,6 @@ import type { ChannelApprovalKind } from "openclaw/plugin-sdk/approval-handler-r
 import { parseExecApprovalCommandText } from "openclaw/plugin-sdk/approval-reply-runtime";
 import { resolveCommandAuthorization } from "openclaw/plugin-sdk/command-auth-native";
 import { isApprovalNotFoundError } from "openclaw/plugin-sdk/error-runtime";
-import { requestHeartbeat } from "openclaw/plugin-sdk/heartbeat-runtime";
 import {
   parseStrictFiniteNumber,
   timestampMsToIsoString,
@@ -16,7 +15,6 @@ import {
   normalizeOptionalString,
   normalizeUniqueTrimmedStringList,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { enqueueRoutedSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import {
   decodeSlackApprovalAction,
   SLACK_APPROVAL_HEADER_BLOCK_ID,
@@ -35,6 +33,7 @@ import {
   SLACK_REPLY_SELECT_ACTION_ID,
   SLACK_SESSION_LINK_ACTION_ID,
 } from "../../reply-action-ids.js";
+import { getSlackRuntime } from "../../runtime.js";
 import { formatSlackTarget } from "../../target-parsing.js";
 import { truncateSlackText } from "../../truncate.js";
 import {
@@ -1002,25 +1001,27 @@ function enqueueSlackBlockActionEvent(params: {
     normalizeOptionalString(params.parsed.typedActionWithText.action_ts) ??
       params.parsed.typedBody.trigger_id,
   ].filter(Boolean);
-  const queued = enqueueRoutedSystemEvent(params.formatSystemEvent(eventPayload), route, {
-    contextKey: contextParts.join(":"),
-    deliveryContext: {
-      channel: "slack",
-      to: deferredTarget?.target,
-      accountId: params.ctx.accountId,
-      threadId: params.parsed.threadTs,
-    },
-  });
-  if (queued) {
-    requestHeartbeat({
-      source: "hook",
-      intent: "immediate",
-      reason: "hook:slack-interaction",
+  const receipt = getSlackRuntime().system.enqueueSessionEvent(
+    params.formatSystemEvent(eventPayload),
+    {
       agentId: route.agentId,
       sessionKey: route.sessionKey,
-      heartbeat: { target: "last" },
-    });
-  }
+      contextKey: contextParts.join(":"),
+      deliveryContext: {
+        channel: "slack",
+        to: deferredTarget?.target,
+        accountId: params.ctx.accountId,
+        threadId: params.parsed.threadTs,
+      },
+    },
+  );
+  void receipt.settled.then((outcome) => {
+    if (outcome.status !== "completed") {
+      params.ctx.runtime.log?.(
+        `slack:interaction follow-up ${outcome.status}: ${outcome.error ?? "cancelled"}`,
+      );
+    }
+  });
 }
 
 function buildSlackConfirmationBlocks(params: {

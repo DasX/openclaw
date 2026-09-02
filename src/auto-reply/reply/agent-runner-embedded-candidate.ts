@@ -104,7 +104,6 @@ export async function runEmbeddedFallbackCandidate(
     turn.runtimePolicySessionKey ?? embeddedContext.sessionKey;
   const messageActionTurnCapability =
     isTrustedMessageActionTurnIngress(turn.sessionCtx.Provider) &&
-    !turn.isHeartbeat &&
     embeddedContext.agentId &&
     messageActionCapabilitySessionKey &&
     embeddedContext.messageProvider &&
@@ -166,7 +165,11 @@ export async function runEmbeddedFallbackCandidate(
         messageActionTurnCapability,
         lifecycleGeneration: params.getLifecycleGeneration(),
         allowGatewaySubagentBinding: true,
-        trigger: turn.isHeartbeat ? "heartbeat" : "user",
+        trigger: turn.followupRun.run.scheduledAutomation
+          ? "cron"
+          : turn.opts?.internalEventExecution
+            ? "event"
+            : "user",
         cronCreatorAuthorityCapability: turn.opts?.cronCreatorAuthorityCapability,
         cronCreatorAuthorityUnavailableReason:
           turn.opts?.turnAdoptionLifecycle?.cronCreatorAuthorityUnavailable,
@@ -199,10 +202,17 @@ export async function runEmbeddedFallbackCandidate(
         explicitSkillSelections: turn.followupRun.explicitSkillSelections,
         extraSystemPrompt: turn.followupRun.run.extraSystemPrompt,
         sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
-        forceMessageTool: turn.followupRun.run.sourceReplyDeliveryMode === "message_tool_only",
-        // Heartbeat ambient routes are delivery context, never implicit message recipients.
-        // Omit false so subagent sessions keep their downstream default.
-        ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+        forceMessageTool:
+          turn.followupRun.run.scheduledAutomation?.sourceDelivery?.messageTool.force ??
+          turn.followupRun.run.sourceReplyDeliveryMode === "message_tool_only",
+        ...(turn.followupRun.run.scheduledAutomation
+          ? {
+              requireExplicitMessageTarget: true,
+              disableMessageTool:
+                turn.followupRun.run.scheduledAutomation.sourceDelivery?.messageTool.enabled ===
+                false,
+            }
+          : {}),
         silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
         suppressNextUserMessagePersistence: params.suppressQueuedUserPersistenceForCandidate,
         onUserMessagePersisted: params.notifyUserMessagePersisted,
@@ -226,8 +236,6 @@ export async function runEmbeddedFallbackCandidate(
           turn.followupRun,
           toolAuthorityRoute,
         ),
-        enableHeartbeatTool: turn.opts?.enableHeartbeatTool,
-        forceHeartbeatTool: turn.opts?.forceHeartbeatTool,
         bootstrapContextMode: turn.opts?.bootstrapContextMode,
         bootstrapContextRunKind: params.bootstrapContextRunKind,
         images: params.currentTurnImages.images,

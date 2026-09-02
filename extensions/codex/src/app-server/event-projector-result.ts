@@ -1,7 +1,6 @@
 import {
   classifyAgentHarnessTerminalOutcome,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
-  type HeartbeatToolResponse,
   type MessagingToolSend,
   type MessagingToolSourceReplyPayload,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -28,7 +27,6 @@ export type CodexAppServerToolTelemetry = {
   messagingToolSentMediaUrls: string[];
   messagingToolSentTargets: MessagingToolSend[];
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
-  heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
   toolAutoDeliveryMediaUrls?: string[];
   coreTtsToolResults?: object[];
@@ -219,7 +217,6 @@ export function buildCodexAttemptResult(
     messagingToolSentMediaUrls: input.toolTelemetry.messagingToolSentMediaUrls,
     messagingToolSentTargets: input.toolTelemetry.messagingToolSentTargets,
     messagingToolSourceReplyPayloads: input.toolTelemetry.messagingToolSourceReplyPayloads ?? [],
-    heartbeatToolResponse: input.toolTelemetry.heartbeatToolResponse,
     toolMediaUrls: input.generatedMediaProjection.buildToolMediaUrls(input.toolTelemetry),
     hostOwnedToolMediaUrls: input.generatedMediaProjection.buildHostOwnedMediaUrls(
       input.toolTelemetry,

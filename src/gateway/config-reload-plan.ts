@@ -25,7 +25,6 @@ export type GatewayReloadPlan = {
   refreshHooksPolicy?: boolean;
   restartGmailWatcher: boolean;
   restartCron: boolean;
-  restartHeartbeat: boolean;
   reconcileSkillReviewJobs?: boolean;
   restartHealthMonitor: boolean;
   reloadPlugins: boolean;
@@ -44,7 +43,6 @@ export function isNoopGatewayReloadPlan(plan: GatewayReloadPlan): boolean {
     !plan.refreshHooksPolicy &&
     !plan.restartGmailWatcher &&
     !plan.restartCron &&
-    !plan.restartHeartbeat &&
     !plan.reconcileSkillReviewJobs &&
     !plan.restartHealthMonitor &&
     !plan.reloadPlugins &&
@@ -70,7 +68,6 @@ type ReloadAction =
   | "refresh-hooks-policy"
   | "restart-gmail-watcher"
   | "restart-cron"
-  | "restart-heartbeat"
   | "reconcile-skill-review-jobs"
   | "restart-health-monitor"
   | "reload-plugins"
@@ -98,11 +95,6 @@ const BASE_RELOAD_RULES: ReloadRule[] = [
   { prefix: "hooks.gmail", kind: "hot", actions: ["restart-gmail-watcher"] },
   { prefix: "hooks", kind: "hot", actions: ["reload-hooks"] },
   {
-    prefix: "agents.defaults.heartbeat",
-    kind: "hot",
-    actions: ["restart-heartbeat"],
-  },
-  {
     prefix: "agents.defaults.sessionStore",
     kind: "hot",
     actions: ["refresh-hooks-policy"],
@@ -111,30 +103,25 @@ const BASE_RELOAD_RULES: ReloadRule[] = [
   {
     prefix: "agents.defaults.models",
     kind: "hot",
-    actions: ["restart-heartbeat"],
   },
   {
     prefix: "agents.defaults.modelPolicy",
     kind: "hot",
-    actions: ["restart-heartbeat"],
   },
   {
     prefix: "agents.defaults.model",
     kind: "hot",
-    actions: ["restart-heartbeat"],
   },
   {
     prefix: "models",
     kind: "hot",
-    actions: ["restart-heartbeat"],
   },
   {
     prefix: "agents.entries",
     kind: "hot",
-    actions: ["restart-heartbeat", "refresh-hooks-policy"],
+    actions: ["refresh-hooks-policy"],
   },
   { prefix: "agents.ownership", kind: "hot", actions: ["refresh-hooks-policy"] },
-  { prefix: "agent.heartbeat", kind: "hot", actions: ["restart-heartbeat"] },
   {
     prefix: "skills.workshop.autonomous.mode",
     kind: "hot",
@@ -427,7 +414,6 @@ export function buildGatewayReloadPlan(
     reloadHooks: false,
     restartGmailWatcher: false,
     restartCron: false,
-    restartHeartbeat: false,
     reconcileSkillReviewJobs: false,
     restartHealthMonitor: false,
     reloadPlugins: false,
@@ -485,9 +471,6 @@ export function buildGatewayReloadPlan(
         break;
       case "restart-cron":
         plan.restartCron = true;
-        break;
-      case "restart-heartbeat":
-        plan.restartHeartbeat = true;
         break;
       case "reconcile-skill-review-jobs":
         plan.reconcileSkillReviewJobs = true;

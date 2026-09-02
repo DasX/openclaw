@@ -79,6 +79,7 @@ describe("cron quiet task finalization", () => {
           return finalize(params);
         });
       const state = createCronServiceState({
+        runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
         defaultAgentId: "main",
         storePath,
         cronEnabled: true,
@@ -86,7 +87,7 @@ describe("cron quiet task finalization", () => {
         log: logger,
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
+        enqueueSessionEvent: vi.fn(),
         evaluateCronTrigger: vi.fn(async () => {
           if (mode.startsWith("retired")) {
             advanceCronActiveJobGeneration();

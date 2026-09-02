@@ -4,6 +4,7 @@ import { resolveCronTriggerMinIntervalMs } from "../../config/cron-limits.js";
 import type { CronConfig } from "../../config/types.cron.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { compileSafeRegexDetailed } from "../../security/safe-regex.js";
+import { assertCronActiveHours } from "../active-hours.js";
 import { resolveCronDeliveryPlan } from "../delivery-plan.js";
 import { parseCronPacingBounds } from "../pacing.js";
 import { parseAbsoluteTimeMs } from "../parse.js";
@@ -15,6 +16,34 @@ import {
   type CronJobPatch,
 } from "../types.js";
 import { normalizeHttpWebhookUrl } from "../webhook-url.js";
+
+export function assertExecutionPolicy(job: Pick<CronJob, "activeHours" | "idleOnly" | "delivery">) {
+  if (job.activeHours !== undefined) {
+    assertCronActiveHours(job.activeHours);
+  }
+  if (job.idleOnly !== undefined && typeof job.idleOnly !== "boolean") {
+    throw new Error("cron idleOnly must be a boolean");
+  }
+  const delivery = job.delivery;
+  if (delivery?.target !== undefined && delivery.target !== "owner") {
+    throw new Error('cron delivery.target must be "owner"');
+  }
+  if (
+    delivery?.directPolicy !== undefined &&
+    delivery.directPolicy !== "allow" &&
+    delivery.directPolicy !== "block"
+  ) {
+    throw new Error('cron delivery.directPolicy must be "allow" or "block"');
+  }
+  if (
+    delivery?.target === "owner" &&
+    (delivery.to !== undefined || delivery.threadId !== undefined || delivery.mode === "webhook")
+  ) {
+    throw new Error(
+      "cron owner delivery cannot specify a recipient, thread, or webhook; the owner DM is resolved at execution time",
+    );
+  }
+}
 
 function assertCronScriptSyntax(script: string, subject: "script payload" | "trigger script") {
   if (!script.trim()) {
@@ -32,6 +61,11 @@ function assertCronScriptSyntax(script: string, subject: "script payload" | "tri
 export function assertSupportedJobSpec(
   job: Pick<CronJob, "schedule" | "sessionTarget" | "payload">,
 ) {
+  if (job.payload.kind === "heartbeat") {
+    throw new Error(
+      "Retired heartbeat job: run openclaw doctor --fix to convert it to an ordinary automation",
+    );
+  }
   if (typeof job.sessionTarget !== "string") {
     throw new Error(
       'cron job is missing sessionTarget; expected "main", "isolated", "current", or "session:<id>"',
@@ -287,6 +321,7 @@ export function assertAnnounceDeliveryChannelSupport(
     (plan.channel !== undefined && plan.channel !== "last") ||
     targetMaySelectChannel ||
     job.delivery?.bestEffort === true ||
+    job.delivery?.target === "owner" ||
     channels.length < 2
   ) {
     return;

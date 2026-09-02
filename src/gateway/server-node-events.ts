@@ -8,6 +8,10 @@ import {
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { validateNodePresenceActivityPayload } from "../../packages/gateway-protocol/src/index.js";
 import { resolveSessionAgentId as defaultResolveSessionAgentId } from "../agents/agent-scope.js";
+import {
+  captureSessionEventTargetForHost as captureSessionEventTargetDefault,
+  enqueueSessionEventForHost as enqueueSessionEventDefault,
+} from "../auto-reply/reply/session-event-handoff.js";
 import { sendDurableMessageBatchCore } from "../channels/message/runtime.js";
 import { normalizeChannelId as defaultNormalizeChannelId } from "../channels/plugins/index.js";
 import { createOutboundSendDeps } from "../cli/outbound-send-deps.js";
@@ -22,12 +26,6 @@ import {
   type NodePairingGeneration,
 } from "../infra/device-pairing.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import {
-  resolveEventSessionKeyForPolicy,
-  resolveEventSessionRoutingPolicy,
-  scopedHeartbeatWakeOptionsForPolicy,
-} from "../infra/event-session-routing.js";
-import { requestHeartbeat as defaultRequestHeartbeat } from "../infra/heartbeat-wake.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
@@ -36,7 +34,10 @@ import {
   registerApnsRegistration as defaultRegisterApnsRegistration,
 } from "../infra/push-apns.js";
 import { withSystemEventOwner as defaultWithSystemEventOwner } from "../infra/system-event-ownership.js";
-import { enqueueSystemEvent as defaultEnqueueSystemEvent } from "../infra/system-events.js";
+import {
+  enqueueSystemEvent as defaultEnqueueSystemEvent,
+  enqueueSystemEventEntry as defaultEnqueueSystemEventEntry,
+} from "../infra/system-events.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import { deleteMediaBuffer } from "../media/store.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../process/gateway-work-admission.js";
@@ -73,6 +74,7 @@ function resolveDefaultServerNodeEventDependencies() {
     defaultRuntime,
     deleteMediaBuffer,
     enqueueSystemEvent: defaultEnqueueSystemEvent,
+    enqueueSystemEventEntry: defaultEnqueueSystemEventEntry,
     formatForLog: defaultFormatForLog,
     getRuntimeConfig: defaultGetRuntimeConfig,
     INLINE_IMAGE_DURABLE_OMISSION_MARKER: DEFAULT_INLINE_IMAGE_DURABLE_OMISSION_MARKER,
@@ -84,7 +86,8 @@ function resolveDefaultServerNodeEventDependencies() {
     parseMessageWithAttachments: defaultParseMessageWithAttachments,
     persistInboundImagesForTranscript: defaultPersistInboundImagesForTranscript,
     registerApnsRegistration: defaultRegisterApnsRegistration,
-    requestHeartbeat: defaultRequestHeartbeat,
+    captureSessionEventTarget: captureSessionEventTargetDefault,
+    enqueueSessionEvent: enqueueSessionEventDefault,
     resolveChatAttachmentMaxBytes: defaultResolveChatAttachmentMaxBytes,
     resolveGatewayModelSupportsImages: defaultResolveGatewayModelSupportsImages,
     resolveOutboundTarget,
@@ -607,6 +610,7 @@ export const handleNodeEvent = async (
   const {
     ApnsRegistrationPairingChangedError,
     enqueueSystemEvent,
+    enqueueSystemEventEntry,
     formatForLog,
     getRuntimeConfig,
     INLINE_IMAGE_DURABLE_OMISSION_MARKER,
@@ -618,7 +622,8 @@ export const handleNodeEvent = async (
     parseMessageWithAttachments,
     persistInboundImagesForTranscript,
     registerApnsRegistration,
-    requestHeartbeat,
+    captureSessionEventTarget,
+    enqueueSessionEvent,
     resolveChatAttachmentMaxBytes,
     resolveGatewayModelSupportsImages,
     resolveSessionAgentId,
@@ -1011,23 +1016,41 @@ export const handleNodeEvent = async (
         }
       }
 
-      const eventOptions = {
-        sessionKey,
-        contextKey: `notification:${keyRaw}`,
-      };
-      const queued = enqueueSystemEvent(
+      const eventAgentId =
+        target.agentId ?? resolveSessionAgentId({ config: getRuntimeConfig(), sessionKey });
+      const expectedTarget = captureSessionEventTarget(eventAgentId, sessionKey);
+      summary = sliceUtf16Safe(summary, 0, 4000);
+      // The notification owns dedupe; hand admission that exact occurrence so
+      // duplicate device reports cannot start a second model turn while queued.
+      const occurrence = enqueueSystemEventEntry(
         summary,
-        target.agentId ? withSystemEventOwner(eventOptions, target.agentId) : eventOptions,
+        withSystemEventOwner(
+          {
+            sessionKey,
+            contextKey: `notification:${keyRaw}`,
+            deliveryContext: expectedTarget.deliveryContext,
+          },
+          eventAgentId,
+        ),
       );
-      if (queued) {
-        requestHeartbeat({
-          source: "notifications-event",
-          intent: "event",
-          reason: "notifications-event",
-          ...(target.agentId ? { agentId: target.agentId } : {}),
-          sessionKey,
-        });
+      if (!occurrence) {
+        return undefined;
       }
+      const receipt = enqueueSessionEvent(summary, {
+        occurrence,
+        agentId: eventAgentId,
+        sessionKey,
+        source: "device",
+        contextKey: `notification:${keyRaw}`,
+        expectedTarget,
+      });
+      void receipt.settled.then((outcome) => {
+        if (outcome.status !== "completed") {
+          ctx.logGateway.warn(
+            `notification session event ${outcome.status}: ${outcome.error ?? "inspect session history"}`,
+          );
+        }
+      });
       return undefined;
     }
     case "chat.subscribe": {
@@ -1070,22 +1093,27 @@ export const handleNodeEvent = async (
 
       const cfg = getRuntimeConfig();
       const runId = normalizeOptionalString(obj.runId) ?? "";
-      if (
-        !ctx.authorizeNodeSystemRunEvent({
-          nodeId,
-          connId: opts?.connId,
-          ...(runId ? { runId } : {}),
-          // Match the key sent in system.run params; canonicalization below is for routing.
-          sessionKey: sessionKeyRaw,
-          terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
-        })
-      ) {
+      const authorization = ctx.authorizeNodeSystemRunEvent({
+        nodeId,
+        connId: opts?.connId,
+        ...(runId ? { runId } : {}),
+        // Match the key sent in system.run params; canonicalization below is for routing.
+        sessionKey: sessionKeyRaw,
+        terminal: evt.event === "exec.finished" || evt.event === "exec.denied",
+      });
+      if (!authorization) {
         return {
           ok: true,
           event: evt.event,
           handled: false,
           reason: "unmatched_exec_event",
         };
+      }
+      if (!authorization.expectedTarget?.agentId || !authorization.expectedTarget.sessionKey) {
+        ctx.logGateway.warn(
+          "Node exec completion has no admission-captured session; rerun the command from its current session",
+        );
+        return { ok: true, event: evt.event, handled: false, reason: "unmatched_exec_event" };
       }
       // Respect tools.exec.notifyOnExit setting (default: true)
       // When false, skip system event notifications for node exec events.
@@ -1145,27 +1173,32 @@ export const handleNodeEvent = async (
         }
       }
 
-      const eventRouting = resolveEventSessionRoutingPolicy({ cfg, sessionKey });
-      const queued = enqueueSystemEvent(text, {
-        sessionKey: resolveEventSessionKeyForPolicy(sessionKey, eventRouting),
-        contextKey: runId ? `exec:${runId}` : "exec",
-      });
-      if (queued) {
-        // Scope wakes only for canonical agent sessions. Synthetic node-* fallback
-        // keys should keep legacy unscoped behavior so enabled non-main heartbeat
-        // agents still run when no explicit agent session is provided.
-        requestHeartbeat(
-          scopedHeartbeatWakeOptionsForPolicy(
-            sessionKey,
-            {
-              source: "exec-event",
-              intent: "event",
-              reason: "exec-event",
-              coalesceMs: 0,
-            },
-            eventRouting,
+      // Bound display text only after matching the exact invocation; never truncate identity.
+      text = sliceUtf16Safe(text, 0, 4000);
+      const expectedTarget = authorization.expectedTarget;
+      if (evt.event === "exec.started") {
+        enqueueSystemEvent(
+          text,
+          withSystemEventOwner(
+            { sessionKey: expectedTarget.sessionKey!, contextKey: `exec:${authorization.runId}` },
+            expectedTarget.agentId!,
           ),
         );
+      } else {
+        const receipt = enqueueSessionEvent(text, {
+          agentId: expectedTarget.agentId!,
+          sessionKey: expectedTarget.sessionKey!,
+          source: "node",
+          contextKey: `exec:${authorization.runId}`,
+          expectedTarget,
+        });
+        void receipt.settled.then((outcome) => {
+          if (outcome.status !== "completed") {
+            ctx.logGateway.warn(
+              `Node exec follow-up ${outcome.status}: ${outcome.error ?? "inspect session history"}`,
+            );
+          }
+        });
       }
       return undefined;
     }

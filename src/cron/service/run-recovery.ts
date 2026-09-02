@@ -2,6 +2,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import { isProactiveJobCutoverPending } from "../proactive-job-receipt.js";
 import { noteCronJobsStoreCommit } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import {
@@ -337,7 +338,12 @@ export function recomputeUnownedCronSchedules(
           continue;
         }
         const job = jobsById.get(row.job_id);
-        if (!job) {
+        if (!job || isProactiveJobCutoverPending(state.deps.storePath, job, db)) {
+          continue;
+        }
+        // An idle-only job still owns its overdue slot. Maintenance must not
+        // advance it past foreground work that prevented admission.
+        if (job.idleOnly && state.deps.isExecutionIdle?.(job) !== true) {
           continue;
         }
         if (

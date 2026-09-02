@@ -15,7 +15,7 @@ const DIAGNOSTIC_METHODS = [
   "status",
   "health",
   "models.list",
-  "last-heartbeat",
+  "cron.status",
 ] as const;
 type DiagnosticMethod = (typeof DIAGNOSTIC_METHODS)[number];
 
@@ -28,7 +28,6 @@ type TestDebugPage = HTMLElement & {
   debugCallResult: string | null;
   debugDiagnosticsError: string | null;
   debugHealth: unknown;
-  debugHeartbeat: unknown;
   debugLanes: unknown[];
   debugModels: unknown[];
   debugStatus: unknown;
@@ -82,12 +81,12 @@ function diagnosticResponse(method: string, marker = "initial"): unknown {
   switch (method) {
     case "status":
       return { version: marker };
+    case "cron.status":
+      return { enabled: true, triggersEnabled: true, jobs: 2, nextWakeAtMs: null };
     case "health":
       return { marker, ok: true };
     case "models.list":
       return { models: [{ id: marker }] };
-    case "last-heartbeat":
-      return { source: marker };
     case "diagnostics.lanes":
       return {
         ts: 1,
@@ -113,7 +112,6 @@ function expectSnapshots(page: TestDebugPage, marker: string): void {
   expect(page.debugStatus).toEqual({ version: marker });
   expect(page.debugHealth).toEqual({ marker, ok: true });
   expect(page.debugModels).toEqual([{ id: marker }]);
-  expect(page.debugHeartbeat).toEqual({ source: marker });
   expect(page.debugLanes).toEqual([expect.objectContaining({ lane: marker })]);
 }
 
@@ -122,8 +120,8 @@ function createProps(overrides: Partial<DebugProps> = {}): DebugProps {
     loading: false,
     status: null,
     health: null,
+    automations: null,
     models: [],
-    heartbeat: null,
     lanes: [],
     dynamic: null,
     diagnosticsError: null,
@@ -158,6 +156,48 @@ afterEach(async () => {
 });
 
 describe("renderDebug", () => {
+  it.each([
+    [true, 1, "Scheduler Enabled · 1 total jobs"],
+    [true, 0, "Scheduler Enabled · 0 total jobs"],
+    [false, 2, "Scheduler Disabled · 2 total jobs"],
+  ] as const)(
+    "uses canonical scheduler=%s and total=%s while retaining raw legacy data",
+    (enabled, jobs, text) => {
+      const container = document.createElement("div");
+      const status = {
+        heartbeat: { defaultAgentId: "main", agents: [{ enabled: false, every: "disabled" }] },
+      };
+      const health = { heartbeatSeconds: 0, agents: [] };
+      render(
+        renderDebug(
+          createProps({
+            status,
+            health,
+            automations: { enabled, triggersEnabled: true, jobs, nextWakeAtMs: null },
+          }),
+        ),
+        container,
+      );
+      const sections = container.querySelectorAll(".settings-section");
+      expect(normalizedText(sections[0])).toContain(text);
+      expect(normalizedText(sections[0])).toContain("none scheduled");
+      expect(normalizedText(sections[0])).not.toContain("heartbeat");
+      expect(normalizedText(sections[1])).toContain("Raw protocol / legacy inspection");
+      const raw = sections[1]?.querySelectorAll("pre");
+      expect(JSON.parse(raw?.[0]?.textContent ?? "null")).toEqual(status);
+      expect(JSON.parse(raw?.[1]?.textContent ?? "null")).toEqual(health);
+    },
+  );
+
+  it("shows unavailable diagnostics instead of claiming a disabled scheduler", () => {
+    const container = document.createElement("div");
+    render(renderDebug(createProps({ diagnosticsError: "cron.status unavailable" })), container);
+    const summary = container.querySelector(".settings-section");
+    expect(normalizedText(summary)).toContain("Unavailable");
+    expect(normalizedText(summary)).toContain("cron.status unavailable");
+    expect(normalizedText(summary)).not.toContain("Scheduler Disabled");
+  });
+
   it("keeps the security audit command styled as monospace", async () => {
     await i18n.setLocale("zh-CN");
     const container = document.createElement("div");
@@ -351,6 +391,56 @@ describe("DebugPage", () => {
 });
 
 describe("DebugOverlay", () => {
+  it("shows canonical job outcomes, redacts reasons, and omits compatibility alias noise", async () => {
+    const request = vi.fn(async (method: string) =>
+      method === "sessions.list"
+        ? { sessions: [] }
+        : method === "system.info"
+          ? {}
+          : diagnosticResponse(method),
+    );
+    const overlay = document.createElement("openclaw-debug-overlay") as TestDebugOverlay;
+    overlay.context = createDebugApplicationContext(request);
+    Object.assign(overlay.context.gateway, {
+      eventLog: [
+        { ts: 3, event: "heartbeat", payload: { status: "skipped", reason: "alias only" } },
+        {
+          ts: 2,
+          event: "cron",
+          payload: {
+            jobId: "monitor-42",
+            runId: "run-17",
+            action: "finished",
+            status: "skipped",
+            error: "owner unavailable; token=synthetic-private-token",
+            job: { payload: { message: "private prompt" } },
+            summary: "private scratch",
+          },
+        },
+        {
+          ts: 1,
+          event: "cron",
+          payload: { action: "finished", status: "error", error: "No route" },
+        },
+      ],
+    });
+    document.body.append(overlay);
+    overlay.toggle();
+    await vi.waitFor(() =>
+      expect(overlay.querySelectorAll(".debug-overlay__events li")).toHaveLength(2),
+    );
+    const rows = overlay.querySelectorAll(".debug-overlay__events li");
+    expect(normalizedText(rows[0])).toContain(
+      "cron · Job monitor-42 · Run run-17 · skipped · owner unavailable",
+    );
+    expect(normalizedText(rows[0])).not.toContain("synthetic-private-token");
+    expect(normalizedText(rows[0])).not.toContain("private prompt");
+    expect(normalizedText(rows[0])).not.toContain("private scratch");
+    expect(normalizedText(rows[1])).toContain("cron · error · No route");
+    expect(normalizedText(rows[1])).not.toContain("Job");
+    expect(normalizedText(rows[1])).not.toContain("Run");
+  });
+
   it("graphs bounded status samples without clamping CPU and resets history on reopen", async () => {
     vi.useFakeTimers();
     let sampleCount = 0;

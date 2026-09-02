@@ -50,7 +50,6 @@ export function copySessionNodeArtifactsForRepair(
   copySessionPendingInputsForRepair(source, destination, keys, canonicalKey);
   const sourceDb = getSessionKysely(source.db);
   const destinationDb = getSessionKysely(destination.db);
-  const sourceKeyReferences = new Set(keys.flatMap((key) => [key, key.trim()]));
   const sourceTables = readSessionNodeArtifactTables(source);
   let destinationTables = readSessionNodeArtifactTables(destination);
   if (
@@ -192,45 +191,7 @@ export function copySessionNodeArtifactsForRepair(
       }
     }
   }
-  if (sourceTables.has("heartbeat_outcomes") && destinationTables.has("heartbeat_outcomes")) {
-    for (const heartbeat of executeSqliteQuerySync(
-      source.db,
-      sourceDb.selectFrom("heartbeat_outcomes").selectAll().where("session_key", "in", keys),
-    ).rows) {
-      executeSqliteQuerySync(
-        destination.db,
-        destinationDb
-          .insertInto("heartbeat_outcomes")
-          .values({
-            ...heartbeat,
-            session_key: canonicalKey,
-            run_session_key: sourceKeyReferences.has(heartbeat.run_session_key)
-              ? canonicalKey
-              : heartbeat.run_session_key,
-          })
-          .onConflict((conflict) =>
-            conflict
-              .column("session_key")
-              .doUpdateSet({
-                ...heartbeat,
-                session_key: canonicalKey,
-                run_session_key: sourceKeyReferences.has(heartbeat.run_session_key)
-                  ? canonicalKey
-                  : heartbeat.run_session_key,
-              })
-              .where((eb) =>
-                eb.or([
-                  eb("updated_at", "<", heartbeat.updated_at),
-                  eb.and([
-                    eb("updated_at", "=", heartbeat.updated_at),
-                    eb("occurred_at", "<", heartbeat.occurred_at),
-                  ]),
-                ]),
-              ),
-          ),
-      );
-    }
-  }
+
   if (
     options.includeParticipants !== false &&
     sourceTables.has("session_participants") &&
@@ -338,11 +299,7 @@ export function deleteSessionNodeArtifacts(
       db.deleteFrom("board_tabs").where("session_key", "=", sessionKey),
     );
   }
-  for (const table of [
-    "heartbeat_outcomes",
-    "session_participants",
-    "session_progress_cards",
-  ] as const) {
+  for (const table of ["session_participants", "session_progress_cards"] as const) {
     if (!presentTables.has(table)) {
       continue;
     }
@@ -363,7 +320,6 @@ function readSessionNodeArtifactTables(database: OpenClawAgentDatabase): Set<str
         .where("name", "in", [
           "board_tabs",
           "board_widgets",
-          "heartbeat_outcomes",
           "session_members",
           "session_participants",
           "session_progress_cards",

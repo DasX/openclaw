@@ -828,7 +828,7 @@ export function logSessionTurnCreated(params: {
   sessionKey?: string;
   agentId?: string;
   channel?: string;
-  trigger: "user" | "heartbeat";
+  trigger: "user" | "cron" | "event";
 }) {
   if (!areDiagnosticsEnabledForProcess()) {
     return;

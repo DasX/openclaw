@@ -66,13 +66,13 @@ function createDispatchInboundMessageMockExports(
 ): typeof import("../auto-reply/dispatch.js") {
   return {
     ...actual,
-    dispatchInboundMessage: (...args: Parameters<typeof actual.dispatchInboundMessage>) => {
+    dispatchInboundMessageCore: (...args: Parameters<typeof actual.dispatchInboundMessageCore>) => {
       const impl = gatewayTestHoisted.dispatchInboundMessage.getMockImplementation();
       return impl
         ? (gatewayTestHoisted.dispatchInboundMessage(...args) as ReturnType<
-            typeof actual.dispatchInboundMessage
+            typeof actual.dispatchInboundMessageCore
           >)
-        : actual.dispatchInboundMessage(...args);
+        : actual.dispatchInboundMessageCore(...args);
     },
     dispatchInboundMessageWithProjectedDispatcher: (
       ...args: Parameters<typeof actual.dispatchInboundMessageWithProjectedDispatcher>

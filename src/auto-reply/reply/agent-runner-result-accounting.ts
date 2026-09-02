@@ -31,7 +31,6 @@ type AgentTurnAccountingContext = Pick<
   | "cfg"
   | "defaultModel"
   | "followupRun"
-  | "isHeartbeat"
   | "pendingToolTasks"
   | "preflightCompactionApplied"
   | "resolvedVerboseLevel"
@@ -81,7 +80,7 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     cfg,
     defaultModel,
     followupRun,
-    isHeartbeat,
+
     pendingToolTasks,
     preflightCompactionApplied,
     resolvedVerboseLevel,
@@ -310,7 +309,7 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
     currentContextSnapshot,
     promptTokens,
-    isHeartbeat,
+
     preserveRuntimeModel:
       fallbackExhausted || fallbackTransition.nextState.selectedModel !== undefined,
     preserveUserFacingSessionModelState: preserveUserFacingSessionState,
@@ -327,7 +326,7 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     preserveFreshTotalTokensOnStaleUsage: preflightCompactionApplied,
     agentHarnessId: runResult.meta?.agentMeta?.agentHarnessId,
   });
-  if (!isHeartbeat && !preserveUserFacingSessionState && !fallbackExhausted) {
+  if (!preserveUserFacingSessionState && !fallbackExhausted) {
     // A completed run that executed the persisted selection consumes the
     // pending live-switch flag; CLI harness runs never hit the embedded
     // attempt-recovery clear, so /status would report the switch forever.
@@ -400,7 +399,7 @@ export async function accountFollowupTurn(params: {
     cfg: turn.config,
     defaultModel: defaults.defaultModel,
     followupRun: turn.queued,
-    isHeartbeat: defaults.opts?.isHeartbeat === true,
+
     pendingToolTasks: execution.pendingToolTasks,
     replyOperation: turn.operation,
     preflightCompactionApplied: turn.preflightCompactionApplied,

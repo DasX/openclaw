@@ -55,6 +55,11 @@ describe("status-overview-rows", () => {
     const rows = buildStatusCommandOverviewRows(createStatusCommandOverviewRowsParams());
 
     expect(findRowValue(rows, "OS")).toBe(`macOS · node ${process.versions.node}`);
+    expect(findRowValue(rows, "Automations")).toBe(
+      "scheduler enabled · 2 total jobs · no wake scheduled",
+    );
+    expect(findRowValue(rows, "Heartbeat")).toBeUndefined();
+    expect(findRowValue(rows, "Last heartbeat")).toBeUndefined();
     expect(findRowValue(rows, "Memory")).toBe(
       "1 files · 2 chunks · plugin memory · ok(vector ready) · warn(fts ready) · muted(cache warm)",
     );
@@ -221,6 +226,7 @@ describe("status-overview-rows", () => {
   it("builds status-all overview rows from the shared surface", () => {
     const summary = createStatusCommandOverviewRowsParams().summary;
     const rows = buildStatusAllOverviewRows({
+      automations: { ok: true, value: { enabled: true, jobs: 2, nextWakeAtMs: null } },
       surface: {
         ...baseStatusOverviewSurface,
         tailscaleMode: "off",

@@ -44,7 +44,7 @@ OpenClaw assembles its own system prompt on every run. It includes:
     `agents.defaults.compaction.postCompactionSections` opt-in; plugins can add
     other context through `before_prompt_build`.
 - Time (UTC + user timezone)
-- Reply tags + heartbeat behavior
+- Reply tags + quiet-reply behavior
 - Runtime metadata (host/OS/model/thinking)
 
 See the full breakdown in [System Prompt](/concepts/system-prompt).
@@ -228,9 +228,11 @@ This keeps cache write costs lower when a session goes idle past the TTL.
 Configure it in [Gateway configuration](/gateway/configuration) and see the
 behavior details in [Session pruning](/concepts/session-pruning).
 
-Heartbeat can keep the cache **warm** across idle gaps. If your model cache
-TTL is `1h`, setting the heartbeat interval just under that (e.g., `55m`) can
-avoid re-caching the full prompt, reducing cache write costs.
+An ordinary [cron job](/automation/cron-jobs) that runs useful checks in the
+same session with the same model can keep its cache **warm** across idle gaps.
+For a `1h` TTL, a cadence such as `55m` may reduce cache writes. Each check still
+uses model tokens, including quiet `NO_REPLY` completions, and cache reuse is
+not guaranteed. An isolated job does not warm the main conversation's cache.
 
 In multi-agent setups, you can keep one shared model config and tune cache
 behavior per agent with `agents.entries.*.params.cacheRetention`.
@@ -242,7 +244,7 @@ tokens, while cache writes are billed at a higher multiplier. See Anthropic's
 prompt caching pricing for the latest rates and TTL multipliers:
 [https://platform.claude.com/docs/en/build-with-claude/prompt-caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 
-### Example: keep 1h cache warm with heartbeat
+### Example: scheduled checks with a 1h cache
 
 ```yaml
 agents:
@@ -253,9 +255,20 @@ agents:
       "anthropic/claude-opus-4-6":
         params:
           cacheRetention: "long"
-    heartbeat:
-      every: "55m"
 ```
+
+Create the schedule as an ordinary job, separate from model configuration:
+
+```sh
+openclaw cron add \
+  --name "Pending-work check" \
+  --every "55m" \
+  --session main \
+  --system-event "Review pending work. Report only actionable changes; otherwise return NO_REPLY." \
+  --wake now
+```
+
+For older `agents.*.heartbeat` settings, use [Heartbeat migration](/gateway/heartbeat).
 
 ### Example: mixed traffic with per-agent cache strategy
 
@@ -271,8 +284,6 @@ agents:
   list:
     - id: "research"
       default: true
-      heartbeat:
-        every: "55m" # keep long cache warm for deep sessions
     - id: "alerts"
       params:
         cacheRetention: "none" # avoid cache writes for bursty notifications

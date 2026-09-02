@@ -15,7 +15,10 @@ import { parseDurationMs } from "../parse-duration.js";
 import { isUnknownCronGetMethodError, listCronJobsFromGateway } from "./list-jobs.js";
 import { createCronOutputCommand } from "./output-mode.js";
 import { resolveCronEditPayloadDeliveryPatch } from "./register.cron-edit-options.js";
-import { registerCronMutationOptions } from "./register.cron-options.js";
+import {
+  registerCronMutationOptions,
+  resolveCronExecutionPolicyOptions,
+} from "./register.cron-options.js";
 import {
   applyExistingCronSchedulePatch,
   applyExistingStreamSchedulePatch,
@@ -68,6 +71,8 @@ export function registerCronEditCommand(cron: Command) {
       .option("--clear-agent", "Unset agent and use default", false)
       .option("--clear-session-key", "Unset session key", false)
       .option("--clear-pacing", "Remove dynamic-cadence bounds", false)
+      .option("--clear-active-hours", "Remove the entire execution window", false)
+      .option("--clear-idle-only", "Remove the per-job idle-only policy", false)
       .option("--clear-trigger", "Remove the condition trigger", false)
       .option(
         "--clear-thinking",
@@ -86,6 +91,8 @@ export function registerCronEditCommand(cron: Command) {
       .option("--clear-to", "Unset the delivery destination", false)
       .option("--clear-thread-id", "Unset the Telegram forum topic thread id", false)
       .option("--clear-account", "Unset the per-job delivery account override", false)
+      .option("--clear-delivery-target", "Remove dynamic owner targeting", false)
+      .option("--clear-direct-policy", "Remove the per-job direct-message policy", false)
       .option("--no-best-effort-deliver", "Fail job when delivery fails")
       .option("--failure-alert", "Enable failure alerts for this job")
       .option("--no-failure-alert", "Disable failure alerts for this job")
@@ -191,7 +198,10 @@ export function registerCronEditCommand(cron: Command) {
           const triggerScript = triggerScriptPath
             ? await readCronTriggerScript(triggerScriptPath)
             : undefined;
-          const patch: Record<string, unknown> = {};
+          const patch: Record<string, unknown> = await resolveCronExecutionPolicyOptions(
+            opts,
+            readExistingCronJob,
+          );
           if (typeof opts.name === "string") {
             patch.name = opts.name;
           }

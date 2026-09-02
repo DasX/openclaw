@@ -174,7 +174,7 @@ export async function resolveReplyDirectives(params: {
   model: string;
   hasOneTurnModelOverride?: boolean;
   skipStoredModelOverride?: boolean;
-  hasResolvedHeartbeatModelOverride: boolean;
+  hasResolvedTurnModelOverride: boolean;
   typing: TypingController;
   opts?: GetReplyOptions;
   skillFilter?: string[];
@@ -206,7 +206,7 @@ export async function resolveReplyDirectives(params: {
     model: initialModel,
     hasOneTurnModelOverride,
     skipStoredModelOverride,
-    hasResolvedHeartbeatModelOverride,
+    hasResolvedTurnModelOverride,
     typing,
     opts,
     skillFilter,
@@ -448,7 +448,7 @@ export async function resolveReplyDirectives(params: {
 
   const useFastModelSelection =
     useFastReplyRuntime &&
-    !hasResolvedHeartbeatModelOverride &&
+    !hasResolvedTurnModelOverride &&
     !(agentCfg?.models && Object.keys(agentCfg.models).length > 0) &&
     !normalizeOptionalString(targetSessionEntry?.modelOverride) &&
     !normalizeOptionalString(targetSessionEntry?.providerOverride) &&
@@ -488,8 +488,8 @@ export async function resolveReplyDirectives(params: {
           hasModelDirective: directives.hasModelDirective,
           hasOneTurnModelOverride,
           skipStoredModelOverride,
-          hasResolvedHeartbeatModelOverride,
-          isHeartbeat: opts?.isHeartbeat === true,
+          hasResolvedTurnModelOverride,
+
           preparedModelCatalog: params.preparedModelCatalog,
         });
   } catch (error) {

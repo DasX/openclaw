@@ -43,7 +43,7 @@ async function withFailureAlertCron(
   run: (context: {
     cron: CronService;
     enqueueSystemEvent: ReturnType<typeof vi.fn>;
-    requestHeartbeat: ReturnType<typeof vi.fn>;
+    enqueueSessionEvent: ReturnType<typeof vi.fn>;
     sendCronFailureAlert: ReturnType<typeof vi.fn<SendCronFailureAlert>>;
     addJob: (name: string, overrides?: Partial<CronJobCreate>) => ReturnType<CronService["add"]>;
   }) => Promise<void>,
@@ -51,12 +51,13 @@ async function withFailureAlertCron(
   const store = await makeStorePath();
   const sendCronFailureAlert = vi.fn<SendCronFailureAlert>(async () => undefined);
   const enqueueSystemEvent = vi.fn();
-  const requestHeartbeat = vi.fn();
+  const enqueueSessionEvent = vi.fn();
   const runResult = params.runResult ?? {
     status: "error",
     error: "temporary upstream error",
   };
   const cron = new CronService({
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const, executionStarted: true })),
     storePath: store.storePath,
     cronEnabled: true,
     ...(params.failureAlert === undefined
@@ -64,7 +65,7 @@ async function withFailureAlertCron(
       : { cronConfig: { failureAlert: params.failureAlert } }),
     log: noopLogger,
     enqueueSystemEvent,
-    requestHeartbeat,
+    enqueueSessionEvent,
     runIsolatedAgentJob: vi.fn(async () => runResult),
     ...(params.useFallback ? {} : { sendCronFailureAlert }),
   });
@@ -74,7 +75,7 @@ async function withFailureAlertCron(
     await run({
       cron,
       enqueueSystemEvent,
-      requestHeartbeat,
+      enqueueSessionEvent,
       sendCronFailureAlert,
       addJob: async (name, overrides) => await cron.add(createFailureAlertJob(name, overrides)),
     });
@@ -213,7 +214,7 @@ describe("CronService failure alerts", () => {
   it("keeps fallback events and immediate wakes on the failing job owner", async () => {
     await withFailureAlertCron(
       { failureAlert: { enabled: true, after: 1 }, useFallback: true },
-      async ({ cron, enqueueSystemEvent, requestHeartbeat, addJob }) => {
+      async ({ cron, enqueueSystemEvent, enqueueSessionEvent, addJob }) => {
         const sessionKey = "agent:work:cron:failure-alert";
         const job = await addJob("work-owned failure", {
           agentId: "work",
@@ -223,17 +224,16 @@ describe("CronService failure alerts", () => {
 
         await cron.run(job.id, "force");
 
-        expect(enqueueSystemEvent).toHaveBeenCalledWith(
+        expect(enqueueSystemEvent).not.toHaveBeenCalled();
+        expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith(
           expect.stringContaining('Automation "work-owned failure" failed 1 times'),
-          { agentId: "work", sessionKey, contextKey: `cron:${job.id}:failure-alert` },
+          {
+            agentId: "work",
+            sessionKey,
+            contextKey: `cron:${job.id}:failure-alert`,
+            deliveryContext: undefined,
+          },
         );
-        expect(requestHeartbeat).toHaveBeenCalledWith({
-          source: "notifications-event",
-          intent: "immediate",
-          reason: "wake",
-          agentId: "work",
-          sessionKey,
-        });
       },
     );
   });
@@ -272,7 +272,7 @@ describe("CronService failure alerts", () => {
   ])("falls back exactly once only when an alert $name", async (testCase) => {
     await withFailureAlertCron(
       { failureAlert: { enabled: true, after: 1 } },
-      async ({ cron, sendCronFailureAlert, enqueueSystemEvent, addJob }) => {
+      async ({ cron, sendCronFailureAlert, enqueueSystemEvent, enqueueSessionEvent, addJob }) => {
         sendCronFailureAlert.mockImplementationOnce(async (alert) => {
           if (testCase.recipientReached !== undefined) {
             alert.onDeliveryAttempt?.(testCase.recipientReached);
@@ -286,14 +286,16 @@ describe("CronService failure alerts", () => {
         await cron.run(job.id, "force");
 
         expect(sendCronFailureAlert).toHaveBeenCalledOnce();
-        expect(enqueueSystemEvent).toHaveBeenCalledTimes(testCase.fallbackCalls);
+        expect(enqueueSessionEvent).toHaveBeenCalledTimes(testCase.fallbackCalls);
+        expect(enqueueSystemEvent).not.toHaveBeenCalled();
 
         const deliveryAttempt = alertCallArg(sendCronFailureAlert).onDeliveryAttempt;
         expect(typeof deliveryAttempt).toBe("function");
         if (typeof deliveryAttempt === "function") {
           deliveryAttempt(false);
         }
-        expect(enqueueSystemEvent).toHaveBeenCalledTimes(testCase.fallbackCalls);
+        expect(enqueueSessionEvent).toHaveBeenCalledTimes(testCase.fallbackCalls);
+        expect(enqueueSystemEvent).not.toHaveBeenCalled();
       },
     );
   });

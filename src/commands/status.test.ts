@@ -794,6 +794,11 @@ vi.mock("./status.scan.js", () => ({
 }));
 
 vi.mock("./status-runtime-shared.ts", () => ({
+  resolveStatusLastHeartbeat: vi.fn(async () => null),
+  resolveStatusAutomations: vi.fn(async () => ({
+    ok: true,
+    value: { enabled: true, jobs: 0, nextWakeAtMs: null },
+  })),
   resolveStatusGatewayHealth: vi.fn(async () => ({})),
   resolveStatusSecurityAudit: vi.fn(async (input: unknown) =>
     mocks.runSecurityAudit({
@@ -832,7 +837,6 @@ vi.mock("./status-runtime-shared.ts", () => ({
         securityAudit,
         usage: undefined,
         health: undefined,
-        lastHeartbeat: null,
         gatewayService: await createStatusServiceSummary(mocks.resolveGatewayService()),
         nodeService: await createStatusServiceSummary(mocks.resolveNodeService()),
       };
