@@ -10,7 +10,7 @@ import type {
   ProviderNormalizeResolvedModelContext,
   ProviderRuntimeModel,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-auth";
+import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-auth-api-key";
 import {
   buildManifestModelProviderConfig,
   type ProviderCatalogResult,
