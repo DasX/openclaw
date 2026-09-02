@@ -5604,8 +5604,8 @@ describe("update-cli", () => {
       if (git) {
         vi.mocked(resolveOpenClawPackageRoot).mockResolvedValue(root);
         vi.mocked(runCommandWithTimeout).mockResolvedValue(commandResult({ stdout: sha }));
-        vi.mocked(runGatewayUpdate).mockImplementationOnce(async (options) => {
-          await options?.beforeGitMutation?.({ schemaVersions: { state: 3, agent: 11 } });
+        vi.mocked(runGatewayUpdate).mockImplementationOnce(async (updateOptions) => {
+          await updateOptions?.beforeGitMutation?.({ schemaVersions: { state: 3, agent: 11 } });
           return makeOkUpdateResult({ mode: "git", root });
         });
       }
@@ -5650,8 +5650,10 @@ describe("update-cli", () => {
       });
       expect(serviceReadCommand).toHaveBeenCalledTimes(git ? 2 : 3);
       const serviceStateCommandReads = serviceReadCommand.mock.calls.filter(
-        ([options]) =>
-          typeof options === "object" && options !== null && "requireEffective" in options,
+        ([readOptions]) =>
+          typeof readOptions === "object" &&
+          readOptions !== null &&
+          "requireEffective" in readOptions,
       );
       expect(serviceStateCommandReads).toEqual([
         [{ requireEffective: true }],
