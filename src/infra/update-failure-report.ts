@@ -270,11 +270,12 @@ async function pathExists(filePath: string): Promise<boolean> {
 async function discardSavedUpdateFailureReport(
   prepared: PreparedUpdateFailureReport,
   saved: SavedUpdateFailureReport,
+  removeExistingReport = false,
 ): Promise<void> {
-  if (saved.reportCreated) {
+  if (saved.reportCreated || removeExistingReport) {
     await fs.rm(prepared.savedReportPath, { force: true });
   }
-  if (saved.reportDirCreated) {
+  if (saved.reportDirCreated || removeExistingReport) {
     await fs.rmdir(path.dirname(prepared.savedReportPath)).catch((error: unknown) => {
       if (!hasErrorCode(error, "ENOENT", "ENOTEMPTY")) {
         throw error;
@@ -391,6 +392,9 @@ export async function submitUpdateFailureReport(
     stateEnv,
   );
   if (!reservation.reserved) {
+    if (reservation.receipt?.status === "created") {
+      await discardSavedUpdateFailureReport(prepared, saved, true);
+    }
     return resultFromExistingReceipt(reservation.receipt, prepared.savedReportPath);
   }
 
@@ -404,6 +408,7 @@ export async function submitUpdateFailureReport(
     if (!finalizeUpdateFailureReportReceipt(prepared.attemptId, receipt, stateEnv)) {
       throw new Error("Update failure report reservation could not be finalized.");
     }
+    await discardSavedUpdateFailureReport(prepared, saved, true);
     return { savedReportPath: prepared.savedReportPath, status: "created", url: created.url };
   }
   const message = sanitizeReportField(created.message, context);

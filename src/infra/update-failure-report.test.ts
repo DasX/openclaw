@@ -32,7 +32,7 @@ function failedUpdate(overrides: Partial<UpdateRunResult> = {}): UpdateRunResult
 }
 
 describe("update failure report", () => {
-  it("saves only allowlisted, redacted, Unicode-safe report facts", async () => {
+  it("saves only allowlisted, redacted, Unicode-safe report facts for fallback", async () => {
     const home = tempDirs.make("openclaw-update-report-");
     const stateDir = path.join(home, ".openclaw");
     const secret = "sk-test-update-report-secret-1234567890";
@@ -55,14 +55,17 @@ describe("update failure report", () => {
       { env: { HOME: home, OPENCLAW_STATE_DIR: stateDir }, stateDir },
     );
     await expect(fs.stat(prepared.savedReportPath)).rejects.toMatchObject({ code: "ENOENT" });
-    await submitUpdateFailureReport(prepared, prepared.previewDigest, {
-      createIssue: vi.fn(() => ({
-        ok: true as const,
-        url: "https://github.com/openclaw/openclaw/issues/123",
-      })),
-      env: { HOME: home, OPENCLAW_STATE_DIR: stateDir },
-      stateDir,
-    });
+    await expect(
+      submitUpdateFailureReport(prepared, prepared.previewDigest, {
+        createIssue: vi.fn(() => ({
+          fallbackUrl: "https://github.com/openclaw/openclaw/issues/new?title=update",
+          message: "GitHub CLI unavailable",
+          ok: false as const,
+        })),
+        env: { HOME: home, OPENCLAW_STATE_DIR: stateDir },
+        stateDir,
+      }),
+    ).resolves.toMatchObject({ status: "fallback" });
 
     const saved = await fs.readFile(prepared.savedReportPath, "utf8");
     expect(saved).toBe(prepared.body);
@@ -112,9 +115,7 @@ describe("update failure report", () => {
       status: "duplicate",
       url: "https://github.com/openclaw/openclaw/issues/123",
     });
-    expect((await fs.readdir(path.dirname(prepared.savedReportPath))).toSorted()).toEqual([
-      path.basename(prepared.savedReportPath),
-    ]);
+    await expect(fs.stat(prepared.savedReportPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps the event loop responsive while issue creation is pending", async () => {

@@ -191,7 +191,7 @@ describe("update report live authority boundary", () => {
     const response = await harness.awaitResponseFrame("allowed");
 
     expect(mocks.createGithubIssueAsync).toHaveBeenCalledOnce();
-    expect(await countReportFiles()).toBe(1);
+    expect(await countReportFiles()).toBe(0);
     expect(countReportReceipts()).toBe(1);
     expect(response).toMatchObject({
       ok: true,
