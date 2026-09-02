@@ -330,6 +330,7 @@ Covered child process surfaces:
 - Supervisor-managed command children
 - PTY shell children
 - MCP stdio server children
+- Managed local model and embedding service children
 - OpenClaw-launched browser/Chrome processes (via the plugin SDK process runtime)
 
 The wrapper is Linux-only and skipped when `/bin/sh` is unavailable, or when
