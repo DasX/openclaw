@@ -1,4 +1,7 @@
-import { withOpenClawStateLease } from "../../state/openclaw-state-lease.js";
+import {
+  withOpenClawStateLease,
+  type OpenClawStateLeaseContext,
+} from "../../state/openclaw-state-lease.js";
 import { withSkillCollectionReviewClaim } from "./collection-review-state.js";
 import { hashSkillProposalContent } from "./proposal-hash.js";
 import {
@@ -10,6 +13,16 @@ import type { SkillProposalRecord } from "./types.js";
 
 const TARGET_LEASE_MS = 60_000;
 const TARGET_LEASE_WAIT_MS = 5_000;
+
+/** The global collection lock aliases the review lease so every tree writer shares one owner. */
+export async function withSkillCollectionLock<T>(
+  fn: (lease: OpenClawStateLeaseContext) => Promise<T>,
+  options: SkillWorkshopStoreOptions = {},
+): Promise<T> {
+  ensureSkillWorkshopSchema(options);
+  return await withSkillCollectionReviewClaim(fn, databaseOptions(options));
+}
+
 export async function withSkillProposalTargetLock<T>(
   record: SkillProposalRecord,
   fn: () => Promise<T>,
@@ -36,8 +49,8 @@ export async function withSkillProposalCommitLock<T>(
   options: SkillWorkshopStoreOptions = {},
 ): Promise<T> {
   ensureSkillWorkshopSchema(options);
-  return await withSkillCollectionReviewClaim(
+  return await withSkillCollectionLock(
     async () => await withSkillProposalTargetLock(record, fn, options),
-    databaseOptions(options),
+    options,
   );
 }
