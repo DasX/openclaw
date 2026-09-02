@@ -1785,6 +1785,13 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check pre-commit==4.6.2
 
       - name: Detect committed private keys
+        env:
+          # pre-commit clones its pinned hook repos over anonymous HTTPS, which the
+          # runners intermittently reject ("could not read Username"). Route those
+          # read-only fetches through the job token without writing a git config.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ github.token }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
         run: pre-commit run --config "${PRE_COMMIT_CONFIG_PATH:-.pre-commit-config.yaml}" --all-files detect-private-key
 
       - name: Audit changed GitHub workflows with zizmor
