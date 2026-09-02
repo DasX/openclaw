@@ -3383,6 +3383,7 @@ describe("talk.client.create handler", () => {
       },
       16,
       800,
+      "model-context",
     );
     expect(mocks.createOrResumeClientVoiceSession).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "openai" }),
