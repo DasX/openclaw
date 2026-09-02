@@ -25,6 +25,7 @@ import { getActivePluginRegistryVersion } from "../../plugins/runtime.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { getSkillsSnapshotVersion } from "../../skills/runtime/refresh-state.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
+import { resolveChatAccountSelection } from "./chat-account-selection.js";
 import type {
   ChatMetadataReadParams,
   ChatMetadataResult,
@@ -372,6 +373,11 @@ export function createGatewayChatMetadataRuntime(params: {
             ...prepared.read(),
             ...(agent.commands !== undefined ? { commands: agent.commands } : {}),
             swarmEnabled: agent.swarmEnabled,
+            accountSelection: resolveChatAccountSelection({
+              authStore: agent.authStore,
+              sessionEntry,
+              requesterProfileId,
+            }),
           }),
         };
         // Only this pending entry may publish its settlement; eviction or invalidation
@@ -652,7 +658,12 @@ export function createGatewayChatMetadataRuntime(params: {
         profiles.preferredProfileId ? undefined : readParams.requesterProfileId,
       );
       const readSession = profiles.preferredProfileId
-        ? await projectAgent(generation, agent, readParams.sessionEntry)
+        ? await projectAgent(
+            generation,
+            agent,
+            readParams.sessionEntry,
+            readParams.requesterProfileId,
+          )
         : readNeutral;
       return {
         isCurrent: () => readNeutral.isCurrent() && readSession.isCurrent(),

@@ -2,6 +2,7 @@
 import type { Command } from "commander";
 import { formatDocsLink } from "../../packages/terminal-core/src/links.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
+import { registerModelsAccountsCli } from "./models-accounts-cli.js";
 import { isModelsStatusJsonOutput } from "./models-output-mode.js";
 import { setCommandJsonMode } from "./program/json-mode.js";
 
@@ -53,6 +54,7 @@ export function registerModelsCli(program: Command) {
   setCommandJsonMode(models, "output", ({ argv, command }) =>
     isModelsStatusJsonOutput(argv, command),
   );
+  registerModelsAccountsCli(models);
 
   models
     .command("list")

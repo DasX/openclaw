@@ -38,6 +38,8 @@ export type GatewayCoreRequestParams = {
   "users.authConnect.cancel": UsersSchema.UsersAuthConnectCancelParams;
   "users.authConnect.token": UsersSchema.UsersAuthConnectTokenParams;
   "users.listAuthLinks": UsersSchema.UsersListAuthLinksParams;
+  "users.listModelAccounts": UsersSchema.UsersListModelAccountsParams;
+  "users.selectModelAccount": UsersSchema.UsersSelectModelAccountParams;
   "users.linkAuthProfile": UsersSchema.UsersLinkAuthProfileParams;
   "users.unlinkAuthProfile": UsersSchema.UsersUnlinkAuthProfileParams;
   "users.github.status": Static<typeof UsersSchema.UsersGitHubStatusParamsSchema>;

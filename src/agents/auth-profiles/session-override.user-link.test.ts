@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { applyMixedDirectives } from "../../auto-reply/reply/directive-handling.mixed-inline.test-helpers.js";
+import { createModelSelectionState } from "../../auto-reply/reply/model-selection.js";
+import type { MsgContext } from "../../auto-reply/templating.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import {
   clearUserProfileAuthLink,
   connectUserModelAccount,
@@ -30,19 +34,33 @@ function connectAccount(profileId: string, label: string): string {
   }).authProfileId;
 }
 
-function selectForRequester(
+async function selectForRequester(
   state: OpenClawTestState,
   sessionEntry: SessionEntry,
   requesterProfileId?: string,
   isNewSession = true,
 ) {
+  const sessionStore = { [SESSION_KEY]: sessionEntry };
+  const model = await createModelSelectionState({
+    cfg: {},
+    agentId: "main",
+    agentCfg: undefined,
+    sessionEntry,
+    sessionStore,
+    sessionKey: SESSION_KEY,
+    defaultProvider: "openai",
+    defaultModel: "gpt-5.6-luna",
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    hasModelDirective: false,
+  });
   return resolveSessionAuthSelection({
     cfg: {},
-    provider: "openai",
-    modelId: "gpt-5.6-luna",
+    provider: model.provider,
+    modelId: model.model,
     agentDir: state.agentDir(),
     sessionEntry,
-    sessionStore: { [SESSION_KEY]: sessionEntry },
+    sessionStore,
     sessionKey: SESSION_KEY,
     isNewSession,
     requesterProfileId,
@@ -54,6 +72,49 @@ function withAuthState(run: (state: OpenClawTestState) => Promise<void>) {
 }
 
 describe("person-linked session auth", () => {
+  it.each(
+    ["owner", "another person", "unidentified"].flatMap((requester) => [
+      { requester, form: "model-only", prefix: "" },
+      { requester, form: "mixed", prefix: "hello " },
+    ]),
+  )(
+    "checks credential ownership for a fresh $form personal account directive from $requester",
+    async ({ requester, prefix }) => {
+      await withAuthState(async (state) => {
+        const alice = ensureProfileForEmail("alice@example.test");
+        const bob = ensureProfileForEmail("bob@example.test");
+        const personalId = connectAccount(alice.id, "alice");
+        clearUserProfileAuthLink({ profileId: alice.id, provider: "openai" });
+        const requesterProfileId =
+          requester === "owner" ? alice.id : requester === "another person" ? bob.id : undefined;
+        const ctx: MsgContext = {};
+        if (requesterProfileId) {
+          prepareSessionParticipantInput(ctx, { type: "profile", id: requesterProfileId });
+        }
+
+        const { result, sessionEntry } = await applyMixedDirectives({
+          body: `${prefix}/model openai/gpt-5.6-luna@${personalId}`,
+          ctx,
+          agentDir: state.agentDir(),
+          channel: "webchat",
+          provider: "openai",
+          model: "gpt-5.6-luna",
+          allowedModels: [
+            { provider: "openai", id: "gpt-5.6-luna", name: "Luna", reasoning: true },
+          ],
+        });
+
+        if (requester === "owner") {
+          expect(sessionEntry.authProfileOverride).toBe(personalId);
+          expect(sessionEntry.authProfileOverrideSource).toBe("user");
+        } else {
+          expect(sessionEntry.authProfileOverride).toBeUndefined();
+          expect(result).toMatchObject({ kind: "reply", reply: { isError: true } });
+        }
+      });
+    },
+  );
+
   it("selects a personal account even when no shared auth store exists", async () => {
     await withAuthState(async (state) => {
       const alice = ensureProfileForEmail("alice@example.test");

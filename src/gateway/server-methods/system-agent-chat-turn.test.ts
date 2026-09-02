@@ -142,6 +142,24 @@ describe("system-agent chat input", () => {
     });
   });
 
+  it("projects a personal-account handoff without claiming a mutation or changing action", () => {
+    expect(
+      buildSystemAgentChatResult({
+        sessionId: "s1",
+        reply: {
+          text: "Open your account controls; nothing has changed.",
+          action: "none",
+          handoff: { kind: "model-accounts" },
+        },
+      }),
+    ).toEqual({
+      sessionId: "s1",
+      reply: "Open your account controls; nothing has changed.",
+      action: "none",
+      handoff: { kind: "model-accounts" },
+    });
+  });
+
   it("omits the delegated approval link when the Control UI is disabled", async () => {
     const manager = new ExecApprovalManager<SystemAgentApprovalRequestPayload>({
       approvalKind: "system-agent",

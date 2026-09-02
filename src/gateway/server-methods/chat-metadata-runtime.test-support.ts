@@ -9,8 +9,24 @@ import { setPreparedModelRuntimeAuthStore } from "../../agents/prepared-model-ru
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { connectUserModelAccount } from "../../state/user-model-accounts.js";
 import { createGatewayChatMetadataRuntime } from "./chat-metadata-runtime.js";
 import type { GatewayRequestContext } from "./types.js";
+
+export function connectChatMetadataAccount(profileId: string): string {
+  return connectUserModelAccount({
+    ownerProfileId: profileId,
+    credential: {
+      type: "oauth",
+      provider: "openai",
+      displayName: "Private provider account",
+      access: "synthetic-personal-access",
+      refresh: "synthetic-personal-refresh",
+      expires: Date.now() + 600_000,
+    },
+    assertCurrent() {},
+  }).authProfileId;
+}
 
 export function createChatMetadataOwner(
   config: OpenClawConfig,

@@ -30,6 +30,7 @@ type ChatContextWindowTarget = Pick<
 >;
 
 type ChatModelControlsProps = {
+  renderAccountControl?: (model: string) => unknown;
   activeRunId: string | null;
   agentDefaultModel?: string;
   connected: boolean;
@@ -407,6 +408,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   return html`
     <div class="chat-controls__session chat-controls__model chat-controls__model-settings">
       ${renderChatModelPicker({
+        accountControl: props.renderAccountControl?.(currentOverride || defaultModel),
         contextWindow:
           contextWindows.length > 1
             ? {

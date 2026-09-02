@@ -44,20 +44,37 @@ Creator source follows scheduled jobs and inherited creation policies; a require
 
 Each teammate can connect a model account to their Gateway profile. New sessions they start prefer that account instead of the Gateway default. This supports ChatGPT/Codex OAuth and Claude subscription tokens; it does not guarantee that every turn bills the same account.
 
+There are four separate pieces:
+
+| Piece            | What it means                                                                                         |
+| ---------------- | ----------------------------------------------------------------------------------------------------- |
+| Saved account    | A credential owned by your Gateway profile. You can keep several accounts for a provider.             |
+| New-chat default | The saved account your new chats prefer for that provider. Changing it does not repin existing chats. |
+| Chat selection   | The account already selected for one chat. Collaborators and forks keep that selection.               |
+| Sign-in attempt  | A temporary, cancellable operation. No account is saved until sign-in succeeds.                       |
+
 Open **Settings → Profile → Model accounts** on an identified connection with `operator.write`:
 
 - **Connect ChatGPT** opens the OpenAI sign-in link. When the browser runs on the Gateway host and the callback port is available, the Gateway receives the `localhost:1455` redirect automatically. With a remote browser or occupied callback port, paste the full redirect URL into the Profile page instead. Keep the Profile connection open until it reports success.
 - **Connect Claude** takes the output of `claude setup-token` run on your own machine (`users.authConnect.token`).
 
+The page lists saved accounts with friendly labels and marks the new-chat default. Select another saved account to change that default without signing in again. **Load more** continues through larger account lists. **Use Gateway defaults for new chats** clears the personal default; the saved accounts stay available.
+
 The page reports the exact sign-in operation as pending, exchanging, connected, cancelled, expired, or failed. **Cancel** asks the Gateway to retire that operation, including an exchange already in flight. Disconnecting, losing permission, or restarting the Gateway prevents an unfinished sign-in from saving credentials; start a new sign-in after reconnecting. Refreshing profile identity does not interrupt account controls.
 
-Credentials and the selected link are saved together in private, identity-scoped SQLite storage. They are not added to the shared or agent-local auth stores, copied into global runtime snapshots, or included in automatic account rotation. Reconnecting replaces only a credential owned by that person. For ChatGPT, matching a workspace alone is not enough: the provider must also identify the same user. An administrator-linked shared account is never overwritten by a personal reconnect.
+In a chat, open the model menu to see its current account selection and choose one of your saved accounts for that provider. This changes the chat, not your new-chat default. The account control shows a collaborator a person-level label for someone else's personal account, not its private email, provider account label, or account id. The label describes the selection, not a billing receipt: configured shared failover accounts can still be used.
+
+The CLI uses the same Gateway operations through [`openclaw models accounts`](/cli/models#personal-model-accounts). It targets the person signed in on that Gateway connection, not `--agent` or the operating-system username.
+
+Ask OpenClaw (Custodian) requires administrator access and a working configured inference route. Ask it to manage your personal model accounts, or enter **model accounts**. In the Control UI it opens the Profile controls; in a terminal it gives the CLI commands. If Custodian is unavailable, use Profile or the CLI directly. The handoff makes no change by itself. Complete sign-in in the protected controls or hidden terminal prompt, never in the conversation. Delegated agent requests cannot open or complete the human sign-in flow.
+
+Credentials and the selected link are saved together in private, identity-scoped records in the shared state database (`state/openclaw.sqlite` under the Gateway state directory). There is no second account database or JSON sidecar. Pending sign-in operations live only in Gateway memory. Credentials are not added to the shared or agent-local auth stores, copied into global runtime snapshots, or included in automatic account rotation. Reconnecting replaces only a credential owned by that person. For ChatGPT, matching a workspace alone is not enough: the provider must also identify the same user. An administrator-linked shared account is never overwritten by a personal reconnect.
 
 Administrators can still create shared profiles through the CLI (`openclaw models auth login --provider openai --profile-id openai:alice`, see [OAuth](/concepts/oauth)) and link them with `users.linkAuthProfile`. Attaching an existing shared credential is an admin decision; `users.unlinkAuthProfile` remains self-or-admin and `users.listAuthLinks` returns link metadata without secrets. A personal credential cannot be linked to another person's profile.
 
-When a linked person starts a session, OpenClaw pins their profile as that session's auth selection with the same strength as a `/model ...@profile` pin. The pin is **session-sticky**: teammates steering into that session use its selected account, and forks inherit it. An explicit `/model ...@profile -s` pin outranks the link. Agent- and channel-originated turns do not create personal links. The ordered shared profiles for the same provider remain failover candidates if the pinned account fails, just as with an explicit pin.
+When a linked person starts a session, OpenClaw pins their profile as that session's auth selection with the same strength as a `/model ...@profile` pin. The pin is **session-sticky**: teammates steering into that session use its selected account, and forks inherit it. An explicit `/model ...@profile -s` pin outranks the link. A fresh personal selection must belong to the authenticated human making it; knowing another person's account id is not permission to select it. Agent- and channel-originated turns do not create personal links. The ordered shared profiles for the same provider remain failover candidates if the pinned account fails, just as with an explicit pin.
 
-**Unlink** affects future sessions only; existing sessions keep their exact credential until reset or repinned. Changing providers can select the current requester's link for the new provider. Unlinking does not revoke a provider token; revoke it with the provider if existing sessions must stop using it. Links and existing session credentials follow verified profile merges, but an explicit unlink on the surviving profile is not reversed by a merge.
+**Use Gateway defaults for new chats**, CLI `clear-default`, and API `users.unlinkAuthProfile` affect future sessions only; existing pinned sessions keep their exact credential until reset or repinned. Changing providers can select the current requester's link for the new provider. Clearing a default neither deletes the saved credential nor revokes a provider token; revoke it with the provider if existing sessions must stop using it. Links and existing session credentials follow verified profile merges, but an explicit unlink on the surviving profile is not reversed by a merge.
 
 This is account-selection convenience inside one trust domain, not isolation from administrators or code running as the Gateway OS user. On a compatible downgrade, older builds do not discover personal credentials as shared defaults; personal account selection is unavailable until a supporting version is restored.
 

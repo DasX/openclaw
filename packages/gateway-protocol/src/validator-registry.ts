@@ -127,6 +127,8 @@ export const validateUsersSetRoleResult = compile(S.UsersSetRoleResultSchema);
 export const validateUsersSetAvatarParams = compile(S.UsersSetAvatarParamsSchema);
 export const validateUsersSetAvatarResult = compile(S.UsersSetAvatarResultSchema);
 export const validateUsersListAuthLinksParams = compile(S.UsersListAuthLinksParamsSchema);
+export const validateUsersListModelAccountsParams = compile(S.UsersListModelAccountsParamsSchema);
+export const validateUsersSelectModelAccountParams = compile(S.UsersSelectModelAccountParamsSchema);
 export const validateUsersAuthConnectStartParams = compile(S.UsersAuthConnectStartParamsSchema);
 export const validateUsersAuthConnectCompleteParams = compile(
   S.UsersAuthConnectCompleteParamsSchema,

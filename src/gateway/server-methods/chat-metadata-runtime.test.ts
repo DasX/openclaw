@@ -11,13 +11,11 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import {
-  clearUserProfileAuthLink,
-  connectUserModelAccount,
-} from "../../state/user-model-accounts.js";
-import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { clearUserProfileAuthLink } from "../../state/user-model-accounts.js";
+import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
+  connectChatMetadataAccount,
   createChatMetadataHarness,
   createChatMetadataOwner,
 } from "./chat-metadata-runtime.test-support.js";
@@ -48,23 +46,12 @@ describe("gateway chat metadata runtime", () => {
           await harness.runtime.refresh();
           const alice = ensureProfileForEmail("alice@example.test");
           const bob = ensureProfileForEmail("bob@example.test");
+          setDisplayName(alice.id, "Alice");
           const aliceScope = { agentId: "main", requesterProfileId: alice.id };
           const bobScope = { agentId: "main", requesterProfileId: bob.id };
           const shared = await harness.runtime.read({ agentId: "main" });
           expect(await harness.runtime.read(aliceScope)).toEqual(shared);
-          const connect = (profileId: string) =>
-            connectUserModelAccount({
-              ownerProfileId: profileId,
-              credential: {
-                type: "oauth",
-                provider: "openai",
-                access: "synthetic-personal-access",
-                refresh: "synthetic-personal-refresh",
-                expires: Date.now() + 600_000,
-              },
-              assertCurrent() {},
-            }).authProfileId;
-          const aliceAuthId = connect(alice.id);
+          const aliceAuthId = connectChatMetadataAccount(alice.id);
           const available = {
             models: expect.arrayContaining([
               expect.objectContaining({ id: "gpt-5.6-luna", available: true }),
@@ -86,13 +73,31 @@ describe("gateway chat metadata runtime", () => {
           await expect(harness.runtime.readStartup(pinned)).resolves.toMatchObject({
             metadata: available,
           });
+          expect((await harness.runtime.read(pinned)).accountSelection).toEqual({
+            kind: "personal",
+            label: "Alice's account",
+            source: "user-link",
+          });
+          const ownerView = await harness.runtime.readStartup({
+            ...pinned,
+            requesterProfileId: alice.id,
+          });
+          expect(ownerView?.metadata?.accountSelection).toEqual({
+            kind: "personal",
+            label: "Private provider account",
+            authProfileId: aliceAuthId,
+            source: "user-link",
+          });
+          expect((await harness.runtime.read(pinned)).accountSelection).not.toHaveProperty(
+            "authProfileId",
+          );
           clearUserProfileAuthLink({ profileId: alice.id, provider: "openai" });
           expect(await harness.runtime.read(aliceScope)).toEqual(shared);
           await expect(harness.runtime.readStartup(pinned)).resolves.toMatchObject({
             metadata: available,
           });
 
-          connect(bob.id);
+          connectChatMetadataAccount(bob.id);
           await expect(
             harness.runtime.read({
               ...pinned,

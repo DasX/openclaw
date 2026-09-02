@@ -1,5 +1,6 @@
 import { html } from "lit";
 import type {
+  UserModelAccount,
   UserProfileAuthLink,
   UsersAuthConnectStartResult,
 } from "../../../../packages/gateway-protocol/src/index.ts";
@@ -14,6 +15,10 @@ import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../../lib/external-l
 
 export type ModelAccountsSectionProps = {
   links: UserProfileAuthLink[];
+  accounts: UserModelAccount[];
+  hasMore: boolean;
+  inventoryLoading: boolean;
+  inventoryError: string | null;
   /** Linking an arbitrary stored credential is operator.admin-only server-side. */
   showManualLink: boolean;
   busy: boolean;
@@ -28,6 +33,9 @@ export type ModelAccountsSectionProps = {
   onLinkDraftInput: (value: string) => void;
   onLink: () => void;
   onUnlink: (provider: string) => void;
+  onSelectAccount: (authProfileId: string) => void;
+  onLoadMore: () => void;
+  onRefresh: () => void;
   onConnectStart: () => void;
   onConnectRedirectInput: (value: string) => void;
   onConnectComplete: () => void;
@@ -52,13 +60,31 @@ function inputValue(event: Event): string {
   return (event.target as HTMLInputElement).value;
 }
 
+function accountIdDetail(accounts: UserModelAccount[], account: UserModelAccount) {
+  return accounts.some(
+    (candidate) =>
+      candidate.authProfileId !== account.authProfileId &&
+      candidate.provider === account.provider &&
+      candidate.label === account.label,
+  )
+    ? html` <code>${account.authProfileId}</code>`
+    : "";
+}
+
 function renderLinkedRow(props: ModelAccountsSectionProps, link: UserProfileAuthLink) {
+  const account = props.accounts.find(
+    (candidate) => candidate.authProfileId === link.authProfileId,
+  );
   return renderSettingsRow({
     title: html`
-      <span class="model-accounts__id">${link.authProfileId}</span>
+      <span class="model-accounts__id"
+        >${account?.label ?? t("profilePage.modelAccounts.gatewayAccount")}</span
+      >
       <span class="model-accounts__provider">${providerLabel(link.provider)}</span>
     `,
-    description: t("profilePage.modelAccounts.linkedDescription"),
+    description: html`${t("profilePage.modelAccounts.linkedDescription")}${account
+      ? accountIdDetail(props.accounts, account)
+      : ""}`,
     control: html`
       ${renderSettingsStatus({ kind: "ok", label: t("profilePage.modelAccounts.linkedStatus") })}
       <button
@@ -68,6 +94,29 @@ function renderLinkedRow(props: ModelAccountsSectionProps, link: UserProfileAuth
         @click=${() => props.onUnlink(link.provider)}
       >
         ${t("profilePage.modelAccounts.unlinkAction")}
+      </button>
+    `,
+  });
+}
+
+function renderSavedAccountRow(props: ModelAccountsSectionProps, account: UserModelAccount) {
+  return renderSettingsRow({
+    title: html`
+      <span class="model-accounts__id">${account.label}</span>
+      <span class="model-accounts__provider">${providerLabel(account.provider)}</span>
+    `,
+    description: html`${t(
+      `profilePage.modelAccounts.authTypes.${account.authType}`,
+    )}${accountIdDetail(props.accounts, account)}`,
+    control: html`
+      <button
+        type="button"
+        class="btn btn--sm profile-auth-account-select"
+        data-auth-profile-id=${account.authProfileId}
+        ?disabled=${props.busy}
+        @click=${() => props.onSelectAccount(account.authProfileId)}
+      >
+        ${t("profilePage.modelAccounts.selectAction")}
       </button>
     `,
   });
@@ -202,6 +251,22 @@ export function renderModelAccountsSection(props: ModelAccountsSectionProps) {
     ${props.links.length === 0
       ? renderSettingsEmpty(t("profilePage.modelAccounts.empty"))
       : props.links.map((link) => renderLinkedRow(props, link))}
+    ${props.accounts
+      .filter((account) => !account.selected)
+      .map((account) => renderSavedAccountRow(props, account))}
+    ${props.hasMore
+      ? renderSettingsRow({
+          title: t("profilePage.modelAccounts.savedAccounts"),
+          control: html`<button
+            type="button"
+            class="btn btn--sm profile-auth-accounts-more"
+            ?disabled=${props.busy}
+            @click=${props.onLoadMore}
+          >
+            ${t("profilePage.modelAccounts.loadMore")}
+          </button>`,
+        })
+      : ""}
     ${renderChatgptFlow(props)}
     ${renderSettingsRow({
       title: t("profilePage.modelAccounts.connectClaude"),
@@ -247,11 +312,24 @@ export function renderModelAccountsSection(props: ModelAccountsSectionProps) {
           <span class="settings-row__desc">${props.error}</span>
         </div>`
       : ""}
+    ${props.inventoryError
+      ? html`<div class="settings-row model-accounts-error" role="alert">
+          ${t("profilePage.modelAccounts.inventoryFailed")} ${props.inventoryError}
+        </div>`
+      : ""}
   `;
   return renderSettingsSection(
     {
       title: t("profilePage.modelAccounts.title"),
       description: t("profilePage.modelAccounts.description"),
+      actions: html`<button
+        type="button"
+        class="btn btn--sm profile-auth-accounts-refresh"
+        ?disabled=${props.inventoryLoading}
+        @click=${props.onRefresh}
+      >
+        ${t("common.refresh")}
+      </button>`,
     },
     rows,
   );

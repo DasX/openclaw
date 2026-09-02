@@ -3,6 +3,8 @@ import type {
   UsersAuthConnectResult,
   UsersAuthConnectStartResult,
   UsersAuthConnectStatusResult,
+  UsersListModelAccountsResult,
+  UsersSelectModelAccountResult,
 } from "../../packages/gateway-protocol/src/schema/users.js";
 import type {
   AuthProfileCredential,
@@ -16,7 +18,13 @@ import {
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { loadActivatedBundledPluginPublicSurfaceModuleSync } from "../plugin-sdk/facade-runtime.js";
 import { parseOAuthAuthorizationInput } from "../plugin-sdk/provider-oauth-runtime.js";
-import { connectUserModelAccount, listUserProfileAuthLinks } from "../state/user-model-accounts.js";
+import {
+  connectUserModelAccount,
+  listUserModelAccounts,
+  listUserProfileAuthLinks,
+  readUserModelAccountSummary,
+  setUserProfileAuthLink,
+} from "../state/user-model-accounts.js";
 
 export type ModelAccountConnectAction = { owner: string; assertCurrent: () => void };
 type AuthorizationResult =
@@ -60,7 +68,7 @@ const MAX_RETAINED_CONNECTS = 64;
 
 export class ModelAccountConnectAuthorityError extends Error {
   constructor() {
-    super("This sign-in no longer has a current authorized connection; reconnect and start again.");
+    super("This account action requires a current authorized connection; reconnect and try again.");
   }
 }
 
@@ -212,6 +220,35 @@ export function createModelAccountConnectService(options: { onChanged?: () => vo
   };
 
   return {
+    list(action: ModelAccountConnectAction, cursor?: string): UsersListModelAccountsResult {
+      assertRunning(action);
+      return {
+        profileId: action.owner,
+        ...listUserModelAccounts({ profileId: action.owner, cursor }),
+        links: listUserProfileAuthLinks(action.owner),
+      };
+    },
+    select(
+      action: ModelAccountConnectAction,
+      authProfileId: string,
+    ): UsersSelectModelAccountResult {
+      assertRunning(action);
+      const account = readUserModelAccountSummary({ profileId: action.owner, authProfileId });
+      if (!account) {
+        throw new ModelAccountConnectInputError(
+          "Select an account from your personal model account list, or connect it first.",
+        );
+      }
+      const links = setUserProfileAuthLink({
+        profileId: action.owner,
+        provider: account.provider,
+        authProfileId,
+        assertCurrent: () => assertRunning(action),
+      });
+      supersede(action.owner, account.provider);
+      options.onChanged?.();
+      return { links };
+    },
     async start(
       action: ModelAccountConnectAction,
       provider: string,

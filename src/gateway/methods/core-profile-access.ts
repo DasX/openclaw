@@ -13,6 +13,8 @@ const PROFILE_DEPENDENT_CORE_METHODS = new Set([
   "users.linkAuthProfile",
   "users.linkEmail",
   "users.listAuthLinks",
+  "users.listModelAccounts",
+  "users.selectModelAccount",
   "users.setAvatar",
   "users.setDisplayName",
   "users.setRole",

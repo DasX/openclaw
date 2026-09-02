@@ -3542,10 +3542,17 @@ export const en: TranslationMap & {
     modelAccounts: {
       title: "Model accounts",
       description:
-        "Connect a model account for new sessions you start. Changing or unlinking an account does not change existing sessions. Gateway failover rules still apply.",
-      empty: "No account linked. Sessions you start use the gateway's default model account.",
-      linkedDescription: "Used for new sessions you start with this provider.",
-      linkedStatus: "Linked",
+        "Choose the account new chats prefer. Existing chats keep their account choice. Gateway fallback rules still apply; this preference is not a billing guarantee.",
+      empty: "No personal default selected. New chats use the gateway's default account.",
+      linkedDescription:
+        "Preferred for new chats with this provider. Clearing the default keeps the saved credential and existing chat choices.",
+      linkedStatus: "New chat default",
+      gatewayAccount: "Selected saved account",
+      selectAction: "Use for new chats",
+      savedAccounts: "Saved accounts",
+      loadMore: "Load more saved accounts",
+      inventoryFailed: "Could not load saved accounts. Refresh to retry.",
+      authTypes: { oauth: "Browser sign-in · saved account", token: "Setup token · saved account" },
       providerChatgpt: "ChatGPT",
       providerClaude: "Claude",
       waitingHint: "Waiting for the sign-in to finish…",
@@ -3558,6 +3565,9 @@ export const en: TranslationMap & {
         connected: "Model account connected.",
         cancelled: "Sign-in cancelled. No account was connected by this attempt.",
         expired: "Sign-in expired. Connect again to start a new attempt.",
+        selected: "Default updated for new chats. Existing chats are unchanged.",
+        cleared:
+          "New chats use the gateway default for this provider. Saved credentials and existing chats are unchanged.",
       },
       connectErrors: {
         exchange: "Sign-in failed while exchanging the authorization code. Connect again.",
@@ -3568,12 +3578,12 @@ export const en: TranslationMap & {
         unavailable:
           "The gateway could not save the account. Connect again or ask an administrator for help.",
       },
-      inputLabel: "Link an auth profile",
+      inputLabel: "Use an existing gateway credential",
       inputDescription:
         'A profile id from the gateway auth store, e.g. "openai:alice" after "openclaw models auth login". Admin only: this attaches an existing credential.',
       inputPlaceholder: "openai:alice",
-      linkAction: "Link",
-      unlinkAction: "Unlink",
+      linkAction: "Use for new chats",
+      unlinkAction: "Use gateway default",
       connectChatgpt: "Connect ChatGPT",
       connectChatgptDescription:
         "Sign in with your own ChatGPT account for new sessions you start.",
@@ -5152,6 +5162,11 @@ export const en: TranslationMap & {
     },
   },
   chat: {
+    modelAccounts: {
+      label: "Account for this chat",
+      manage: "Manage saved accounts…",
+      hint: "This is the chat's saved account choice, not a billing receipt. Gateway fallback rules still apply.",
+    },
     cloudWorkerFailed: "Runner failed: {error}",
     errorDetails: "Error details",
     copyError: "Copy error",

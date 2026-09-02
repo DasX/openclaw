@@ -157,6 +157,8 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["users.setAvatar", "users", "operator.write", "<=2026.7"],
   ["users.setRole", "users", "operator.admin", "2026.8"],
   ["users.listAuthLinks", "users", "operator.read", "2026.8"],
+  ["users.listModelAccounts", "users", "operator.read", "2026.9"],
+  ["users.selectModelAccount", "users", "operator.write", "2026.9"],
   ["users.linkAuthProfile", "users", "operator.admin", "2026.8"],
   ["users.unlinkAuthProfile", "users", "operator.write", "2026.8"],
   ["users.authConnect.start", "users", "operator.write", "2026.8"],
@@ -756,9 +758,7 @@ export function createCoreGatewayMethodDescriptors(
   handlers: Record<string, GatewayMethodHandler>,
 ): GatewayMethodDescriptorInput[] {
   const descriptors: GatewayMethodDescriptorInput[] = [];
-  const specNames = new Set<string>();
   for (const spec of CORE_GATEWAY_METHOD_SPEC_LIST) {
-    specNames.add(spec.name);
     const handler = handlers[spec.name];
     if (!handler) {
       continue;
@@ -777,7 +777,7 @@ export function createCoreGatewayMethodDescriptors(
     });
   }
   for (const name of Object.keys(handlers)) {
-    if (!specNames.has(name)) {
+    if (!CORE_GATEWAY_METHOD_SPEC_BY_NAME.has(name)) {
       // Unclassified core handlers would bypass scope/startup/write metadata, so fail before the
       // dispatcher can expose a method with missing policy.
       throw new Error(`gateway method handler is missing a descriptor: ${name}`);

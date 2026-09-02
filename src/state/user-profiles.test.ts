@@ -152,7 +152,9 @@ describe("user profiles", () => {
     expect(tableExists(database, "user_profiles")).toBe(false);
     expect(tableExists(database, "user_profile_identities")).toBe(false);
 
+    const profileVersion = readUserProfileVersion();
     const first = ensureProfileForEmail("  Ada@Example.COM ", options);
+    expect(readUserProfileVersion()).toBe(profileVersion + 1);
     const second = ensureProfileForEmail("ada@example.com", options);
 
     expect(tableExists(openOpenClawStateDatabase(options).db, "user_profiles")).toBe(true);
@@ -165,6 +167,7 @@ describe("user profiles", () => {
     expect(versionBefore).toBe(OPENCLAW_STATE_SCHEMA_VERSION);
     expect(second).toEqual(first);
     expect(ensureProfileForEmail("ADA@example.com", options)).toEqual(first);
+    expect(readUserProfileVersion()).toBe(profileVersion + 1);
     expect(listProfiles(options)).toEqual([
       expect.objectContaining({ id: first.id, emails: ["ada@example.com"] }),
     ]);
@@ -173,6 +176,7 @@ describe("user profiles", () => {
   it("resolves provider identities without storing them as emails", () => {
     const options = stateOptions();
 
+    const profileVersion = readUserProfileVersion();
     const first = ensureProfileForTailscaleIdentity(
       { login: "Ada@GitHub", name: "Ada Lovelace" },
       options,
@@ -184,6 +188,7 @@ describe("user profiles", () => {
 
     expect(second.id).toBe(first.id);
     expect(second.displayName).toBe("Ada Lovelace");
+    expect(readUserProfileVersion()).toBe(profileVersion + 1);
     expect(listProfiles(options)).toEqual([
       expect.objectContaining({ id: first.id, emails: [], displayName: "Ada Lovelace" }),
     ]);
@@ -730,14 +735,18 @@ describe("user profiles", () => {
     );
 
     setDisplayName(profile.id, null, options);
+    const beforeAdoption = readUserProfileVersion();
     expect(
       ensureProfileForTailscaleIdentity({ login: "ada@github", name: "Ada Adopted" }, options),
     ).toMatchObject({ displayName: "Ada Adopted" });
+    expect(readUserProfileVersion()).toBe(beforeAdoption + 1);
 
     setDisplayName(profile.id, "User Chosen", options);
+    const beforeRefresh = readUserProfileVersion();
     expect(
       ensureProfileForTailscaleIdentity({ login: "ada@github", name: "Provider Changed" }, options),
     ).toMatchObject({ displayName: "User Chosen" });
+    expect(readUserProfileVersion()).toBe(beforeRefresh);
   });
 
   it("moves aliases and leaves an aliasless source profile as a one-hop tombstone", () => {
@@ -774,23 +783,6 @@ describe("user profiles", () => {
       expect.arrayContaining([
         expect.objectContaining({ id: a.id, mergedInto: c.id }),
         expect.objectContaining({ id: b.id, mergedInto: c.id }),
-      ]),
-    );
-  });
-
-  it("resolves a tombstoned link target to its head without forming a cycle", () => {
-    const options = stateOptions();
-    const a = ensureProfileForEmail("a@example.com", options);
-    const b = ensureProfileForEmail("b@example.com", options);
-
-    linkEmail("a@example.com", b.id, options);
-    linkEmail("a@example.com", a.id, options);
-
-    expect(ensureProfileForEmail("a@example.com", options).id).toBe(b.id);
-    expect(listProfiles(options)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: a.id, mergedInto: b.id }),
-        expect.objectContaining({ id: b.id, mergedInto: null }),
       ]),
     );
   });
@@ -964,6 +956,7 @@ describe("user profiles", () => {
     const profileId = listProfiles(options)[0]?.id;
     expect(profileId).toBeTruthy();
     expect(setAvatar(profileId!, new Uint8Array([9, 8, 7]), "image/png", options).ok).toBe(true);
+    const beforeAdoption = readUserProfileVersion();
 
     resolveFetch?.(
       new Response(Uint8Array.from(fixtureImage("ui/public/favicon-32.png")).buffer, {
@@ -973,6 +966,7 @@ describe("user profiles", () => {
     await pending;
 
     expect(getProfileAvatar(profileId!, options)?.bytes).toEqual(new Uint8Array([9, 8, 7]));
+    expect(readUserProfileVersion()).toBe(beforeAdoption);
   });
 
   it("migrates legacy provider logins while preserving profiles and real emails", () => {

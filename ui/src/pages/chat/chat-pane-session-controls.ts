@@ -18,6 +18,7 @@ import { patchChatSessionSettings } from "./chat-settings-patches.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { refreshChatModelCatalogOnDemand } from "./chat-state-refresh.ts";
 import type { ChatProps } from "./chat-view.ts";
+import { renderChatModelAccountControl } from "./components/chat-model-account-control.ts";
 import {
   renderChatModelControls,
   type ChatModelCatalogState,
@@ -92,6 +93,7 @@ export function renderChatPaneComposerControls(params: {
   permissionAccess: SessionMethodAccess;
   canSelectFull: boolean;
   onModelSetup: () => void;
+  onModelAccounts?: () => void;
 }): {
   composerControls: NonNullable<ChatProps["composerControls"]>;
   permissionPicker: ChatPermissionPickerProps;
@@ -106,6 +108,7 @@ export function renderChatPaneComposerControls(params: {
     permissionAccess,
     canSelectFull,
     onModelSetup,
+    onModelAccounts,
   } = params;
   const sessionKey = state.sessionKey;
   const client = state.client;
@@ -133,6 +136,27 @@ export function renderChatPaneComposerControls(params: {
     composerControls: html`
       <div class="chat-composer-model-control">
         ${renderChatModelControls({
+          renderAccountControl: (accountModel) =>
+            renderChatModelAccountControl({
+              state,
+              model: accountModel,
+              disabled:
+                !modelAccess.allowed ||
+                !state.connected ||
+                !accountModel ||
+                selectedSession?.modelSelectionLocked === true ||
+                state.chatLoading ||
+                state.chatSending ||
+                Boolean(state.chatRunId) ||
+                state.chatStream !== null ||
+                Boolean(state.chatModelSwitchPromises[sessionKey]),
+              ownsSelection,
+              onSelect: (authProfileId) =>
+                ownsSelection() && modelAccess.allowed
+                  ? switchChatModel(state, `${accountModel}@${authProfileId}`, sessionKey)
+                  : Promise.resolve(false),
+              onManage: onModelAccounts,
+            }),
           activeRunId: state.chatRunId,
           agentDefaultModel,
           connected: state.connected,

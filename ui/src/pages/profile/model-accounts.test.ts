@@ -1,7 +1,14 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { UsersAuthConnectStatusResult } from "../../../../packages/gateway-protocol/src/index.ts";
+import type {
+  UserModelAccount,
+  UserProfileAuthLink,
+  UsersAuthConnectResult,
+  UsersAuthConnectStatusResult,
+  UsersListAuthLinksResult,
+  UsersListModelAccountsResult,
+} from "../../../../packages/gateway-protocol/src/index.ts";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import { i18n, t } from "../../i18n/index.ts";
@@ -20,17 +27,66 @@ const connectedResult: UsersAuthConnectStatusResult = {
   links: [{ provider: "openai", authProfileId: "openai:personal", updatedAt: 1 }],
 };
 
+const connectedAccount: UserModelAccount = {
+  authProfileId: "openai:personal",
+  provider: "openai",
+  label: "Ada · Personal workspace",
+  authType: "oauth",
+  selected: true,
+};
+const claudeAccount: UserModelAccount = {
+  authProfileId: "anthropic:personal",
+  provider: "anthropic",
+  label: "Ada · Claude",
+  authType: "token",
+  selected: true,
+};
+
 async function mountAccounts(
-  handle: (method: string, params?: unknown) => Promise<unknown>,
+  handle: (
+    method: string,
+    params?: unknown,
+  ) => Promise<UsersAuthConnectStatusResult | UsersAuthConnectResult | UsersListAuthLinksResult>,
   {
     expiresInMs = 60_000,
     scopes = ["operator.write"],
-  }: { expiresInMs?: number; scopes?: string[] } = {},
+    accounts: initialAccounts = [],
+    inventoryPages,
+  }: {
+    expiresInMs?: number;
+    scopes?: string[];
+    accounts?: UserModelAccount[];
+    inventoryPages?: UsersListModelAccountsResult[];
+  } = {},
 ) {
   let starts = 0;
+  let savedAccounts = initialAccounts;
+  let links: UserProfileAuthLink[] = savedAccounts
+    .filter((account) => account.selected)
+    .map((account) => ({
+      provider: account.provider,
+      authProfileId: account.authProfileId,
+      updatedAt: 1,
+    }));
+  let inventoryPage = 0;
+  const fixtures = [
+    ...savedAccounts,
+    ...(inventoryPages?.flatMap((page) => page.accounts) ?? []),
+    connectedAccount,
+    claudeAccount,
+  ];
   const request = vi.fn(async (method: string, params?: unknown) => {
-    if (method === "users.listAuthLinks") {
-      return { links: [] };
+    if (method === "users.listModelAccounts") {
+      const page = inventoryPages?.[inventoryPage++];
+      if (page) {
+        savedAccounts = [
+          ...new Map(
+            [...savedAccounts, ...page.accounts].map((account) => [account.authProfileId, account]),
+          ).values(),
+        ];
+        links = page.links;
+      }
+      return page ?? { profileId: "profile-1", accounts: savedAccounts, links };
     }
     if (method === "users.authConnect.start") {
       starts += 1;
@@ -41,7 +97,25 @@ async function mountAccounts(
         autoCallback: true,
       };
     }
-    return handle(method, params);
+    const result = await handle(method, params);
+    if ("links" in result) {
+      links = result.links;
+      const saved = new Map(savedAccounts.map((account) => [account.authProfileId, account]));
+      for (const link of links) {
+        const account = fixtures.find(
+          (candidate) => candidate.authProfileId === link.authProfileId,
+        );
+        if (account) {
+          saved.set(account.authProfileId, account);
+        }
+      }
+      savedAccounts = [...saved.values()].map((account) =>
+        Object.assign({}, account, {
+          selected: links.some((link) => link.authProfileId === account.authProfileId),
+        }),
+      );
+    }
+    return result;
   });
   let snapshot = {
     client: createTestGatewayClient(request),
@@ -111,6 +185,100 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("lets a writer choose a retained account for new chats and clear the default without removing it", async () => {
+  const work = {
+    ...connectedAccount,
+    authProfileId: "openai:work",
+    label: "Ada · Work workspace",
+    selected: false,
+  };
+  const harness = await mountAccounts(
+    async (method, params) => {
+      if (method === "users.selectModelAccount") {
+        expect(params).toEqual({ profileId: "profile-1", authProfileId: work.authProfileId });
+        return { links: [{ provider: "openai", authProfileId: work.authProfileId, updatedAt: 2 }] };
+      }
+      expect(method).toBe("users.unlinkAuthProfile");
+      expect(params).toEqual({ profileId: "profile-1", provider: "openai" });
+      return { links: [] };
+    },
+    { accounts: [connectedAccount, work] },
+  );
+  expect(harness.accounts.querySelector(".profile-auth-link-input")).toBeNull();
+  expect(harness.accounts.textContent).toContain(connectedAccount.label);
+  expect(harness.accounts.textContent).toContain(work.label);
+  expect(harness.accounts.textContent).not.toContain(work.authProfileId);
+  button(harness.accounts, `[data-auth-profile-id="${work.authProfileId}"]`).click();
+  await vi.waitFor(() =>
+    expect(harness.accounts.textContent).toContain(t("profilePage.modelAccounts.notices.selected")),
+  );
+  await vi.waitFor(() =>
+    expect(button(harness.accounts, ".profile-auth-link-unlink").disabled).toBe(false),
+  );
+  expect(harness.accounts.querySelector('[data-auth-profile-id="openai:personal"]')).not.toBeNull();
+  button(harness.accounts, ".profile-auth-link-unlink").click();
+  await vi.waitFor(() =>
+    expect(harness.accounts.textContent).toContain(t("profilePage.modelAccounts.notices.cleared")),
+  );
+  await vi.waitFor(() =>
+    expect(harness.accounts.querySelectorAll(".profile-auth-account-select")).toHaveLength(2),
+  );
+  expect(harness.accounts.querySelector(".profile-auth-link-unlink")).toBeNull();
+  expect(
+    harness.request.mock.calls.some(([method]) => method.startsWith("users.authConnect.")),
+  ).toBe(false);
+});
+
+it("loads retained accounts one page at a time without dropping earlier choices", async () => {
+  const first = { ...connectedAccount, selected: false };
+  const second = { ...first, authProfileId: "openai:work" };
+  const harness = await mountAccounts(
+    async () => {
+      throw new Error("Unexpected account mutation");
+    },
+    {
+      inventoryPages: [
+        { profileId: "profile-1", accounts: [first], links: [], nextCursor: "page-2" },
+        { profileId: "profile-1", accounts: [second], links: [] },
+      ],
+    },
+  );
+  expect(harness.accounts.textContent).not.toContain(first.authProfileId);
+  button(harness.accounts, ".profile-auth-accounts-more").click();
+  await vi.waitFor(() =>
+    expect(harness.accounts.querySelectorAll(".profile-auth-account-select")).toHaveLength(2),
+  );
+  expect(harness.accounts.textContent).toContain(first.authProfileId);
+  expect(harness.accounts.textContent).toContain(second.authProfileId);
+  expect(harness.accounts.querySelector(".profile-auth-accounts-more")).toBeNull();
+  expect(harness.request).toHaveBeenCalledWith("users.listModelAccounts", {
+    profileId: "profile-1",
+    cursor: "page-2",
+  });
+});
+
+it("discards an inventory reply from the previous connection", async () => {
+  const harness = await mountAccounts(async () => {
+    throw new Error("Unexpected account mutation");
+  });
+  const old = createDeferred<UsersListModelAccountsResult>();
+  harness.request.mockImplementationOnce(async () => old.promise);
+  button(harness.accounts, ".profile-auth-accounts-refresh").click();
+  harness.emit("reconnecting");
+  harness.emit("connected");
+  old.resolve({
+    profileId: "profile-1",
+    accounts: [connectedAccount],
+    links: connectedResult.links,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  await harness.accounts.updateComplete;
+  expect(harness.accounts.textContent).not.toContain(connectedAccount.label);
+  await vi.waitFor(() =>
+    expect(button(harness.accounts, ".profile-auth-connect-start").disabled).toBe(false),
+  );
+});
+
 it("lets an admin link and unlink an existing model account", async () => {
   const harness = await mountAccounts(
     async (method) => {
@@ -127,7 +295,7 @@ it("lets an admin link and unlink an existing model account", async () => {
   expect(harness.accounts.textContent).toContain(t("profilePage.modelAccounts.empty"));
   const linkInput = await input(harness.accounts, ".profile-auth-link-input", "openai:personal");
   button(harness.accounts, ".profile-auth-link-submit").click();
-  await vi.waitFor(() => expect(harness.accounts.textContent).toContain("openai:personal"));
+  await vi.waitFor(() => expect(harness.accounts.textContent).toContain(connectedAccount.label));
   expect(harness.request).toHaveBeenCalledWith("users.linkAuthProfile", {
     profileId: "profile-1",
     authProfileId: "openai:personal",
@@ -164,13 +332,13 @@ it("polls one authorization at a time and uses its recorded outcome", async () =
   expect(button(harness.accounts, ".profile-auth-connect-cancel").disabled).toBe(false);
   await vi.advanceTimersByTimeAsync(2_000);
   await harness.accounts.updateComplete;
-  expect(harness.accounts.textContent).toContain("openai:personal");
+  expect(harness.accounts.textContent).toContain(connectedAccount.label);
   expect(harness.accounts.querySelector(".model-accounts-flow")).toBeNull();
   await vi.advanceTimersByTimeAsync(10_000);
   expect(polls).toBe(2);
   expect(
-    harness.request.mock.calls.filter(([method]) => method === "users.listAuthLinks"),
-  ).toHaveLength(1);
+    harness.request.mock.calls.filter(([method]) => method === "users.listModelAccounts"),
+  ).toHaveLength(2);
 });
 
 it.each([
@@ -232,7 +400,7 @@ it("waits for cancellation and ignores a late completion from the cancelled atte
   await vi.advanceTimersByTimeAsync(0);
   await harness.accounts.updateComplete;
   expect(harness.accounts.textContent).toContain(t("profilePage.modelAccounts.notices.cancelled"));
-  expect(harness.accounts.textContent).not.toContain("openai:personal");
+  expect(harness.accounts.textContent).not.toContain(connectedAccount.label);
   expect(button(harness.accounts, ".profile-auth-connect-start").disabled).toBe(false);
 });
 
@@ -253,7 +421,7 @@ it("does not apply an old poll after reconnecting and starting a new attempt", a
   expect(
     harness.accounts.querySelector<HTMLAnchorElement>(".profile-auth-connect-open")?.href,
   ).toContain("state=2");
-  expect(harness.accounts.textContent).not.toContain("openai:personal");
+  expect(harness.accounts.textContent).not.toContain(connectedAccount.label);
   expect(harness.accounts.querySelector(".model-accounts-flow")).not.toBeNull();
 });
 
@@ -274,7 +442,7 @@ it("keeps a failed status check visible and lets the person retry it", async () 
   await vi.advanceTimersByTimeAsync(10_000);
   expect(polls).toBe(1);
   button(harness.accounts, ".profile-auth-connect-check").click();
-  await vi.waitFor(() => expect(harness.accounts.textContent).toContain("openai:personal"));
+  await vi.waitFor(() => expect(harness.accounts.textContent).toContain(connectedAccount.label));
   expect(harness.accounts.querySelector('[role="alert"]')).toBeNull();
 });
 
@@ -305,6 +473,6 @@ it("lets writers save a masked token without exposing manual account links", asy
   const token = await input(harness.accounts, ".profile-auth-connect-claude", "test-token");
   expect(token.type).toBe("password");
   button(harness.accounts, ".profile-auth-connect-claude-submit").click();
-  await vi.waitFor(() => expect(harness.accounts.textContent).toContain("anthropic:personal"));
+  await vi.waitFor(() => expect(harness.accounts.textContent).toContain(claudeAccount.label));
   expect(token.value).toBe("");
 });

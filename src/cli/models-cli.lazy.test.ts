@@ -13,32 +13,37 @@ describe("models cli lazy runtime boundary", () => {
     vi.resetModules();
   });
 
-  it("renders help without importing the models runtime", async () => {
-    const runtimeLoaded = vi.fn();
-    vi.doMock("./models-cli.runtime.js", () => {
-      runtimeLoaded();
-      return {
-        defaultRuntime: {},
-        rejectAgentScopedModelCommand: vi.fn(),
-        resolveModelAgentOption: vi.fn(),
-        runModelsCommand: vi.fn(),
-      };
-    });
+  it.each([{ args: [] }, { args: ["accounts"] }, { args: ["accounts", "connect"] }])(
+    "renders $args help without importing the models runtime",
+    async ({ args }) => {
+      const runtimeLoaded = vi.fn();
+      vi.doMock("./models-cli.runtime.js", () => {
+        runtimeLoaded();
+        return {
+          defaultRuntime: {},
+          rejectAgentScopedModelCommand: vi.fn(),
+          resolveModelAgentOption: vi.fn(),
+          runModelsCommand: vi.fn(),
+        };
+      });
 
-    const { registerModelsCli } = await import("./models-cli.js");
-    const program = new Command();
-    program.exitOverride();
-    program.configureOutput({
-      writeErr: () => {},
-      writeOut: () => {},
-    });
-    registerModelsCli(program);
+      const { registerModelsCli } = await import("./models-cli.js");
+      const program = new Command();
+      program.exitOverride();
+      program.configureOutput({
+        writeErr: () => {},
+        writeOut: () => {},
+      });
+      registerModelsCli(program);
 
-    await expect(program.parseAsync(["models", "--help"], { from: "user" })).rejects.toMatchObject({
-      exitCode: 0,
-    });
-    expect(runtimeLoaded).not.toHaveBeenCalled();
-  });
+      await expect(
+        program.parseAsync(["models", ...args, "--help"], { from: "user" }),
+      ).rejects.toMatchObject({
+        exitCode: 0,
+      });
+      expect(runtimeLoaded).not.toHaveBeenCalled();
+    },
+  );
 
   it("loads the models runtime for command actions", async () => {
     const defaultRuntime = {};

@@ -488,6 +488,17 @@ export class ChatTurnRouter {
         handoff: recordedOperation,
       };
     }
+    if (recordedOperation.kind === "model-accounts") {
+      this.clearPendingProposals();
+      return {
+        text:
+          this.options.surface === "gateway"
+            ? "Opening Settings → Profile → Model accounts. Connect or select your account there using the protected controls. Nothing has changed yet; never paste credentials into this conversation."
+            : "Run `openclaw models accounts list` to see your personal accounts, or `openclaw models accounts connect <provider>` for protected sign-in. You can also use Settings → Profile → Model accounts in the Control UI. Nothing has changed; never paste credentials into this conversation.",
+        action: "none",
+        ...(this.options.surface === "gateway" ? { handoff: recordedOperation } : {}),
+      };
+    }
     if (recordedOperation.kind === "open-setup") {
       this.clearPendingProposals();
       if (this.options.surface === "gateway") {

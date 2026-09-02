@@ -29,6 +29,7 @@ import { handleChatComposerDetailsToggle, syncChatPickerOverlay } from "./chat-p
 export type { ChatModelCatalogState } from "./chat-model-catalog-state.ts";
 
 type ChatModelPickerParams = {
+  accountControl?: unknown;
   contextWindow?: ChatContextWindowControlParams;
   defaultModelLabel: string;
   disabled: boolean;
@@ -105,8 +106,8 @@ function highlightModelRow(menu: HTMLElement, row: HTMLButtonElement | undefined
 }
 
 // Numbers follow the filtered order because digit selection reads that same row list.
-// A focused search input owns the digits instead (handleModelPickerKeydown bails on input
-// targets), and the :focus-within rule in styles/chat/layout.css withdraws these keycaps there.
+// Search inputs and nested dropdowns own digits instead. The :focus-within rule
+// in styles/chat/layout.css withdraws these keycaps while a control has focus.
 function updateModelShortcuts(menu: HTMLElement, rows: readonly HTMLButtonElement[]): void {
   menu.querySelectorAll<HTMLElement>("[data-chat-model-shortcut]").forEach((shortcut) => {
     shortcut.hidden = true;
@@ -239,7 +240,14 @@ function handleModelSearchKeydown(event: KeyboardEvent): void {
 
 function handleModelPickerKeydown(event: KeyboardEvent): void {
   const details = event.currentTarget as HTMLDetailsElement;
-  if (!details.open || event.target instanceof HTMLInputElement || !/^[1-9]$/u.test(event.key)) {
+  if (
+    !details.open ||
+    event.target instanceof HTMLInputElement ||
+    event
+      .composedPath()
+      .some((target) => target instanceof HTMLElement && target.localName === "wa-dropdown") ||
+    !/^[1-9]$/u.test(event.key)
+  ) {
     return;
   }
   const row = selectableModelRows(details)[Number(event.key) - 1];
@@ -654,6 +662,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
                     `
                   : nothing}
               `}
+          ${params.accountControl ?? nothing}
         </div>
       </wa-popup>
     </details>

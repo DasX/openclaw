@@ -2,7 +2,10 @@
 import path from "node:path";
 import { expect, type Page } from "playwright/test";
 import { beforeEach, it } from "vitest";
-import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../../packages/gateway-protocol/src/index.ts";
+import {
+  GIT_COAUTHOR_PREFERENCE_KEY,
+  type UserModelAccount,
+} from "../../../packages/gateway-protocol/src/index.ts";
 import {
   buildControlUiCspHeader,
   computeInlineScriptHashes,
@@ -155,7 +158,7 @@ suite.define(() => {
         ).toHaveCount(0);
         await screenshot(page, "08-github-identity-unlinked.png");
 
-        await page.getByRole("button", { name: "Refresh" }).click();
+        await page.locator(".profile-refresh").click();
         await expect.poll(async () => (await gateway.getRequests("users.self")).length).toBe(2);
         const prefGet = await gateway.waitForRequest("users.prefs.get");
         expect(prefGet.params).toEqual({ keys: [GIT_COAUTHOR_PREFERENCE_KEY] });
@@ -517,12 +520,43 @@ suite.define(() => {
         viewport: { width: 1280, height: 800 },
       },
       async ({ page }) => {
+        const personal: UserModelAccount = {
+          authProfileId: "openai:scott",
+          provider: "openai",
+          label: "Test Person · Personal workspace",
+          authType: "oauth",
+          selected: true,
+        };
+        const work = {
+          ...personal,
+          authProfileId: "openai:work",
+          label: "Test Person · Work workspace",
+          selected: false,
+        };
+        const connected = {
+          ...personal,
+          authProfileId: "openai:personal",
+          label: "Test Person · New workspace",
+        };
+        const savedAccounts = [personal, work];
+        const inventory = (selected: UserModelAccount | null) => ({
+          profileId: testProfile.id,
+          accounts: savedAccounts.map((account) => ({
+            ...account,
+            selected: account.authProfileId === selected?.authProfileId,
+          })),
+          links: selected
+            ? [
+                {
+                  provider: selected.provider,
+                  authProfileId: selected.authProfileId,
+                  updatedAt: 1_700_000_000_000,
+                },
+              ]
+            : [],
+        });
         const gateway = await openProfilePage(page, {
-          "users.listAuthLinks": {
-            links: [
-              { provider: "openai", authProfileId: "openai:scott", updatedAt: 1_700_000_000_000 },
-            ],
-          },
+          "users.listModelAccounts": inventory(personal),
           "users.authConnect.start": {
             sequence: [1, 2].map((attempt) => ({
               connectId: `connect-${attempt}`,
@@ -538,13 +572,16 @@ suite.define(() => {
         const section = page.locator("section.settings-section", {
           has: page.locator(".profile-auth-link-input"),
         });
+        const selectedAccount = section
+          .locator(".settings-row")
+          .filter({ has: page.locator(".profile-auth-link-unlink") });
 
-        await expect(section.locator(".model-accounts__id").textContent()).resolves.toBe(
-          "openai:scott",
+        await expect(selectedAccount.locator(".model-accounts__id").textContent()).resolves.toBe(
+          personal.label,
         );
-        await expect(section.locator(".model-accounts__provider").textContent()).resolves.toContain(
-          "ChatGPT",
-        );
+        await expect(
+          selectedAccount.locator(".model-accounts__provider").textContent(),
+        ).resolves.toContain("ChatGPT");
         await expect(section.locator(".profile-auth-link-unlink").isEnabled()).resolves.toBe(true);
         if (captureUiProof) {
           await section.screenshot({
@@ -580,7 +617,7 @@ suite.define(() => {
         await gateway.resolveDeferred("users.authConnect.cancel", { status: "cancelled" });
         await expect(section.locator(".model-accounts-flow")).toHaveCount(0);
         await expect(section.locator('[role="status"]')).toContainText("Sign-in cancelled.");
-        await expect(section.locator(".model-accounts__id")).toHaveText("openai:scott");
+        await expect(selectedAccount.locator(".model-accounts__id")).toHaveText(personal.label);
         if (captureUiProof) {
           await section.screenshot({
             animations: "disabled",
@@ -600,6 +637,8 @@ suite.define(() => {
             path: path.join(proofDir, "model-accounts-exchanging.png"),
           });
         }
+        savedAccounts.push(connected);
+        await gateway.setMethodResponse("users.listModelAccounts", inventory(connected));
         await gateway.setMethodResponse("users.authConnect.status", {
           status: "connected",
           authProfileId: "openai:personal",
@@ -608,7 +647,7 @@ suite.define(() => {
           ],
         });
         await expect(section.locator(".model-accounts-flow")).toHaveCount(0);
-        await expect(section.locator(".model-accounts__id")).toHaveText("openai:personal");
+        await expect(selectedAccount.locator(".model-accounts__id")).toHaveText(connected.label);
         await expect(section.locator('[role="status"]')).toContainText("Model account connected.");
         await expect(section.locator(".profile-auth-connect-start")).toBeEnabled();
         const polls = await gateway.getRequests("users.authConnect.status");
@@ -617,6 +656,40 @@ suite.define(() => {
           await section.screenshot({
             animations: "disabled",
             path: path.join(proofDir, "model-accounts-connected.png"),
+          });
+        }
+        await gateway.setMethodResponse("users.selectModelAccount", {
+          links: inventory(work).links,
+        });
+        await gateway.setMethodResponse("users.listModelAccounts", inventory(work));
+        await section.locator(`[data-auth-profile-id="${work.authProfileId}"]`).click();
+        const selection = await gateway.waitForRequest("users.selectModelAccount");
+        expect(selection.params).toEqual({
+          profileId: testProfile.id,
+          authProfileId: work.authProfileId,
+        });
+        await expect(selectedAccount.locator(".model-accounts__id")).toHaveText(work.label);
+        await expect(section.locator(".model-accounts-notice")).toContainText(
+          "Existing chats are unchanged.",
+        );
+        if (captureUiProof) {
+          await section.screenshot({
+            animations: "disabled",
+            path: path.join(proofDir, "model-accounts-default-selected.png"),
+          });
+        }
+        await gateway.setMethodResponse("users.unlinkAuthProfile", { links: [] });
+        await gateway.setMethodResponse("users.listModelAccounts", inventory(null));
+        await section.getByRole("button", { name: "Use gateway default", exact: true }).click();
+        await expect(selectedAccount).toHaveCount(0);
+        await expect(section.locator(".profile-auth-account-select")).toHaveCount(3);
+        await expect(section.locator(".model-accounts-notice")).toContainText(
+          "Saved credentials and existing chats are unchanged.",
+        );
+        if (captureUiProof) {
+          await section.screenshot({
+            animations: "disabled",
+            path: path.join(proofDir, "model-accounts-default-cleared.png"),
           });
         }
       },

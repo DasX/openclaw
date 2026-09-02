@@ -1877,6 +1877,15 @@ function installControlUiMockGateway(
         };
       case "users.listAuthLinks":
         return { links: [] };
+      case "users.listModelAccounts":
+        return {
+          profileId:
+            isRecord(params) && typeof params.profileId === "string"
+              ? params.profileId
+              : (scenario.presenceUsers.find((user) => user.self)?.id ?? "profile-1"),
+          accounts: [],
+          links: [],
+        };
       case "users.github.status":
       case "tools.github.status": {
         const system = {

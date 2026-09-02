@@ -3,6 +3,7 @@ import {
   resolveGatewayStartupRetryAfterMs,
 } from "@openclaw/gateway-client/browser";
 import type {
+  ChatAccountSelection,
   ChatMetadataParams,
   CommandsListResult,
 } from "../../../../packages/gateway-protocol/src/index.js";
@@ -11,6 +12,7 @@ import type { ModelCatalogEntry } from "../../api/types.ts";
 
 export type ChatMetadataResult = CommandsListResult & {
   models?: ModelCatalogEntry[];
+  accountSelection?: ChatAccountSelection;
 };
 
 type ChatMetadataUpdate =

@@ -25,6 +25,7 @@ import {
 import { findModelCatalogEntry } from "../agents/model-catalog.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import { resolveModelContextWindowProfile } from "../agents/model-context-window.js";
+import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
   resolveDefaultModelForAgent,
   resolveSubagentConfiguredModelSelection,
@@ -81,10 +82,12 @@ import {
 } from "../sessions/session-lifecycle-admission.js";
 import { recordSessionCreated } from "../sessions/session-state-events.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { isUserModelAuthProfileId } from "../state/user-model-account-id.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
+import type { UserModelAccountSelection } from "./server-methods/users-model-account-access.js";
 import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
 import {
   type GatewaySessionTitleModelSelection,
@@ -313,6 +316,7 @@ export async function createGatewaySession(params: {
   displayName?: string;
   category?: string;
   model?: string;
+  personalModelSelection?: UserModelAccountSelection;
   contextWindow?: string;
   thinkingLevel?: string;
   fastMode?: FastMode;
@@ -385,6 +389,32 @@ export async function createGatewaySession(params: {
   /** Synchronous caller-authority guard checked by each durable owner boundary. */
   commitGuard?: () => void;
 }): Promise<CreateGatewaySessionResult> {
+  const { personalModelSelection } = params;
+  const requestedProfile = splitTrailingAuthProfile(
+    params.catalogTarget?.model ?? params.model ?? "",
+  ).profile;
+  if (
+    requestedProfile &&
+    isUserModelAuthProfileId(requestedProfile) &&
+    personalModelSelection?.authProfileId !== requestedProfile
+  ) {
+    return {
+      ok: false,
+      error: errorShape(
+        ErrorCodes.FORBIDDEN,
+        "Choose your personal account from an identified Gateway connection.",
+      ),
+    };
+  }
+  // Fresh account authority covers title generation and resource preparation,
+  // not just the final row. An inherited parent pin is not a new selection.
+  const commitGuard = personalModelSelection
+    ? () => {
+        params.commitGuard?.();
+        personalModelSelection.assertCurrent();
+      }
+    : params.commitGuard;
+  commitGuard?.();
   // Presentation titles do not claim labels. Bound the snapshot at the shared
   // creator so every native owner gets the same surrogate-safe storage contract.
   const displayName = truncateUtf16Safe(params.displayName?.trim() ?? "", 500).trimEnd();
@@ -766,7 +796,7 @@ export async function createGatewaySession(params: {
         ...(params.clearExecBinding ? { clearExecBinding: true } : {}),
         ...(params.clearSpawnedCwd && !spawnedCwd ? { clearSpawnedCwd: true } : {}),
         ...(params.armSessionDiffBaselineCapture ? { armSessionDiffBaselineCapture: true } : {}),
-        ...(params.commitGuard ? { assertAuthorizedInstance: params.commitGuard } : {}),
+        ...(commitGuard ? { assertAuthorizedInstance: commitGuard } : {}),
       });
       if (!resetResult.ok) {
         return resetResult;
@@ -805,7 +835,7 @@ export async function createGatewaySession(params: {
         }
       : undefined;
   const createChildSession = async (): Promise<GatewaySessionCommitResult> => {
-    params.commitGuard?.();
+    commitGuard?.();
     let currentParentSessionEntry = parentSessionEntry;
     if (
       canonicalParentSessionKey &&
@@ -933,6 +963,7 @@ export async function createGatewaySession(params: {
       params.catalogTarget ?? params.model,
       currentParentSessionEntry,
     );
+    commitGuard?.();
     const preparationResult = params.prepareLifecycle
       ? await params.prepareLifecycle({
           agentId: target.agentId,
@@ -1128,6 +1159,7 @@ export async function createGatewaySession(params: {
           },
           loadGatewayModelCatalog: params.loadGatewayModelCatalog,
           authorizedAgentHarnessId: params.authorizedAgentHarnessId,
+          personalModelSelection: params.personalModelSelection,
         });
         if (!patched.ok) {
           return patched;
@@ -1349,7 +1381,7 @@ export async function createGatewaySession(params: {
         const forkResult = await forkSessionFromParentWithDecision({
           parentEntry: currentParentSessionEntry,
           agentId: parentSessionTarget.agentId,
-          ...(params.commitGuard ? { commitGuard: params.commitGuard } : {}),
+          ...(commitGuard ? { commitGuard } : {}),
           parentSessionKey: forkParentSessionKey,
           sessionKey: target.canonicalKey,
           storePath: parentSessionTarget.storePath,
@@ -1394,7 +1426,7 @@ export async function createGatewaySession(params: {
               requireWriteSuccess: true,
             }
           : {}),
-        ...(params.commitGuard ? { commitGuard: params.commitGuard } : {}),
+        ...(commitGuard ? { commitGuard } : {}),
         ...(runtimeCwd ? { cwd: runtimeCwd } : {}),
       },
     );

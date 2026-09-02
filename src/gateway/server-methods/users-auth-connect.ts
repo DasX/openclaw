@@ -6,29 +6,23 @@ import {
   validateUsersAuthConnectStartParams,
   validateUsersAuthConnectStatusParams,
   validateUsersAuthConnectTokenParams,
+  validateUsersListModelAccountsParams,
+  validateUsersSelectModelAccountParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { getGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { validateAnthropicSetupToken } from "../../plugins/provider-auth-token.js";
-import { roleScopesAllow } from "../../shared/operator-scope-compat.js";
-import {
-  getUserProfileListItem,
-  resolveUserProfileId,
-  UserProfileNotFoundError,
-} from "../../state/user-profiles.js";
+import { UserProfileNotFoundError } from "../../state/user-profiles.js";
 import {
   ModelAccountConnectAuthorityError,
   ModelAccountConnectInputError,
   type ModelAccountConnectAction,
 } from "../model-account-connect.js";
-import { resolveOperatorRolePolicyForProfile } from "../operator-role-policy.js";
-import { isGatewayClientProfilePending } from "./gateway-client-identity.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
   GatewayRequestHandlers,
 } from "./types.js";
-import { resolveAuthenticatedProfileId } from "./users-profile-access.js";
+import { prepareUserModelAccountAction } from "./users-model-account-access.js";
 import { defineValidatedGatewayMethod } from "./validation.js";
 
 type ConnectRequest = Pick<
@@ -36,54 +30,14 @@ type ConnectRequest = Pick<
   "client" | "context" | "signal" | "respond"
 >;
 
-function prepareConnectAction(
-  options: ConnectRequest,
-  profileId: string,
-): ModelAccountConnectAction {
-  const { client, context } = options;
-  const owner = getUserProfileListItem(profileId).id;
-  const actor = resolveAuthenticatedProfileId(client);
-  const assertCurrent = () => {
-    // Bind to the exact initiating socket, not retained scopes or a copied id.
-    // Disconnect and role invalidation both retire this pending authorization.
-    if (
-      !client?.connId ||
-      client.connect.role !== "operator" ||
-      client.internal?.syntheticClient ||
-      client.internal?.agentToolCaller ||
-      client.internal?.agentRuntimeIdentity ||
-      client.internal?.operatorRoleActor ||
-      getGatewayToolCallerIdentity() ||
-      options.signal?.aborted ||
-      isGatewayClientProfilePending(client) ||
-      !context.getClientConnIds?.((current) => current === client).has(client.connId) ||
-      resolveUserProfileId(owner) !== owner ||
-      resolveAuthenticatedProfileId(client) !== actor
-    ) {
-      throw new ModelAccountConnectAuthorityError();
-    }
-    const scope = actor === owner ? "operator.write" : "operator.admin";
-    const role = resolveOperatorRolePolicyForProfile(actor, context.getRuntimeConfig());
-    const grants = [client.connect.scopes ?? [], ...(role ? [role.scopes] : [])];
-    if (
-      !grants.every((allowedScopes) =>
-        roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes }),
-      )
-    ) {
-      throw new ModelAccountConnectAuthorityError();
-    }
-  };
-  assertCurrent();
-  return { owner, assertCurrent };
-}
-
 function runConnectRequest(
   options: ConnectRequest,
-  profileId: string,
+  profileId: string | undefined,
   run: (
     service: NonNullable<GatewayRequestContext["modelAccountConnectService"]>,
     action: ModelAccountConnectAction,
   ) => unknown,
+  requiredScope: "operator.read" | "operator.write" = "operator.write",
 ): void | Promise<void> {
   const fail = (error: unknown) => {
     const responseError =
@@ -99,7 +53,7 @@ function runConnectRequest(
     options.respond(false, undefined, responseError);
   };
   try {
-    const action = prepareConnectAction(options, profileId);
+    const action = prepareUserModelAccountAction(options, profileId, requiredScope);
     const service = options.context.modelAccountConnectService;
     if (!service) {
       throw new Error("Model-account service is not running.");
@@ -115,6 +69,25 @@ function runConnectRequest(
 }
 
 export const usersAuthConnectHandlers: GatewayRequestHandlers = {
+  "users.listModelAccounts": defineValidatedGatewayMethod(
+    "users.listModelAccounts",
+    validateUsersListModelAccountsParams,
+    (options) =>
+      runConnectRequest(
+        options,
+        options.params.profileId,
+        (service, action) => service.list(action, options.params.cursor),
+        "operator.read",
+      ),
+  ),
+  "users.selectModelAccount": defineValidatedGatewayMethod(
+    "users.selectModelAccount",
+    validateUsersSelectModelAccountParams,
+    (options) =>
+      runConnectRequest(options, options.params.profileId, (service, action) =>
+        service.select(action, options.params.authProfileId),
+      ),
+  ),
   "users.authConnect.start": defineValidatedGatewayMethod(
     "users.authConnect.start",
     validateUsersAuthConnectStartParams,

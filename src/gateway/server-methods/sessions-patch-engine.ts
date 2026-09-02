@@ -53,6 +53,10 @@ import type {
   GatewayRequestContext,
   SessionMutationAuthorization,
 } from "./types.js";
+import {
+  preparePersonalModelSelection,
+  type UserModelAccountSelection,
+} from "./users-model-account-access.js";
 
 type PatchTargetIdentity = sessionUnreadAck.SessionPatchTargetIdentity;
 const { resolveSessionUnreadAck, validateSessionUnreadAck } = sessionUnreadAck;
@@ -91,6 +95,12 @@ async function executeSessionPatchMutations(params: {
   targets: readonly MutationTarget[];
 }): Promise<MutationCoreResult> {
   const { client } = params;
+  let personalModelSelection: UserModelAccountSelection | undefined;
+  try {
+    personalModelSelection = preparePersonalModelSelection(params, params.patch.model);
+  } catch (error) {
+    return { ok: false, error: unexpectedPatchError(params.targets[0]?.key ?? "", error) };
+  }
   const cfg = params.context.getRuntimeConfig();
   const operatorCreation = resolveOperatorSessionCreation(client);
   const sandbox = resolveCreatorSandbox(cfg, operatorCreation);
@@ -275,6 +285,7 @@ async function executeSessionPatchMutations(params: {
                 commitGuard: params.targets[target.index]!.commitGuard,
                 context: params.context,
                 loadGatewayModelCatalog: () => loadModelCatalog(target.targetAgentId),
+                personalModelSelection,
                 ...(pluginOwnerId ? { pluginOwnerId } : {}),
                 target,
               });
@@ -331,6 +342,9 @@ async function executeSessionPatchMutations(params: {
                 >();
                 const groupOutcomes = await applySessionEntryCanonicalReplacements({
                   assertCommitAllowed: () => {
+                    // Fresh selections remain human-owned through the final commit;
+                    // existing session pins are intentionally not rebound to the caller.
+                    personalModelSelection?.assertCurrent();
                     for (const transition of worktreeTransitions.values()) {
                       transition.assertCommitAllowed();
                     }
@@ -470,6 +484,7 @@ async function executeSessionPatchMutations(params: {
                           patch: target.fullPatch,
                           archivedBy: archiveActor,
                           loadGatewayModelCatalog: () => loadModelCatalog(target.targetAgentId),
+                          personalModelSelection,
                         });
                         if (!projected.ok) {
                           projectedOutcomes.push(projected);

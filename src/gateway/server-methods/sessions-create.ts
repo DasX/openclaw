@@ -29,6 +29,7 @@ import {
   resolveExplicitSessionName,
 } from "../dashboard-session-title.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
+import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { buildDashboardSessionKey, createGatewaySession } from "../session-create-service.js";
 import type { PreparedGatewaySessionLifecycle } from "../session-lifecycle-preparation.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
@@ -55,6 +56,10 @@ import { prepareSessionCreateFilesystemRoot } from "./session-create-root.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
 import { sessionLog } from "./sessions-shared.js";
 import type { GatewayRequestHandlers } from "./types.js";
+import {
+  preparePersonalModelSelection,
+  type UserModelAccountSelection,
+} from "./users-model-account-access.js";
 import { assertValidParams } from "./validation.js";
 import { resolveWorkspacePathContainment } from "./workspace-path-containment.js";
 
@@ -106,6 +111,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     isWebchatConnect,
     sessionMutationCommitGuard,
     sessionMutationAuthorization,
+    signal,
   }) => {
     if (!assertValidParams(params, validateSessionsCreateParams, "sessions.create", respond)) {
       return;
@@ -126,14 +132,31 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const requestedModel = normalizeOptionalString(p.model);
+    let personalModelSelection: UserModelAccountSelection | undefined;
+    try {
+      personalModelSelection = preparePersonalModelSelection(
+        { client, context, signal },
+        requestedModel,
+      );
+    } catch (error) {
+      if (!(error instanceof ModelAccountConnectAuthorityError)) {
+        throw error;
+      }
+      respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
+      return;
+    }
     const cfg = context.getRuntimeConfig();
     const authority = createAgentRuntimeAuthorityGuard(client, context, respond);
     let commitGuard =
-      authority.commitGuard || sessionMutationCommitGuard || sessionMutationAuthorization
+      authority.commitGuard ||
+      sessionMutationCommitGuard ||
+      sessionMutationAuthorization ||
+      personalModelSelection
         ? () => {
             sessionMutationCommitGuard?.();
             authority.commitGuard?.();
             sessionMutationAuthorization?.assertCurrent();
+            personalModelSelection?.assertCurrent();
           }
         : undefined;
     const catalogId = normalizeOptionalString(p.catalogId);
@@ -432,9 +455,12 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
               ? await generateWorktreeSessionTitle({
                   cfg,
                   agentId: lifecycleTarget.agentId,
-                  entry: requestedModel
-                    ? { ...lifecycleTarget.entry, ...lifecycleTarget.titleModelSelection }
-                    : lifecycleTarget.entry,
+                  // A new personal selection is not owned by this chat until
+                  // creation commits; pre-commit naming uses its saved account.
+                  entry:
+                    requestedModel && !personalModelSelection
+                      ? { ...lifecycleTarget.entry, ...lifecycleTarget.titleModelSelection }
+                      : lifecycleTarget.entry,
                   sessionId: lifecycleTarget.entry.sessionId,
                   sessionKey: lifecycleTarget.key,
                   storePath: lifecycleTarget.storePath,
@@ -489,6 +515,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       label: p.label,
       category: p.category,
       ...(catalogTarget ? { catalogTarget: catalogTarget.target } : { model: requestedModel }),
+      personalModelSelection,
       contextWindow: p.contextWindow,
       thinkingLevel: p.thinkingLevel,
       fastMode: p.fastMode,
@@ -577,7 +604,13 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           });
         }
       },
-    }).catch((error: unknown) => authority.handleClosedError(error));
+    }).catch((error: unknown) => {
+      if (error instanceof ModelAccountConnectAuthorityError) {
+        respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
+        return undefined;
+      }
+      return authority.handleClosedError(error);
+    });
     if (!created) {
       return;
     }

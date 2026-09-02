@@ -10,7 +10,12 @@ import {
   runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
 import { onUserProfilesChanged } from "./user-profile-events.js";
-import { ensureProfileForEmail, linkEmail, readUserProfileAliases } from "./user-profiles.js";
+import {
+  ensureProfileForEmail,
+  linkEmail,
+  listProfiles,
+  readUserProfileAliases,
+} from "./user-profiles.js";
 
 const roots = createTempDirTracker();
 const statePaths: string[] = [];
@@ -27,7 +32,7 @@ afterEach(() => {
 });
 
 describe("profile alias reader lifecycle", () => {
-  it("observes committed merges, not nested uncommitted or rolled-back aliases", () => {
+  it("publishes committed merges, not rollbacks or links to the same canonical profile", () => {
     const options = stateOptions();
     const source = ensureProfileForEmail("source@aliases.test", options);
     const target = ensureProfileForEmail("target@aliases.test", options);
@@ -51,8 +56,20 @@ describe("profile alias reader lifecycle", () => {
         expect(read()).toEqual(new Set([target.id]));
       }, options);
       expect(published).toHaveBeenCalledOnce();
+      expect(linkEmail("source@aliases.test", source.id, options)).toMatchObject({
+        id: target.id,
+        mergedInto: null,
+      });
+      expect(ensureProfileForEmail("source@aliases.test", options).id).toBe(target.id);
+      expect(published).toHaveBeenCalledOnce();
       expect(read()).toEqual(new Set([source.id, target.id]));
       expect(readUserProfileAliases(source.id, options)).toEqual(new Set([source.id, target.id]));
+      expect(listProfiles(options)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: source.id, mergedInto: target.id }),
+          expect.objectContaining({ id: target.id, mergedInto: null }),
+        ]),
+      );
     } finally {
       stop();
     }

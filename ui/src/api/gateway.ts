@@ -438,7 +438,7 @@ export class GatewayBrowserClient {
       client,
       role,
       scopes,
-      authToken: selectedAuth.authBootstrapToken ?? selectedAuth.authToken,
+      authToken: selectedAuth.signatureToken,
       connectNonce,
       connectChallengeTs,
     });

@@ -12,7 +12,10 @@ import {
 import {
   clearUserProfileAuthLink,
   connectUserModelAccount,
+  isUserModelAuthProfileOwner,
+  listUserModelAccounts,
   listUserProfileAuthLinks,
+  readUserModelAccountSummary,
   readUserModelAuthProfile,
   resolveUserProfileAuthLink,
   setUserProfileAuthLink,
@@ -104,7 +107,113 @@ describe("personal model accounts", () => {
     const profile = ensureProfileForEmail("lazy@example.com", options);
 
     expect(listUserProfileAuthLinks(profile.id, options)).toEqual([]);
+    expect(listUserModelAccounts({ profileId: profile.id }, options)).toEqual({ accounts: [] });
     expect(hasPrivateAccountState(profile.id, options)).toBe(false);
+  });
+
+  it("lists retained owned accounts without secrets and can select them again after clearing a default", () => {
+    const options = stateOptions();
+    const alice = ensureProfileForEmail("inventory-alice@example.test", options);
+    const bob = ensureProfileForEmail("inventory-bob@example.test", options);
+    const first = connectUserModelAccount(
+      {
+        ownerProfileId: alice.id,
+        credential: {
+          type: "oauth",
+          provider: "openai",
+          email: "account@example.test",
+          access: "synthetic-inventory-access",
+          refresh: "synthetic-inventory-refresh",
+          expires: 123,
+        },
+        assertCurrent() {},
+      },
+      options,
+    );
+    const second = connectToken(alice.id, options);
+    const expected = [
+      {
+        authProfileId: first.authProfileId,
+        provider: "openai",
+        label: "account@example.test",
+        authType: "oauth",
+        selected: true,
+      },
+      {
+        authProfileId: second.authProfileId,
+        provider: "anthropic",
+        label: "anthropic",
+        authType: "token",
+        selected: true,
+      },
+    ].toSorted((a, b) => a.authProfileId.localeCompare(b.authProfileId));
+    expect(listUserModelAccounts({ profileId: alice.id }, options)).toEqual({ accounts: expected });
+    expect(listUserModelAccounts({ profileId: bob.id }, options)).toEqual({ accounts: [] });
+    expect(
+      readUserModelAccountSummary(
+        { profileId: bob.id, authProfileId: first.authProfileId },
+        options,
+      ),
+    ).toBeUndefined();
+    expect(
+      isUserModelAuthProfileOwner(
+        { profileId: bob.id, authProfileId: first.authProfileId },
+        options,
+      ),
+    ).toBe(false);
+
+    clearUserProfileAuthLink({ profileId: alice.id, provider: "openai" }, options);
+    closeOpenClawStateDatabaseByPath(options.path);
+    expect(
+      readUserModelAccountSummary(
+        { profileId: alice.id, authProfileId: first.authProfileId },
+        options,
+      ),
+    ).toMatchObject({ label: "account@example.test", selected: false });
+    expect(
+      isUserModelAuthProfileOwner(
+        { profileId: alice.id, authProfileId: first.authProfileId },
+        options,
+      ),
+    ).toBe(true);
+    setUserProfileAuthLink(
+      { profileId: alice.id, provider: "openai", authProfileId: first.authProfileId },
+      options,
+    );
+    expect(listUserModelAccounts({ profileId: alice.id }, options)).toEqual({ accounts: expected });
+  });
+
+  it("paginates only the current owner's retained accounts without losing the selected one", () => {
+    const options = stateOptions();
+    const alice = ensureProfileForEmail("pages-alice@example.test", options);
+    const bob = ensureProfileForEmail("pages-bob@example.test", options);
+    connectToken(bob.id, options);
+    const ids = Array.from(
+      { length: 51 },
+      (_, index) =>
+        connectUserModelAccount(
+          {
+            ownerProfileId: alice.id,
+            credential: { type: "token", provider: "anthropic", token: `synthetic-page-${index}` },
+            assertCurrent() {},
+          },
+          options,
+        ).authProfileId,
+    );
+    const first = listUserModelAccounts({ profileId: alice.id }, options);
+    expect(first.accounts).toHaveLength(50);
+    expect(first.nextCursor).toBeDefined();
+    const second = listUserModelAccounts(
+      { profileId: alice.id, cursor: first.nextCursor },
+      options,
+    );
+    expect(second.accounts).toHaveLength(1);
+    expect(second.nextCursor).toBeUndefined();
+    const all = [...first.accounts, ...second.accounts];
+    expect(all.map((account) => account.authProfileId)).toEqual(ids.toSorted());
+    expect(
+      all.filter((account) => account.selected).map((account) => account.authProfileId),
+    ).toEqual([ids.at(-1)]);
   });
 
   it("rejects links for unknown profiles", () => {
@@ -285,6 +394,9 @@ describe("personal model accounts", () => {
     const { authProfileId } = connectToken(source.id, options);
     clearUserProfileAuthLink({ profileId: target.id, provider: "anthropic" }, options);
     linkEmail("source@example.test", target.id, options);
+    expect(isUserModelAuthProfileOwner({ profileId: target.id, authProfileId }, options)).toBe(
+      true,
+    );
     expect(listUserProfileAuthLinks(target.id, options)).toEqual([]);
     expect(readUserModelAuthProfile(authProfileId, options)?.credential).toMatchObject({
       token: "synthetic-personal-token",

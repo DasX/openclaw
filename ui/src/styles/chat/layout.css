@@ -3812,6 +3812,15 @@ button.chat-pr__diff {
   width: 100%;
 }
 
+.chat-model-account.chat-controls__model-provenance {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.chat-model-account__error {
+  color: var(--danger);
+}
+
 .agent-chat__composer-input-row {
   display: flex;
   align-items: flex-end;

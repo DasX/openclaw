@@ -19,6 +19,9 @@ const resolveUserProfileId = vi.hoisted(() => vi.fn());
 const ensureProfileForEmail = vi.hoisted(() => vi.fn());
 const connectUserModelAccount = vi.hoisted(() => vi.fn());
 const listUserProfileAuthLinks = vi.hoisted(() => vi.fn());
+const listUserModelAccounts = vi.hoisted(() => vi.fn());
+const readUserModelAccountSummary = vi.hoisted(() => vi.fn());
+const setUserProfileAuthLink = vi.hoisted(() => vi.fn());
 const registerSecretValueForRedaction = vi.hoisted(() => vi.fn());
 const createModelAccountAuthorization = vi.hoisted(() => vi.fn());
 const exchange = vi.hoisted(() => vi.fn());
@@ -36,6 +39,9 @@ vi.mock("../../state/user-profiles.js", async (importOriginal) => {
 vi.mock("../../state/user-model-accounts.js", () => ({
   connectUserModelAccount,
   listUserProfileAuthLinks,
+  listUserModelAccounts,
+  readUserModelAccountSummary,
+  setUserProfileAuthLink,
 }));
 vi.mock("../../logging/secret-redaction-registry.js", () => ({ registerSecretValueForRedaction }));
 vi.mock("../../plugin-sdk/facade-runtime.js", () => ({
@@ -153,6 +159,25 @@ beforeEach(async () => {
   writes = [];
   linksByOwner = new Map();
   listUserProfileAuthLinks.mockImplementation((owner: string) => linksByOwner.get(owner) ?? []);
+  listUserModelAccounts.mockReset().mockReturnValue({ accounts: [] });
+  readUserModelAccountSummary.mockReset();
+  setUserProfileAuthLink
+    .mockReset()
+    .mockImplementation(
+      (params: {
+        profileId: string;
+        provider: string;
+        authProfileId: string;
+        assertCurrent: () => void;
+      }) => {
+        params.assertCurrent();
+        const links = [
+          { provider: params.provider, authProfileId: params.authProfileId, updatedAt: 2 },
+        ];
+        linksByOwner.set(params.profileId, links);
+        return links;
+      },
+    );
   callbackUri = `http://127.0.0.1:${await getFreePort()}/auth/callback`;
   getUserProfileListItem.mockImplementation((id: string) => ({
     id,
@@ -212,6 +237,83 @@ afterEach(async () => {
 });
 
 describe("users model-account connection lifecycle", () => {
+  it("lists the authenticated person's account page without accepting an implicit different owner", async () => {
+    const accounts = [
+      {
+        authProfileId: "personal:profile-1:saved",
+        provider: "openai",
+        label: "Saved account",
+        authType: "oauth",
+        selected: false,
+      },
+    ];
+    listUserModelAccounts.mockReturnValue({ accounts, nextCursor: "personal:profile-1:saved" });
+    expect(
+      await rpc("users.listModelAccounts", { cursor: "personal:profile-1:before" }),
+    ).toHaveBeenCalledWith(true, {
+      profileId: "profile-1",
+      accounts,
+      nextCursor: "personal:profile-1:saved",
+      links: [],
+    });
+    expect(listUserModelAccounts).toHaveBeenCalledWith({
+      profileId: "profile-1",
+      cursor: "personal:profile-1:before",
+    });
+    listUserModelAccounts.mockClear();
+    expect(
+      await rpc("users.listModelAccounts", { profileId: "profile-other" }),
+    ).toHaveBeenCalledWith(false, undefined, expect.objectContaining({ code: "FORBIDDEN" }));
+    expect(listUserModelAccounts).not.toHaveBeenCalled();
+  });
+
+  it("selects a retained owned account and cancels an older sign-in without rewriting credentials", async () => {
+    const flow = await startFlow();
+    readUserModelAccountSummary.mockReturnValue({
+      provider: "openai",
+      authProfileId: "personal:profile-1:saved",
+    });
+    expect(
+      await rpc("users.selectModelAccount", { authProfileId: "personal:profile-1:saved" }),
+    ).toHaveBeenCalledWith(true, {
+      links: [{ provider: "openai", authProfileId: "personal:profile-1:saved", updatedAt: 2 }],
+    });
+    expect(readUserModelAccountSummary).toHaveBeenCalledWith({
+      profileId: "profile-1",
+      authProfileId: "personal:profile-1:saved",
+    });
+    expect(await status(flow)).toEqual({ status: "cancelled" });
+    expect(await complete(flow)).toHaveBeenCalledWith(true, { status: "cancelled" });
+    expect(writes).toEqual([]);
+    expect(broadcast).toHaveBeenCalledExactlyOnceWith(
+      "chat.metadata.changed",
+      {},
+      { dropIfSlow: true },
+    );
+  });
+
+  it.each(["unavailable account", "disconnected", "agent caller"] as const)(
+    "refuses personal selection for %s without changing the default",
+    async (reason) => {
+      if (reason === "disconnected") {
+        clients.delete(self);
+      } else if (reason === "agent caller") {
+        self.internal = { ...self.internal, syntheticClient: true };
+      }
+      expect(
+        await rpc("users.selectModelAccount", { authProfileId: "personal:profile-other:account" }),
+      ).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          code: reason === "unavailable account" ? "INVALID_REQUEST" : "FORBIDDEN",
+        }),
+      );
+      expect(setUserProfileAuthLink).not.toHaveBeenCalled();
+      expect(writes).toEqual([]);
+    },
+  );
+
   it("records paste completion once and returns the same terminal result on replay", async () => {
     const flow = await startFlow();
     const respond = await complete(flow);

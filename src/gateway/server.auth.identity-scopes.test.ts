@@ -1,8 +1,15 @@
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import {
+  buildGatewayConnectAuth,
+  selectGatewayConnectAuth,
+} from "../../packages/gateway-client/src/connect-auth.js";
+import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
+import type { UsersSelfResult } from "../../packages/gateway-protocol/src/schema/users.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeConfigFile } from "../config/config.js";
 import type { GatewayAuthConfig, GatewayOperatorRolesConfig } from "../config/types.gateway.js";
+import { loadOriginDeviceToken, storeOriginDeviceToken } from "../infra/device-auth-store.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { getPairedDevice, listDevicePairing } from "../infra/device-pairing.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
@@ -18,6 +25,7 @@ import {
   rpcReq,
   testState,
   testTailscaleWhois,
+  waitForWsClose,
   withGatewayServer,
 } from "./server.auth.test-helpers.js";
 
@@ -415,6 +423,96 @@ describe("gateway identity scope grants", () => {
       });
     },
   );
+
+  test.each([
+    {
+      authentication: "verified person with cached device auth",
+      token: undefined,
+      expectsPerson: true,
+    },
+    { authentication: "explicit shared-token authority", token: "secret", expectsPerson: false },
+  ])("preserves $authentication on a second Tailscale connection", async (scenario) => {
+    await configureGatewayAuth(
+      { mode: "token", token: "secret", allowTailscale: true },
+      { tailscaleMode: "serve" },
+    );
+    const login = "cached-person@example.com";
+    testTailscaleWhois.value = { login, name: "Cached Person" };
+    const identityPath = deviceIdentityPath("identity-tailscale-reconnect");
+    const identity = loadOrCreateDeviceIdentity({ path: identityPath });
+
+    await withGatewayServer(async ({ server }) => {
+      const endpoint = server.getTailscaleIngressEndpoint();
+      if (!endpoint) {
+        throw new Error("expected managed Tailscale listener");
+      }
+      const cacheKey = {
+        gatewayScope: `ws://${endpoint.host}:${endpoint.port}`,
+        deviceId: identity.deviceId,
+        role: "operator",
+      };
+      const headers = { origin: BROWSER_ORIGIN, "tailscale-user-login": login };
+      const initialWs = await openTailscaleWs(endpoint, headers);
+      let profileId: string | undefined;
+      try {
+        const connected = await connectReq(initialWs, {
+          skipDefaultAuth: true,
+          prePairDevice: true,
+          scopes: ["operator.read", "operator.write"],
+          client: CONTROL_UI_CLIENT,
+          deviceIdentityPath: identityPath,
+          browserOrigin: BROWSER_ORIGIN,
+        });
+        expect(connected.ok, JSON.stringify(connected.error)).toBe(true);
+        const self = await rpcReq<UsersSelfResult>(initialWs, "users.self");
+        expect(self.ok, JSON.stringify(self.error)).toBe(true);
+        profileId = self.payload?.profile.id;
+        expect(profileId).toBeTypeOf("string");
+        const auth = (connected.payload as HelloOk).auth;
+        if (!auth.deviceToken) {
+          throw new Error("expected a Gateway-issued device token");
+        }
+        storeOriginDeviceToken({ ...cacheKey, token: auth.deviceToken, scopes: auth.scopes });
+      } finally {
+        initialWs.close();
+        expect(await waitForWsClose(initialWs, 1_000)).toBe(true);
+      }
+
+      const cached = loadOriginDeviceToken(cacheKey);
+      if (!cached) {
+        throw new Error("expected the first connection's cached device token");
+      }
+      const auth = buildGatewayConnectAuth(
+        selectGatewayConnectAuth({
+          token: scenario.token,
+          storedToken: cached.token,
+          storedScopes: cached.scopes,
+        }),
+      );
+      const reconnectWs = await openTailscaleWs(endpoint, headers);
+      try {
+        const connected = await connectReq(reconnectWs, {
+          ...auth,
+          skipDefaultAuth: true,
+          prePairDevice: false,
+          scopes: ["operator.read", "operator.write"],
+          client: CONTROL_UI_CLIENT,
+          deviceIdentityPath: identityPath,
+          browserOrigin: BROWSER_ORIGIN,
+        });
+        expect(connected.ok, JSON.stringify(connected.error)).toBe(true);
+        const self = await rpcReq<UsersSelfResult>(reconnectWs, "users.self");
+        expect(self, JSON.stringify(self.error)).toMatchObject(
+          scenario.expectsPerson
+            ? { ok: true, payload: { profile: { id: profileId } } }
+            : { ok: false, error: { code: "FORBIDDEN" } },
+        );
+      } finally {
+        reconnectWs.close();
+        expect(await waitForWsClose(reconnectWs, 1_000)).toBe(true);
+      }
+    });
+  });
 
   test("caps the device and identity scope union", async () => {
     await configureGatewayAuth({

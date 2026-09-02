@@ -14,6 +14,17 @@ import { waitForFast } from "../../test-helpers/wait-for.ts";
 import { ProfilePage } from "./profile-page.ts";
 
 const PROFILE_PAGE_TEST_TAG = "test-openclaw-profile-page";
+const modelAccountProfile: UserProfile = {
+  id: "profile-1",
+  displayName: "Ada",
+  avatarMime: null,
+  mergedInto: null,
+  createdAt: 1,
+  updatedAt: 2,
+  emails: ["ada@example.test"],
+  githubIdentity: null,
+  hasAvatar: false,
+};
 // Keep the element class on the same post-reset i18n module as this test.
 if (!customElements.get(PROFILE_PAGE_TEST_TAG)) {
   customElements.define(PROFILE_PAGE_TEST_TAG, class extends ProfilePage {});
@@ -211,8 +222,8 @@ it("renders identity before a Usage statistics link without requesting usage dat
     if (method === "users.self") {
       return { profile };
     }
-    if (method === "users.listAuthLinks") {
-      return { links: [] };
+    if (method === "users.listModelAccounts") {
+      return { profileId: "profile-1", accounts: [], links: [] };
     }
     throw new Error(`unexpected method: ${method}`);
   });
@@ -229,7 +240,7 @@ it("renders identity before a Usage statistics link without requesting usage dat
 
   expect(request.mock.calls.map(([method]) => method)).toEqual([
     "users.self",
-    "users.listAuthLinks",
+    "users.listModelAccounts",
   ]);
   const docsLink = page.querySelector<HTMLAnchorElement>(".page-subtitle a");
   expect(docsLink?.textContent?.trim()).toBe("Learn more");
@@ -266,8 +277,8 @@ it("loads and updates co-author consent separately from verified GitHub identity
     if (method === "users.self") {
       return { profile };
     }
-    if (method === "users.listAuthLinks") {
-      return { links: [] };
+    if (method === "users.listModelAccounts") {
+      return { profileId: "profile-1", accounts: [], links: [] };
     }
     if (method === "users.prefs.get") {
       expect(params).toEqual({ keys: [GIT_COAUTHOR_PREFERENCE_KEY] });
@@ -290,7 +301,7 @@ it("loads and updates co-author consent separately from verified GitHub identity
 
   await waitForFast(() => expect(page.querySelector(".settings-account")).not.toBeNull());
   expect(request.mock.calls.map(([method]) => method).toSorted()).toEqual(
-    ["users.self", "users.listAuthLinks", "users.prefs.get"].toSorted(),
+    ["users.self", "users.listModelAccounts", "users.prefs.get"].toSorted(),
   );
   expect(page.querySelector(".identity-github-form")).toBeNull();
   const toggle = page.querySelector<HTMLElement & { checked: boolean }>("wa-switch");
@@ -304,7 +315,7 @@ it("loads and updates co-author consent separately from verified GitHub identity
   );
   await waitForFast(() => expect(toggle?.checked).toBe(true));
   expect(request.mock.calls.map(([method]) => method).toSorted()).toEqual(
-    ["users.self", "users.listAuthLinks", "users.prefs.get", "users.prefs.set"].toSorted(),
+    ["users.self", "users.listModelAccounts", "users.prefs.get", "users.prefs.set"].toSorted(),
   );
 });
 
@@ -710,8 +721,8 @@ it("replaces an in-flight identity request after a same-client reconnect", async
     resolveFresh = resolve;
   });
   const request = vi.fn(async (method: string) => {
-    if (method === "users.listAuthLinks") {
-      return { links: [] };
+    if (method === "users.listModelAccounts") {
+      return { profileId: "profile-1", accounts: [], links: [] };
     }
     if (method !== "users.self") {
       throw new Error(`unexpected method: ${method}`);
@@ -777,8 +788,8 @@ it("bootstraps and refreshes the connected user's profile through users.self", a
       }
       return { profile };
     }
-    if (method === "users.listAuthLinks") {
-      return { links: [] };
+    if (method === "users.listModelAccounts") {
+      return { profileId: "profile-1", accounts: [], links: [] };
     }
     if (method === "users.setDisplayName") {
       expect(params).toEqual({ profileId: "profile-1", displayName: "Augusta Ada" });
@@ -920,25 +931,24 @@ it("bootstraps and refreshes the connected user's profile through users.self", a
 });
 
 it("keeps model-account actions usable when identity refresh overlaps ChatGPT completion", async () => {
-  const profile: UserProfile = {
-    id: "profile-1",
-    displayName: "Ada",
-    avatarMime: null,
-    mergedInto: null,
-    createdAt: 1,
-    updatedAt: 2,
-    emails: ["ada@example.test"],
-    githubIdentity: null,
-    hasAvatar: false,
-  };
+  const profile = { ...modelAccountProfile };
   let links: Array<{ provider: string; authProfileId: string; updatedAt: number }> = [];
   const completion = createDeferred();
   const request = vi.fn(async (method: string, params?: unknown) => {
     if (method === "users.self") {
       return { profile };
     }
-    if (method === "users.listAuthLinks") {
-      return { links };
+    if (method === "users.listModelAccounts") {
+      return {
+        profileId: profile.id,
+        accounts: links.map((link) => ({
+          ...link,
+          label: "Ada · Personal workspace",
+          authType: "oauth",
+          selected: true,
+        })),
+        links,
+      };
     }
     if (method === "users.authConnect.start") {
       expect(params).toEqual({ profileId: "profile-1", provider: "openai" });
@@ -998,7 +1008,7 @@ it("keeps model-account actions usable when identity refresh overlaps ChatGPT co
     expect(page.querySelector<HTMLButtonElement>(".profile-refresh")?.disabled).toBe(false),
   );
   completion.resolve();
-  await waitForFast(() => expect(page.textContent).toContain("openai:ada"));
+  await waitForFast(() => expect(page.textContent).toContain("Ada · Personal workspace"));
   expect(page.querySelector(".profile-auth-connect-redirect")).toBeNull();
   expect(page.querySelector<HTMLButtonElement>(".profile-auth-connect-start")?.disabled).toBe(
     false,
@@ -1007,24 +1017,14 @@ it("keeps model-account actions usable when identity refresh overlaps ChatGPT co
 });
 
 it("uses the canonical self profile after a merge while presence still carries its old alias", async () => {
-  let profile: UserProfile = {
-    id: "profile-before-merge",
-    displayName: "Ada",
-    avatarMime: null,
-    mergedInto: null,
-    createdAt: 1,
-    updatedAt: 2,
-    emails: ["ada@example.test"],
-    githubIdentity: null,
-    hasAvatar: false,
-  };
+  let profile = { ...modelAccountProfile, id: "profile-before-merge" };
   const request = vi.fn(async (method: string, params?: unknown) => {
     if (method === "users.self") {
       return { profile };
     }
-    if (method === "users.listAuthLinks") {
+    if (method === "users.listModelAccounts") {
       expect(params).toEqual({ profileId: profile.id });
-      return { links: [] };
+      return { profileId: profile.id, accounts: [], links: [] };
     }
     if (method === "users.authConnect.start") {
       expect(params).toEqual({ profileId: "profile-after-merge", provider: "openai" });

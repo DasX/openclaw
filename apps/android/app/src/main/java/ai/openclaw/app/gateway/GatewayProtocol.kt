@@ -596,6 +596,8 @@ enum class GatewayMethod(
   UsersSetAvatar("users.setAvatar"),
   UsersSetRole("users.setRole"),
   UsersListAuthLinks("users.listAuthLinks"),
+  UsersListModelAccounts("users.listModelAccounts"),
+  UsersSelectModelAccount("users.selectModelAccount"),
   UsersLinkAuthProfile("users.linkAuthProfile"),
   UsersUnlinkAuthProfile("users.unlinkAuthProfile"),
   UsersAuthConnectStart("users.authConnect.start"),

@@ -2,11 +2,14 @@ import { consume } from "@lit/context";
 import { nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import type {
+  UserModelAccount,
   UserProfileAuthLink,
   UsersAuthConnectResult,
   UsersAuthConnectStartResult,
   UsersAuthConnectStatusResult,
   UsersListAuthLinksResult,
+  UsersListModelAccountsResult,
+  UsersSelectModelAccountResult,
 } from "../../../../packages/gateway-protocol/src/index.ts";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import {
@@ -38,9 +41,14 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
   @property({ attribute: false }) identityId: string | null = null;
   @property({ attribute: false }) profileId: string | null = null;
   @state() private links: UserProfileAuthLink[] = [];
+  @state() private accounts: UserModelAccount[] = [];
+  @state() private nextCursor: string | undefined;
+  @state() private inventoryLoading = false;
+  @state() private inventoryError: string | null = null;
   @state() private action: AccountAction | null = null;
   @state() private error: string | null = null;
-  @state() private notice: "connected" | "cancelled" | "expired" | null = null;
+  @state() private notice: "connected" | "cancelled" | "expired" | "selected" | "cleared" | null =
+    null;
   @state() private linkDraft = "";
   @state() private connectFlow: ModelAccountsSectionProps["connectFlow"] = null;
   @state() private connectRedirectDraft = "";
@@ -49,6 +57,7 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
 
   private target: AccountTarget | null = null;
   private generation = 0;
+  private inventoryRequest = 0;
   private unsubscribe: (() => void) | null = null;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -95,6 +104,11 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
     this.target =
       client && identityId && profileId ? { client, identityId, profileId, canAdmin } : null;
     this.links = [];
+    this.accounts = [];
+    this.nextCursor = undefined;
+    this.inventoryRequest += 1;
+    this.inventoryLoading = false;
+    this.inventoryError = null;
     this.action = null;
     this.error = null;
     this.notice = null;
@@ -104,16 +118,46 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
     this.claudeTokenDraft = "";
     this.statusUnavailable = false;
     if (this.target) {
-      void this.runAction(
-        "request",
-        (target) =>
-          target.client.request<UsersListAuthLinksResult>("users.listAuthLinks", {
-            profileId: target.profileId,
-          }),
-        (result) => {
-          this.links = result.links;
-        },
+      void this.loadAccounts();
+    }
+  }
+
+  private applyLinks(links: UserProfileAuthLink[]) {
+    this.links = links;
+    this.accounts = this.accounts.map((account) => ({
+      ...account,
+      selected: links.some((link) => link.authProfileId === account.authProfileId),
+    }));
+  }
+
+  private async loadAccounts(cursor?: string) {
+    const target = this.target;
+    if (!target) {
+      return;
+    }
+    const request = ++this.inventoryRequest;
+    const isCurrent = () =>
+      this.isConnected && this.target === target && request === this.inventoryRequest;
+    this.inventoryLoading = true;
+    this.inventoryError = null;
+    try {
+      const result = await target.client.request<UsersListModelAccountsResult>(
+        "users.listModelAccounts",
+        { profileId: target.profileId, ...(cursor ? { cursor } : {}) },
       );
+      if (isCurrent()) {
+        this.accounts = cursor ? [...this.accounts, ...result.accounts] : result.accounts;
+        this.nextCursor = result.nextCursor;
+        this.applyLinks(result.links);
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        this.inventoryError = formatUiError(error);
+      }
+    } finally {
+      if (isCurrent()) {
+        this.inventoryLoading = false;
+      }
     }
   }
 
@@ -166,8 +210,26 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
           { profileId: target.profileId, ...change },
         ),
       (result) => {
-        this.links = result.links;
+        this.applyLinks(result.links);
         this.linkDraft = "";
+        this.notice = linking ? "selected" : "cleared";
+        void this.loadAccounts();
+      },
+    );
+  }
+
+  private selectAccount(authProfileId: string) {
+    void this.runAction(
+      "request",
+      (target) =>
+        target.client.request<UsersSelectModelAccountResult>("users.selectModelAccount", {
+          profileId: target.profileId,
+          authProfileId,
+        }),
+      (result) => {
+        this.applyLinks(result.links);
+        this.notice = "selected";
+        void this.loadAccounts();
       },
     );
   }
@@ -204,7 +266,8 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
       return;
     }
     if (result.status === "connected") {
-      this.links = result.links;
+      this.applyLinks(result.links);
+      void this.loadAccounts();
     }
     this.notice = result.status;
   }
@@ -241,9 +304,10 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
           token,
         }),
       (result) => {
-        this.links = result.links;
+        this.applyLinks(result.links);
         this.claudeTokenDraft = "";
         this.notice = "connected";
+        void this.loadAccounts();
       },
     );
   }
@@ -311,8 +375,13 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
     }
     return renderModelAccountsSection({
       links: this.links,
+      accounts: this.accounts,
+      hasMore: Boolean(this.nextCursor),
+      inventoryLoading: this.inventoryLoading,
+      inventoryError: this.inventoryError,
       showManualLink: this.target.canAdmin,
-      busy: this.action !== null || this.connectFlow?.status === "exchanging",
+      busy:
+        this.inventoryLoading || this.action !== null || this.connectFlow?.status === "exchanging",
       cancelBusy: this.action !== null && this.action !== "complete",
       error: this.error,
       notice: this.notice ? t(`profilePage.modelAccounts.notices.${this.notice}`) : null,
@@ -326,6 +395,9 @@ export class ModelAccounts extends OpenClawLightDomContentsElement {
       },
       onLink: () => this.updateLink({ authProfileId: this.linkDraft.trim() }),
       onUnlink: (provider) => this.updateLink({ provider }),
+      onSelectAccount: (authProfileId) => this.selectAccount(authProfileId),
+      onLoadMore: () => void this.loadAccounts(this.nextCursor),
+      onRefresh: () => void this.loadAccounts(),
       onConnectStart: () => this.startConnect(),
       onConnectRedirectInput: (value) => {
         this.connectRedirectDraft = value;
