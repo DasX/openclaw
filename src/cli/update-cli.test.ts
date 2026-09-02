@@ -4042,7 +4042,7 @@ describe("update-cli", () => {
       ]);
       if (source === "bridge") {
         expect(jsonOutput?.postUpdate?.plugins?.sync.errors).toEqual([
-          "Failed to update consent-fixture: Operator review token changed.",
+          'Failed to update consent-fixture: Operator review token changed.\nBundled relocation did not install the replacement plugin payload; resolve the error above, then run "openclaw update repair".',
         ]);
       }
       expect(defaultRuntime.exit).not.toHaveBeenCalled();
