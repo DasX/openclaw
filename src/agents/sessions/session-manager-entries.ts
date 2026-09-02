@@ -219,6 +219,7 @@ export class SessionManagerEntries extends SessionManagerPersistence {
     tokensBefore: number,
     details?: unknown,
     fromHook?: boolean,
+    metadata?: CompactionEntry["__openclaw"],
   ): string {
     const entry: CompactionEntry = {
       type: "compaction",
@@ -230,6 +231,7 @@ export class SessionManagerEntries extends SessionManagerPersistence {
       tokensBefore,
       details,
       fromHook,
+      ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),
     };
     this.appendEntry(entry, {
       invalidateSerializedPrefixCache: fromHook === true || details !== undefined,

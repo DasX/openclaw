@@ -43,7 +43,6 @@ import {
 import { commitComposerDraft } from "./chat-composer-state.ts";
 import {
   renderChatRunStatusIndicator,
-  renderCompactionIndicator,
   renderFallbackIndicator,
   type ComposerRunStatus,
 } from "./chat-composer-status.ts";
@@ -257,7 +256,6 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     ? nothing
     : renderChatRunStatusIndicator(composerRunStatus);
   const fallbackStatus = renderFallbackIndicator(props.fallbackStatus);
-  const compactionStatus = renderCompactionIndicator(props.compactionStatus);
   const progressCard = props.progressCard
     ? html`<div class="agent-chat__progress-float">
         ${renderSessionProgressCard(
@@ -309,7 +307,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
         : ""}"
     >
       <div class="agent-chat__composer-overlay">
-        ${props.anchoredNotices ?? nothing} ${composerAlerts} ${fallbackStatus} ${compactionStatus}
+        ${props.anchoredNotices ?? nothing} ${composerAlerts} ${fallbackStatus}
         ${interruptedStatus === nothing
           ? nothing
           : html`<div class="agent-chat__composer-run-status">${interruptedStatus}</div>`}

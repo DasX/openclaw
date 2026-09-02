@@ -129,6 +129,7 @@ function evaluateWorkflowExpression(
     hostedRunnerProfileContract?: boolean;
     matrix?: Record<string, unknown>;
     preflightOutputs?: Record<string, string>;
+    ref?: string;
     resolveTargetOutputs?: Record<string, string>;
     releaseGate?: boolean;
     repository: string;
@@ -170,6 +171,7 @@ function evaluateWorkflowExpression(
     github: {
       event_name: context.eventName,
       repository: context.repository,
+      ref: context.ref ?? "refs/heads/main",
       run_attempt: context.runAttempt,
       workflow_sha: context.workflowSha,
       event:
@@ -210,7 +212,7 @@ function evaluateWorkflowExpression(
   });
 }
 
-function runCiGateFixture(requiredResults: string, selectedResults: string) {
+function runCiGateFixture(jobResults: string) {
   const gateStep = readCiWorkflow().jobs["ci-gate"].steps.find(
     (step: WorkflowStep) => step.name === "Verify selected CI lanes",
   );
@@ -218,9 +220,44 @@ function runCiGateFixture(requiredResults: string, selectedResults: string) {
     encoding: "utf8",
     env: {
       ...process.env,
-      REQUIRED_RESULTS: requiredResults,
-      SELECTED_RESULTS: selectedResults,
+      JOB_RESULTS: jobResults,
     },
+  });
+}
+
+function renderCiGateEnvironment(
+  context: Partial<Parameters<typeof evaluateWorkflowExpression>[1]> = {},
+  results: Record<string, string> = {},
+) {
+  const workflow = readCiWorkflow();
+  const step = workflow.jobs["ci-gate"].steps.find(
+    (candidate: WorkflowStep) => candidate.name === "Verify selected CI lanes",
+  );
+  const preflightOutputs = {
+    ...Object.fromEntries(
+      Object.keys(workflow.jobs.preflight.outputs)
+        .filter((key) => key.startsWith("run_"))
+        .map((key) => [key, "true"]),
+    ),
+    compatibility_target: "false",
+    release_scope: "full",
+    ...context.preflightOutputs,
+  };
+  const jobResults: string = step.env.JOB_RESULTS;
+  return jobResults.replace(/\$\{\{[\s\S]*?\}\}/gu, (expression) => {
+    const result = expression.match(/^\$\{\{\s*needs\.([\w-]+)\.result\s*\}\}$/u);
+    if (result) {
+      return results[expectDefined(result[1], expression)] ?? "success";
+    }
+    return String(
+      evaluateWorkflowExpression(expression, {
+        eventName: "workflow_dispatch",
+        repository: "openclaw/openclaw",
+        runAttempt: 1,
+        ...context,
+        preflightOutputs,
+      }) ?? "",
+    );
   });
 }
 
@@ -356,6 +393,7 @@ function runCiManifestFixture(options: {
   runnerProfile?: "blacksmith" | "github" | "hybrid";
   targetHostedRunnerProfileContract?: boolean;
   uiE2eProjectsCapability?: boolean;
+  remoteTagRefs?: Record<string, string>;
   scopeEnv?: Record<string, string>;
 }) {
   const root = mkdtempSync(path.join(tmpdir(), "openclaw-ci-manifest-"));
@@ -548,6 +586,36 @@ function runCiManifestFixture(options: {
     for (const name of ["test-prerequisites.mjs", "test-prerequisites.json"]) {
       writeFileSync(path.join(trustedGitOwner, name), readFileSync(path.join(gitOwner, name)));
     }
+    const trustedReleasePolicy = path.join(root, ".ci-harness/scripts/lib");
+    mkdirSync(trustedReleasePolicy, { recursive: true });
+    for (const name of ["release-context.mjs", "release-version.mjs"]) {
+      writeFileSync(path.join(trustedReleasePolicy, name), readFileSync(`scripts/lib/${name}`));
+    }
+    const fixtureBin = path.join(root, "bin");
+    if (options.remoteTagRefs) {
+      mkdirSync(fixtureBin);
+      writeFileSync(path.join(root, "ci-git-owner.py"), readFileSync(`${gitOwner}/owner.py`));
+      const gitFixture = path.join(root, "git.mjs");
+      writeFileSync(
+        gitFixture,
+        `
+        const [directoryFlag, directory, command, tags, remote, ...requested] = process.argv.slice(2);
+        if (directoryFlag !== "-C" || !directory || command !== "ls-remote" || tags !== "--tags" || remote !== "https://github.com/openclaw/openclaw.git") {
+          throw new Error("Expected the owned canonical release tag query");
+        }
+        const refs = ${JSON.stringify(options.remoteTagRefs)};
+        for (const ref of requested) {
+          if (refs[ref]) process.stdout.write(refs[ref] + "\\t" + ref + "\\n");
+        }
+      `,
+      );
+      const executable = path.join(fixtureBin, "git");
+      writeFileSync(
+        executable,
+        `#!/bin/sh\nexec ${quoteShell(process.execPath)} ${quoteShell(gitFixture)} "$@"\n`,
+      );
+      chmodSync(executable, 0o755);
+    }
     if (options.historicalReader) {
       const reader = path.join(root, "src/audit/message-delivery-progress-store.test.ts");
       mkdirSync(path.dirname(reader), { recursive: true });
@@ -564,6 +632,10 @@ function runCiManifestFixture(options: {
         ...process.env,
         GITHUB_OUTPUT: outputPath,
         GITHUB_STEP_SUMMARY: summaryPath,
+        RUNNER_TEMP: root,
+        PATH: options.remoteTagRefs
+          ? `${fixtureBin}${path.delimiter}${process.env.PATH ?? ""}`
+          : process.env.PATH,
         OPENCLAW_CI_CHANGED_PATHS_JSON: JSON.stringify(options.changedPaths ?? null),
         OPENCLAW_CI_CHECKOUT_REVISION: "a".repeat(40),
         OPENCLAW_CI_DOCS_CHANGED: "true",
@@ -1930,7 +2002,7 @@ NODE
     expect(workflow.on.workflow_dispatch.inputs.release_scope).toMatchObject({
       default: "full",
       type: "choice",
-      options: ["full", "npm-beta"],
+      options: ["full", "npm-beta", "npm-stable"],
     });
     expect(workflow.jobs.preflight.outputs.release_scope).toBe(
       "${{ steps.manifest.outputs.release_scope }}",
@@ -2023,7 +2095,7 @@ NODE
       ).toMatch(/^(?:ubuntu|windows|macos)-/u);
     }
 
-    for (const jobName of ["macos-node", "macos-swift", "ios-build"]) {
+    for (const jobName of ["macos-node", "macos-swift"]) {
       expect(
         workflow.jobs[jobName]["runs-on"],
         `${jobName} retries must escape stalled Blacksmith macOS capacity`,
@@ -2031,55 +2103,95 @@ NODE
     }
   });
 
-  it("runs release compilation independently of the complete native test workload", () => {
-    const workflow = readCiWorkflow();
-    const swift = workflow.jobs["macos-swift"];
-    expect(swift.strategy).toEqual({
-      "fail-fast": false,
-      "max-parallel": 2,
-      matrix: { phase: ["release", "tests"] },
-    });
-    expect(swift["continue-on-error"]).not.toBe(true);
-    const workloads = {
-      release: ["Native state schema version contract", "Swift lint", "Swift build (release)"],
-      tests: [
-        "OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)",
-        "OpenClawKit tests",
-        "Swift test",
-      ],
-    };
-    const names = [];
-    for (const [phase, expected] of Object.entries(workloads)) {
+  it.each([
+    ["macos-swift", false],
+    ["ios-build", false],
+    ["ios-build", true],
+  ] as const)(
+    "runs %s compilation independently of its native tests (historical=%s)",
+    (jobName, historical) => {
+      const workflow = readCiWorkflow();
+      const job = workflow.jobs[jobName];
       const context = {
         eventName: "workflow_dispatch" as const,
         repository: "openclaw/openclaw",
         runAttempt: 1,
-        matrix: { phase },
-        preflightOutputs: { run_openclawkit_tests: "true" },
+        preflightOutputs: {
+          compatibility_target: String(historical),
+          run_openclawkit_tests: "true",
+        },
       };
-      names.push(evaluateWorkflowExpression(swift.name, context));
-      const selected = swift.steps
-        .filter((step: WorkflowStep) =>
-          Object.values(workloads)
-            .flat()
-            .includes(step.name ?? ""),
-        )
-        .filter(
-          (step: WorkflowStep) =>
-            !step.if || evaluateWorkflowExpression(`\${{ ${step.if} }}`, context),
-        )
-        .map((step: WorkflowStep) => step.name);
-      expect(selected, phase).toEqual(expected);
-    }
-    // The release collector keys retained/rerun evidence by the displayed job name.
-    expect(new Set(names).size).toBe(2);
-    expect(workflow.jobs["ci-gate"].needs).toContain("macos-swift");
-    const gateStep = workflow.jobs["ci-gate"].steps.find(
-      (step: WorkflowStep) => step.name === "Verify selected CI lanes",
-    );
-    expect(gateStep.env.SELECTED_RESULTS).toContain("macos-swift=${{ needs.macos-swift.result }}");
-    for (const conclusion of ["failure", "cancelled"]) {
-      expect(runCiGateFixture("preflight=success", `macos-swift=${conclusion}`).status).toBe(1);
+      const phases = historical ? (["tests"] as const) : (["release", "tests"] as const);
+      const matrixPhases = job.strategy.matrix.phase;
+      expect(
+        Array.isArray(matrixPhases)
+          ? matrixPhases
+          : evaluateWorkflowExpression(matrixPhases, context),
+      ).toEqual(phases);
+      expect(job.strategy["fail-fast"]).toBe(false);
+      expect(job.strategy["max-parallel"]).toBe(2);
+      expect(job["continue-on-error"]).not.toBe(true);
+      expect(job.needs).toEqual(["preflight"]);
+      const workloads =
+        jobName === "macos-swift"
+          ? {
+              release: [
+                "Native state schema version contract",
+                "Swift lint",
+                "Swift build (release)",
+              ],
+              tests: [
+                "OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)",
+                "OpenClawKit tests",
+                "Swift test",
+              ],
+            }
+          : {
+              release: ["Build iOS app (Release)"],
+              tests: [
+                "Swift lint",
+                "Build iOS app",
+                "Run focused iOS lifecycle simulator tests",
+                "Run focused Apple Watch operation simulator tests",
+              ],
+            };
+      const names = [];
+      for (const phase of phases) {
+        const phaseContext = { ...context, matrix: { phase } };
+        const expected = historical ? ["Swift lint", "Build iOS app"] : workloads[phase];
+        names.push(evaluateWorkflowExpression(job.name, phaseContext));
+        const selected = job.steps
+          .filter((step: WorkflowStep) =>
+            Object.values(workloads)
+              .flat()
+              .includes(step.name ?? ""),
+          )
+          .filter(
+            (step: WorkflowStep) =>
+              !step.if || evaluateWorkflowExpression(`\${{ ${step.if} }}`, phaseContext),
+          )
+          .map((step: WorkflowStep) => step.name);
+        expect(selected, phase).toEqual(expected);
+      }
+      // The release collector keys retained/rerun evidence by the displayed job name.
+      expect(new Set(names).size).toBe(phases.length);
+      expect(workflow.jobs["ci-gate"].needs).toContain(jobName);
+      const gateStep = workflow.jobs["ci-gate"].steps.find(
+        (step: WorkflowStep) => step.name === "Verify selected CI lanes",
+      );
+      expect(gateStep.env.JOB_RESULTS).toContain(`${jobName}=\${{ needs.${jobName}.result }}`);
+      for (const conclusion of ["failure", "cancelled"]) {
+        expect(
+          runCiGateFixture(`preflight=success|true\n${jobName}=${conclusion}|true`).status,
+        ).toBe(1);
+      }
+    },
+  );
+
+  it("starts iOS builds and screenshots directly on verified hosted capacity", () => {
+    const workflow = readCiWorkflow();
+    for (const jobName of ["ios-build", "ios-screenshot-shard"]) {
+      expect(workflow.jobs[jobName]["runs-on"], jobName).toBe("macos-26");
     }
   });
 
@@ -3960,8 +4072,6 @@ NODE
       "checks-ui-e2e-real-gateway": "ubuntu-24.04",
       "control-ui-i18n": "ubuntu-24.04",
       "docker-seed-e2e": "ubuntu-24.04",
-      "ios-build": "macos-26",
-      "ios-screenshot-shard": "macos-26",
       "macos-node": "macos-15",
       "macos-swift": "macos-26",
       "native-i18n": "ubuntu-24.04",
@@ -3988,8 +4098,6 @@ NODE
       "docker-seed-e2e": "blacksmith-16vcpu-ubuntu-2404",
       "qa-smoke-ci-profile": "blacksmith-16vcpu-ubuntu-2404",
       "macos-swift": "blacksmith-12vcpu-macos-26",
-      "ios-build": "blacksmith-12vcpu-macos-26",
-      "ios-screenshot-shard": "blacksmith-12vcpu-macos-26",
       "check-test-types-hosted-core-shard": "blacksmith-32vcpu-ubuntu-2404",
       "checks-ui": "blacksmith-8vcpu-ubuntu-2404",
       "checks-windows": "blacksmith-8vcpu-windows-2025",
@@ -5215,6 +5323,10 @@ server.listen(0, "127.0.0.1", () => {
       releaseChecks.jobs.validate_repo_e2e_gateway,
       releaseChecks.jobs.validate_repo_e2e_runtime,
     ];
+    expect(releaseChecks.jobs.validate_live_docker_provider_suites.env).toMatchObject({
+      OPENCLAW_SELECTED_SHA: "${{ needs.validate_selected_ref.outputs.selected_sha }}",
+      OPENCLAW_TOOLING_SHA: "${{ needs.validate_selected_ref.outputs.workflow_sha }}",
+    });
     const repoE2eRows = pipelines.flatMap((pipeline) => JSON.parse(pipeline.with.suites)) as Array<{
       name: string;
       command: string;
@@ -7448,7 +7560,9 @@ server.listen(0, "127.0.0.1", () => {
       with: {
         ref: "${{ github.workflow_sha }}",
         path: ".ci-harness",
-        "sparse-checkout": ".github/actions",
+        "sparse-checkout":
+          "/.github/actions/\n/scripts/lib/release-context.mjs\n/scripts/lib/release-version.mjs\n",
+        "sparse-checkout-cone-mode": false,
         "persist-credentials": false,
       },
     });
@@ -9507,34 +9621,47 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     },
   );
 
-  it.each(["release branch", "release tag"])(
-    "qualifies npm beta CI without native app jobs through a validated %s",
-    (context) => {
+  it.each(
+    [
+      { scope: "npm-beta", packageVersion: "2026.9.1-beta.1", branch: "release/2026.9.1" },
+      { scope: "npm-stable", packageVersion: "2026.9.1", branch: "release/2026.9.1" },
+      { scope: "npm-stable", packageVersion: "2026.9.1-1", branch: "release/2026.9.1-1" },
+    ].flatMap(({ scope, packageVersion, branch }) =>
+      ["release branch", "release tag"].map((context) => ({
+        scope,
+        packageVersion,
+        branch,
+        context,
+      })),
+    ),
+  )(
+    "qualifies $scope $packageVersion without native app jobs through a validated $context",
+    ({ scope, packageVersion, branch, context }) => {
       const options = {
         bundledPlanner: true,
-        packageVersion: "2026.9.1-beta.1",
+        packageVersion,
         scopeEnv: {
           OPENCLAW_CI_TARGET_REF: "a".repeat(40),
-          OPENCLAW_CI_TARGET_CONTEXT_REF: context === "release branch" ? "release/2026.9.1" : "",
+          OPENCLAW_CI_TARGET_CONTEXT_REF: context === "release branch" ? branch : "",
           OPENCLAW_CI_TARGET_CONTEXT_TARGET: String(context === "release branch"),
-          OPENCLAW_CI_HISTORICAL_TARGET_TAG: context === "release tag" ? "v2026.9.1-beta.1" : "",
+          OPENCLAW_CI_HISTORICAL_TARGET_TAG: context === "release tag" ? `v${packageVersion}` : "",
           OPENCLAW_CI_HISTORICAL_TARGET: String(context === "release tag"),
           OPENCLAW_CI_RUN_UI_TESTS: "true",
         },
       };
       const full = runCiManifestFixture(options);
-      const beta = runCiManifestFixture({
+      const qualification = runCiManifestFixture({
         ...options,
-        scopeEnv: { ...options.scopeEnv, OPENCLAW_CI_RELEASE_SCOPE: "npm-beta" },
+        scopeEnv: { ...options.scopeEnv, OPENCLAW_CI_RELEASE_SCOPE: scope },
       });
       expect(full.status, full.output).toBe(0);
-      expect(beta.status, beta.output).toBe(0);
-      expect(beta.output).toContain("CI release scope: npm-beta");
-      expect(beta.summary).toContain("Scope: `npm-beta`");
-      expect(beta.summary).toContain("Native app qualification: deferred");
-      expect(beta.outputs).toEqual({
+      expect(qualification.status, qualification.output).toBe(0);
+      expect(qualification.output).toContain(`CI release scope: ${scope}`);
+      expect(qualification.summary).toContain(`Scope: \`${scope}\``);
+      expect(qualification.summary).toContain("Native app qualification: deferred");
+      expect(qualification.outputs).toEqual({
         ...full.outputs,
-        release_scope: "npm-beta",
+        release_scope: scope,
         run_macos_swift: "false",
         run_openclawkit_tests: "false",
         run_ios_build: "false",
@@ -9552,7 +9679,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         "run_protocol_event_coverage",
         "run_ui_tests",
       ]) {
-        expect(beta.outputs[output], output).toBe("true");
+        expect(qualification.outputs[output], output).toBe("true");
       }
       for (const jobName of ["ios-screenshot-shard", "ios-screenshot-evidence"]) {
         expect(
@@ -9561,7 +9688,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             repository: "openclaw/openclaw",
             runAttempt: 1,
             preflightOutputs: {
-              ...beta.outputs,
+              ...qualification.outputs,
               compatibility_target: "false",
               run_ios_screenshots: "true",
             },
@@ -9571,6 +9698,40 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       }
     },
   );
+
+  it.skipIf(process.platform === "win32").each([
+    { label: "base branch correction", context: "branch", direct: "a", accepted: true },
+    { label: "base tag correction", context: "tag", direct: "a", accepted: true },
+    { label: "annotated base tag", context: "tag", direct: "c", peeled: "a", accepted: true },
+    { label: "missing base tag", context: "branch", accepted: false },
+    { label: "different base source", context: "branch", direct: "c", accepted: false },
+    { label: "different peeled source", context: "tag", direct: "a", peeled: "c", accepted: false },
+  ])("binds npm stable $label to the exact source", ({ context, direct, peeled, accepted }) => {
+    const result = runCiManifestFixture({
+      bundledPlanner: true,
+      packageVersion: "2026.9.1",
+      remoteTagRefs: {
+        ...(direct ? { "refs/tags/v2026.9.1": direct.repeat(40) } : {}),
+        ...(peeled ? { "refs/tags/v2026.9.1^{}": peeled.repeat(40) } : {}),
+      },
+      scopeEnv: {
+        OPENCLAW_CI_RELEASE_SCOPE: "npm-stable",
+        OPENCLAW_CI_TARGET_REF: "a".repeat(40),
+        OPENCLAW_CI_TARGET_CONTEXT_REF: context === "branch" ? "release/2026.9.1-1" : "",
+        OPENCLAW_CI_TARGET_CONTEXT_TARGET: String(context === "branch"),
+        OPENCLAW_CI_HISTORICAL_TARGET_TAG: context === "tag" ? "v2026.9.1-1" : "",
+        OPENCLAW_CI_HISTORICAL_TARGET: String(context === "tag"),
+      },
+    });
+    expect(result.status === 0, result.output).toBe(accepted);
+    if (accepted) {
+      expect(result.outputs.run_ios_build).toBe("false");
+      expect(result.outputs.run_node).toBe("true");
+    } else {
+      expect(result.output).toContain("correction base v2026.9.1 does not resolve");
+      expect(result.outputs).not.toHaveProperty("run_node");
+    }
+  });
 
   it.each<{ label: string } & Omit<Parameters<typeof runCiManifestFixture>[0], "bundledPlanner">>([
     { label: "stable target", packageVersion: "2026.9.1" },
@@ -9595,24 +9756,39 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       },
     },
     { label: "unknown scope", scopeEnv: { OPENCLAW_CI_RELEASE_SCOPE: "package" } },
-  ])("rejects npm beta CI qualification for $label", ({ label: _label, scopeEnv, ...options }) => {
-    const result = runCiManifestFixture({
-      bundledPlanner: true,
-      historicalCompatibility: false,
-      packageVersion: "2026.9.1-beta.1",
-      ...options,
-      scopeEnv: {
-        OPENCLAW_CI_RELEASE_SCOPE: "npm-beta",
-        OPENCLAW_CI_TARGET_REF: "a".repeat(40),
-        OPENCLAW_CI_TARGET_CONTEXT_REF: "release/2026.9.1",
-        OPENCLAW_CI_TARGET_CONTEXT_TARGET: "true",
-        ...scopeEnv,
-      },
-    });
-    expect(result.status, result.output).not.toBe(0);
-    expect(result.output).toContain("release_scope");
-    expect(result.outputs).not.toHaveProperty("run_node");
-  });
+    ...["2026.9.1-beta.1", "2026.9.1-alpha.1", "2026.9.33", "2026.9.33-1"].map(
+      (packageVersion) => ({
+        label: `npm-stable with ${packageVersion}`,
+        packageVersion,
+        scopeEnv: { OPENCLAW_CI_RELEASE_SCOPE: "npm-stable" },
+      }),
+    ),
+    {
+      label: "correction package in a different release context",
+      packageVersion: "2026.9.1-1",
+      scopeEnv: { OPENCLAW_CI_RELEASE_SCOPE: "npm-stable" },
+    },
+  ])(
+    "rejects scoped npm CI qualification for $label",
+    ({ label: _label, scopeEnv, ...options }) => {
+      const result = runCiManifestFixture({
+        bundledPlanner: true,
+        historicalCompatibility: false,
+        packageVersion: "2026.9.1-beta.1",
+        ...options,
+        scopeEnv: {
+          OPENCLAW_CI_RELEASE_SCOPE: "npm-beta",
+          OPENCLAW_CI_TARGET_REF: "a".repeat(40),
+          OPENCLAW_CI_TARGET_CONTEXT_REF: "release/2026.9.1",
+          OPENCLAW_CI_TARGET_CONTEXT_TARGET: "true",
+          ...scopeEnv,
+        },
+      });
+      expect(result.status, result.output).not.toBe(0);
+      expect(result.output).toContain("release_scope");
+      expect(result.outputs).not.toHaveProperty("run_node");
+    },
+  );
 
   it.each([
     ["pull_request", "openclaw/openclaw", true],
@@ -11935,19 +12111,15 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     const verifyStep = gate.steps.find(
       (step: WorkflowStep) => step.name === "Verify selected CI lanes",
     );
-    expect(Object.keys(verifyStep.env).toSorted()).toEqual([
-      "REQUIRED_RESULTS",
-      "SELECTED_RESULTS",
-    ]);
-    for (const job of requiredJobs) {
-      expect(verifyStep.env.REQUIRED_RESULTS).toContain(`${job}=\${{ needs.${job}.result }}`);
-    }
+    expect(Object.keys(verifyStep.env)).toEqual(["JOB_RESULTS"]);
+    const resultRows: string[] = verifyStep.env.JOB_RESULTS.trim().split("\n");
+    expect(resultRows.slice(0, requiredJobs.length)).toEqual(
+      requiredJobs.map((job) => `${job}=\${{ needs.${job}.result }}|true`),
+    );
     for (const job of selectedJobs) {
-      expect(verifyStep.env.SELECTED_RESULTS).toContain(`${job}=\${{ needs.${job}.result }}`);
+      expect(verifyStep.env.JOB_RESULTS).toContain(`${job}=\${{ needs.${job}.result }}|`);
     }
-    expect(verifyStep.run).toContain("Required CI job did not succeed");
-    expect(verifyStep.run).toContain("success | skipped");
-    expect(verifyStep.run).toContain("Selected CI job did not succeed");
+    expect(resultRows).toHaveLength(gate.needs.length);
   });
 
   it("does not admit the final gate for cancelled workflows or draft pull requests", () => {
@@ -11970,6 +12142,224 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     }
   });
 
+  it("ci-gate selection projections match their owning job predicates", () => {
+    const workflow = readCiWorkflow();
+    const step = workflow.jobs["ci-gate"].steps.find(
+      (candidate: WorkflowStep) => candidate.name === "Verify selected CI lanes",
+    );
+    const rows: string[] = step.env.JOB_RESULTS.trim().split("\n").slice(2);
+    for (const row of rows) {
+      const match = expectDefined(
+        row.match(/^([\w-]+)=\$\{\{ needs\.([\w-]+)\.result \}\}\|\$\{\{ (.+) \}\}$/u),
+        row,
+      );
+      const job = expectDefined(match[1], row);
+      const selection = expectDefined(match[3], row);
+      expect(match[2], row).toBe(job);
+      // Gate inputs duplicate eligibility, never dependency status or cancellation.
+      // Bind that projection to its owner so a routing change cannot leave stale selection.
+      const eligible = workflow.jobs[job].if
+        .replace(/^\$\{\{\s*|\s*\}\}$/gu, "")
+        .replace(/!cancelled\(\)\s*&&\s*always\(\)\s*&&\s*/gu, "")
+        .replace(/\s+/gu, " ")
+        .trim();
+      const projected = /^needs\.preflight\.outputs\.\w+$/u.test(selection)
+        ? `${selection} == 'true'`
+        : selection;
+      expect(projected, job).toBe(eligible);
+    }
+  });
+
+  it.skipIf(process.platform === "win32").each<{
+    label: string;
+    context: Partial<Parameters<typeof evaluateWorkflowExpression>[1]>;
+    expected: Record<string, boolean>;
+  }>([
+    {
+      label: "same-repo Blacksmith PR",
+      context: { eventName: "pull_request" },
+      expected: {
+        "pnpm-store-warmup": false,
+        "checks-node-compat": false,
+        "ios-screenshot-shard": true,
+      },
+    },
+    {
+      label: "fork PR",
+      context: { eventName: "pull_request", headRepository: "contributor/fork" },
+      expected: { "pnpm-store-warmup": true },
+    },
+    {
+      label: "same-repo docs-only PR",
+      context: { eventName: "pull_request", preflightOutputs: { run_node: "false" } },
+      expected: { "pnpm-store-warmup": true },
+    },
+    {
+      label: "no Node or docs scope",
+      context: { preflightOutputs: { run_node: "false", run_check_docs: "false" } },
+      expected: { "pnpm-store-warmup": false },
+    },
+    {
+      label: "canonical Blacksmith push",
+      context: { eventName: "push" },
+      expected: {
+        "pnpm-store-warmup": false,
+        "checks-node-compat": false,
+        "ios-screenshot-shard": false,
+      },
+    },
+    {
+      label: "non-main push",
+      context: { eventName: "push", ref: "refs/heads/topic" },
+      expected: { "pnpm-store-warmup": true },
+    },
+    {
+      label: "fork repository push",
+      context: { eventName: "push", repository: "contributor/fork" },
+      expected: { "pnpm-store-warmup": true },
+    },
+    {
+      label: "GitHub push",
+      context: { eventName: "push", runnerProfile: "github" },
+      expected: {
+        "pnpm-store-warmup": true,
+        "check-lint-hosted-core-shard": true,
+        "check-test-types-hosted-core-shard": true,
+      },
+    },
+    {
+      label: "hybrid PR",
+      context: { eventName: "pull_request", runnerProfile: "hybrid" },
+      expected: { "pnpm-store-warmup": true, "check-lint-hosted-core-shard": true },
+    },
+    {
+      label: "Blacksmith has no hosted stripes",
+      context: { frozenTarget: true },
+      expected: {
+        "check-lint-hosted-core-shard": false,
+        "check-test-types-hosted-core-shard": false,
+      },
+    },
+    {
+      label: "frozen target without hosted capability",
+      context: { frozenTarget: true, hostedRunnerProfileContract: false, runnerProfile: "github" },
+      expected: {
+        "check-lint-hosted-core-shard": false,
+        "check-test-types-hosted-core-shard": false,
+      },
+    },
+    {
+      label: "frozen target with hosted capability",
+      context: { frozenTarget: true, runnerProfile: "hybrid" },
+      expected: {
+        "check-lint-hosted-core-shard": true,
+        "check-test-types-hosted-core-shard": true,
+      },
+    },
+    {
+      label: "current target needs no capability fallback",
+      context: { hostedRunnerProfileContract: false, runnerProfile: "github" },
+      expected: { "check-lint-hosted-core-shard": true },
+    },
+    {
+      label: "hosted checks out of scope",
+      context: { runnerProfile: "github", preflightOutputs: { run_check: "false" } },
+      expected: {
+        "check-shard": false,
+        "check-lint-hosted-core-shard": false,
+        "check-test-types-hosted-core-shard": false,
+      },
+    },
+    {
+      label: "compatibility target",
+      context: { preflightOutputs: { compatibility_target: "true" } },
+      expected: {
+        "checks-ui": true,
+        "checks-ui-e2e": false,
+        "checks-ui-e2e-real-gateway": false,
+        "ios-screenshot-shard": false,
+      },
+    },
+    {
+      label: "current target",
+      context: {},
+      expected: {
+        "checks-ui-e2e": true,
+        "checks-ui-e2e-real-gateway": true,
+        "ios-screenshot-shard": true,
+        "checks-node-compat": true,
+      },
+    },
+    {
+      label: "manual Node 22 without artifacts",
+      context: { preflightOutputs: { run_build_artifacts: "false" } },
+      expected: { "checks-node-compat": false },
+    },
+    {
+      label: "ordinary manual screenshot override",
+      context: { preflightOutputs: { run_ios_screenshots: "false" } },
+      expected: { "ios-screenshot-shard": true },
+    },
+    {
+      label: "release gate respects screenshot scope",
+      context: { releaseGate: true, preflightOutputs: { run_ios_screenshots: "false" } },
+      expected: { "ios-screenshot-shard": false },
+    },
+    {
+      label: "release gate selects screenshots",
+      context: { releaseGate: true },
+      expected: { "ios-screenshot-shard": true },
+    },
+    {
+      label: "npm-beta excludes manual screenshots",
+      context: { preflightOutputs: { release_scope: "npm-beta" } },
+      expected: { "ios-screenshot-shard": false },
+    },
+    {
+      label: "npm-beta excludes PR screenshots",
+      context: { eventName: "pull_request", preflightOutputs: { release_scope: "npm-beta" } },
+      expected: { "ios-screenshot-shard": false },
+    },
+    {
+      label: "npm-stable excludes manual screenshots",
+      context: { preflightOutputs: { release_scope: "npm-stable" } },
+      expected: { "ios-screenshot-shard": false },
+    },
+    {
+      label: "npm-stable excludes PR screenshots",
+      context: { eventName: "pull_request", preflightOutputs: { release_scope: "npm-stable" } },
+      expected: { "ios-screenshot-shard": false },
+    },
+    {
+      label: "PR screenshot scope off",
+      context: { eventName: "pull_request", preflightOutputs: { run_ios_screenshots: "false" } },
+      expected: { "ios-screenshot-shard": false },
+    },
+  ])("ci-gate preserves eligibility: $label", ({ context, expected }) => {
+    const jobResults = renderCiGateEnvironment(context);
+    const selections = Object.fromEntries(
+      jobResults
+        .trim()
+        .split("\n")
+        .map((row) => {
+          const [job, , selected] = row.split(/[=|]/u);
+          return [expectDefined(job, row), expectDefined(selected, row)];
+        }),
+    );
+    for (const [job, selected] of Object.entries(expected)) {
+      expect(selections[job], job).toBe(String(selected));
+    }
+    expect(selections["ios-screenshot-evidence"]).toBe(selections["ios-screenshot-shard"]);
+    const results = Object.fromEntries(
+      Object.entries(selections).map(([job, selected]) => [
+        job,
+        selected === "true" ? "success" : "skipped",
+      ]),
+    );
+    const outcome = runCiGateFixture(renderCiGateEnvironment(context, results));
+    expect(outcome.status, `${outcome.stdout}\n${outcome.stderr}`).toBe(0);
+  });
+
   it("runs Node 22 compatibility only from manual CI dispatches", () => {
     const workflow = readCiWorkflow();
     const compatibilityJob = workflow.jobs["checks-node-compat"];
@@ -11987,36 +12377,102 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(fullReleaseDispatch.run).toContain('-f target_ref="$TARGET_SHA"');
   });
 
+  it.skipIf(process.platform === "win32")("ci-gate rejects an unexpected selected skip", () => {
+    const result = runCiGateFixture(renderCiGateEnvironment({}, { "checks-ui": "skipped" }));
+    expect(result.stdout).toContain("checks-ui: skipped");
+    expect(result.status, result.stdout).toBe(1);
+  });
+
+  it.skipIf(process.platform === "win32").each([
+    [true, "success", 0],
+    [true, "skipped", 1],
+    [true, "failure", 1],
+    [true, "cancelled", 1],
+    [true, "", 1],
+    [true, "unknown", 1],
+    [false, "success", 0],
+    [false, "skipped", 0],
+    [false, "failure", 1],
+    [false, "cancelled", 1],
+    [false, "", 1],
+    [false, "unknown", 1],
+  ] as const)(
+    "ci-gate checks all downstream lanes (selected=%s, result=%s)",
+    (selected, result, exit) => {
+      const workflow = readCiWorkflow();
+      const jobs: string[] = workflow.jobs["ci-gate"].needs.slice(2);
+      const jobResults = renderCiGateEnvironment(
+        {
+          eventName: selected ? "workflow_dispatch" : "pull_request",
+          runnerProfile: "github",
+          preflightOutputs: Object.fromEntries(
+            Object.keys(workflow.jobs.preflight.outputs)
+              .filter((key) => key.startsWith("run_"))
+              .map((key) => [key, String(selected)]),
+          ),
+        },
+        Object.fromEntries(jobs.map((job) => [job, result])),
+      );
+      const outcome = runCiGateFixture(jobResults);
+      expect(outcome.status, `${outcome.stdout}\n${outcome.stderr}`).toBe(exit);
+      for (const job of jobs) {
+        expect(jobResults).toContain(`${job}=${result}|${selected}\n`);
+        expect(outcome.stdout).toContain(`${job}: ${result} (selected=${selected})`);
+        if (exit !== 0) {
+          expect(outcome.stdout).toContain(`${job} finished with ${result} (selected=${selected})`);
+        }
+      }
+    },
+  );
+
+  it
+    .skipIf(process.platform === "win32")
+    .each(["failure", "cancelled", "skipped", "", "unknown", "success="])(
+    "ci-gate rejects required result %s independently of downstream success",
+    (result) => {
+      const outcome = runCiGateFixture(
+        renderCiGateEnvironment({}, { preflight: result, "security-fast": result }),
+      );
+      expect(outcome.status, outcome.stdout).toBe(1);
+      for (const job of ["preflight", "security-fast"]) {
+        expect(outcome.stdout).toContain(`${job} finished with ${result} (selected=true)`);
+      }
+    },
+  );
+
+  it
+    .skipIf(process.platform === "win32")
+    .each(["", "unknown", "TRUE", "true|false", "true|", "false="])(
+    "ci-gate rejects missing or malformed selection %s even after success",
+    (selection) => {
+      const outcome = runCiGateFixture(
+        renderCiGateEnvironment({ preflightOutputs: { run_ui_tests: selection } }),
+      );
+      expect(outcome.status, outcome.stdout).toBe(1);
+      expect(outcome.stdout).toContain(
+        `checks-ui finished with success (selected=${selection || "missing"})`,
+      );
+    },
+  );
+
   it.skipIf(process.platform === "win32")(
-    "accepts only successful required jobs and successful or skipped selected jobs",
+    "ci-gate reports failed upstream and selected dependent skips",
     () => {
-      const passing = runCiGateFixture(
-        "preflight=success\nsecurity-fast=success",
-        "checks-ui=success\nmacos-swift=skipped",
+      const jobResults = renderCiGateEnvironment(
+        {},
+        {
+          "ios-screenshot-shard": "failure",
+          "ios-screenshot-evidence": "skipped",
+        },
       );
-      expect(passing.status, `${passing.stdout}\n${passing.stderr}`).toBe(0);
-
-      const skippedRequired = runCiGateFixture(
-        "preflight=skipped\nsecurity-fast=success",
-        "checks-ui=skipped",
+      const outcome = runCiGateFixture(jobResults);
+      expect(outcome.status, outcome.stdout).toBe(1);
+      expect(outcome.stdout).toContain(
+        "ios-screenshot-shard finished with failure (selected=true)",
       );
-      expect(skippedRequired.status).not.toBe(0);
-      expect(skippedRequired.stdout).toContain("preflight finished with skipped");
-
-      const failedSelected = runCiGateFixture(
-        "preflight=success\nsecurity-fast=success",
-        "checks-ui=failure\nmacos-swift=cancelled",
+      expect(outcome.stdout).toContain(
+        "ios-screenshot-evidence finished with skipped (selected=true)",
       );
-      expect(failedSelected.status).not.toBe(0);
-      expect(failedSelected.stdout).toContain("checks-ui finished with failure");
-      expect(failedSelected.stdout).toContain("macos-swift finished with cancelled");
-
-      const failedUiE2e = runCiGateFixture(
-        "preflight=success\nsecurity-fast=success",
-        "checks-ui=success\nchecks-ui-e2e=failure",
-      );
-      expect(failedUiE2e.status).not.toBe(0);
-      expect(failedUiE2e.stdout).toContain("checks-ui-e2e finished with failure");
     },
   );
 
