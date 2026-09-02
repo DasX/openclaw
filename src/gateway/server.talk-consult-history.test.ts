@@ -224,17 +224,6 @@ function expectNoGeneratedInput(messages: unknown[], surface: string) {
     )
     .toEqual([]);
 }
-function expectNoConsultUserFrames(surface: string) {
-  const messages = liveMessages();
-  // Browser Talk renders speech locally; the consult must not publish a second human turn.
-  expect
-    .soft(
-      messages.filter((message) => asOptionalRecord(message)?.role === "user"),
-      surface,
-    )
-    .toEqual([]);
-  expectNoGeneratedInput(messages, surface);
-}
 function expectVisibleSpeechOnly(messages: unknown[], surface: string, hasAnswer: boolean) {
   const users = messages.filter((message) => asOptionalRecord(message)?.role === "user");
   expect.soft(users.map(extractText), surface).toEqual([spoken]);
@@ -428,13 +417,15 @@ describe("Browser Talk consult input custody", () => {
     "keeps $name consult scaffolding out of chat and later context but in the raw archive",
     async ({ scopes, tools }) => {
       client.connect.scopes = scopes;
-      await rpc("talk.client.transcript", {
+      const userTranscript = {
         sessionKey,
         voiceSessionId,
         entryId: "spoken-user",
         role: "user",
         text: spoken,
-      });
+      };
+      await rpc("talk.client.transcript", userTranscript);
+      await rpc("talk.client.transcript", userTranscript);
       await drainPublications();
       const participantsBeforeConsult =
         listSessionParticipantsReadOnly(scope()).get(sessionKey) ?? [];
@@ -459,7 +450,7 @@ describe("Browser Talk consult input custody", () => {
         expect(run.prompt).toContain(marker);
       }
       await drainPublications();
-      expectNoConsultUserFrames("before model completion");
+      expectVisibleSpeechOnly(liveMessages(), "before model completion", false);
       expectVisibleSpeechOnly(await historyMessages(), "model-held chat.history", false);
 
       releaseModel.resolve();
@@ -473,7 +464,7 @@ describe("Browser Talk consult input custody", () => {
         text: answer,
       });
       await drainPublications();
-      expectNoConsultUserFrames("live session.message");
+      expectVisibleSpeechOnly(liveMessages(), "live session.message", true);
       expectVisibleSpeechOnly(await historyMessages(), "chat.history", true);
 
       const storedMessages = loadTranscriptEventsSync(scope()).flatMap((event) => {

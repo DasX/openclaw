@@ -2,7 +2,6 @@ package ai.openclaw.app.voice
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,7 +31,7 @@ internal class AudioRetirement(
       capture?.cancel()
       val previous = _completion.value
       scope
-        .async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+        .async(Dispatchers.IO) {
           // Closing on IO unblocks a native read; Job completion includes the recorder's finally.
           try {
             input?.close()
@@ -43,13 +42,13 @@ internal class AudioRetirement(
           previous.await()
         }.also {
           _completion.value = it
-          it.start()
         }
     }
 
-  suspend fun await() {
+  suspend fun await(retirement: Deferred<Unit>? = null) {
     while (true) {
-      val current = completion.value
+      // PTT finishes its captured owner; new microphone admission drains the latest owner.
+      val current = retirement ?: completion.value
       try {
         current.await()
       } catch (error: Exception) {
@@ -57,7 +56,7 @@ internal class AudioRetirement(
         // Cancellation or exceptional completion does not prove that the device was released.
         throw IllegalStateException("Audio device failed to stop. Restart the app before recording again.", error)
       }
-      if (current === completion.value) return
+      if (retirement != null || current === completion.value) return
     }
   }
 }

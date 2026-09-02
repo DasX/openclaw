@@ -3518,7 +3518,8 @@ class ChatController internal constructor(
 
       "session.message" -> {
         if (payloadJson.isNullOrBlank()) return
-        handleSessionMessageEvent(payloadJson)
+        val payload = json.parseToJsonElement(payloadJson).asObjectOrNull() ?: return
+        applySessionEvent(payload, refreshWhenMissing = false)
       }
 
       "agent" -> {
@@ -6051,35 +6052,35 @@ class ChatController internal constructor(
     }
   }
 
-  private fun handleSessionMessageEvent(payloadJson: String) {
-    val payload = json.parseToJsonElement(payloadJson).asObjectOrNull() ?: return
-    applySessionEvent(payload, refreshWhenMissing = false)
-  }
-
   private fun applySessionEvent(
     payload: JsonObject,
     refreshWhenMissing: Boolean,
   ) {
     val eventObject = eventSessionObject(payload)
     val entry = eventObject?.let(::parseSessionEntry)
-    if (entry == null) {
-      if (refreshWhenMissing) refreshSessionsForCurrentWindow()
-      return
-    }
+    val eventKey = entry?.key ?: payload["sessionKey"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
     val eventOwner =
-      resolveAgentIdFromMainSessionKey(entry.key)
-        ?: entry.ownerAgentId
+      eventKey?.let(::resolveAgentIdFromMainSessionKey)
+        ?: entry?.ownerAgentId
         ?: payload["agentId"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() }
     val visibleOwner = resolveAgentIdForSessionKey(_sessionKey.value)
     // Session keys can collide across agents. Never merge an ownerless or foreign event into
     // the visible agent-scoped snapshot; an authoritative refresh resolves ambiguous payloads.
     if (eventOwner == null || visibleOwner == null) {
-      refreshSessionsForCurrentWindow()
+      if (entry != null || refreshWhenMissing) refreshSessionsForCurrentWindow()
       return
     }
     if (eventOwner != visibleOwner) return
-    val ownedEntry = reconcileSessionObserverProjectionOwner(entry, eventOwner)
     val phase = payload["phase"].asStringOrNull()
+    // Durable transcript invalidations need no session snapshot or chat terminal event.
+    if (eventKey == _sessionKey.value && (payload["message"] is JsonObject || phase == "message")) {
+      refreshCurrentHistoryBestEffort(updateSessionInfo = true)
+    }
+    if (entry == null) {
+      if (refreshWhenMissing) refreshSessionsForCurrentWindow()
+      return
+    }
+    val ownedEntry = reconcileSessionObserverProjectionOwner(entry, eventOwner)
     val terminalRunId =
       payload["runId"]
         .asStringOrNull()
