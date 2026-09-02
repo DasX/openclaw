@@ -62,13 +62,20 @@ const failure: RestartSentinelPayload = {
   },
 };
 
-async function invoke(params: Record<string, unknown>) {
+async function invoke(
+  params: Record<string, unknown>,
+  hasCurrentClientAuthority: (() => boolean) | null = () => true,
+) {
   const respond = vi.fn();
   const handler = updateHandlers["update.report"];
   if (!handler) {
     throw new Error("update.report handler is unavailable");
   }
-  await handler({ params, respond } as never);
+  await handler({
+    ...(hasCurrentClientAuthority ? { hasCurrentClientAuthority } : {}),
+    params,
+    respond,
+  } as never);
   return respond;
 }
 
@@ -160,6 +167,54 @@ describe("update.report", () => {
       expect.objectContaining({
         code: "INVALID_REQUEST",
         message: expect.stringContaining("stale"),
+      }),
+    );
+  });
+
+  it("refuses submission when client authority closes during report preparation", async () => {
+    let authorityCurrent = true;
+    mocks.prepare.mockImplementation(async () => {
+      authorityCurrent = false;
+      return {
+        attemptId: "handoff-failed",
+        body: "sanitized body",
+        previewDigest: "a".repeat(64),
+        savedReportPath: "/tmp/report.md",
+        title: "Update failure",
+        url: "https://github.com/openclaw/openclaw/issues/new",
+      };
+    });
+
+    const respond = await invoke(
+      {
+        action: "submit",
+        attemptId: "handoff-failed",
+        previewDigest: "a".repeat(64),
+      },
+      () => authorityCurrent,
+    );
+
+    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("refuses submission without a live authenticated-client guard", async () => {
+    const respond = await invoke(
+      {
+        action: "submit",
+        attemptId: "handoff-failed",
+        previewDigest: "a".repeat(64),
+      },
+      null,
+    );
+
+    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "INVALID_REQUEST",
+        message: expect.stringContaining("authenticated client"),
       }),
     );
   });

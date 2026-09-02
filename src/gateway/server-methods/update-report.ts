@@ -88,6 +88,7 @@ function projectPublicSubmitResult(result: UpdateFailureReportSubmitResult) {
 }
 
 export const updateReportHandler: GatewayRequestHandlers["update.report"] = async ({
+  hasCurrentClientAuthority,
   params,
   respond,
 }) => {
@@ -126,6 +127,16 @@ export const updateReportHandler: GatewayRequestHandlers["update.report"] = asyn
           code: "INVALID_REQUEST",
           message: "This failed update attempt is stale or unavailable.",
         });
+        return;
+      }
+      if (!hasCurrentClientAuthority) {
+        respond(false, undefined, {
+          code: "INVALID_REQUEST",
+          message: "Update report submission requires a current authenticated client.",
+        });
+        return;
+      }
+      if (!hasCurrentClientAuthority()) {
         return;
       }
       result = projectPublicSubmitResult(
