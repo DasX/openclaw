@@ -150,7 +150,9 @@ describe("write-plugin-sdk-entry-dts", () => {
     expect(
       (privateQa.stdout + privateQa.stderr).match(/\[tsdown-build\] invocation \d\/2 finished/gu),
     ).toHaveLength(2);
-    expectOutputs(root, qa, Object.keys(treeHashes(path.join(root, "dist"))));
+    // QA may add root chunks that the later source change must retain as history.
+    const beforeChange = treeHashes(path.join(root, "dist"));
+    expectOutputs(root, qa, Object.keys(beforeChange));
     expectStagingClean(root);
 
     writeDeclarations("after");
@@ -189,8 +191,10 @@ describe("write-plugin-sdk-entry-dts", () => {
       writeRelocated(relative, content);
     }
     // SDK publication owns flat entries; historical shared chunks belong to other groups.
-    for (const file of Object.keys(before).filter((entry) => !entry.startsWith("plugin-sdk/"))) {
-      expect(first[file]).toBe(before[file]);
+    for (const file of Object.keys(beforeChange).filter(
+      (entry) => !entry.startsWith("plugin-sdk/"),
+    )) {
+      expect(first[file]).toBe(beforeChange[file]);
       writeRelocated(`dist/${file}`, fs.readFileSync(path.join(root, "dist", file), "utf8"));
     }
     writeRelocated("dist/plugin-sdk/obsolete.d.ts", "obsolete restored declaration");
