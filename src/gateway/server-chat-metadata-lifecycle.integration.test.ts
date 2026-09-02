@@ -158,11 +158,23 @@ async function createLifecycle(getConfig: () => OpenClawConfig = () => config) {
 }
 
 async function publishOwner(ownerConfig: OpenClawConfig = config): Promise<void> {
+  // The birth discovery worker is mocked; mirror the catalog builder so discovered rows land
+  // exactly as a real child would publish them, then settle discovery before reads.
+  mocks.runPreparedModelCatalogWorker.mockImplementation(
+    async () => await mocks.buildPreparedModelCatalogSnapshot({} as never),
+  );
   await refreshPreparedModelRuntimeSnapshots(ownerConfig, {
     gatewayLifecycle: true,
     catalogMode: "live",
     allowGatewaySubagentBinding: true,
   });
+  const owner = getPreparedModelCatalogOwnerSnapshot({
+    agentId: "main",
+    config: ownerConfig,
+    readOnly: true,
+    allowGatewaySubagentBinding: true,
+  });
+  await owner?.loadFullModelCatalog?.();
 }
 
 async function expectAvailable(
@@ -183,7 +195,7 @@ async function expectAvailable(
   const projector = createGatewayAgentModelCatalogProjector({
     cfg: activeConfig,
     agentId: "main",
-    snapshot: owner.modelCatalog,
+    snapshot: owner.readFullModelCatalog?.() ?? owner.modelCatalog,
     metadataSnapshot: owner.metadataSnapshot,
     preparedAuthStore: mocks.preparedAuthStore ?? { version: 1, profiles: {} },
     preparedRuntimeAuthModes: owner.authModes,
@@ -198,7 +210,7 @@ async function expectAvailable(
       preloadedCatalog: {
         agentId: "main",
         config: activeConfig,
-        snapshot: owner.modelCatalog,
+        snapshot: owner.readFullModelCatalog?.() ?? owner.modelCatalog,
       },
       preloadedOnly: true,
       catalogProjector: projector,
@@ -284,7 +296,7 @@ describe("gateway chat metadata lifecycle composition", () => {
         const projector = createGatewayAgentModelCatalogProjector({
           cfg: owner.config,
           agentId: "main",
-          snapshot: owner.modelCatalog,
+          snapshot: owner.readFullModelCatalog?.() ?? owner.modelCatalog,
           metadataSnapshot: owner.metadataSnapshot,
           preparedAuthStore: mocks.preparedAuthStore,
           preparedRuntimeAuthModes: owner.authModes,
@@ -308,7 +320,7 @@ describe("gateway chat metadata lifecycle composition", () => {
           preloadedCatalog: {
             agentId: "main",
             config: owner.config,
-            snapshot: owner.modelCatalog,
+            snapshot: owner.readFullModelCatalog?.() ?? owner.modelCatalog,
           },
           catalogProjector: projector,
         };
@@ -457,12 +469,12 @@ describe("gateway chat metadata lifecycle composition", () => {
               preloadedCatalog: {
                 agentId: "main",
                 config: owner.config,
-                snapshot: owner.modelCatalog,
+                snapshot: owner.readFullModelCatalog?.() ?? owner.modelCatalog,
               },
               catalogProjector: createGatewayAgentModelCatalogProjector({
                 cfg: owner.config,
                 agentId: "main",
-                snapshot: owner.modelCatalog,
+                snapshot: owner.readFullModelCatalog?.() ?? owner.modelCatalog,
                 metadataSnapshot: owner.metadataSnapshot,
                 preparedAuthStore: { version: 1, profiles: {} },
                 preparedRuntimeAuthModes: owner.authModes,
@@ -628,6 +640,7 @@ describe("gateway chat metadata lifecycle composition", () => {
       throw new Error("expected unresolved prepared auth store");
     }
 
+    const workerRuns = mocks.runPreparedModelCatalogWorker.mock.calls.length;
     reportEmbeddedRunSuccessfulAuthBinding({
       profileStore,
       apiKeyInfo: null,
@@ -649,7 +662,8 @@ describe("gateway chat metadata lifecycle composition", () => {
       pluginHarnessOwnsAuthBootstrap: true,
     });
 
-    expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledOnce();
+    // A successful binding publishes auth materializations without rediscovering the catalog.
+    expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(workerRuns);
     expect(mocks.preparedAuthMaterializations).toEqual([
       expect.objectContaining({
         provider: "openai",

@@ -83,9 +83,7 @@ describe("models.list OpenAI routes", () => {
         preloadedCatalog: { agentId: "main", config, snapshot: preloadedCatalog },
       }),
     ).resolves.toEqual({ models: [] });
-    expect(loadGatewayModelCatalogSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "worker" }),
-    );
+    expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
   });
 
   it("does not reuse a preloaded catalog from another config generation", async () => {
@@ -278,45 +276,14 @@ describe("models.list OpenAI routes", () => {
 
     await buildModelsListResult({ context, params: { view: "configured" } });
 
-    expect(loadGatewayModelCatalogSnapshot.mock.calls).toEqual([
-      [expect.objectContaining({ agentId: "worker", readOnly: true })],
-      [expect.objectContaining({ agentId: "main", readOnly: false })],
-    ]);
+    expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
   });
 
-  it("rejects a full-discovery snapshot from a different owner", async () => {
+  it("does not discover when the prepared owner is unavailable", async () => {
     const initialConfig = {
       agents: { defaults: {}, list: [{ id: "main" }, { id: "worker", default: true }] },
     } as OpenClawConfig;
-    const replacementConfig = {
-      agents: {
-        defaults: { models: { "openai/*": {} } },
-        list: [{ id: "main", default: true }, { id: "worker" }],
-      },
-    } as OpenClawConfig;
-    const entry = catalogEntry("gpt-owner", "openai-responses");
-    const loadGatewayModelCatalogSnapshot = vi
-      .fn<GatewayRequestContext["loadGatewayModelCatalogSnapshot"]>()
-      .mockResolvedValueOnce({
-        agentId: "main",
-        agentDir: "/tmp/models-list-main-agent",
-        catalogComplete: false,
-        workspaceDir: "/tmp/models-list-main-workspace",
-        config: replacementConfig,
-        ...preparedOwnerFacts(replacementConfig),
-        entries: [entry],
-        routeVariants: [entry],
-      })
-      .mockResolvedValueOnce({
-        agentId: "worker",
-        agentDir: "/tmp/models-list-worker-agent",
-        catalogComplete: true,
-        workspaceDir: "/tmp/models-list-worker-workspace",
-        config: replacementConfig,
-        ...preparedOwnerFacts(replacementConfig),
-        entries: [entry],
-        routeVariants: [entry],
-      });
+    const loadGatewayModelCatalogSnapshot = vi.fn();
     const context = {
       getRuntimeConfig: () => initialConfig,
       loadGatewayModelCatalogSnapshot,
@@ -324,9 +291,17 @@ describe("models.list OpenAI routes", () => {
     } as unknown as GatewayRequestContext;
     registerTestCatalogAccess(context);
 
-    await expect(
-      buildModelsListResult({ context, params: { view: "configured" } }),
-    ).resolves.toEqual({ models: [] });
+    const result = await buildModelsListResult({ context, params: { view: "configured" } });
+    expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
+    expect(result.models.map(({ provider, id }) => ({ provider, id }))).toEqual([
+      { provider: "claude-cli", id: "claude-opus-5" },
+      { provider: "claude-cli", id: "claude-sonnet-5" },
+      { provider: "claude-cli", id: "claude-fable-5-1" },
+      { provider: "claude-cli", id: "claude-fable-5" },
+      { provider: "claude-cli", id: "claude-opus-4-7" },
+      { provider: "claude-cli", id: "claude-sonnet-4-6" },
+      { provider: "claude-cli", id: "claude-opus-4-6" },
+    ]);
   });
 
   it("passes the resolved default agent to catalog loads", async () => {

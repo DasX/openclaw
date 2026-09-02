@@ -31,7 +31,6 @@ import {
   prepareModelRuntimeSnapshot,
   PreparedModelRuntimeOwnerNotPublishedError,
   preparedModelRuntimeConfigsMatch,
-  refreshStalePreparedModelRuntimeCatalog,
   type PreparedModelRuntimeInput,
   type PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.js";
@@ -75,13 +74,9 @@ async function materializeRequestedModelCatalog(
   if (!snapshot.loadFullModelCatalog) {
     return snapshot;
   }
-  const staleCatalog =
-    readOnly === true && refreshFullCatalog === true
-      ? await refreshStalePreparedModelRuntimeCatalog(snapshot)
-      : undefined;
   const modelCatalog =
     readOnly === true
-      ? (staleCatalog ?? snapshot.readFullModelCatalog?.())
+      ? undefined
       : await snapshot.loadFullModelCatalog({ refresh: refreshFullCatalog === true });
   if (!modelCatalog) {
     return snapshot;
@@ -222,8 +217,7 @@ export function getPreparedModelCatalogSnapshot(
 export function getAvailablePreparedModelCatalogSnapshot(
   params: LoadPreparedModelCatalogParams = {},
 ): ModelCatalogSnapshot | undefined {
-  const owner = getPreparedModelCatalogOwnerSnapshot(params);
-  return owner?.readFullModelCatalog?.() ?? owner?.modelCatalog;
+  return getPreparedModelCatalogOwnerSnapshot(params)?.modelCatalog;
 }
 
 async function resolvePreparedModelCatalogOwnerSnapshotWithPolicy(

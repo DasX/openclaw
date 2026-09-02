@@ -13,11 +13,11 @@ import { resolveConfiguredModelEntries } from "../../agents/configured-model-ent
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
 import { createAgentHarnessCatalogEvaluator } from "../../agents/harness/model-catalog-readiness.js";
+import { resolveLegacyInheritedAuthDir } from "../../agents/legacy-inherited-auth-dir.js";
 import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
 import {
   buildProviderConfigModelCatalogForBrowse,
   loadPreparedModelCatalogSnapshotForBrowse,
-  modelCatalogBrowseRequiresFullDiscovery,
   type ModelCatalogBrowseView,
 } from "../../agents/model-catalog-browse.js";
 import {
@@ -29,6 +29,7 @@ import {
   resolveLogicalModelCatalogEntryState,
   prepareLogicalVisibleModelCatalog,
 } from "../../agents/model-catalog-visibility.js";
+import { buildCurrentModelCatalogSnapshot } from "../../agents/model-catalog.js";
 import type { ModelCatalogSnapshot, ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { modelKey } from "../../agents/model-ref-shared.js";
 import { modelCatalogLogicalKey } from "../../agents/model-selection-shared.js";
@@ -42,11 +43,14 @@ import {
   resolveModelCatalogIdentityKey,
 } from "../../agents/openai-model-routes.js";
 import { publishedModelCatalogOwnerMatchesAgent } from "../../agents/prepared-model-catalog-owner.js";
+import { loadPreparedModelRuntimeAuthStore } from "../../agents/prepared-model-runtime.auth-store.js";
 import { isPreparedModelCatalogFull } from "../../agents/prepared-model-runtime.full-catalog.js";
 import { preparedModelRuntimeConfigsMatch } from "../../agents/prepared-model-runtime.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
 import { getRuntimeConfigSourceSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
+import { loadManifestMetadataSnapshot } from "../../plugins/manifest-contract-eligibility.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { loadDeferredCatalog, readPreparedCatalog } from "../server-model-catalog-auth.js";
@@ -78,11 +82,20 @@ type PreparedModelsListResult = {
   isCurrent: () => boolean;
 };
 
-let loggedSlowModelsListCatalog = false;
-
 function resolveModelsListView(params: Record<string, unknown>): ModelCatalogBrowseView {
   const view = params.view;
   return view === "configured" || view === "provider-config" || view === "all" ? view : "default";
+}
+
+function loadModelsListAuthStore(config: OpenClawConfig, agentId: string): AuthProfileStore {
+  const agentDir = resolveAgentDir(config, agentId);
+  const inheritedAuthDir = resolveLegacyInheritedAuthDir(config);
+  return loadPreparedModelRuntimeAuthStore({
+    agentId,
+    agentDir,
+    config,
+    ...(inheritedAuthDir ? { inheritedAuthDir } : {}),
+  });
 }
 
 /** Configured dynamic-catalog providers that omit explicit model inventory. */
@@ -402,28 +415,54 @@ export async function prepareModelsListResult(
   const view = resolveModelsListView(params.params);
   const preparedOnly = params.params.preparedOnly === true;
   const refresh = params.params.refresh === true;
-  const preloadedCatalog =
+  const currentMetadataSnapshot =
+    getCurrentPluginMetadataSnapshot({ config: initialConfig }) ??
+    loadManifestMetadataSnapshot({ config: initialConfig });
+  const ordinary = !refresh && view !== "all";
+  const explicitPreloadedCatalog =
     params.preloadedCatalog?.agentId === initialAgentId &&
     preparedModelRuntimeConfigsMatch(params.preloadedCatalog.config, initialConfig)
       ? params.preloadedCatalog
       : undefined;
-  let loadedSnapshot: Awaited<ReturnType<typeof loadDeferredCatalog>> | undefined;
+  const publishedCatalog =
+    ordinary && !params.preloadedOnly && !explicitPreloadedCatalog
+      ? await readPreparedCatalog(params.context, initialAgentId)
+      : undefined;
+  const directCatalog =
+    ordinary &&
+    !publishedCatalog &&
+    !explicitPreloadedCatalog &&
+    !params.preloadedCatalog &&
+    currentMetadataSnapshot
+      ? {
+          agentId: initialAgentId,
+          config: initialConfig,
+          snapshot: buildCurrentModelCatalogSnapshot({
+            config: initialConfig,
+            metadataSnapshot: currentMetadataSnapshot,
+            agentDir: resolveAgentDir(initialConfig, initialAgentId),
+          }),
+        }
+      : undefined;
+  const directProjector =
+    directCatalog && currentMetadataSnapshot
+      ? createGatewayAgentModelCatalogProjector({
+          cfg: initialConfig,
+          agentId: initialAgentId,
+          snapshot: directCatalog.snapshot,
+          metadataSnapshot: currentMetadataSnapshot,
+          preparedAuthStore: loadModelsListAuthStore(initialConfig, initialAgentId),
+        })
+      : undefined;
+  const preloadedCatalog = publishedCatalog
+    ? { agentId: initialAgentId, config: initialConfig, snapshot: publishedCatalog }
+    : (directCatalog ?? explicitPreloadedCatalog);
+  const catalogProjector = directProjector ?? params.catalogProjector;
+  let loadedSnapshot: Awaited<ReturnType<typeof loadDeferredCatalog>> | undefined =
+    publishedCatalog;
   let loadedReadOnly = true;
-  let usedPreloadedCatalog = false;
-  let catalogTimedOut = false;
-  const handleCatalogTimeout = (timeoutMs: number) => {
-    catalogTimedOut = true;
-    if (loggedSlowModelsListCatalog) {
-      return;
-    }
-    loggedSlowModelsListCatalog = true;
-    params.context.logGateway.warn(
-      `models.list catalog load exceeded ${timeoutMs}ms; using the prepared catalog when available`,
-    );
-  };
+  let usedPreloadedCatalog = publishedCatalog !== undefined;
   let snapshot = await loadPreparedModelCatalogSnapshotForBrowse({
-    cfg: initialConfig,
-    agentId: initialAgentId,
     view,
     preparedOnly,
     refresh,
@@ -434,6 +473,7 @@ export async function prepareModelsListResult(
       if (
         preloadedCatalog &&
         (loadedReadOnly ||
+          (!refresh && isPreparedModelCatalogFull(preloadedCatalog.snapshot)) ||
           (params.preloadedOnly && isPreparedModelCatalogFull(preloadedCatalog.snapshot)))
       ) {
         usedPreloadedCatalog = true;
@@ -445,52 +485,11 @@ export async function prepareModelsListResult(
       loadedSnapshot = await loadDeferredCatalog(params.context, initialAgentId, {
         readOnly: loadedReadOnly,
         refreshAuth: refresh && loadedReadOnly,
-        ...(!preparedOnly ? { refreshFullCatalog: true } : {}),
+        ...(refresh || view === "all" ? { refreshFullCatalog: true } : {}),
       });
       return loadedSnapshot;
     },
-    onTimeout: handleCatalogTimeout,
   });
-  if (
-    loadedSnapshot &&
-    loadedReadOnly &&
-    !preparedOnly &&
-    modelCatalogBrowseRequiresFullDiscovery({
-      cfg: loadedSnapshot.config,
-      agentId: loadedSnapshot.agentId,
-      view,
-    })
-  ) {
-    const escalationAgentId = loadedSnapshot.agentId;
-    let escalationTimedOut = false;
-    let fullSnapshot: typeof loadedSnapshot | undefined;
-    const escalatedCatalog = await loadPreparedModelCatalogSnapshotForBrowse({
-      cfg: loadedSnapshot.config,
-      agentId: escalationAgentId,
-      view,
-      refresh,
-      loadCatalog: async ({ readOnly }) => {
-        fullSnapshot = await loadDeferredCatalog(params.context, escalationAgentId, {
-          readOnly,
-          refreshAuth: refresh && readOnly,
-          refreshFullCatalog: true,
-        });
-        return fullSnapshot;
-      },
-      timeoutFullDiscovery: true,
-      onTimeout: (timeoutMs) => {
-        escalationTimedOut = true;
-        handleCatalogTimeout(timeoutMs);
-      },
-    });
-    if (!escalationTimedOut && fullSnapshot) {
-      if (!publishedModelCatalogOwnerMatchesAgent(fullSnapshot, escalationAgentId)) {
-        return { read: () => ({ models: [] }), isCurrent: () => true };
-      }
-      loadedSnapshot = fullSnapshot;
-      snapshot = escalatedCatalog;
-    }
-  }
   if (
     loadedSnapshot &&
     params.agentId !== undefined &&
@@ -500,24 +499,21 @@ export async function prepareModelsListResult(
   }
   const ownerSnapshot =
     loadedSnapshot ??
-    (preloadedCatalog && params.catalogProjector
+    (preloadedCatalog && catalogProjector
       ? undefined
       : await readPreparedCatalog(params.context, initialAgentId));
-  if (catalogTimedOut && ownerSnapshot) {
-    snapshot = ownerSnapshot;
-  }
   const cfg = ownerSnapshot?.config ?? initialConfig;
   const agentId = ownerSnapshot?.agentId ?? initialAgentId;
   const workspaceDir =
     ownerSnapshot?.workspaceDir ??
     resolveAgentWorkspaceDir(cfg, agentId) ??
     resolveDefaultAgentWorkspaceDir();
-  const preparedProjectionOwner = ownerSnapshot ?? params.catalogProjector;
+  const preparedProjectionOwner = ownerSnapshot ?? catalogProjector;
   const metadataSnapshot = preparedProjectionOwner?.metadataSnapshot;
-  const preparedAuthStore = ownerSnapshot?.authStore ?? params.catalogProjector?.authStore;
-  if (!metadataSnapshot || !preparedAuthStore) {
-    throw new Error("Gateway model catalog owner omitted prepared metadata or auth state");
+  if (!metadataSnapshot) {
+    throw new Error("Gateway model catalog owner omitted prepared metadata");
   }
+  const preparedAuthStore = ownerSnapshot?.authStore ?? loadModelsListAuthStore(cfg, agentId);
   const preparedCatalog = await prepareModelsListHarnessCatalog({
     cfg,
     agentId,
@@ -526,7 +522,7 @@ export async function prepareModelsListResult(
     snapshot,
     view,
     metadataSnapshot,
-    allowHarnessDiscovery: params.preloadedOnly !== true && !preparedOnly,
+    allowHarnessDiscovery: refresh || view === "all",
     onError: (error) =>
       params.context.logGateway.debug(
         `models.list continuing without harness catalog: ${String(error)}`,
@@ -535,7 +531,7 @@ export async function prepareModelsListResult(
   snapshot = preparedCatalog.snapshot;
   const { catalog, defaultModel } = preparedCatalog;
   const nativeEvaluator =
-    (usedPreloadedCatalog ? params.catalogProjector?.evaluateNative : undefined) ??
+    (usedPreloadedCatalog ? catalogProjector?.evaluateNative : undefined) ??
     createAgentHarnessCatalogEvaluator({
       config: cfg,
       agentId,
@@ -635,7 +631,7 @@ export async function prepareModelsListResult(
     manifestPlugins: metadataSnapshot,
   });
   const evaluateEntry =
-    (usedPreloadedCatalog ? params.catalogProjector?.evaluateEntry : undefined) ??
+    (usedPreloadedCatalog ? catalogProjector?.evaluateEntry : undefined) ??
     createModelsListEntryEvaluator({
       cfg,
       agentId,

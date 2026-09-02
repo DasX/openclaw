@@ -7,6 +7,7 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import { MODEL_APIS } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isDiagnosticFlagEnabled } from "../infra/diagnostic-flags.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -17,6 +18,7 @@ import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapsh
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { augmentModelCatalogWithProviderPlugins } from "../plugins/provider-runtime.runtime.js";
 import { createLazyPromise } from "../shared/lazy-promise.js";
+import { discoverModels } from "./agent-model-discovery.js";
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { modelSupportsInput as modelCatalogEntrySupportsInput } from "./model-catalog-lookup.js";
 import { assignProviderModelOrder, compareModelCatalogEntries } from "./model-catalog-order.js";
@@ -28,6 +30,7 @@ import type {
 import { resolveCatalogOwnedModelCompat } from "./model-compat-catalog.js";
 import { modelKey, createConfiguredProviderCatalogModelIdNormalizer } from "./model-ref-shared.js";
 import { buildConfiguredModelCatalog } from "./model-selection-shared.js";
+import { AuthStorage } from "./sessions/auth-storage.js";
 import type { AuthStorageData, ModelRegistry } from "./sessions/index.js";
 
 const log = createSubsystemLogger("model-catalog");
@@ -58,6 +61,29 @@ type DiscoveredModel = {
   baseUrl?: string;
 };
 
+const CATALOG_MODEL_APIS: ReadonlySet<string> = new Set(MODEL_APIS);
+
+function isCatalogModelApi(value: string): value is NonNullable<ModelCatalogEntry["api"]> {
+  return CATALOG_MODEL_APIS.has(value);
+}
+
+function persistedModelToEntry(model: DiscoveredModel): ModelCatalogEntry {
+  return {
+    id: model.id,
+    name: model.name ?? model.id,
+    provider: model.provider,
+    ...(typeof model.api === "string" && isCatalogModelApi(model.api) ? { api: model.api } : {}),
+    ...(model.baseUrl ? { baseUrl: model.baseUrl } : {}),
+    ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+    ...(model.contextTokens ? { contextTokens: model.contextTokens } : {}),
+    ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+    ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+    ...(model.input ? { input: model.input } : {}),
+    ...(model.params ? { params: model.params } : {}),
+    ...(model.compat ? { compat: model.compat } : {}),
+  };
+}
+
 export type BuildPreparedModelCatalogParams = {
   agentDir: string;
   authCredentials: Readonly<AuthStorageData>;
@@ -75,13 +101,14 @@ type ManifestModelCatalogCacheEntry = {
   snapshot: PluginMetadataSnapshot;
   rows: ModelCatalogEntry[];
 };
+// Manifest rows are process-stable per config generation; ordinary catalog reads reuse them.
 let manifestModelCatalogCache = new WeakMap<OpenClawConfig, ManifestModelCatalogCacheEntry>();
 const loadModelSuppression = createLazyPromise(() => import("./model-suppression.js"));
 const loadProviderApiKeyResolver = createLazyPromise(
   () => import("./models-config.providers.secrets.js"),
 );
 
-export function resetModelCatalogBuilderCacheForTest() {
+export function resetModelCatalogBuilderStateForTest() {
   manifestModelCatalogCache = new WeakMap();
   hasLoggedModelCatalogError = false;
 }
@@ -351,6 +378,54 @@ function createModelCatalogSnapshot(
     entries: sortModelCatalogEntries(entries),
     routeVariants: sortModelCatalogEntries(routeVariants.entries),
   };
+}
+
+/** Builds the current network-free catalog directly from manifests and authored config. */
+export function buildCurrentModelCatalogSnapshot(params: {
+  config: OpenClawConfig;
+  metadataSnapshot: PluginMetadataSnapshot;
+  agentDir?: string;
+  workspaceDir?: string;
+  env?: NodeJS.ProcessEnv;
+}): ModelCatalogSnapshot {
+  const routeVariants = createModelCatalogRouteVariantCollector();
+  const models = loadManifestModelCatalog({
+    config: params.config,
+    metadataSnapshot: params.metadataSnapshot,
+    workspaceDir: params.workspaceDir,
+    env: params.env,
+  });
+  mergeCatalogRouteVariants(routeVariants, models);
+  const configured = buildConfiguredModelCatalog({
+    cfg: params.config,
+    workspaceDir: params.workspaceDir,
+    manifestPlugins: params.metadataSnapshot,
+  });
+  mergeCatalogRouteVariants(routeVariants, configured, { preserveBaseCompat: true });
+  mergeCatalogEntries(models, configured, {
+    catalogRoutes: routeVariants,
+    preserveBaseCompat: true,
+    preserveBaseName: true,
+  });
+  if (params.agentDir) {
+    const persistedModels = discoverModels(AuthStorage.inMemory({}), params.agentDir, {
+      config: params.config,
+      includePluginCatalogs: true,
+      pluginMetadataSnapshot: params.metadataSnapshot,
+      normalizeModels: false,
+      ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
+      ...(params.env ? { env: params.env } : {}),
+      // SAFETY: persisted registry rows are the DiscoveredModel shape written by discovery.
+    }).getAll() as DiscoveredModel[];
+    const persistedEntries = persistedModels.map(persistedModelToEntry);
+    mergeCatalogRouteVariants(routeVariants, persistedEntries);
+    mergeCatalogEntries(models, persistedEntries, {
+      catalogRoutes: routeVariants,
+      preserveBaseCompat: true,
+      preserveBaseName: true,
+    });
+  }
+  return createModelCatalogSnapshot(models, routeVariants);
 }
 
 function resolveEligibleManifestCatalogPlugins(

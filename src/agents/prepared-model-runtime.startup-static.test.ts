@@ -181,6 +181,7 @@ vi.mock("./agent-scope-config.js", async (importOriginal) => ({
 vi.mock("./auth-profiles/runtime-snapshots.js", () => ({
   getPreparedRuntimeAuthProfileStoreSnapshotCore: () => undefined,
   getRuntimeAuthProfileStoreCredentialsRevision: () => 0,
+  getRuntimeAuthProfileStoreSnapshotAtDatabasePath: () => undefined,
   registerRuntimeAuthProfileStoreMutationListener: (
     listener: (event: { agentDir?: string; affectsInheritedStores: boolean }) => void,
   ) => {
@@ -613,19 +614,16 @@ describe("prepared model runtime Gateway catalog mode", () => {
     const unregisterCatalogPublication = registerPreparedModelRuntimePublicationListener((event) =>
       catalogPublicationEvents.push(event.phase),
     );
-    await snapshot?.loadFullModelCatalog?.();
+    const fullCatalog = await snapshot?.loadFullModelCatalog?.();
     expect(catalogPublicationEvents).toEqual(["catalog-published"]);
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
     expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
     expect(mocks.loadAgentRuntimePluginRegistryHandle).toHaveBeenCalledTimes(2);
 
-    await expect(snapshot?.loadFullModelCatalog?.()).resolves.toEqual({
-      entries: [],
-      routeVariants: [],
-    });
+    await expect(snapshot?.loadFullModelCatalog?.()).resolves.toBe(fullCatalog);
     expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
     expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
-    expect(snapshot?.readFullModelCatalog?.()).toEqual({ entries: [], routeVariants: [] });
+    expect(snapshot?.readFullModelCatalog?.()).toBe(fullCatalog);
     expect(
       getAvailablePreparedModelCatalogSnapshot({
         agentId: "default",
@@ -633,7 +631,7 @@ describe("prepared model runtime Gateway catalog mode", () => {
         agentDir: "/tmp/prepared-static-agent",
         workspaceDir: "/tmp/prepared-static-workspace",
       }),
-    ).toEqual({ entries: [], routeVariants: [] });
+    ).toBe(snapshot?.modelCatalog);
     expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
     expect(catalogPublicationEvents).toEqual(["catalog-published"]);
 

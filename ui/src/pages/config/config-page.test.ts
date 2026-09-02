@@ -650,9 +650,12 @@ describe("ConfigPage session observer models", () => {
       agentSelection: { state: { selectedId: "main" } },
     } as ApplicationContext;
     state.systemInfoGatewaySource = gateway;
+    state.sessionObserverModels = [{ id: "previous", name: "Previous", provider: "openai" }];
 
     await state.ensureSessionObserverModels(client, "main");
-    expect(state.sessionObserverModels).toEqual([]);
+    expect(state.sessionObserverModels).toEqual([
+      { id: "previous", name: "Previous", provider: "openai" },
+    ]);
     expect(state.sessionObserverModelsUnavailable).toBe(true);
 
     await state.ensureSessionObserverModels(client, "main");

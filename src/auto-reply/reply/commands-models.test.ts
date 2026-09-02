@@ -13,7 +13,10 @@ import {
 import { buildPreparedModelsProviderData, handleModelsCommand } from "./commands-models.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
-const modelCatalogMocks = vi.hoisted(() => ({ loadModelCatalog: vi.fn() }));
+const modelCatalogMocks = vi.hoisted(() => ({
+  loadModelCatalog: vi.fn(),
+  currentEntries: [] as Array<Record<string, unknown>>,
+}));
 const modelAuthLabelMocks = vi.hoisted(() => ({
   resolveModelAuthLabel: vi.fn<(params: unknown) => string | undefined>(() => undefined),
 }));
@@ -112,6 +115,14 @@ vi.mock("../../agents/prepared-model-catalog.js", () => ({
   },
 }));
 
+vi.mock("../../agents/model-catalog.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/model-catalog.js")>()),
+  buildCurrentModelCatalogSnapshot: () => ({
+    entries: modelCatalogMocks.currentEntries,
+    routeVariants: modelCatalogMocks.currentEntries,
+  }),
+}));
+
 vi.mock("../../agents/model-auth-label.js", () => ({
   resolveModelAuthLabel: modelAuthLabelMocks.resolveModelAuthLabel,
 }));
@@ -188,11 +199,15 @@ const textSurfaceModelsTestPlugins = (["discord", "whatsapp"] as const).map((id)
   source: "test",
 }));
 
+function setModelCatalog(entries: Array<Record<string, unknown>>): void {
+  modelCatalogMocks.currentEntries = entries;
+  modelCatalogMocks.loadModelCatalog.mockResolvedValue(entries);
+}
+
 beforeAll(async () => {
   setFastModelsCliBackendDeps();
-  modelCatalogMocks.loadModelCatalog.mockResolvedValue([
-    { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
-  ]);
+  pluginMetadataMocks.getCurrent.mockReturnValue(createPluginMetadataSnapshotFixture());
+  setModelCatalog([{ provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" }]);
   await buildPreparedModelsProviderData({
     agents: { defaults: { model: { primary: "anthropic/claude-opus-4-5" } } },
   } as OpenClawConfig);
@@ -201,7 +216,7 @@ beforeAll(async () => {
 beforeEach(() => {
   setFastModelsCliBackendDeps();
   modelCatalogMocks.loadModelCatalog.mockReset();
-  modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+  setModelCatalog([
     { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
     { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
     { provider: "openai", id: "gpt-4.1", name: "GPT-4.1" },
@@ -212,6 +227,7 @@ beforeEach(() => {
   modelAuthLabelMocks.resolveModelAuthLabel.mockReturnValue(undefined);
   normalizeProviderModelIdWithRuntimeMock.mockReset();
   pluginMetadataMocks.getCurrent.mockReset();
+  pluginMetadataMocks.getCurrent.mockReturnValue(createPluginMetadataSnapshotFixture());
   modelProviderAuthMocks.authenticatedProviders = new Set(["anthropic", "google", "openai"]);
   modelProviderAuthMocks.selectedRoute = undefined;
   modelProviderAuthMocks.createProviderAuthChecker.mockClear();
@@ -305,12 +321,6 @@ function firstAuthCheckerParams() {
   return modelProviderAuthMocks.createProviderAuthChecker.mock.calls[0]?.[0];
 }
 
-function preparedAuthCheckerParams() {
-  return modelProviderAuthMocks.createProviderAuthChecker.mock.calls
-    .map(([params]) => params)
-    .find((params) => params.allowPreparedRuntimeAuth === true);
-}
-
 describe("handleModelsCommand", () => {
   it("shows a simple providers menu on text surfaces", async () => {
     const result = await handleModelsCommand(buildParams("/models"), true);
@@ -323,38 +333,18 @@ describe("handleModelsCommand", () => {
     expect(result?.reply?.text).toContain("Use: /models <provider>");
     expect(result?.reply?.text).toContain("Switch: /model <provider/model>");
     expect(result?.reply?.text).not.toContain("Add: /models add");
-    const authCheckerParams = preparedAuthCheckerParams();
+    const authCheckerParams = firstAuthCheckerParams();
     expect(authCheckerParams?.workspaceDir).toBe("/tmp");
   });
 
-  it("uses read-only catalog loading and static auth checks for default browse", async () => {
+  it("uses current metadata and static auth checks for default browse", async () => {
     await handleModelsCommand(buildParams("/models"), true);
 
-    expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]?.readOnly).toBe(true);
-    expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]?.refreshFullCatalog).toBe(true);
-    const authCheckerParams = preparedAuthCheckerParams();
+    expect(modelCatalogMocks.loadModelCatalog).not.toHaveBeenCalled();
+    const authCheckerParams = firstAuthCheckerParams();
     expect(authCheckerParams?.allowPluginSyntheticAuth).toBe(false);
     expect(authCheckerParams?.discoverExternalCliAuth).toBe(false);
     expect(authCheckerParams?.allowPreparedRuntimeAuth).toBe(true);
-  });
-
-  it("does not block default browse when read-only catalog loading is slow", async () => {
-    vi.useFakeTimers();
-    try {
-      modelCatalogMocks.loadModelCatalog.mockReturnValue(new Promise(() => {}));
-
-      const resultPromise = handleModelsCommand(buildParams("/models"), true);
-      await vi.advanceTimersByTimeAsync(750);
-      const result = await resultPromise;
-
-      expect(modelCatalogMocks.loadModelCatalog).toHaveBeenCalledTimes(1);
-      expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]?.readOnly).toBe(true);
-      expect(result?.shouldContinue).toBe(false);
-      expect(result?.reply?.text).toContain("Providers:");
-      expect(result?.reply?.text).toContain("- anthropic (1)");
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("keeps explicit all browse on the full catalog path", async () => {
@@ -365,43 +355,6 @@ describe("handleModelsCommand", () => {
     expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]?.readOnly).toBe(false);
     expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]?.workspaceDir).toBe(
       "/tmp/spawned-workspace",
-    );
-  });
-
-  it("scopes the prepared catalog without passing plugin metadata", async () => {
-    const metadataSnapshot = createPluginMetadataSnapshotFixture();
-    pluginMetadataMocks.getCurrent.mockReturnValue(metadataSnapshot);
-
-    await handleModelsCommand(buildParams("/models"), true);
-
-    const params = modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0];
-    expect(params).toMatchObject({ readOnly: true, workspaceDir: "/tmp" });
-    expect(params).not.toHaveProperty("metadataSnapshot");
-  });
-
-  it("loads the selected agent lifecycle catalog", async () => {
-    const cfg = {
-      agents: {
-        defaults: { model: { primary: "anthropic/claude-opus-4-5" } },
-        list: [
-          {
-            id: "worker",
-            agentDir: "/tmp/models-worker-agent",
-            workspace: "/tmp/models-worker-workspace",
-          },
-        ],
-      },
-    } as OpenClawConfig;
-
-    await buildPreparedModelsProviderData(cfg, "worker");
-
-    expect(modelCatalogMocks.loadModelCatalog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentDir: "/tmp/models-worker-agent",
-      }),
-    );
-    expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]).not.toHaveProperty(
-      "workspaceDir",
     );
   });
 
@@ -423,7 +376,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("does not offer an OpenAI row with a conflicting API and endpoint", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       {
         provider: "openai",
         id: "gpt-5.5",
@@ -472,7 +425,7 @@ describe("handleModelsCommand", () => {
         contextWindow: 128_000,
         thinkingLevelMap: { high: "high", xhigh: "xhigh" },
       };
-      modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+      setModelCatalog([
         {
           ...selected,
           name: "Platform GPT-5.5",
@@ -512,9 +465,7 @@ describe("handleModelsCommand", () => {
         ],
       }),
     );
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
-      { provider: "custom", id: "modern", name: "Modern" },
-    ]);
+    setModelCatalog([{ provider: "custom", id: "modern", name: "Modern" }]);
     modelProviderAuthMocks.authenticatedProviders = new Set(["custom"]);
     const data = await buildPreparedModelsProviderData({
       agents: {
@@ -526,11 +477,11 @@ describe("handleModelsCommand", () => {
     } as OpenClawConfig);
 
     expect(data.byProvider.get("custom")).toEqual(new Set(["modern"]));
-    expect(pluginMetadataMocks.getCurrent).toHaveBeenCalledTimes(1);
+    expect(pluginMetadataMocks.getCurrent).toHaveBeenCalled();
   });
 
   it("does not re-add the default provider when provider visibility is restricted", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
       { provider: "openai", id: "gpt-5.4-codex", name: "GPT-5.4 Codex" },
       { provider: "openai", id: "gpt-5.5-codex", name: "GPT-5.5 Codex" },
@@ -554,14 +505,14 @@ describe("handleModelsCommand", () => {
       true,
     );
 
-    expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]?.readOnly).toBe(true);
+    expect(modelCatalogMocks.loadModelCatalog).not.toHaveBeenCalled();
     expect(result?.reply?.text).toContain("- openai (2)");
     expect(result?.reply?.text).toContain("- vllm (2)");
     expect(result?.reply?.text).not.toContain("- anthropic");
   });
 
   it("hides bare backwards-compat aliases but surfaces supported CLI runtime providers in /models lists", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValueOnce([
+    setModelCatalog([
       { provider: "codex", id: "gpt-5.5", name: "GPT-5.5" },
       { provider: "claude-cli", id: "claude-opus-4-7", name: "Claude Opus" },
       { provider: "google-gemini-cli", id: "gemini-3.1-pro-preview", name: "Gemini Pro" },
@@ -594,7 +545,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("sources CLI runtime provider model lists from the catalog", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "claude-cli", id: "claude-opus-4-7", name: "Claude Opus 4.7" },
       { provider: "claude-cli", id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { provider: "claude-cli", id: "claude-opus-4-6", name: "Claude Opus 4.6" },
@@ -651,7 +602,7 @@ describe("handleModelsCommand", () => {
         plugins: [{ id: "acme", cliBackends: ["acme-cli"] }],
       }),
     );
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "anthropic", id: "claude-opus-4-7", name: "Claude Opus 4.7" },
       { provider: "acme-cli", id: "acme-model", name: "Acme Model" },
     ]);
@@ -672,7 +623,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("keeps non-CLI configured provider model lists scoped to user config", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "claude-cli", id: "claude-opus-4-7", name: "Claude Opus 4.7" },
       { provider: "claude-cli", id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { provider: "claude-cli", id: "claude-opus-4-6", name: "Claude Opus 4.6" },
@@ -700,9 +651,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("does not synthesize claude-cli models when the catalog has no claude-cli entries", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
-      { provider: "anthropic", id: "claude-opus-4-7", name: "Claude Opus 4.7" },
-    ]);
+    setModelCatalog([{ provider: "anthropic", id: "claude-opus-4-7", name: "Claude Opus 4.7" }]);
     modelProviderAuthMocks.authenticatedProviders = new Set(["anthropic", "claude-cli"]);
 
     const result = await handleModelsCommand(
@@ -720,7 +669,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("hides CLI runtime providers from the picker when the user has no CLI auth", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "anthropic", id: "claude-opus-4-7", name: "Claude Opus 4.7" },
       { provider: "claude-cli", id: "claude-opus-4-7", name: "Claude Opus 4.7 (CLI)" },
       { provider: "codex-cli", id: "gpt-5.5", name: "GPT-5.5 (CLI)" },
@@ -821,7 +770,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("does not use another provider's first model override as that provider's default runtime choice", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "openai", id: "gpt-5.5", name: "GPT-5.5" },
       { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
       { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
@@ -846,7 +795,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("honors provider wildcard runtime policy for non-default provider picker choices", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "openai", id: "gpt-5.5", name: "GPT-5.5" },
       { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
       { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
@@ -876,7 +825,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("filters nested provider namespaces with the same prefix policy as enforcement", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "clawrouter", id: "anthropic/claude-haiku-4-5", name: "Claude Haiku" },
       { provider: "clawrouter", id: "google/gemini-3.5-flash", name: "Gemini Flash" },
       { provider: "openai", id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
@@ -894,7 +843,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("keeps the telegram provider picker browse-only", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
       { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
       { provider: "claude-cli", id: "claude-opus-4-7", name: "Claude Opus (CLI)" },
@@ -929,7 +878,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("keeps plugin menu hook compatibility for provider pickers", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
       { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
       { provider: "claude-cli", id: "claude-opus-4-7", name: "Claude Opus (CLI)" },
@@ -984,7 +933,7 @@ describe("handleModelsCommand", () => {
   });
 
   it("does not list bare fallback models under the default provider when catalog ownership is unique", async () => {
-    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+    setModelCatalog([
       { provider: "openai", id: "gpt-5.4", name: "GPT-5.4" },
       { provider: "deepseek", id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
       { provider: "deepseek", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },

@@ -57,7 +57,7 @@ export type PreparedModelRuntimeSnapshot = Readonly<{
    * Full inventory discovery is deliberately outside the startup publication boundary.
    */
   modelCatalog: ModelCatalogSnapshot;
-  /** Reads a completed full catalog without starting provider discovery. */
+  /** Reads this generation's completed full catalog without starting discovery. */
   readFullModelCatalog?: () => ModelCatalogSnapshot | undefined;
   /** Builds this generation's full control-plane catalog without replacing turn facts. */
   loadFullModelCatalog?: (options?: { refresh?: boolean }) => Promise<ModelCatalogSnapshot>;
@@ -128,9 +128,7 @@ export type PreparedModelRuntimeBuildStats = Readonly<{
   agentCount: number;
   workspaceGroupCount: number;
   configuredFactsGroupCount: number;
-  catalogSourceCount: number;
   credentialGroupCount: number;
-  catalogGroupCount: number;
   runtimeRegistryCount: number;
   configuredRuntimeModelCount: number;
   generatedCatalogPluginCount: number;
@@ -142,9 +140,7 @@ export type PreparedModelRuntimeBuildStats = Readonly<{
   ambientCredentialsMs: number;
   agentFactsMs: number;
   configuredProjectionMs: number;
-  catalogSourceMs: number;
   registryMs: number;
-  sourceConcurrencyLimit: number;
   fullCatalogConcurrencyLimit: number;
 }>;
 
@@ -156,9 +152,6 @@ export type PreparedModelRuntimeOwner = {
   provenance: "configured" | "standalone" | "explicit" | "run" | "ephemeral";
   generation: number;
   needsRefresh: boolean;
-  catalogStale: boolean;
-  /** Completed discovery facts; runtime capability projection belongs to each generation. */
-  catalogInventory?: { catalog: ModelCatalogSnapshot; key: string };
   refreshError?: Error;
   snapshot?: PreparedModelRuntimeSnapshot;
   pluginGeneration?: PreparedModelRuntimePluginGeneration;
@@ -167,6 +160,7 @@ export type PreparedModelRuntimeOwner = {
   pending?: Promise<PreparedModelRuntimeSnapshot>;
   buildCompletion?: Promise<void>;
   leaseCount?: number;
+  retire?: () => Promise<void>;
 };
 
 export type PreparedModelRuntimeReplacement = {

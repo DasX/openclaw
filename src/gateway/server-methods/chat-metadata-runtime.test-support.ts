@@ -92,13 +92,10 @@ export function createChatMetadataHarness(
       const modelCatalog = facts.modelCatalog;
       return {
         modelCatalog: modelCatalog.entries,
-        models: modelCatalog.entries,
       };
     },
   );
-  const readProjection = vi.fn(
-    (projection: { modelCatalog: ModelCatalogEntry[]; models?: unknown[] }) => projection,
-  );
+  const readProjection = vi.fn((projection: { modelCatalog: ModelCatalogEntry[] }) => projection);
   const context = {
     getRuntimeConfig: () => config,
     loadGatewayModelCatalogSnapshot: async (params?: { readOnly?: boolean }) => {
@@ -140,7 +137,10 @@ export function createChatMetadataHarness(
               const projection = await buildProjection(params);
               return {
                 modelCatalog: projection.modelCatalog,
-                read: () => ({ models: readProjection(projection).models }),
+                read: () => {
+                  readProjection(projection);
+                  return {};
+                },
                 isCurrent: () => !invalidProjections.has(projection),
               };
             },

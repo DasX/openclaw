@@ -4,7 +4,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { registerRuntimeAuthProfileStoreMutationListener } from "./auth-profiles/runtime-snapshots.js";
-import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
   PreparedModelRuntimeAuthPublicationOwner,
   type PreparedModelRuntimeAuthMutation,
@@ -14,7 +13,6 @@ import {
   configuredOwnersAreRequestVisible,
   registerPreparedRuntimeAuthMaterializationPublisher,
 } from "./prepared-model-runtime-materializations.js";
-import { preparedModelInventoryKey } from "./prepared-model-runtime.facts.js";
 import {
   PreparedModelRuntimeOwnerNotPublishedError,
   PreparedModelRuntimeOwnerRetention,
@@ -30,7 +28,7 @@ import {
   publishPreparedModelRuntimeOwnerBatch,
   publishModelRuntimeSnapshot,
   rebindInputToCommittedConfiguredOwner,
-  resolvePreparedModelRuntimeOwnerBySnapshot,
+  retirePreparedModelRuntimeOwner,
   resolveConfiguredOwnerPublication,
   resolvePublishedOwner,
   type PreparedModelRuntimeOwner,
@@ -374,31 +372,6 @@ export async function prepareModelRuntimeSnapshot(
   );
 }
 
-/** Refreshes stale inventory only for an explicit catalog read; turn admission remains static. */
-export async function refreshStalePreparedModelRuntimeCatalog(
-  snapshot: PreparedModelRuntimeSnapshot,
-): Promise<ModelCatalogSnapshot | undefined> {
-  const owner = resolvePreparedModelRuntimeOwnerBySnapshot(snapshot);
-  if (
-    !owner ||
-    owners.get(ownerKey(owner.input)) !== owner ||
-    !owner.catalogStale ||
-    !snapshot.loadFullModelCatalog
-  ) {
-    return undefined;
-  }
-  const generation = owner.generation;
-  const catalog = await snapshot.loadFullModelCatalog({ refresh: true });
-  if (
-    owner.catalogStale &&
-    owner.generation === generation &&
-    owners.get(ownerKey(owner.input)) === owner
-  ) {
-    owner.catalogStale = false;
-  }
-  return catalog;
-}
-
 /** Invalidates every published generation before config/plugin runtime replacement. */
 export function markPreparedModelRuntimeSnapshotsStale(
   reason = "prepared model runtime owner is stale after config publication",
@@ -459,13 +432,6 @@ async function refreshPreparedModelRuntimeSnapshotsNow(
   const catalogMode = options.catalogMode ?? "live";
   gatewayLifecycleActive ||= options.gatewayLifecycle === true;
   const staleError = new Error("prepared model runtime owner is stale after config publication");
-  const inventories = new Map(
-    [...owners.values()].flatMap((owner) =>
-      owner.provenance === "configured" && owner.catalogInventory
-        ? [[owner.catalogInventory.key, owner.catalogInventory] as const]
-        : [],
-    ),
-  );
   updateOwnersForScopedRefresh(owners, options.agentIds, staleError, {
     retainedConfig: config,
   });
@@ -489,6 +455,7 @@ async function refreshPreparedModelRuntimeSnapshotsNow(
       continue;
     }
     if (!knownKeys.has(key) && (gatewayLifecycleActive || owner.provenance === "configured")) {
+      retirePreparedModelRuntimeOwner(owner);
       owners.delete(key);
     }
   }
@@ -501,7 +468,6 @@ async function refreshPreparedModelRuntimeSnapshotsNow(
       catalogMode,
       existing?.provenance === "configured" ? existing : undefined,
     );
-    owner.catalogInventory = inventories.get(preparedModelInventoryKey(input));
     return { input, owner };
   });
   await publishPreparedModelRuntimeOwnerBatch({
@@ -516,6 +482,7 @@ async function refreshPreparedModelRuntimeSnapshotsNow(
     onBuildStats: options.onBuildStats,
     pluginMetadataSnapshot: options.pluginMetadataSnapshot,
     registerEntriesAfterBuildStart: true,
+    discoverFullCatalog: gatewayLifecycleActive,
   });
 }
 
@@ -625,6 +592,7 @@ async function drainPendingAuthMutations(commit?: () => void): Promise<void> {
         buildTimeoutMs: modelRuntimeBuildTimeoutMs,
         ...(includeCredentialProviders ? { includeCredentialProviders: true } : {}),
         reusePluginGenerations: true,
+        discoverFullCatalog: gatewayLifecycleActive,
       }),
     publishOwners: (publishedOwners) => replyDispatchPublication.replace(publishedOwners),
     commit,
@@ -653,12 +621,10 @@ function invalidateForAuthMutation(event: PreparedModelRuntimeAuthMutation): voi
       continue;
     }
     invalidatedOwners.push(owner);
+    retirePreparedModelRuntimeOwner(owner);
     owner.generation += 1;
     owner.needsRefresh = true;
     owner.refreshError = staleError;
-    if (normalizedEvent.profileSetChanged) {
-      owner.catalogStale = true;
-    }
     if (owner.provenance === "configured" && owner.input.agentId) {
       invalidatedConfiguredAgentIds.add(owner.input.agentId);
     }
@@ -735,6 +701,9 @@ function resetPreparedModelRuntimeSnapshotsForTest(): void {
   );
   pendingModelRuntimeReplacement?.resolve();
   pendingModelRuntimeReplacement = undefined;
+  for (const owner of owners.values()) {
+    retirePreparedModelRuntimeOwner(owner);
+  }
   owners.clear();
   agentBuildCompletions.clear();
   standaloneActivationTails.clear();

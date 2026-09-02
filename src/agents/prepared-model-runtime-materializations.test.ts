@@ -37,7 +37,6 @@ function createOwner(params: {
     provenance: "configured",
     generation: 1,
     needsRefresh: params.needsRefresh === true,
-    catalogStale: false,
     snapshot,
   };
 }

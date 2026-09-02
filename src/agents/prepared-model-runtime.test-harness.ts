@@ -87,6 +87,10 @@ const preparedModelRuntimeMocks = vi.hoisted(() => ({
       routeVariants: [],
     }),
   ),
+  runPreparedModelAuthWorker: vi.fn(async () => ({
+    authStore: { version: 1, profiles: {} },
+    authModes: {},
+  })),
   runtimeSyntheticAuthProviderRefs: [] as string[],
   resolveAmbientCredentials: vi.fn((..._args: unknown[]) => ({})),
   resolveStaticCatalogModel: vi.fn<StaticCatalogResolver>(() => undefined),
@@ -121,13 +125,34 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
     ...args: Parameters<typeof preparedModelRuntimeMocks.createPreparedModelCatalogWorkerInput>
   ) => preparedModelRuntimeMocks.createPreparedModelCatalogWorkerInput(...args),
   createPreparedModelCatalogWorker: () => ({
-    loadCatalog: (...args: unknown[]) =>
-      preparedModelRuntimeMocks.runPreparedModelCatalogWorker(...args),
-    loadAuth: () =>
-      Promise.resolve({
+    // Mirror the real worker boundary: a completed catalog is marked full and carries the auth
+    // generation it was discovered with, or the fail-closed metadata guard rejects it.
+    loadCatalog: async (
+      ...args: Parameters<typeof preparedModelRuntimeMocks.runPreparedModelCatalogWorker>
+    ) => {
+      const [
+        { markPreparedModelCatalogFull },
+        { setPreparedModelFullCatalogAuth },
+        { resolveUsableAgentCredentialModes },
+      ] = await Promise.all([
+        import("./prepared-model-runtime.full-catalog.js"),
+        import("./prepared-model-runtime-auth.js"),
+        import("./agent-auth-credentials.js"),
+      ]);
+      const snapshot = markPreparedModelCatalogFull(
+        await preparedModelRuntimeMocks.runPreparedModelCatalogWorker(...args),
+      );
+      // A real child resolves auth from the same durable store and credentials as the parent.
+      setPreparedModelFullCatalogAuth(snapshot, {
         authStore: preparedModelRuntimeMocks.preparedAuthStore ?? { version: 1, profiles: {} },
-        authModes: {},
-      }),
+        authModes: resolveUsableAgentCredentialModes(
+          preparedModelRuntimeMocks.authStorage.getAll(),
+        ),
+      });
+      return snapshot;
+    },
+    loadAuth: (...args: Parameters<typeof preparedModelRuntimeMocks.runPreparedModelAuthWorker>) =>
+      preparedModelRuntimeMocks.runPreparedModelAuthWorker(...args),
   }),
 }));
 
@@ -312,6 +337,7 @@ vi.mock("./auth-profiles/runtime-materializations.js", () => ({
 vi.mock("./auth-profiles/runtime-snapshots.js", () => ({
   getPreparedRuntimeAuthProfileStoreSnapshotCore: () => preparedModelRuntimeMocks.preparedAuthStore,
   getRuntimeAuthProfileStoreSnapshot: () => preparedModelRuntimeMocks.preparedAuthStore,
+  getRuntimeAuthProfileStoreSnapshotAtDatabasePath: () => undefined,
   getRuntimeAuthProfileStoreSnapshotRevision: () => 0,
   getRuntimeAuthProfileStoreCredentialsRevision: () =>
     preparedModelRuntimeMocks.credentialsRevision,
@@ -430,6 +456,10 @@ export function resetPreparedModelRuntimeHarness(state: OpenClawTestState): void
     entries: [],
     routeVariants: [],
   });
+  preparedModelRuntimeMocks.runPreparedModelAuthWorker.mockReset().mockImplementation(async () => ({
+    authStore: preparedModelRuntimeMocks.preparedAuthStore ?? { version: 1, profiles: {} },
+    authModes: {},
+  }));
   preparedModelRuntimeMocks.runtimeSyntheticAuthProviderRefs = [];
   preparedModelRuntimeMocks.resolveAmbientCredentials.mockReset().mockReturnValue({});
   preparedModelRuntimeMocks.resolveStaticCatalogModel.mockReset().mockReturnValue(undefined);

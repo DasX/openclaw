@@ -102,7 +102,7 @@ type ChatMetadataRuntimeDeps = {
     facts: PreparedAgentFacts;
     preferredProfileId?: string;
     lockedProfileId?: string;
-  }) => Promise<PreparedAgentProjection<{ models?: unknown[] }>>;
+  }) => Promise<PreparedAgentProjection<Partial<ChatMetadataResult>>>;
 };
 
 const CHAT_METADATA_CACHE_MAX_ENTRIES = 64;
@@ -236,7 +236,7 @@ async function defaultBuildProjection(params: {
   facts: PreparedAgentFacts;
   preferredProfileId?: string;
   lockedProfileId?: string;
-}): Promise<PreparedAgentProjection<{ models?: unknown[] }>> {
+}): Promise<PreparedAgentProjection<Partial<ChatMetadataResult>>> {
   const { prepareModelsListResult, createGatewayAgentModelCatalogProjector } =
     await import("./models-list-result.js");
   // Chat metadata must stay on process-published facts. Live discovery belongs to explicit
@@ -271,6 +271,7 @@ async function defaultBuildProjection(params: {
       catalogProjector: projector,
     }),
   ]);
+  // Android ChatController.kt still reads models from chat.metadata; drop once it uses models.list.
   return {
     modelCatalog,
     read: () => ({ models: readModels.read().models }),

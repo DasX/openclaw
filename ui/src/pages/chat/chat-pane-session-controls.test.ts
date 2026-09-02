@@ -550,6 +550,7 @@ describe("chat pane composer controls", () => {
         chatLoading: false,
         chatModelCatalog: cachedModels,
         chatModelCatalogError: null,
+        modelCatalogRequestVersion: 0,
         sessions: {
           state: { modelOverrides: {} },
           think: () => undefined,

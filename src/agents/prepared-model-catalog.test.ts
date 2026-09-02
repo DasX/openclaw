@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => ({
   loadSnapshot: vi.fn(),
   prepareSnapshot: vi.fn(),
   prepareScopedCatalog: vi.fn(),
-  refreshStaleCatalog: vi.fn(),
   isFullCatalog: vi.fn(),
   releaseSnapshot: vi.fn(),
 }));
@@ -53,8 +52,6 @@ vi.mock("./prepared-model-runtime.js", () => {
     preparedModelRuntimeConfigsMatch: (left: object, right: object) =>
       JSON.stringify(left) === JSON.stringify(right),
     prepareModelRuntimeSnapshot: (...args: unknown[]) => mocks.prepareSnapshot(...args),
-    refreshStalePreparedModelRuntimeCatalog: (...args: unknown[]) =>
-      mocks.refreshStaleCatalog(...args),
   };
 });
 
@@ -109,7 +106,6 @@ describe("prepared model catalog access", () => {
     mocks.loadSnapshot.mockReset();
     mocks.prepareSnapshot.mockReset();
     mocks.prepareScopedCatalog.mockReset();
-    mocks.refreshStaleCatalog.mockReset();
     mocks.isFullCatalog.mockReset();
     mocks.releaseSnapshot.mockReset();
   });
@@ -181,11 +177,7 @@ describe("prepared model catalog access", () => {
     expect(mocks.releaseSnapshot).not.toHaveBeenCalled();
   });
 
-  it("refreshes stale catalog content during an explicit read-only load", async () => {
-    const staleCatalog = {
-      entries: [{ provider: "test", id: "fresh", name: "Fresh" }],
-      routeVariants: [],
-    };
+  it("keeps read-only loads on the published catalog facts", async () => {
     const snapshot = {
       ...fullSnapshot,
       loadFullModelCatalog: vi.fn(),
@@ -193,16 +185,11 @@ describe("prepared model catalog access", () => {
     };
     mocks.getSnapshot.mockReturnValue(snapshot);
     mocks.prepareSnapshot.mockResolvedValue(snapshot);
-    mocks.refreshStaleCatalog.mockResolvedValue(staleCatalog);
-    setPreparedModelFullCatalogAuth(staleCatalog, {
-      authStore: fullSnapshot.authStore,
-      authModes: fullSnapshot.authModes,
-    });
 
     await expect(
       loadPreparedModelCatalogOwnerSnapshot({ readOnly: true, refreshFullCatalog: true }),
-    ).resolves.toMatchObject({ modelCatalog: staleCatalog });
-    expect(mocks.refreshStaleCatalog).toHaveBeenCalledWith(snapshot);
+    ).resolves.toMatchObject({ modelCatalog: fullSnapshot.modelCatalog });
+    expect(snapshot.loadFullModelCatalog).not.toHaveBeenCalled();
     expect(snapshot.readFullModelCatalog).not.toHaveBeenCalled();
   });
 
@@ -222,8 +209,7 @@ describe("prepared model catalog access", () => {
     await expect(
       loadPreparedModelCatalogOwnerSnapshot({ readOnly: true, refreshFullCatalog: false }),
     ).resolves.toMatchObject({ modelCatalog: fullSnapshot.modelCatalog });
-    expect(mocks.refreshStaleCatalog).not.toHaveBeenCalled();
-    expect(snapshot.readFullModelCatalog).toHaveBeenCalledOnce();
+    expect(snapshot.readFullModelCatalog).not.toHaveBeenCalled();
   });
 
   it("does not await a stale full catalog for read-only request paths", async () => {
@@ -234,7 +220,6 @@ describe("prepared model catalog access", () => {
     };
     mocks.getSnapshot.mockReturnValue(snapshot);
     mocks.prepareSnapshot.mockResolvedValue(snapshot);
-    mocks.refreshStaleCatalog.mockRejectedValue(new Error("full discovery was awaited"));
     setPreparedModelFullCatalogAuth(snapshot.modelCatalog, {
       authStore: fullSnapshot.authStore,
       authModes: fullSnapshot.authModes,
@@ -243,7 +228,6 @@ describe("prepared model catalog access", () => {
     await expect(loadPreparedModelCatalogSnapshot({ readOnly: true })).resolves.toBe(
       snapshot.modelCatalog,
     );
-    expect(mocks.refreshStaleCatalog).not.toHaveBeenCalled();
   });
 
   it("reuses a published full generation for a provider-scoped read-only load", async () => {
@@ -339,7 +323,6 @@ describe("prepared model catalog access", () => {
       expect.objectContaining({ readOnly: true, workspaceDir: "/tmp/dynamic-workspace" }),
     );
     expect(mocks.releaseSnapshot).toHaveBeenCalledOnce();
-    expect(mocks.refreshStaleCatalog).not.toHaveBeenCalled();
   });
 
   it("rejects a full generation replaced with another config", async () => {

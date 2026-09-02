@@ -326,6 +326,7 @@ describe("models.list native account catalog", () => {
                   cfg: hostConfig,
                   catalog: rows,
                   view: "configured",
+                  refresh: true,
                 });
                 expect(readiness(hostConfig)).toEqual({ accountType: "apiKey" });
                 expect(host.models[0]?.available, `host route ${routeIndex}`).toBe(false);

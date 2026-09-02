@@ -152,6 +152,7 @@ export function makeChatHost(
     chatModelsLoading: false,
     chatModelCatalog: [],
     chatModelCatalogError: null,
+    modelCatalogRequestVersion: 0,
     refreshSessionsAfterChat: new Map(),
     toolStreamById: new Map(),
     toolStreamOrder: [],

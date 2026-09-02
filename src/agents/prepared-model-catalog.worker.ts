@@ -204,7 +204,7 @@ export async function runPreparedModelCatalogWorkerRequest(
       exactAgentFacts,
       prepared.pluginGeneration,
       "live",
-      false,
+      true,
       { authStore },
     );
     const facts = await prepareFullCatalogFacts(

@@ -136,7 +136,7 @@ describe("models.list plugin metadata handoff", () => {
     );
   });
 
-  it("discovers a harness catalog for an explicit configured picker read", async () => {
+  it("keeps harness discovery off ordinary configured picker reads", async () => {
     const cfg = { agents: { defaults: { model: "custom/modern" } } } as OpenClawConfig;
     const snapshot: ModelCatalogSnapshot = {
       entries: [catalogEntry("modern")],
@@ -163,7 +163,7 @@ describe("models.list plugin metadata handoff", () => {
     });
 
     expect(mocks.prepareHarnessCatalog).toHaveBeenCalledWith(
-      expect.objectContaining({ allowHarnessDiscovery: true, agentId: "main", snapshot }),
+      expect.objectContaining({ allowHarnessDiscovery: false, agentId: "main", snapshot }),
     );
   });
 });

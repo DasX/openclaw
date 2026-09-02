@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginMetadataSnapshot } from "../config/plugin-auto-enable.test-helpers.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { PreparedModelRuntimeOwnerNotPublishedError } from "./prepared-model-runtime.errors.js";
+import { markPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
 
 const manifestCatalogMock = vi.fn((..._args: unknown[]): Array<Record<string, unknown>> => []);
@@ -117,10 +118,10 @@ describe("loadProviderScopedThinkingCatalog", () => {
         input: ["text", "image"],
       };
       const completed: ModelCatalogSnapshot = { entries: [entry], routeVariants: [entry] };
+      markPreparedModelCatalogFull(completed);
       publishedSnapshotMock.mockImplementation((input: unknown) => ({
         config: (input as { config: unknown }).config,
-        modelCatalog: { entries: [], routeVariants: [] },
-        readFullModelCatalog: () => completed,
+        modelCatalog: completed,
       }));
       const { loadProviderScopedThinkingCatalog } = await import("./prepared-model-catalog.js");
       const catalog = await loadProviderScopedThinkingCatalog({

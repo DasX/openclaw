@@ -57,13 +57,13 @@ async function resolveLoader(
 
 // Isolated gateway tests share process module state with lifecycle-owner tests.
 export async function resetPreparedModelCatalogStateForTest(): Promise<void> {
-  const [{ resetPreparedModelRuntimeSnapshotsForTest }, { resetModelCatalogBuilderCacheForTest }] =
+  const [{ resetPreparedModelRuntimeSnapshotsForTest }, { resetModelCatalogBuilderStateForTest }] =
     await Promise.all([
       import("../agents/prepared-model-runtime.test-support.js"),
       import("../agents/model-catalog.js"),
     ]);
   resetPreparedModelRuntimeSnapshotsForTest();
-  resetModelCatalogBuilderCacheForTest();
+  resetModelCatalogBuilderStateForTest();
 }
 
 async function loadGatewayModelCatalogOwnerSnapshot(
@@ -211,9 +211,12 @@ export async function readPreparedGatewayModelCatalogOwnerSnapshot(
   if (!candidate) {
     return undefined;
   }
+  // The published owner is the fact: its completed full catalog when discovery has landed,
+  // otherwise its configured projection. Ordinary reads never wait for discovery.
+  const modelCatalog = candidate.readFullModelCatalog?.() ?? candidate.modelCatalog;
   const owner = resolvePublishedModelCatalogOwner(candidate);
   return {
-    ...projectGatewayModelCatalogSnapshot(owner),
+    ...projectGatewayModelCatalogSnapshot({ ...owner, modelCatalog }),
     authModes: owner.authModes,
     authStore: owner.authStore,
     metadataSnapshot: owner.metadataSnapshot,
