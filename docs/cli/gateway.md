@@ -513,6 +513,9 @@ OpenClaw launches only an SSH client found in OS-managed system directories. On 
 install the **OpenSSH Client** optional feature; Windows places it under
 `%SystemRoot%\System32\OpenSSH`.
 
+If SSH startup fails or you cancel the probe, OpenClaw stops its local connection
+checks and waits for the SSH process to exit before completing cleanup.
+
 <ParamField path="--ssh-identity <path>" type="string">
   Identity file.
 </ParamField>

@@ -1,7 +1,7 @@
 // Covers SSH target parsing and tunnel startup preflight behavior.
 import { EventEmitter } from "node:events";
 import net from "node:net";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   ensurePortAvailable: vi.fn<(port: number, host?: string) => Promise<void>>(),
@@ -106,6 +106,18 @@ describe("startSshPortForward", () => {
     mocks.resolveSshClient.mockReturnValue("/usr/bin/ssh");
     mocks.spawn.mockReset();
   });
+
+  function mockPendingProbe() {
+    const socket = new net.Socket();
+    // Only the test drives probe completion; no native socket timeout races the fake clock.
+    socket.setTimeout = () => socket;
+    const connect = vi.spyOn(net, "connect").mockReturnValue(socket);
+    onTestFinished(() => {
+      socket.destroy();
+      connect.mockRestore();
+    });
+    return { socket, connect };
+  }
 
   // Fake ssh child that, when spawned, parses the -L forward spec and starts a
   // real IPv4-loopback listener on the chosen local port so waitForLocalListener
@@ -274,19 +286,18 @@ describe("startSshPortForward", () => {
   });
 
   it("keeps startup abort pending until the SSH child exits", async () => {
-    const child = new EventEmitter() as EventEmitter & {
-      pid: number;
-      stderr: EventEmitter & { setEncoding: (enc: string) => void };
-      kill: (signal?: string) => boolean;
-    };
-    child.pid = 4242;
-    child.stderr = Object.assign(new EventEmitter(), { setEncoding: () => {} });
-    child.kill = vi.fn(() => true);
+    vi.useFakeTimers();
+    const { socket, connect } = mockPendingProbe();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4242,
+      stderr: Object.assign(new EventEmitter(), { setEncoding: () => {} }),
+      kill: vi.fn(() => true),
+    });
     mocks.spawn.mockReturnValue(child);
     const controller = new AbortController();
     const forwarding = startSshPortForward({
       target: "me@example.com:2222",
-      localPortPreferred: await getFreePort(),
+      localPortPreferred: 43210,
       remotePort: 18789,
       timeoutMs: 1000,
       signal: controller.signal,
@@ -298,57 +309,66 @@ describe("startSshPortForward", () => {
       })
       .catch(() => {});
 
-    await vi.waitFor(() => expect(mocks.spawn).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
     controller.abort();
-    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"));
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(settled).toBe(false);
-    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
 
     child.emit("exit", null, "SIGTERM");
     await expect(forwarding).rejects.toMatchObject({ name: "AbortError" });
+    expect(socket.destroyed).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.runAllTimersAsync();
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(child.kill).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects with the spawn error when ssh binary is missing", async () => {
-    vi.useFakeTimers();
-    const spawnError = new Error("ENOENT: no such file or directory, spawn /usr/bin/ssh");
-    (spawnError as NodeJS.ErrnoException).code = "ENOENT";
-    const kill = vi.fn(() => false);
-    mocks.spawn.mockImplementation(() => {
-      const child = new EventEmitter() as EventEmitter & {
-        killed: boolean;
-        pid?: number;
-        stderr: EventEmitter & { setEncoding: (enc: string) => void };
-        kill: (signal?: string) => boolean;
-      };
-      child.killed = false;
-      const stderr = new EventEmitter() as EventEmitter & { setEncoding: (enc: string) => void };
-      stderr.setEncoding = () => {};
-      child.stderr = stderr;
-      child.kill = kill;
+  it.each(["connecting", "retrying"] as const)(
+    "rejects with the spawn error when ssh binary is missing while the probe is %s",
+    async (phase) => {
+      vi.useFakeTimers();
+      const { socket, connect } = mockPendingProbe();
+      const spawnError = new Error("ENOENT: no such file or directory, spawn /usr/bin/ssh");
+      (spawnError as NodeJS.ErrnoException).code = "ENOENT";
+      const kill = vi.fn(() => false);
+      const child = Object.assign(new EventEmitter(), {
+        stderr: Object.assign(new EventEmitter(), { setEncoding: () => {} }),
+        kill,
+      });
+      mocks.spawn.mockReturnValue(child);
+
+      const forwarding = startSshPortForward({
+        target: "me@example.com:2222",
+        localPortPreferred: 43210,
+        remotePort: 18789,
+        timeoutMs: 500,
+      });
+      const rejection = expect(forwarding).rejects.toMatchObject({
+        message: expect.stringContaining("ENOENT"),
+        cause: spawnError,
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      if (phase === "retrying") {
+        // Refuse the probe before SSH fails so its retry is already scheduled.
+        socket.emit("error", new Error("ECONNREFUSED"));
+        await vi.advanceTimersByTimeAsync(0);
+      }
       queueMicrotask(() => {
         child.emit("error", spawnError);
         child.emit("close", -2, null);
       });
-      return child;
-    });
 
-    const forwarding = startSshPortForward({
-      target: "me@example.com:2222",
-      localPortPreferred: 43210,
-      remotePort: 18789,
-      timeoutMs: 500,
-    });
-    const rejection = expect(forwarding).rejects.toMatchObject({
-      message: expect.stringContaining("ENOENT"),
-      cause: spawnError,
-    });
-
-    await vi.advanceTimersByTimeAsync(0);
-    expect(vi.getTimerCount()).toBe(0);
-    await rejection;
-    expect(kill).toHaveBeenCalledWith("SIGTERM");
-  });
+      await vi.advanceTimersByTimeAsync(0);
+      await rejection;
+      expect(socket.destroyed).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.runAllTimersAsync();
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    },
+  );
 
   it.each(["active", "teardown"] as const)(
     "does not crash when stderr errors while the tunnel is %s",
