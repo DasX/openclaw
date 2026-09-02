@@ -532,12 +532,14 @@ visible but disabled with an actionable reason. Enable hosting with
 setting, then restart the node host. Update-required hosts must be upgraded and
 restarted before selection.
 
-If a required command is unavailable, first check that its plugin is installed
-and enabled on the device. Reconnect the app or node host, approve its updated
-command surface, and check `gateway.nodes.commands.allow`; changing the Gateway
-allowlist alone cannot install a missing device plugin. Approving an updated
-command surface refreshes hosting automatically; you do not need to restart the
-app or node host a second time.
+If a required command is unavailable, follow the reason in the placement error.
+For `command not allowlisted`, review `gateway.nodes.commands.allow` and
+`gateway.nodes.commands.deny`; an explicit deny overrides an allow. For
+`command not declared by node` or `node did not declare commands`, check that
+its plugin is installed and enabled on the device, then reconnect and approve
+its updated command surface. Changing the Gateway allowlist cannot install a
+missing device plugin. Approving an updated command surface refreshes hosting
+automatically; you do not need to restart the app or node host a second time.
 
 While node inventory refreshes, or if that refresh fails, the picker keeps known
 devices visible but disables remote selection and Start until fresh inventory

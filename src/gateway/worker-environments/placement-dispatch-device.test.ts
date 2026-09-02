@@ -42,7 +42,9 @@ vi.mock("../../config/config.js", async (importOriginal) => {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const CODEX_COMMAND = "codex.exec-server.stdio.v1";
 const MISSING_COMMAND_GUIDANCE =
-  "paired-device command codex.exec-server.stdio.v1 is unavailable for device-1; check that its plugin is installed and enabled on the device, reconnect and approve the node's commands, and check gateway.nodes.commands.allow";
+  "paired-device command codex.exec-server.stdio.v1 is unavailable for device-1 (command not declared by node); check that its plugin is installed and enabled on the device, then reconnect and approve the node's commands";
+const POLICY_COMMAND_GUIDANCE =
+  "paired-device command codex.exec-server.stdio.v1 is unavailable for device-1 (command not allowlisted); review gateway.nodes.commands.allow and gateway.nodes.commands.deny (deny overrides allow)";
 const OPENCLAW_DEVICE_REQUIREMENT = { requiredNodeCommands: [], consumesWorkerSlot: true };
 const CODEX_DEVICE_REQUIREMENT = {
   requiredNodeCommands: [CODEX_COMMAND],
@@ -586,7 +588,7 @@ describe("device worker placement dispatch", () => {
       requirement: CODEX_DEVICE_REQUIREMENT,
       config: { gateway: { nodes: { commands: { deny: [CODEX_COMMAND] } } } },
       expected: false,
-      message: MISSING_COMMAND_GUIDANCE,
+      message: POLICY_COMMAND_GUIDANCE,
     },
     {
       name: "allows an explicitly enabled declared command",
