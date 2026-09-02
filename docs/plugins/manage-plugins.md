@@ -23,7 +23,8 @@ verify the plugin's runtime registrations.
 
 Open **Plugins** in the Control UI, or use `/settings/plugins` relative to the
 configured Control UI base path. For example, a base path of `/openclaw` uses
-`/openclaw/settings/plugins`. The page has two tabs:
+`/openclaw/settings/plugins`. Use the **Installed** and **Discover** tabs to
+manage plugins. The hub also has **Skills** and **Workshop** tabs.
 
 - **Installed** shows the full local inventory grouped by category (channels,
   model providers, memory, tools). Each row opens a detail view and offers
@@ -305,14 +306,13 @@ Saved updates apply to the running Gateway without restarting it. If part of
 exits with an error. When the Gateway is offline, updates take effect at its
 next startup.
 
-`openclaw plugins update --all` is the bulk maintenance path. It still
-respects ordinary tracked install specs, but trusted official OpenClaw
-plugin records sync to the current official catalog target instead of
-staying pinned to a stale exact official package. The canonical channel
-resolver uses both `update.channel` and the installed core version, so an
-installed beta core with no configured channel keeps official plugins on the
-beta release line. Use a targeted `update <plugin-id>` to keep an exact or
-tagged official spec untouched.
+`openclaw plugins update --all` is the bulk maintenance path. It preserves
+ordinary exact pins and explicit tags. Floating trusted official plugin records
+follow the current registry-channel policy while retaining their recorded
+selector. The channel resolver uses both `update.channel` and the installed core
+version, so an installed beta core with no configured channel keeps eligible
+official plugins on that core's beta version. See the
+[pinning rules](/cli/plugins#update) for trusted official plugin ID replacements.
 
 For npm installs, pass an explicit package spec to switch the tracked
 record:
