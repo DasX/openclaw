@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import type { CronJob } from "../../cron/types.js";
 import { runSkillCollectionReviewForAgent } from "../../skills/workshop/collection-review-boundary.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -28,7 +29,7 @@ describe("skill_workshop collection restore", () => {
       wakeMode: "next-heartbeat",
       payload: { kind: "agentTurn", message: "review" },
       state: {},
-    };
+    } satisfies CronJob;
     try {
       await fs.mkdir(path.dirname(skillFile), { recursive: true });
       await fs.writeFile(
