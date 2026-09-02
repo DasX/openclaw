@@ -25,6 +25,30 @@ public struct GatewayNodeSessionRoute: Sendable, Equatable {
     fileprivate let socketGeneration: UInt64
 }
 
+/// In-process authority for one exact socket admission. Native work retains this
+/// identity across actor hops and checks revocation without adopting a new route.
+public final class GatewayNodeInvocationRoute: @unchecked Sendable {
+    fileprivate let route: GatewayNodeSessionRoute
+    private let lock = NSLock()
+    private var active = true
+
+    fileprivate init(route: GatewayNodeSessionRoute) {
+        self.route = route
+    }
+
+    public var isActive: Bool {
+        self.lock.withLock { self.active }
+    }
+
+    public func matches(_ route: GatewayNodeSessionRoute?) -> Bool {
+        self.route == route && self.isActive
+    }
+
+    fileprivate func invalidate() {
+        self.lock.withLock { self.active = false }
+    }
+}
+
 /// Owns a server-event stream until its caller is finished or canceled.
 public struct GatewayServerEventSubscription: Sendable {
     public let events: AsyncStream<EventFrame>
@@ -45,6 +69,7 @@ public struct GatewayServerEventSubscription: Sendable {
 }
 
 public actor GatewayNodeSession {
+    @TaskLocal public static var invocationRoute: GatewayNodeInvocationRoute?
     @TaskLocal private static var executingLifecycleCallbackID: UUID?
     private static let pluginSurfaceRefreshTimeoutMs = 8000.0
 
@@ -110,7 +135,7 @@ public actor GatewayNodeSession {
     private var activeTLSRouteMetadataProvider: GatewayTLSRouteMetadataProviding?
     // A delayed push keeps its physical socket epoch. Once disconnect cleanup
     // retires that epoch, it cannot adopt the replacement route's admission.
-    private var activeSocketGeneration: UInt64?
+    private var activeInvocationRoute: GatewayNodeInvocationRoute?
     private var lastRetiredSocketGeneration: UInt64?
     private var routeTeardownBarrier: Task<Void, Never>?
     private var lifecycleCallbackBarrier: LifecycleCallbackBarrier?
@@ -246,6 +271,7 @@ public actor GatewayNodeSession {
         let channelGeneration: UInt64
         if shouldReconnect {
             let invalidatedAdmissionGeneration = self.admissionGeneration
+            let invalidatedInvocationRoute = self.activeInvocationRoute
             self.channelGeneration &+= 1
             self.admissionGeneration &+= 1
             channelGeneration = self.channelGeneration
@@ -260,6 +286,7 @@ public actor GatewayNodeSession {
                 self.enqueueRouteTeardown(
                     channel: existing,
                     admissionGeneration: invalidatedAdmissionGeneration,
+                    invocationRoute: invalidatedInvocationRoute,
                     onRouteInvalidated: previousOnRouteInvalidated)
             } else {
                 self.routeTeardownBarrier
@@ -378,6 +405,7 @@ public actor GatewayNodeSession {
 
     public func disconnect() async {
         let invalidatedAdmissionGeneration = self.admissionGeneration
+        let invalidatedInvocationRoute = self.activeInvocationRoute
         self.channelGeneration &+= 1
         self.admissionGeneration &+= 1
         let channel = self.channel
@@ -390,6 +418,7 @@ public actor GatewayNodeSession {
             self.enqueueRouteTeardown(
                 channel: channel,
                 admissionGeneration: invalidatedAdmissionGeneration,
+                invocationRoute: invalidatedInvocationRoute,
                 onRouteInvalidated: onRouteInvalidated)
         } else {
             self.routeTeardownBarrier
@@ -412,13 +441,15 @@ public actor GatewayNodeSession {
         self.onInvokeInput = nil
         self.onInvokeCancel = nil
         self.onRouteInvalidated = nil
-        self.activeSocketGeneration = nil
+        self.activeInvocationRoute?.invalidate()
+        self.activeInvocationRoute = nil
         self.lastRetiredSocketGeneration = nil
     }
 
     private func enqueueRouteTeardown(
         channel: GatewayChannelActor,
         admissionGeneration: UInt64,
+        invocationRoute: GatewayNodeInvocationRoute?,
         onRouteInvalidated: (@Sendable () async -> Void)?) -> Task<Void, Never>
     {
         let isLifecycleReentry = self.isExecutingLifecycleCallback()
@@ -432,8 +463,10 @@ public actor GatewayNodeSession {
         // automatic reconnect ownership while lifecycle callbacks are suspended.
         let channelShutdown = Task { await channel.shutdown() }
         let immediateTeardown = Task {
-            await Self.$executingLifecycleCallbackID.withValue(invalidationCallbackID) {
-                await onRouteInvalidated?()
+            await Self.$invocationRoute.withValue(invocationRoute) {
+                await Self.$executingLifecycleCallbackID.withValue(invalidationCallbackID) {
+                    await onRouteInvalidated?()
+                }
             }
             await channelShutdown.value
         }
@@ -442,8 +475,10 @@ public actor GatewayNodeSession {
             await previous?.value
             await lifecycleCallback?.task.value
             if lifecycleCallback != nil {
-                await Self.$executingLifecycleCallbackID.withValue(invalidationCallbackID) {
-                    await onRouteInvalidated?()
+                await Self.$invocationRoute.withValue(invocationRoute) {
+                    await Self.$executingLifecycleCallbackID.withValue(invalidationCallbackID) {
+                        await onRouteInvalidated?()
+                    }
                 }
             }
             await self.awaitActiveInvokes(activeInvokes)
@@ -456,6 +491,7 @@ public actor GatewayNodeSession {
     }
 
     private func enqueueLifecycleCallback(
+        invocationRoute: GatewayNodeInvocationRoute?,
         immediate: (@Sendable () async -> Void)? = nil,
         final: @escaping @Sendable () async -> Void) -> LifecycleCallbackBarrier
     {
@@ -463,10 +499,12 @@ public actor GatewayNodeSession {
         let id = UUID()
         self.executingLifecycleCallbackIDs.insert(id)
         let task = Task { [weak self] in
-            await Self.$executingLifecycleCallbackID.withValue(id) {
-                await immediate?()
-                await previous?.value
-                await final()
+            await Self.$invocationRoute.withValue(invocationRoute) {
+                await Self.$executingLifecycleCallbackID.withValue(id) {
+                    await immediate?()
+                    await previous?.value
+                    await final()
+                }
             }
             await self?.finishLifecycleCallback(id)
         }
@@ -939,7 +977,7 @@ extension GatewayNodeSession {
         socketGeneration: UInt64) async
     {
         guard self.channelGeneration == channelGeneration,
-              self.retireSocketGeneration(socketGeneration)
+              let invocationRoute = self.retireSocketGeneration(socketGeneration)
         else { return }
         // The channel actor reconnects in place, so channelGeneration alone cannot
         // distinguish delayed work decoded before this socket loss. Revoke those
@@ -956,6 +994,7 @@ extension GatewayNodeSession {
         // Transport reconnect must not wait on owner callbacks that can suspend
         // indefinitely. The lifecycle barrier still gates readiness and invokes.
         _ = self.enqueueLifecycleCallback(
+            invocationRoute: invocationRoute,
             immediate: {
                 // Release held input before waiting for a connected callback that
                 // may already be suspended in owner code.
@@ -1040,7 +1079,9 @@ extension GatewayNodeSession {
         }
         self.hasNotifiedConnected = true
         guard let onConnected = self.onConnected else { return }
-        let lifecycleCallback = self.enqueueLifecycleCallback(final: onConnected)
+        let lifecycleCallback = self.enqueueLifecycleCallback(
+            invocationRoute: self.activeInvocationRoute,
+            final: onConnected)
         // A lifecycle callback may deliberately disconnect or replace its route.
         // Queue the successor callback behind it, but never make it await itself.
         if !self.isExecutingLifecycleCallback() {
@@ -1246,18 +1287,28 @@ extension GatewayNodeSession {
         -> BridgeInvokeResponse
     {
         guard self.isCurrentRoute(expectedRoute),
-              self.channel != nil
+              self.channel != nil,
+              let invocationRoute = self.activeInvocationRoute,
+              invocationRoute.route == expectedRoute,
+              invocationRoute.isActive
         else { return Self.staleRouteInvokeResponse(requestId: request.id) }
         let requiresRouteScopedCancellation = request.command == "computer.act" ||
+            request.command == OpenClawScreenCommand.snapshot.rawValue ||
             request.command == OpenClawCameraCommand.ptzControl.rawValue ||
             OpenClawTalkCommand(rawValue: request.command) != nil
         guard requiresRouteScopedCancellation else {
-            return await onInvoke(request)
+            return await Self.$invocationRoute.withValue(invocationRoute) {
+                await onInvoke(request)
+            }
         }
         // These side-effecting commands own explicit cancellation cleanup. Route
         // teardown waits for it so a replacement cannot inherit input ownership.
         let invokeID = UUID()
-        let task = Task { await onInvoke(request) }
+        let task = Task {
+            await Self.$invocationRoute.withValue(invocationRoute) {
+                await onInvoke(request)
+            }
+        }
         self.activeInvokes[invokeID] = ActiveInvoke(
             requestID: request.id,
             admissionGeneration: expectedRoute.admissionGeneration,
@@ -1282,27 +1333,35 @@ extension GatewayNodeSession {
         {
             return false
         }
-        if let activeSocketGeneration {
-            return socketGeneration == activeSocketGeneration
+        if let activeInvocationRoute {
+            return socketGeneration == activeInvocationRoute.route.socketGeneration
         }
-        self.activeSocketGeneration = socketGeneration
+        self.activeInvocationRoute = GatewayNodeInvocationRoute(route: GatewayNodeSessionRoute(
+            channelGeneration: self.channelGeneration,
+            admissionGeneration: self.admissionGeneration,
+            socketGeneration: socketGeneration))
         return true
     }
 
-    private func retireSocketGeneration(_ socketGeneration: UInt64) -> Bool {
+    private func retireSocketGeneration(_ socketGeneration: UInt64) -> GatewayNodeInvocationRoute? {
         if let lastRetiredSocketGeneration,
            socketGeneration <= lastRetiredSocketGeneration
         {
-            return false
+            return nil
         }
-        if let activeSocketGeneration,
-           socketGeneration != activeSocketGeneration
+        if let activeInvocationRoute,
+           socketGeneration != activeInvocationRoute.route.socketGeneration
         {
-            return false
+            return nil
         }
-        self.activeSocketGeneration = nil
+        let invocationRoute = self.activeInvocationRoute ?? GatewayNodeInvocationRoute(route: GatewayNodeSessionRoute(
+            channelGeneration: self.channelGeneration,
+            admissionGeneration: self.admissionGeneration,
+            socketGeneration: socketGeneration))
+        invocationRoute.invalidate()
+        self.activeInvocationRoute = nil
         self.lastRetiredSocketGeneration = socketGeneration
-        return true
+        return invocationRoute
     }
 
     #if DEBUG

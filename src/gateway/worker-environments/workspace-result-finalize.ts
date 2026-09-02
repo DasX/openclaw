@@ -5,6 +5,10 @@ import type { SessionPlacementTurnParams } from "../../agents/session-placement-
 import { withSessionPlacementComputer } from "../../agents/session-placement-computer.js";
 import { withSessionSkillResources } from "../../agents/session-placement-skill-resources.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
+import {
+  attachErrorDiagnostic,
+  formatErrorMessageForDisplay,
+} from "../../infra/error-diagnostics.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import {
@@ -63,8 +67,11 @@ function workspaceError(error: unknown): string {
   return truncateUtf16Safe(message || "cloud worker turn failed", 1_024);
 }
 
-function remoteExecWorkspaceFailure(executionError: unknown, reconciliationError: unknown): Error {
-  const executionMessage = formatErrorMessage(executionError);
+export function workerWorkspaceFailure(
+  executionError: unknown,
+  reconciliationError: unknown,
+): Error {
+  const executionMessage = formatErrorMessageForDisplay(executionError);
   const reconciliationDetail =
     reconciliationError instanceof WorkerWorkspaceReconciliationError &&
     reconciliationError.cause !== undefined
@@ -453,7 +460,20 @@ export async function executeRemoteExecTurn(params: {
     try {
       await computer?.close("turn-complete");
     } catch (error) {
-      executionError ??= error;
+      if (executionError === undefined || executionError === null) {
+        executionError = error;
+      } else {
+        // Keep typed/abort identity: cleanup detail is display-only, never retry policy.
+        const primary =
+          executionError instanceof Error
+            ? executionError
+            : new Error(formatErrorMessage(executionError));
+        const diagnostic = `Computer cleanup also failed: ${formatErrorMessage(error)}`;
+        executionError = attachErrorDiagnostic(
+          primary,
+          formatErrorMessageForDisplay(primary, diagnostic),
+        );
+      }
     }
   }
   const workspaceConflict = await reconcileWorkspaceAfterTurn({
@@ -490,7 +510,7 @@ export async function executeRemoteExecTurn(params: {
       });
     }
     if (executionError) {
-      throw remoteExecWorkspaceFailure(executionError, reconciliationError);
+      throw workerWorkspaceFailure(executionError, reconciliationError);
     }
     throw reconciliationError;
   });
