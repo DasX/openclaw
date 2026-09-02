@@ -7,16 +7,15 @@ import { loadSettings } from "../../app/settings.ts";
 import { readPresenceEntries } from "../../app/user-profile.ts";
 import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
 import { t } from "../../i18n/index.ts";
-import "../../components/web-awesome-popover.ts";
 import { normalizeAgentTargetLabel } from "../../lib/agents/display.ts";
-import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
+import "../../components/web-awesome-popover.ts";
 import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts";
 import { buildAgentMainSessionKey } from "../../lib/sessions/session-key.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { focusChatComposerFromPrintableKeydown } from "../chat/chat-pane-shared.ts";
 import "../../styles/chat.css";
 import "../../styles/new-session.css";
-import { focusChatComposerFromPrintableKeydown } from "../chat/chat-pane-shared.ts";
 import { renderChatImageLightbox } from "../chat/components/chat-image-lightbox.ts";
 import { renderChatPermissionPicker } from "../chat/components/chat-permission-picker.ts";
 import { renderWelcomeState } from "../chat/components/chat-welcome.ts";
@@ -25,7 +24,6 @@ import { NewSessionDictationControl } from "./composer-dictation-control.ts";
 import { renderDraftError } from "./composer.ts";
 import { ConnectMachineSetupState, renderConnectMachineDialog } from "./connect-machine-dialog.ts";
 import { isWorktreeNameValid } from "./create-params.ts";
-import { renderDetailChip, resolveDetailChip } from "./detail-chip.ts";
 import { renderNewSessionBody, renderNewSessionDraftComposer } from "./draft-composer.ts";
 import { DraftGatewayState } from "./draft-gateway-state.ts";
 import * as drafts from "./draft-navigation-handoff.ts";
@@ -45,10 +43,8 @@ import {
   isPlaceTopologyEvent,
   presenceStateSignature,
 } from "./new-session-runtime.ts";
-import { renderProjectChip, resolveProjectChip } from "./project-chip.ts";
 import type { SubmissionOutcomeReason } from "./session-placement-recovery-state.ts";
-import { renderAgentSelect } from "./target-controls.ts";
-import { renderWhereChip, resolveWhereChip } from "./where-chip.ts";
+import { renderAgentSelect, renderNewSessionPlaceControls } from "./target-controls.ts";
 
 const { activateDraft, restoreDraft, restoreDraftOwner, retainDraft } = drafts;
 
@@ -372,161 +368,21 @@ export class NewSessionPage extends OpenClawLightDomElement {
               },
             })
           : nothing,
-      placeSelect: this.renderPlaceChips(),
+      placeSelect: renderNewSessionPlaceControls({
+        context: this.context,
+        data: this.data,
+        gateway: this.gateway,
+        place: this.place,
+        submitting: this.submission.submitting,
+        pendingPlacement: Boolean(this.submission.pendingPlacement.sessionKey),
+        onConnectMachine: () => this.openConnectMachine(),
+        requestUpdate: () => this.requestUpdate(),
+      }),
       retrying:
         this.gateway.catalogRetrying ||
         Boolean(this.data?.group && sessions?.groupsStatus() === "loading"),
       onRetry: this.gateway.handleCatalogRetry,
     });
-  }
-
-  private renderPlaceChips() {
-    const cloudProfiles =
-      catalog.isTarget(this.data) || !this.place.isAdmin() ? [] : this.gateway.cloudProfiles;
-    const branches = this.place.repository.kind === "git" ? this.place.repository : null;
-    const projects = catalog.isTarget(this.data) ? [] : this.browser.projects;
-    const recents = catalog.isTarget(this.data)
-      ? []
-      : this.browser.resolveProjectRecents({
-          sessions: this.context?.sessions.state.result?.sessions ?? [],
-          workspace: this.place.workspacePath(),
-          workspaceRoots: this.place.knownWorkspaceRoots(),
-          isAdmin: this.place.isAdmin(),
-        });
-    const whereState = resolveWhereChip({
-      environments: this.place.canWrite() ? this.gateway.environments : [],
-      cloudProfiles,
-      cloudProfileId: this.place.cloudProfileId,
-      machineClass: this.place.machineClass,
-      deviceId: this.place.deviceId,
-      autoDevice: this.place.autoDevice,
-      devicePlacement: this.place.devicePlacementRequirement(),
-      deviceDisabledReason:
-        this.place.modelControl.devicePlacementUnsupportedReason() ??
-        this.gateway.deviceCatalogDisabledReason,
-    });
-    const projectState = resolveProjectChip({
-      folder: this.place.folder,
-      workspace: this.place.workspacePath(),
-      projectId: this.browser.projectId,
-      selectedRemoteProject: this.browser.remoteProject,
-      projects,
-      recents,
-      projectQuery: this.browser.projectQuery,
-    });
-    const detailState = resolveDetailChip({
-      destination: this.place.remotePlacement ? "remote" : "local",
-      worktree: this.place.worktree,
-      worktreeAvailable: this.place.worktreeAvailable(),
-    });
-    const gatewayLabel = this.gateway.gatewayName
-      ? t("newSession.gatewayNamed", { name: this.gateway.gatewayName })
-      : t("newSession.gateway");
-    const submitting = this.submission.submitting;
-    const pendingPlacement = Boolean(this.submission.pendingPlacement.sessionKey);
-    return html`${renderWhereChip({
-      state: whereState,
-      gatewayName: this.gateway.gatewayName,
-      cloudProfileId: this.place.cloudProfileId,
-      machineClass: this.place.machineClass,
-      deviceId: this.place.deviceId,
-      autoDevice: this.place.autoDevice,
-      autoPlacementMode: this.place.modelControl.autoPlacementSelectionMode(),
-      worktreeAvailable: this.place.worktreeAvailable(),
-      cloudDisabledReason: this.submission.cloudDisabledReason(),
-      cloudProfileDisabledReason: (profile) =>
-        this.place.modelControl.cloudRuntimeUnsupportedReason(profile),
-      submitting,
-      pendingPlacement,
-      isAdmin: this.place.isAdmin(),
-      ...this.browser.popoverCallbacks("where"),
-      onSelectDevice: (deviceId) => this.place.selectDevice(deviceId),
-      onSelectAutoDevice: () => this.place.selectDevice("", true),
-      onSelectCloudProfile: (profileId) => this.place.selectCloudProfile(profileId),
-      onSelectCloudMachine: (machineId) =>
-        this.place.cloudMachines.select(
-          this.place.cloudProfileId,
-          machineId,
-          cloudProfiles,
-          submitting || pendingPlacement,
-          () => this.requestUpdate(),
-        ),
-      onConnectMachine: () => this.openConnectMachine(),
-    })}${renderProjectChip({
-      state: projectState,
-      browseAvailable: this.place.browseAvailable(),
-      isAdmin: this.place.isAdmin(),
-      canWrite: this.place.canWrite(),
-      folder: this.place.folder,
-      workspace: this.place.workspacePath(),
-      projects,
-      projectQuery: this.browser.projectQuery,
-      projectSearchAvailable: canCallGatewayMethod(
-        this.context?.gateway.snapshot,
-        "projects.searchRemote",
-        "operator.read",
-      ),
-      projectAddAvailable: canCallGatewayMethod(
-        this.context?.gateway.snapshot,
-        "projects.add",
-        "operator.write",
-      ),
-      remoteProjects: this.browser.projectSearchResult?.projects ?? [],
-      selectedRemoteProject: this.browser.remoteProject,
-      projectSearchCredentialMissing: this.browser.projectSearchResult?.credential === "missing",
-      projectSearchLoading: this.browser.projectSearchLoading,
-      projectSearchError: this.browser.projectSearchError,
-      projectId: this.browser.projectId,
-      gatewayLabel,
-      remotePlacement: this.place.remotePlacement,
-      branches,
-      branchesLoading: this.place.repository.kind === "checking",
-      baseRef: this.place.baseRef,
-      worktreeName: this.place.worktreeName,
-      submitting,
-      pendingPlacement,
-      ...this.browser.popoverCallbacks("project"),
-      browserOpen: this.browser.browserOpen,
-      browserListing: this.browser.browserListing,
-      browserLoading: this.browser.browserLoading,
-      browserError: this.browser.browserError,
-      browserPathDraft: this.browser.browserPathDraft,
-      usableBrowserPath: this.browser.usableBrowserPath(),
-      registerProjectPath: this.browser.browserProjectPath,
-      registeringProject: this.browser.browserRegistering,
-      onSelectProject: (projectId) => this.place.selectProjectId(projectId),
-      onProjectQueryInput: (query) => this.browser.changeProjectQuery(query),
-      onSelectRemoteProject: (project) => this.place.selectRemoteProject(project),
-      onApplyFolder: (folder) => this.place.applyFolder(folder),
-      onBaseRefInput: (baseRef) => this.place.setBaseRef(baseRef),
-      onWorktreeNameInput: (worktreeName) => this.place.setWorktreeName(worktreeName),
-      onBrowse: () =>
-        this.browser.selectGatewayBrowser(this.place.folder.trim() || this.place.workspacePath()),
-      onBrowserPathDraftChange: (value) => {
-        this.browser.browserPathDraft = value;
-      },
-      onBrowserNavigate: (path) => this.browser.loadBrowser(path),
-      onBrowserBack: () => this.browser.showRoot(),
-      onRegisterProject: (path) => void this.browser.registerBrowserProject(path),
-      onClose: () => this.browser.close(),
-    })}${detailState
-      ? renderDetailChip({
-          state: detailState,
-          worktree: this.place.worktree,
-          worktreeAvailable: this.place.worktreeAvailable(),
-          repositoryUnavailable: this.place.repository.kind === "unavailable",
-          branches,
-          branchesLoading: this.place.repository.kind === "checking",
-          baseRef: this.place.baseRef,
-          worktreeName: this.place.worktreeName,
-          submitting,
-          pendingPlacement,
-          ...this.browser.popoverCallbacks("detail"),
-          onToggleWorktree: () => this.place.toggleWorktree(),
-          onBaseRefInput: (baseRef) => this.place.setBaseRef(baseRef),
-          onWorktreeNameInput: (worktreeName) => this.place.setWorktreeName(worktreeName),
-        })
-      : nothing}`;
   }
 
   private openConnectMachine() {
@@ -547,6 +403,12 @@ export class NewSessionPage extends OpenClawLightDomElement {
       <div class="new-session-page__draft" aria-busy=${String(this.submission.submitting)}>
         ${this.renderTargetBar()}
         ${worktreeNameInvalid ? renderDraftError(t("newSession.worktreeNameInvalid")) : nothing}
+        ${catalog.isTarget(this.data) && capabilities.toolOverrides
+          ? renderDraftError(t("newSession.terminalCapabilityOverridesUnsupported"), {
+              label: t("common.reset"),
+              onClick: () => capabilities.setToolOverrides(null),
+            })
+          : nothing}
         ${this.submission.submissionOutcomeUnknown
           ? renderDraftError(
               t(
@@ -599,16 +461,9 @@ export class NewSessionPage extends OpenClawLightDomElement {
           textareaController: this.submission.composerTextarea,
           voiceControl,
           messageLocked: Boolean(this.submission.pendingPlacement.sessionKey),
-          terminalAction: this.submission.showStartInTerminal()
-            ? {
-                canStart:
-                  !this.submission.submitting &&
-                  !dictationLocked &&
-                  this.submission.canSubmit("terminal"),
-                disabledReason: this.submission.submitBlock("terminal")?.reason,
-                onStart: () => void this.submission.startInTerminal(),
-              }
-            : undefined,
+          nativeTerminal: catalog.isTarget(this.data),
+          onUnsupportedAttachment: () =>
+            this.submission.setError(t("newSession.terminalAttachmentsUnsupported")),
           onInput: (message) => this.setMessageFromUser(message),
           onOpenImage: this.setImageLightbox,
           onVisibilityChange: (visibility) => {
@@ -618,11 +473,13 @@ export class NewSessionPage extends OpenClawLightDomElement {
           },
           onSubmit: () => void this.submission.submit(),
           onBackgroundSubmit:
-            this.submission.visibility === "draft"
+            this.submission.visibility === "draft" || catalog.isTarget(this.data)
               ? undefined
               : () => void this.submission.submit(undefined, true),
         })}
-        ${renderNewSessionIncognitoNotice(this.submission.visibility === "incognito")}
+        ${!catalog.isTarget(this.data)
+          ? renderNewSessionIncognitoNotice(this.submission.visibility === "incognito")
+          : nothing}
       </div>
     `;
   }
@@ -635,7 +492,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
       assistantName: agent ? normalizeAgentTargetLabel(agent, identity) : "",
       assistantAvatar: agent?.identity?.avatar ?? agent?.identity?.emoji ?? null,
       assistantAvatarUrl: agent?.identity?.avatarUrl ?? null,
-      hint: t("newSession.hint"),
+      hint: t(catalog.isTarget(this.data) ? "newSession.nativeTerminalHint" : "newSession.hint"),
       composer: this.renderDraftBlock(),
       hideSecondaryContent: this.submission.visibility === "incognito",
       fadeSecondaryContent: this.submission.message.trim().length > 0,
@@ -684,10 +541,12 @@ export class NewSessionPage extends OpenClawLightDomElement {
           ? "new-session-page--incognito"
           : ""}"
       >
-        ${renderNewSessionIncognitoControl(
-          this.submission,
-          this.submission.capabilities.canStartAsDraft(this.context),
-        )}
+        ${catalog.isTarget(this.data)
+          ? nothing
+          : renderNewSessionIncognitoControl(
+              this.submission,
+              this.submission.capabilities.canStartAsDraft(this.context),
+            )}
         ${renderNewSessionBody({
           error: this.submission.error,
           pendingMessage,
