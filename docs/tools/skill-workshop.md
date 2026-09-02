@@ -129,7 +129,7 @@ The review prompt asks the agent to stay inside the Workshop directory. The
 agent edits files directly during this scheduled turn. A full-tree snapshot is
 created before the turn; changed or added `SKILL.md` files are scanned after it,
 and a failing file is restored from the snapshot while other safe changes stay.
-There is no collection-size cap.
+There is no skill-count admission cap like the old 200-skill limit. The inventory is bounded to 10,000 files and six directory levels. A larger tree fails the review with a recorded error; split or prune the Workshop directory by hand before running it again.
 
 Recorded usage counts and last-used recency are supporting evidence, not an
 age-based lifecycle: heavy use favors preserving a skill's procedure, while no
