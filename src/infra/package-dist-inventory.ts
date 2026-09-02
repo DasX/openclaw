@@ -280,8 +280,7 @@ async function collectRelativeFiles(
       entries.map(async (entry) => {
         const entryPath = path.join(rootDir, entry.name);
         const relativePath = normalizeRelativePath(path.relative(baseDir, entryPath));
-        // Source-checkout dependency links belong to excluded package subtrees.
-        if (entry.isSymbolicLink() && !isOmittedDistSubtree(relativePath, rules)) {
+        if (entry.isSymbolicLink()) {
           throw new Error(`Unsafe package dist path: ${relativePath}`);
         }
         if (entry.isDirectory()) {

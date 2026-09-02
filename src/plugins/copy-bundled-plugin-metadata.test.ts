@@ -1,6 +1,5 @@
 // Covers copying bundled plugin metadata for package output.
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyBundledPluginMetadata } from "../../scripts/copy-bundled-plugin-metadata.mts";
@@ -27,7 +26,6 @@ function createPlugin(
   params: {
     id: string;
     packageName: string;
-    dependencies?: Record<string, string>;
     manifest?: Record<string, unknown>;
     packageOpenClaw?: Record<string, unknown>;
   },
@@ -41,7 +39,6 @@ function createPlugin(
   });
   writeJson(path.join(pluginDir, "package.json"), {
     name: params.packageName,
-    dependencies: params.dependencies,
     ...(params.packageOpenClaw ? { openclaw: params.packageOpenClaw } : {}),
   });
   return pluginDir;
@@ -272,7 +269,7 @@ describe("copyBundledPluginMetadata", () => {
     expect(fs.existsSync(path.join(repoRoot, "dist", "extensions", "tlon", "bundled-skills"))).toBe(
       false,
     );
-    expect(fs.existsSync(staleNodeModulesDir)).toBe(true);
+    expect(fs.existsSync(staleNodeModulesDir)).toBe(false);
   });
 
   it("retries transient skill copy races from concurrent runtime postbuilds", () => {
@@ -408,7 +405,7 @@ describe("copyBundledPluginMetadata", () => {
       expectedExists: false,
     },
     {
-      name: "removes externalized optional plugin metadata from the core dist",
+      name: "omits external-only metadata without a publishable source-checkout build",
       pluginId: "whatsapp",
       packageName: "@openclaw/whatsapp",
       packageOpenClaw: {
@@ -443,48 +440,56 @@ describe("copyBundledPluginMetadata", () => {
     },
   );
 
-  it.each([
-    { kind: "bundled", build: {} },
-    { kind: "external", build: { bundledDist: false } },
-  ])("keeps $kind source-checkout runtimes with their dependency owners", ({ build }) => {
-    const repoRoot = makeRepoRoot("openclaw-plugin-local-dist-meta-");
-    const pluginDir = createPlugin(repoRoot, {
-      id: "sms",
-      packageName: "@openclaw/sms",
-      dependencies: { "source-only-runtime": "1.0.0" },
-      manifest: { skills: ["./node_modules/source-only-runtime"] },
+  it("removes build-excluded bundled plugin metadata", () => {
+    const repoRoot = makeRepoRoot("openclaw-bundled-plugin-excluded-meta-");
+    createPlugin(repoRoot, {
+      id: "selected",
+      packageName: "@openclaw/selected",
+      packageOpenClaw: { extensions: ["./index.ts"] },
+    });
+    createPlugin(repoRoot, {
+      id: "whatsapp",
+      packageName: "@openclaw/whatsapp",
       packageOpenClaw: {
         extensions: ["./index.ts"],
-        build,
+        setupEntry: "./setup-entry.ts",
+      },
+    });
+    const staleDistDir = path.join(repoRoot, "dist", "extensions", "whatsapp");
+    fs.mkdirSync(staleDistDir, { recursive: true });
+    fs.writeFileSync(path.join(staleDistDir, "index.js"), "export default {}\n", "utf8");
+
+    copyBundledPluginMetadata({
+      repoRoot,
+      env: { OPENCLAW_BUNDLED_PLUGIN_BUILD_IDS: "selected" },
+    });
+
+    expect(fs.existsSync(staleDistDir)).toBe(false);
+    expect(readBundledPackageJson(repoRoot, "selected").openclaw?.extensions).toEqual([
+      "./index.js",
+    ]);
+  });
+
+  it("preserves isolated source-checkout output for an external plugin", () => {
+    const repoRoot = makeRepoRoot("openclaw-external-plugin-local-dist-meta-");
+    createPlugin(repoRoot, {
+      id: "sms",
+      packageName: "@openclaw/sms",
+      packageOpenClaw: {
+        extensions: ["./index.ts"],
+        build: { bundledDist: false },
         release: { publishToNpm: true },
       },
     });
-    const dependencyDir = path.join(pluginDir, "node_modules", "source-only-runtime");
-    const dependencyPackage = path.join(dependencyDir, "package.json");
-    writeJson(dependencyPackage, { name: "source-only-runtime", version: "1.0.0" });
-    fs.writeFileSync(path.join(dependencyDir, "SKILL.md"), "# Runtime skill\n", "utf8");
     const distPluginDir = path.join(repoRoot, "dist", "extensions", "sms");
     fs.mkdirSync(distPluginDir, { recursive: true });
     fs.writeFileSync(path.join(distPluginDir, "index.js"), "export default {};\n", "utf8");
 
-    // A warm rebuild must not follow the dependency link while replacing skill assets.
-    for (let run = 0; run < 2; run += 1) {
-      copyBundledPluginMetadata({ repoRoot });
-
-      expect(
-        createRequire(path.join(distPluginDir, "package.json")).resolve(
-          "source-only-runtime/package.json",
-        ),
-      ).toBe(dependencyPackage);
-      expect(fs.readFileSync(path.join(dependencyDir, "SKILL.md"), "utf8")).toBe(
-        "# Runtime skill\n",
-      );
-    }
+    copyBundledPluginMetadata({ repoRoot });
 
     expect(fs.existsSync(path.join(distPluginDir, "index.js"))).toBe(true);
     expect(fs.existsSync(path.join(distPluginDir, "openclaw.plugin.json"))).toBe(true);
     expect(readBundledPackageJson(repoRoot, "sms").openclaw?.extensions).toEqual(["./index.js"]);
-    expectBundledSkills(repoRoot, "sms", ["./bundled-skills/source-only-runtime"]);
   });
 
   it("preserves manifest-less runtime support package outputs and copies package metadata", () => {

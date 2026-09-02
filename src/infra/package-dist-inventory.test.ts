@@ -260,47 +260,48 @@ describe("package dist inventory", () => {
     });
   });
 
-  it.each(["directory", "symlink"])(
-    "omits packaged extension node_modules %s while keeping extension runtime files",
-    async (layout) => {
-      await withTestDir(
-        { prefix: "openclaw-dist-inventory-extension-node-modules-" },
-        async (packageRoot) => {
-          const extensionDir = path.join(packageRoot, "dist", "extensions", "demo");
-          const extensionRuntime = path.join(extensionDir, "runtime-api.js");
-          const rootSdkAliasPackage = path.join(
-            path.dirname(extensionDir),
-            "node_modules",
-            "openclaw",
-            "package.json",
-          );
-          const dependenciesDir =
-            layout === "symlink"
-              ? path.join(packageRoot, "extensions", "demo", "node_modules")
-              : path.join(extensionDir, "node_modules");
-          const extensionDependencyPackage = path.join(dependenciesDir, "left-pad", "package.json");
+  it("omits packaged extension node_modules while keeping extension runtime files", async () => {
+    await withTestDir(
+      { prefix: "openclaw-dist-inventory-extension-node-modules-" },
+      async (packageRoot) => {
+        const extensionRuntime = path.join(
+          packageRoot,
+          "dist",
+          "extensions",
+          "demo",
+          "runtime-api.js",
+        );
+        const rootSdkAliasPackage = path.join(
+          packageRoot,
+          "dist",
+          "extensions",
+          "node_modules",
+          "openclaw",
+          "package.json",
+        );
+        const extensionDependencyPackage = path.join(
+          packageRoot,
+          "dist",
+          "extensions",
+          "demo",
+          "node_modules",
+          "left-pad",
+          "package.json",
+        );
 
-          await fs.mkdir(path.dirname(extensionRuntime), { recursive: true });
-          await fs.mkdir(path.dirname(rootSdkAliasPackage), { recursive: true });
-          await fs.mkdir(path.dirname(extensionDependencyPackage), { recursive: true });
-          await fs.writeFile(extensionRuntime, "export {};\n", "utf8");
-          await fs.writeFile(rootSdkAliasPackage, "{}", "utf8");
-          await fs.writeFile(extensionDependencyPackage, "{}", "utf8");
-          if (layout === "symlink") {
-            await fs.symlink(
-              dependenciesDir,
-              path.join(extensionDir, "node_modules"),
-              process.platform === "win32" ? "junction" : "dir",
-            );
-          }
+        await fs.mkdir(path.dirname(extensionRuntime), { recursive: true });
+        await fs.mkdir(path.dirname(rootSdkAliasPackage), { recursive: true });
+        await fs.mkdir(path.dirname(extensionDependencyPackage), { recursive: true });
+        await fs.writeFile(extensionRuntime, "export {};\n", "utf8");
+        await fs.writeFile(rootSdkAliasPackage, "{}", "utf8");
+        await fs.writeFile(extensionDependencyPackage, "{}", "utf8");
 
-          await expect(writePackageDistInventory(packageRoot)).resolves.toEqual([
-            "dist/extensions/demo/runtime-api.js",
-          ]);
-        },
-      );
-    },
-  );
+        await expect(writePackageDistInventory(packageRoot)).resolves.toEqual([
+          "dist/extensions/demo/runtime-api.js",
+        ]);
+      },
+    );
+  });
 
   it.each(["index.js", ""])("omits externalized plugin entry %j", async (entry) => {
     await withTestDir({ prefix: "openclaw-dist-inventory-externalized-" }, async (packageRoot) => {
