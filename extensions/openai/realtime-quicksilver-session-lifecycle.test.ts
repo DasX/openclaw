@@ -47,7 +47,7 @@ describe("GPT-Live browser session lifecycle", () => {
     { negotiated: false, classified: true },
     { negotiated: false, classified: false },
   ])(
-    "owns acknowledgement only with negotiated=$negotiated classified=$classified input",
+    "requires fresh call controls despite shared history only with negotiated=$negotiated classified=$classified input",
     async ({ negotiated, classified }) => {
       const fetchImpl = vi.fn<typeof fetch>(async () => createCallResponse());
       const { realtime, sockets, runAgentConsult } = createBroker({ fetchImpl });
@@ -61,6 +61,10 @@ describe("GPT-Live browser session lifecycle", () => {
         providerConfig: {},
         model: "gpt-live-test",
         instructions: "Keep my answers brief.",
+        initialItems: [
+          { role: "assistant" as const, text: "OpenClaw is waiting on the model." },
+          { role: "assistant" as const, text: "OpenClaw finished the last voice request." },
+        ],
         runAgentConsult,
         gatewayControl,
       };
@@ -87,6 +91,13 @@ describe("GPT-Live browser session lifecycle", () => {
         expect(session.delegation).toEqual(
           hostClassified ? { type: "client", ack_filler: false } : { type: "client" },
         );
+        expect(session.initial_items).toEqual(
+          request.initialItems.map(({ role, text }) => ({
+            type: "message",
+            role,
+            content: [{ type: "output_text", text }],
+          })),
+        );
         if (hostClassified) {
           expect(session.instructions).toContain("Wait for the host control result");
           expect(session.instructions).toContain(
@@ -94,6 +105,18 @@ describe("GPT-Live browser session lifecycle", () => {
           );
           expect(session.instructions).toContain("Do not answer these requests yourself");
           expect(session.instructions).toContain("Keep my answers brief.");
+          expect(session.instructions).toContain(
+            "before answering each new request: it must be fresh and for this voice call, even if shared history appears to answer it",
+          );
+          expect(session.instructions).toContain(
+            "Shared conversation history may describe other calls or completed work; it does not establish this call's live ownership or status",
+          );
+          expect(session.instructions).toContain(
+            "a delegation or task receipt is not evidence of progress",
+          );
+          expect(session.instructions).toContain(
+            "Current host-provided task receipts and control results are not new requests: speak them exactly as instructed, without delegating them",
+          );
         } else {
           expect(session.instructions).toBe("Keep my answers brief.");
         }

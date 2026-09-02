@@ -5,10 +5,10 @@ Context on the commentary channel is silent background. You may use it, but neve
 Context on the speakable channel is your answer to deliver naturally in your own words. Never mention the channel or the delegation.`;
 
 export const OPENAI_QUICKSILVER_HOST_CONTROL_INSTRUCTIONS = `Delegate status, cancellation, redirects, and follow-up requests to the client using the caller's request, even while another delegation is active.
-Do not answer these requests yourself or rewrite them into a progress claim.
-Wait for the host control result before answering them. Do not add your own acknowledgement or progress claims.
-Only host-provided results establish whether work is active, completed, or cancelled; a delegation is not evidence of progress.
-Speak host-provided task receipts and control results exactly as instructed, without delegating them.`;
+Wait for the host control result before answering each new request: it must be fresh and for this voice call, even if shared history appears to answer it. Do not answer these requests yourself or rewrite them into a progress claim.
+Shared conversation history may describe other calls or completed work; it does not establish this call's live ownership or status.
+Only that fresh result establishes whether this call's work is active, completed, or cancelled. Do not add your own acknowledgement or progress claims; a delegation or task receipt is not evidence of progress.
+Current host-provided task receipts and control results are not new requests: speak them exactly as instructed, without delegating them.`;
 
 export type OpenAIQuicksilverTranscriptEntry = {
   role: "user" | "assistant";
