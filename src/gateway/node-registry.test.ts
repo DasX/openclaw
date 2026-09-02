@@ -978,9 +978,25 @@ describe("gateway/node-registry", () => {
     },
   );
 
-  it.each([NODE_WORKER_WORKSPACE_EXEC_COMMAND, NODE_WORKER_WORKSPACE_PREPARE_COMMAND] as const)(
-    "fences %s capability loss during pairing lookup while preserving exact environment stop",
-    async (command) => {
+  it.each([
+    {
+      command: NODE_WORKER_WORKSPACE_EXEC_COMMAND,
+      capability: "workspaceManifest",
+      label: "workspace manifest",
+    },
+    {
+      command: NODE_WORKER_WORKSPACE_PREPARE_COMMAND,
+      capability: "workspaceManifest",
+      label: "workspace preparation",
+    },
+    {
+      command: NODE_WORKER_WORKSPACE_EXEC_COMMAND,
+      capability: "workspaceSkillResources",
+      label: "resource capability",
+    },
+  ] as const)(
+    "fences $label loss during pairing lookup while preserving exact environment stop",
+    async ({ command, capability }) => {
       const pairing = { identity: "identity-a", generation: "generation-a" };
       const entered = createDeferred();
       const release = createDeferred<typeof pairing>();
@@ -1003,7 +1019,7 @@ describe("gateway/node-registry", () => {
         }),
         { pairingIdentity: pairing.identity, pairingGeneration: pairing.generation },
       );
-      const update = (workspaceManifest?: 1) =>
+      const update = (supported: boolean) =>
         updateNodeRunnerInventory({
           registry: nodeRegistry,
           nodeId: "node-1",
@@ -1012,30 +1028,71 @@ describe("gateway/node-registry", () => {
             protocolFeatures: [NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE],
             workerHost: {
               enabled: true,
-              capacity: { total: 2, available: 2 },
+              // A concurrent slot change publishes the loss even before the capability
+              // equality repair, independently exercising the final dispatch fence.
+              capacity: {
+                total: 2,
+                available: capability === "workspaceSkillResources" && !supported ? 1 : 2,
+              },
               environmentSession: 1,
-              ...(workspaceManifest ? { workspaceManifest } : {}),
+              ...(capability !== "workspaceManifest" || supported ? { workspaceManifest: 1 } : {}),
+              ...(capability === "workspaceSkillResources" && supported
+                ? { workspaceSkillResources: 1 }
+                : {}),
             },
           },
         });
-      update(1);
+      update(true);
       const [proof] = await nodeWorkerSupervisorTransport.listCurrentNodes();
       if (!proof) {
         throw new Error("expected node proof");
       }
       held = true;
-      const invocation = nodeWorkerSupervisorTransport.invoke({
-        node: proof,
-        command,
-        ...(command === NODE_WORKER_WORKSPACE_EXEC_COMMAND
-          ? { requireWorkspaceManifest: true }
-          : {}),
-        isDispatchAuthorized: () => true,
-      });
+      let invocationSettled = false;
+      const invocation = nodeWorkerSupervisorTransport
+        .invoke({
+          node: proof,
+          command,
+          ...(capability === "workspaceSkillResources"
+            ? {
+                params: {
+                  gatewayNamespace: "gateway-1",
+                  environmentId: "environment-1",
+                  sessionId: "session-1",
+                  generation: 1,
+                  argv: ["openclaw-internal-skill-resources"],
+                  skillResources: { operation: "init" },
+                },
+              }
+            : {}),
+          ...(command === NODE_WORKER_WORKSPACE_EXEC_COMMAND
+            ? { requireWorkspaceManifest: true }
+            : {}),
+          isDispatchAuthorized: () => true,
+        })
+        .finally(() => {
+          invocationSettled = true;
+        });
       await entered.promise;
-      update();
-      held = false;
-      release.resolve(pairing);
+      try {
+        update(false);
+      } finally {
+        held = false;
+        release.resolve(pairing);
+      }
+      // Settle an incorrectly dispatched request too, so the regression fails on
+      // the authority result without leaking a pending invoke or waiting for timeout.
+      await vi.waitFor(() => expect(invocationSettled || frames.length > 0).toBe(true));
+      if (!invocationSettled && frames.length > 0) {
+        const frame = JSON.parse(frames[0]!);
+        nodeRegistry.handleInvokeResult({
+          id: frame.payload.id,
+          nodeId: "node-1",
+          connId: "conn-1",
+          ok: true,
+          payloadJSON: "null",
+        });
+      }
       await expect(invocation).resolves.toMatchObject({
         ok: false,
         error: { code: "APPROVAL_AUTHORITY_CLOSED" },
@@ -1058,6 +1115,37 @@ describe("gateway/node-registry", () => {
       await expect(stopping).resolves.toMatchObject({ ok: true });
     },
   );
+
+  it("publishes resource capability gain and loss on the same connection", async () => {
+    const { nodeRegistry, nodeWorkerSupervisorTransport } = createPrivateNodeRegistryRuntime();
+    registerNodeSession(
+      nodeRegistry,
+      makeClient("conn-1", "node-1", [], { clientId: GATEWAY_CLIENT_IDS.NODE_HOST }),
+      { pairingIdentity: "identity-a", pairingGeneration: "generation-a" },
+    );
+    for (const supported of [false, true, false]) {
+      expect(
+        updateNodeRunnerInventory({
+          registry: nodeRegistry,
+          nodeId: "node-1",
+          connId: "conn-1",
+          declaration: {
+            protocolFeatures: [NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE],
+            workerHost: {
+              enabled: true,
+              capacity: { total: 2, available: 2 },
+              environmentSession: 1,
+              workspaceManifest: 1,
+              ...(supported ? { workspaceSkillResources: 1 } : {}),
+            },
+          },
+        }),
+      ).toEqual({ changed: true });
+      const [proof] = await nodeWorkerSupervisorTransport.listCurrentNodes();
+      expect(proof?.workerHost.workspaceSkillResources).toBe(supported ? 1 : undefined);
+      expect(proof?.workerHost.workspaceManifest).toBe(1);
+    }
+  });
 
   it("reports a node manifest upgrade without removing its cleanup transport", async () => {
     const { nodeRegistry, nodeWorkerSupervisorTransport } = createPrivateNodeRegistryRuntime();

@@ -91,6 +91,7 @@ it.each([
       runtime.exec(
         {
           ...command,
+          skillResources: command.skillResources?.operation,
           argv: [...command.argv],
           gatewayNamespace: "gateway-input-test",
           environmentId,
@@ -396,6 +397,7 @@ it("restores node reconciliation after Gateway bootstrap changes without replaci
     runtime.exec(
       {
         ...command,
+        skillResources: command.skillResources?.operation,
         argv: [...command.argv],
         gatewayNamespace: "gateway-restart-test",
         environmentId,

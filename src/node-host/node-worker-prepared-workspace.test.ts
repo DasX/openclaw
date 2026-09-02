@@ -322,6 +322,19 @@ describe("prepared node workspace ownership", () => {
     const f = await fixture();
     await f.runtime.prepare(f.registration);
     await f.runtime.prepare(binding);
+    const resourceCommand = {
+      ...f.command,
+      argv: ["openclaw-internal-skill-resources"],
+      skillResources: { operation: "init" as const },
+    };
+    await expect(
+      f.runtime.exec({ ...resourceCommand, sessionKey: "agent:main:other" }),
+    ).rejects.toThrow("does not own");
+    const initialized = await f.runtime.exec(resourceCommand);
+    expect(initialized.code).toBe(0);
+    const resourceRoot = (JSON.parse(initialized.stdout) as { root: string }).root;
+    expect(path.dirname(resourceRoot)).toBe(f.ownerRoot);
+    expect(await fsp.readdir(f.workspaceDir)).not.toContain(path.basename(resourceRoot));
     const retain = {
       version: 1 as const,
       gatewayNamespace: binding.gatewayNamespace,
@@ -333,6 +346,7 @@ describe("prepared node workspace ownership", () => {
     await expect(f.runtime.applyRetainSnapshot(retain, () => [])).resolves.toMatchObject({
       deleted: 0,
     });
+    expect((await fsp.stat(resourceRoot)).isDirectory()).toBe(true);
     acquired.release();
     await expect(
       f.runtime.applyRetainSnapshot({ ...retain, sequence: 2 }, () => []),
@@ -349,6 +363,7 @@ describe("prepared node workspace ownership", () => {
     const restarted = new NodeWorkerWorkspaceRuntime(f.options);
     expect(() => restarted.acquireManagedWorkspace(f.request)).toThrow("does not own");
     await expect(restarted.exec(f.command)).rejects.toThrow("does not own");
+    await expect(restarted.exec(resourceCommand)).rejects.toThrow("does not own");
   });
 
   it("leaves an interrupted in-place mutation unusable after restart", async () => {

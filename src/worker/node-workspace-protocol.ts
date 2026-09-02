@@ -4,6 +4,12 @@ import type { SpawnResult } from "../process/exec.js";
 import { NODE_WORKER_WORKSPACE_COMMAND_TIMEOUT_MS } from "./node-workspace-deadlines.js";
 import type { NodeWorkerWorkspaceTransferInput } from "./node-workspace-transfer-protocol.js";
 import { hasExactOwnKeys } from "./protocol-record.js";
+import {
+  parseWorkerSkillResourceOperation,
+  validateWorkerSkillResourceInput,
+  WORKER_SKILL_RESOURCE_COMMAND,
+  type WorkerSkillResourceOperation,
+} from "./skill-resource-protocol.js";
 
 const IDENTIFIER_MAX_CHARS = 256;
 const GATEWAY_NAMESPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
@@ -34,6 +40,7 @@ export type NodeWorkerWorkspaceExecInput = {
   transfer?: NodeWorkerWorkspaceTransferInput;
   seed?: NodeWorkerWorkspaceSeedInput;
   capture?: { baseManifestRef: string; referenceManifestRef: string };
+  skillResources?: WorkerSkillResourceOperation;
 };
 
 export type NodeWorkerWorkspaceExecResult = SpawnResult & { workspaceDir: string };
@@ -78,6 +85,7 @@ export function parseNodeWorkerWorkspaceExecInput(
         "transfer",
         "seed",
         "capture",
+        "skillResources",
         "sessionKey",
         "preparationKey",
       ],
@@ -144,6 +152,21 @@ export function parseNodeWorkerWorkspaceExecInput(
   }
   if (value.resetWorkspace !== undefined && typeof value.resetWorkspace !== "boolean") {
     throw new Error("INVALID_REQUEST: resetWorkspace must be a boolean");
+  }
+  let skillResources: WorkerSkillResourceOperation | undefined;
+  if (value.skillResources !== undefined) {
+    if (
+      value.capture !== undefined ||
+      value.transfer !== undefined ||
+      value.seed !== undefined ||
+      value.resetWorkspace !== undefined ||
+      value.argv.length !== 1 ||
+      value.argv[0] !== WORKER_SKILL_RESOURCE_COMMAND
+    ) {
+      throw new Error("INVALID_REQUEST: skill resources require an exclusive workspace operation");
+    }
+    skillResources = parseWorkerSkillResourceOperation(value.skillResources);
+    validateWorkerSkillResourceInput(skillResources, value.input);
   }
   const validRef = (candidate: unknown): candidate is string =>
     typeof candidate === "string" && /^sha256:[a-f0-9]{64}$/u.test(candidate);
@@ -257,6 +280,7 @@ export function parseNodeWorkerWorkspaceExecInput(
     ...(transfer ? { transfer } : {}),
     ...(seed ? { seed } : {}),
     ...(capture ? { capture } : {}),
+    ...(skillResources ? { skillResources } : {}),
   };
 }
 

@@ -13,6 +13,7 @@ import {
   type NodeWorkerWorkspaceExecInput,
   type NodeWorkerWorkspaceExecResult,
 } from "../worker/node-workspace-protocol.js";
+import { buildSkillResourceCommand } from "../worker/skill-resource-receiver.js";
 import type {
   NodeWorkerPreparedWorkspaceStore,
   NodeWorkerPreparedWorkspaceRow,
@@ -126,7 +127,13 @@ export async function execNodeWorkerWorkspace(params: {
   if (params.prepared && (input.resetWorkspace !== undefined || input.seed)) {
     throw new Error("INVALID_REQUEST: a consumed prepared workspace cannot be reset or reseeded");
   }
-  if (input.transfer || input.resetWorkspace || input.seed || input.capture) {
+  if (
+    input.transfer ||
+    input.resetWorkspace ||
+    input.seed ||
+    input.capture ||
+    input.skillResources
+  ) {
     try {
       const stats = fs.lstatSync(workspacePath);
       const resolved = fs.realpathSync.native(workspacePath);
@@ -233,13 +240,24 @@ export async function execNodeWorkerWorkspace(params: {
   const workspaceDir = params.prepared
     ? workspacePath
     : ensureNodeWorkerWorkspaceDirectory(sessionRoot, workspaceName);
-  assertWorkspaceArgv(workspaceDir, input.argv);
+  // Resource artifacts belong to this generation outside the project tree. Only the
+  // typed operation may derive that sibling path; ordinary argv stays workspace-bound.
+  const argv = input.skillResources
+    ? buildSkillResourceCommand({
+        parentDir: sessionRoot,
+        generation: input.generation,
+        operation: input.skillResources,
+      })
+    : input.argv;
+  if (!input.skillResources) {
+    assertWorkspaceArgv(workspaceDir, argv);
+  }
   const commandEnv = {
     ...params.env,
     HOME: homeDir,
     ...(process.platform === "win32" ? { USERPROFILE: homeDir } : {}),
   };
-  const result = await runCommandWithTimeout(input.argv, {
+  const result = await runCommandWithTimeout(argv, {
     cwd: workspaceDir,
     baseEnv: commandEnv,
     ...(input.input === undefined ? {} : { input: input.input }),

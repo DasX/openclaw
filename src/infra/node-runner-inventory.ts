@@ -15,6 +15,7 @@ export const NODE_WORKER_BUNDLE_STATUS_VERSION = 1;
 export const NODE_WORKER_PORTAL_STREAM_VERSION = 1;
 export const NODE_WORKER_ENVIRONMENT_SESSION_VERSION = 1;
 export const NODE_WORKER_WORKSPACE_MANIFEST_VERSION = 1;
+export const NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION = 1;
 export const NODE_WORKER_CAPACITY_MAX = 1_024;
 
 export const NODE_RUNNER_UPDATE_REQUIRED_ISSUE = {
@@ -41,6 +42,7 @@ export type NodeWorkerHostDeclaration =
       portalStream?: typeof NODE_WORKER_PORTAL_STREAM_VERSION;
       environmentSession?: typeof NODE_WORKER_ENVIRONMENT_SESSION_VERSION;
       workspaceManifest?: typeof NODE_WORKER_WORKSPACE_MANIFEST_VERSION;
+      workspaceSkillResources?: typeof NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION;
     };
 
 export type NodeRunnerInventoryDeclaration =
@@ -89,7 +91,7 @@ function parseWorkerHostDeclaration(value: unknown): NodeWorkerHostDeclaration |
   if (
     !capacity ||
     keys.length < 2 ||
-    keys.length > 8 ||
+    keys.length > 9 ||
     !keys.includes("enabled") ||
     !keys.includes("capacity") ||
     keys.some(
@@ -101,7 +103,8 @@ function parseWorkerHostDeclaration(value: unknown): NodeWorkerHostDeclaration |
         key !== "bundleStatus" &&
         key !== "portalStream" &&
         key !== "environmentSession" &&
-        key !== "workspaceManifest",
+        key !== "workspaceManifest" &&
+        key !== "workspaceSkillResources",
     ) ||
     (value.bundlePrewarm !== undefined && value.bundlePrewarm !== WORKER_BUNDLE_PREWARM_VERSION) ||
     (value.bundleRetention !== undefined &&
@@ -114,6 +117,8 @@ function parseWorkerHostDeclaration(value: unknown): NodeWorkerHostDeclaration |
       value.environmentSession !== NODE_WORKER_ENVIRONMENT_SESSION_VERSION) ||
     (value.workspaceManifest !== undefined &&
       value.workspaceManifest !== NODE_WORKER_WORKSPACE_MANIFEST_VERSION) ||
+    (value.workspaceSkillResources !== undefined &&
+      value.workspaceSkillResources !== NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION) ||
     (value.bundleStatus !== undefined && value.bundleRetention === undefined)
   ) {
     return null;
@@ -135,6 +140,9 @@ function parseWorkerHostDeclaration(value: unknown): NodeWorkerHostDeclaration |
       : {}),
     ...(value.workspaceManifest === NODE_WORKER_WORKSPACE_MANIFEST_VERSION
       ? { workspaceManifest: NODE_WORKER_WORKSPACE_MANIFEST_VERSION }
+      : {}),
+    ...(value.workspaceSkillResources === NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION
+      ? { workspaceSkillResources: NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION }
       : {}),
     ...(value.environmentSession === NODE_WORKER_ENVIRONMENT_SESSION_VERSION
       ? { environmentSession: NODE_WORKER_ENVIRONMENT_SESSION_VERSION }

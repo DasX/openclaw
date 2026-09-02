@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   isPrivateNodeInvokeCommand,
   NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
   NODE_WORKER_PRIVATE_COMMANDS,
   NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
+  NODE_WORKER_WORKSPACE_EXEC_COMMAND,
   NODE_WORKER_WORKSPACE_PREPARE_COMMAND,
 } from "../infra/node-commands.js";
 import {
   NODE_WORKER_BUNDLE_RETENTION_VERSION,
   NODE_WORKER_BUNDLE_STATUS_VERSION,
-  NODE_WORKER_ENVIRONMENT_SESSION_VERSION,
-  NODE_WORKER_WORKSPACE_MANIFEST_VERSION,
   type NodeRunnerInventoryIssue,
   type NodeRunnerInventoryDeclaration,
   type NodeWorkerCapacitySnapshot,
@@ -29,10 +30,10 @@ import {
 import {
   createNodeRunnerStatePublisher,
   isNodeWorkerHostClientId,
+  isNodeWorkerSupervisorProofCurrent,
   resolveNodeRunnerInventoryIssue,
   resolveNodeWorkerSupervisorProof,
   sameBundleStatusObservation,
-  sameNodeWorkerHostDeclaration,
   type NodeRunnerInventoryRecord,
   type NodeRunnerRegistrySession,
   type NodeRunnerStateChange,
@@ -161,34 +162,6 @@ type NodeRegistryPrivateState = {
 
 const NODE_REGISTRY_PRIVATE_STATES = new WeakMap<object, NodeRegistryPrivateState>();
 
-function isWorkerSupervisorProofCurrent(
-  state: NodeRegistryPrivateState,
-  proof: NodeWorkerSupervisorNodeProof,
-  requireLaunchEligibility: boolean,
-  requiredCommands: readonly string[] = [],
-  requireEnvironmentSession = false,
-  requireWorkspaceManifest = false,
-): boolean {
-  const node = state.context.getNode(proof.nodeId);
-  if (!node || node.client.invalidated === true || node.connId !== proof.connId) {
-    return false;
-  }
-  const current = resolveNodeWorkerSupervisorProof(node, state.runnerInventoryByConn);
-  return (
-    current?.pairingIdentity === proof.pairingIdentity &&
-    current.pairingGeneration === proof.pairingGeneration &&
-    current.clientId === proof.clientId &&
-    current.clientMode === proof.clientMode &&
-    current.protocolFeature === proof.protocolFeature &&
-    (!requireLaunchEligibility || current.workerHost.capacity.available > 0) &&
-    (!requireEnvironmentSession ||
-      current.workerHost.environmentSession === NODE_WORKER_ENVIRONMENT_SESSION_VERSION) &&
-    (!requireWorkspaceManifest ||
-      current.workerHost.workspaceManifest === NODE_WORKER_WORKSPACE_MANIFEST_VERSION) &&
-    requiredCommands.every((command) => current.commands.includes(command))
-  );
-}
-
 function updateWorkerRunnerInventory(
   state: NodeRegistryPrivateState,
   params: {
@@ -246,7 +219,7 @@ function updateWorkerRunnerInventory(
     !previous ||
     previous.pairingGeneration !== next.pairingGeneration ||
     !sameWorkerProtocolFeatures(previous.protocolFeatures, next.protocolFeatures) ||
-    !sameNodeWorkerHostDeclaration(previous.workerHost, next.workerHost) ||
+    !isDeepStrictEqual(previous.workerHost, next.workerHost) ||
     statusCleared;
   if (changed) {
     state.runnerInventoryByConn.set(node.connId, next);
@@ -486,10 +459,10 @@ export function registerNodeRegistryPrivateRuntime(
       return observation ? structuredClone(observation) : undefined;
     },
     acceptBundleStatus: (node, observation) => {
-      if (!isWorkerSupervisorProofCurrent(state, node, false)) {
+      const currentNode = state.context.getNode(node.nodeId);
+      if (!isNodeWorkerSupervisorProofCurrent(currentNode, state.runnerInventoryByConn, node)) {
         return false;
       }
-      const currentNode = state.context.getNode(node.nodeId);
       const currentProof = currentNode
         ? resolveNodeWorkerSupervisorProof(currentNode, state.runnerInventoryByConn)
         : undefined;
@@ -511,7 +484,12 @@ export function registerNodeRegistryPrivateRuntime(
       return true;
     },
     isCurrent: (node, requireLaunchEligibility = false, requiredCommands = []) =>
-      isWorkerSupervisorProofCurrent(state, node, requireLaunchEligibility, requiredCommands),
+      isNodeWorkerSupervisorProofCurrent(
+        state.context.getNode(node.nodeId),
+        state.runnerInventoryByConn,
+        node,
+        { launchEligibility: requireLaunchEligibility, commands: requiredCommands },
+      ),
     invoke: async (params) => {
       if (!NODE_WORKER_PRIVATE_COMMANDS.includes(params.command)) {
         return {
@@ -519,20 +497,30 @@ export function registerNodeRegistryPrivateRuntime(
           error: { code: "INVALID_REQUEST", message: "private node command is not allowed" },
         };
       }
+      // Bind capability demand before pairing awaits; the final fence must read
+      // current inventory rather than the caller's captured node proof.
+      const requireWorkspaceSkillResources =
+        params.command === NODE_WORKER_WORKSPACE_EXEC_COMMAND &&
+        isRecord(params.params) &&
+        Object.hasOwn(params.params, "skillResources");
       const isProofCurrent = () =>
         params.isDispatchAuthorized() &&
-        isWorkerSupervisorProofCurrent(
-          state,
+        isNodeWorkerSupervisorProofCurrent(
+          state.context.getNode(params.node.nodeId),
+          state.runnerInventoryByConn,
           params.node,
-          false,
-          [],
-          params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
-            params.command === NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
-          // Preparation always mutates manifest-bound state; callers cannot opt out,
-          // including when inventory changes during the pairing lookup.
-          params.command === NODE_WORKER_WORKSPACE_PREPARE_COMMAND ||
-            params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
-            params.requireWorkspaceManifest === true,
+          {
+            environmentSession:
+              params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
+              params.command === NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
+            // Preparation always mutates manifest-bound state; callers cannot opt out,
+            // including when inventory changes during the pairing lookup.
+            workspaceManifest:
+              params.command === NODE_WORKER_WORKSPACE_PREPARE_COMMAND ||
+              params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
+              params.requireWorkspaceManifest === true,
+            workspaceSkillResources: requireWorkspaceSkillResources,
+          },
         );
       if (!isProofCurrent()) {
         return {

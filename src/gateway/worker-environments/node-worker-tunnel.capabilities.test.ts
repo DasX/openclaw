@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { NODE_WORKER_ENVIRONMENT_STOP_COMMAND } from "../../infra/node-commands.js";
 import { parseNodeWorkerWorkspaceExecInput } from "../../worker/node-workspace-protocol.js";
+import { WORKER_SKILL_RESOURCE_COMMAND } from "../../worker/skill-resource-protocol.js";
 import type { NodeWorkerSupervisorTransport } from "../node-registry-private.js";
 import { createNodeWorkerTunnelManager } from "./node-worker-tunnel.js";
 import {
@@ -60,6 +61,37 @@ describe("node worker workspace capability", () => {
     });
     const handle = await manager.start(startRequest());
     await handle.syncWorkspace({ localPath, sessionId: "session-1", generation: 1 });
+    const resources = {
+      argv: [WORKER_SKILL_RESOURCE_COMMAND],
+      transportRetry: "never" as const,
+      assertCurrent: () => {},
+      skillResources: {
+        workspaceDir: "/node/workspace",
+        generation: 2,
+        operation: { operation: "init" as const },
+      },
+    };
+    const beforeResources = invoke.mock.calls.length;
+    await expect(handle.runWorkspaceCommand(resources)).rejects.toThrow("openclaw update");
+    expect(invoke).toHaveBeenCalledTimes(beforeResources);
+    node.workerHost.workspaceSkillResources = 1;
+    await handle.runWorkspaceCommand(resources);
+    expect(invoke.mock.calls.at(-1)?.[0].params).toMatchObject({
+      argv: [WORKER_SKILL_RESOURCE_COMMAND],
+      skillResources: { operation: "init" },
+    });
+    for (const changed of [{ workspaceDir: "/other/workspace" }, { generation: 3 }]) {
+      await expect(
+        handle.runWorkspaceCommand({
+          ...resources,
+          skillResources: { ...resources.skillResources, ...changed },
+        }),
+      ).rejects.toThrow("workspace owner");
+    }
+    await expect(
+      handle.runWorkspaceCommand({ ...resources, transportRetry: "idempotent" }),
+    ).rejects.toThrow("workspace owner");
+    expect(invoke).toHaveBeenCalledTimes(beforeResources + 1);
     const quiescence = await handle.quiesceWorkspace("/node/workspace");
     node = {
       ...node,

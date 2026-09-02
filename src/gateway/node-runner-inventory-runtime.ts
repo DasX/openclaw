@@ -1,8 +1,10 @@
 import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
 import {
   NODE_RUNNER_UPDATE_REQUIRED_ISSUE,
+  NODE_WORKER_ENVIRONMENT_SESSION_VERSION,
   NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
   NODE_WORKER_WORKSPACE_MANIFEST_VERSION,
+  NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION,
   type NodeRunnerInventoryIssue,
   type NodeWorkerHostDeclaration,
 } from "../infra/node-runner-inventory.js";
@@ -110,25 +112,6 @@ export function createNodeRunnerStatePublisher(
 
 export type NodeRunnerStatePublisher = ReturnType<typeof createNodeRunnerStatePublisher>;
 
-export function sameNodeWorkerHostDeclaration(
-  left: NodeWorkerHostDeclaration | undefined,
-  right: NodeWorkerHostDeclaration | undefined,
-): boolean {
-  return (
-    left?.enabled === right?.enabled &&
-    (left?.enabled !== true ||
-      (right?.enabled === true &&
-        left.capacity.total === right.capacity.total &&
-        left.capacity.available === right.capacity.available &&
-        left.bundlePrewarm === right.bundlePrewarm &&
-        left.bundleRetention === right.bundleRetention &&
-        left.bundleStatus === right.bundleStatus &&
-        left.portalStream === right.portalStream &&
-        left.environmentSession === right.environmentSession &&
-        left.workspaceManifest === right.workspaceManifest))
-  );
-}
-
 export function resolveNodeWorkerSupervisorProof(
   node: NodeRunnerRegistrySession,
   runnerInventoryByConn: ReadonlyMap<string, NodeRunnerInventoryRecord>,
@@ -164,6 +147,41 @@ export function resolveNodeWorkerSupervisorProof(
     },
     commands: [...node.commands],
   };
+}
+
+/** Match a captured proof against the registry's current connection and inventory. */
+export function isNodeWorkerSupervisorProofCurrent(
+  node: NodeRunnerRegistrySession | undefined,
+  runnerInventoryByConn: ReadonlyMap<string, NodeRunnerInventoryRecord>,
+  proof: NodeWorkerSupervisorNodeProof,
+  requirements: {
+    launchEligibility?: boolean;
+    commands?: readonly string[];
+    environmentSession?: boolean;
+    workspaceManifest?: boolean;
+    workspaceSkillResources?: boolean;
+  } = {},
+): boolean {
+  if (!node || node.client.invalidated === true || node.connId !== proof.connId) {
+    return false;
+  }
+  const current = resolveNodeWorkerSupervisorProof(node, runnerInventoryByConn);
+  return (
+    current?.pairingIdentity === proof.pairingIdentity &&
+    current.pairingGeneration === proof.pairingGeneration &&
+    current.clientId === proof.clientId &&
+    current.clientMode === proof.clientMode &&
+    current.protocolFeature === proof.protocolFeature &&
+    (!requirements.launchEligibility || current.workerHost.capacity.available > 0) &&
+    (!requirements.environmentSession ||
+      current.workerHost.environmentSession === NODE_WORKER_ENVIRONMENT_SESSION_VERSION) &&
+    (!requirements.workspaceManifest ||
+      current.workerHost.workspaceManifest === NODE_WORKER_WORKSPACE_MANIFEST_VERSION) &&
+    (!requirements.workspaceSkillResources ||
+      current.workerHost.workspaceSkillResources ===
+        NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION) &&
+    (requirements.commands?.every((command) => current.commands.includes(command)) ?? true)
+  );
 }
 
 export function resolveNodeRunnerInventoryIssue(

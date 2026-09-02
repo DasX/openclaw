@@ -9,6 +9,7 @@ import {
   NODE_WORKER_BUNDLE_STATUS_VERSION,
   NODE_WORKER_ENVIRONMENT_SESSION_VERSION,
   NODE_WORKER_WORKSPACE_MANIFEST_VERSION,
+  NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION,
   NODE_WORKER_PORTAL_STREAM_VERSION,
   NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
   type NodeWorkerCapacitySnapshot,
@@ -339,6 +340,11 @@ export function startNodeHostConnection({
                   : {}),
                 ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_WORKSPACE_MANIFEST)
                   ? { workspaceManifest: NODE_WORKER_WORKSPACE_MANIFEST_VERSION }
+                  : {}),
+                ...(gatewayCapabilities.has(
+                  GATEWAY_SERVER_CAPS.NODE_WORKER_WORKSPACE_SKILL_RESOURCES,
+                )
+                  ? { workspaceSkillResources: NODE_WORKER_WORKSPACE_SKILL_RESOURCES_VERSION }
                   : {}),
                 ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_ENVIRONMENT_SESSION)
                   ? { environmentSession: NODE_WORKER_ENVIRONMENT_SESSION_VERSION }

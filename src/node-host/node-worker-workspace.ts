@@ -17,6 +17,7 @@ import type {
   NodeWorkerWorkspaceRetainInput,
   NodeWorkerWorkspaceRetainResult,
 } from "../worker/node-workspace-retain-protocol.js";
+import { parseWorkerSkillResourceGeneration } from "../worker/skill-resource-protocol.js";
 import { snapshotNodeWorkerEnv } from "./node-worker-environment.js";
 import { NodeWorkerPreparedWorkspaceStore } from "./node-worker-prepared-workspace-store.js";
 import { prepareNodeWorkerWorkspace } from "./node-worker-prepared-workspace.js";
@@ -420,7 +421,10 @@ export class NodeWorkerWorkspaceRuntime {
           if (!entry.isDirectory() || entry.isSymbolicLink()) {
             continue;
           }
-          const generation = parseGenerationName(entry.name);
+          // Skill bundles live until their generation retires, including between commands;
+          // transfer scratch directories below have a shorter replacement lifecycle.
+          const generation =
+            parseGenerationName(entry.name) ?? parseWorkerSkillResourceGeneration(entry.name);
           const artifactGeneration = parseTransferArtifactGeneration(entry.name);
           if (generation !== undefined) {
             const key = workspaceGenerationKey({ ...session, generation });
@@ -540,6 +544,7 @@ export class NodeWorkerWorkspaceRuntime {
             entry.isDirectory() &&
             !entry.isSymbolicLink() &&
             (parseGenerationName(entry.name) !== undefined ||
+              parseWorkerSkillResourceGeneration(entry.name) !== undefined ||
               parseTransferArtifactGeneration(entry.name) !== undefined),
         );
         const hasAuthoritativeRetain = [...currentSnapshot.retainedGenerations].some((key) =>

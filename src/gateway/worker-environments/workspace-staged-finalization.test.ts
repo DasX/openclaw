@@ -58,6 +58,7 @@ async function fixture(transport: Transport) {
       const result = await runtime.exec(
         {
           ...command,
+          skillResources: command.skillResources?.operation,
           argv: [...command.argv],
           gatewayNamespace: "staged-fence",
           environmentId: identity.environmentId,
