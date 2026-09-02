@@ -79,7 +79,7 @@ export async function executeMutableUpdate(params: {
   invocationCwd?: string;
   recoveryState: UpdateCommandRecoveryState;
   config: OpenClawConfig;
-  prepareMutableUpdate: () => Promise<void>;
+  prepareMutableUpdate: (env?: NodeJS.ProcessEnv) => Promise<void>;
 }): Promise<MutableUpdateExecutionResult | null> {
   let preManagedServiceStop: PreManagedServiceStop | undefined;
   let inspectedOwnedManagedUpdatePreflightStop: PreManagedServiceStop | undefined;
@@ -94,6 +94,8 @@ export async function executeMutableUpdate(params: {
       params.config,
     env: ownedManagedUpdateContext?.env ?? ownedManagedUpdatePreflightContext?.env ?? process.env,
   });
+  const getOwnedManagedUpdateEnv = () =>
+    ownedManagedUpdateContext?.env ?? ownedManagedUpdatePreflightContext?.env;
   let recoveryEnv: NodeJS.ProcessEnv | undefined;
   const originalRecovery = () =>
     params.installKind === "git"
@@ -280,7 +282,7 @@ export async function executeMutableUpdate(params: {
       );
     }
     if (params.updateInstallKind === "package") {
-      await params.prepareMutableUpdate();
+      await params.prepareMutableUpdate(getOwnedManagedUpdateEnv());
       await stopManagedServiceBeforeMutableUpdate();
       const postStopPackageSchemaPreflight = checkTargetDatabaseSchemas(
         params.packageTargetSchemaVersions,
@@ -333,7 +335,8 @@ export async function executeMutableUpdate(params: {
                     stopManagedService: stopManagedServiceBeforeMutableUpdate,
                     getPreManagedServiceStop: () => preManagedServiceStop,
                     getDatabaseSchemaContext: getTargetDatabaseSchemaContext,
-                    prepareMutableUpdate: params.prepareMutableUpdate,
+                    prepareMutableUpdate: () =>
+                      params.prepareMutableUpdate(getOwnedManagedUpdateEnv()),
                     switchToGit: params.switchToGit,
                   })
                 : undefined,

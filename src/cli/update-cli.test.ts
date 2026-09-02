@@ -2444,6 +2444,17 @@ describe("update-cli", () => {
     loadInstalledPluginIndexInstallRecords.mockImplementation(async (options = {}) =>
       options.env?.OPENCLAW_PROFILE === "work" ? managedRecords : {},
     );
+    const preparationProfiles: Array<string | undefined> = [];
+    vi.mocked(cleanupStaleManagedServiceUpdateHandoffs).mockImplementationOnce(async () => {
+      preparationProfiles.push(process.env.OPENCLAW_PROFILE);
+      return 0;
+    });
+    launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob.mockImplementationOnce(
+      async () => {
+        preparationProfiles.push(process.env.OPENCLAW_PROFILE);
+        return false;
+      },
+    );
     let handedConfig: unknown;
     let handedRecords: unknown;
     spawn.mockImplementationOnce((_node, _argv, options) => {
@@ -2485,6 +2496,12 @@ describe("update-cli", () => {
     expect(spawnCall()?.[2]?.env?.[GATEWAY_SERVICE_RUNTIME_PID_ENV]).toBeUndefined();
     expect(handedConfig).toEqual({ sourceConfig: managedConfig, authoredConfig: managedConfig });
     expect(handedRecords).toEqual(managedRecords);
+    expect(preparationProfiles).toEqual(["work", "work"]);
+    const { assertOpenClawStateWriteAllowedAtPath } =
+      await import("../state/openclaw-state-ownership.js");
+    expect(assertOpenClawStateWriteAllowedAtPath).toHaveBeenCalledWith({
+      databasePath: path.join(managedState, "state", "openclaw.sqlite"),
+    });
   });
 
   it("keeps foreign-service updates in the caller profile", async () => {
@@ -2516,6 +2533,17 @@ describe("update-cli", () => {
       async (candidate: string) =>
         entrypoints.includes(candidate) || candidate.endsWith("package.json"),
     );
+    const preparationProfiles: Array<string | undefined> = [];
+    vi.mocked(cleanupStaleManagedServiceUpdateHandoffs).mockImplementationOnce(async () => {
+      preparationProfiles.push(process.env.OPENCLAW_PROFILE);
+      return 0;
+    });
+    launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob.mockImplementationOnce(
+      async () => {
+        preparationProfiles.push(process.env.OPENCLAW_PROFILE);
+        return false;
+      },
+    );
 
     await withEnvAsync(
       {
@@ -2534,6 +2562,12 @@ describe("update-cli", () => {
       OPENCLAW_PROFILE: "personal",
       OPENCLAW_STATE_DIR: personalState,
       OPENCLAW_GATEWAY_PORT: "19111",
+    });
+    expect(preparationProfiles).toEqual(["personal", "personal"]);
+    const { assertOpenClawStateWriteAllowedAtPath } =
+      await import("../state/openclaw-state-ownership.js");
+    expect(assertOpenClawStateWriteAllowedAtPath).toHaveBeenCalledWith({
+      databasePath: path.join(personalState, "state", "openclaw.sqlite"),
     });
   });
 

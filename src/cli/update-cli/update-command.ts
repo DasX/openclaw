@@ -77,6 +77,7 @@ import {
 import { suppressDeprecations } from "./suppress-deprecations.js";
 import { maybeRepairLegacyConfigForUpdateChannel } from "./update-command-config.js";
 import { printUpdateDryRun } from "./update-command-dry-run.js";
+import { withOwnedManagedUpdateEnv } from "./update-command-managed-context.js";
 import { reportPreMutationUpdateFailure, UpdateCommandFailure } from "./update-command-result.js";
 import { resolveServiceRefreshEnv, withUpdateInProgressEnv } from "./update-command-service-env.js";
 import {
@@ -648,17 +649,19 @@ async function updateCommandInternal(
   const { progress, stop } = createUpdateProgress(showProgress);
   const preUpdatePluginInstallRecords = await loadInstalledPluginIndexInstallRecords();
   let mutableUpdatePrepared = false;
-  const prepareMutableUpdate = async () => {
+  const prepareMutableUpdate = async (env?: NodeJS.ProcessEnv) => {
     if (mutableUpdatePrepared) {
       return;
     }
     // These operations can delete handoffs, touch shared state, or disable a service job.
     // Defer them until the exact package/Git target and every owned database have passed.
-    await cleanupStaleManagedServiceUpdateHandoffs().catch(() => undefined);
-    await assertOpenClawStateWriteAllowedAtPath({
-      databasePath: resolveOpenClawStateSqlitePath(process.env),
+    await withOwnedManagedUpdateEnv(env, async () => {
+      await cleanupStaleManagedServiceUpdateHandoffs().catch(() => undefined);
+      await assertOpenClawStateWriteAllowedAtPath({
+        databasePath: resolveOpenClawStateSqlitePath(process.env),
+      });
+      await disableCurrentOpenClawUpdateLaunchdJob().catch(() => undefined);
     });
-    await disableCurrentOpenClawUpdateLaunchdJob().catch(() => undefined);
     mutableUpdatePrepared = true;
   };
 
