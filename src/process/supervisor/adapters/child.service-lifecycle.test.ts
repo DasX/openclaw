@@ -75,8 +75,6 @@ describe.skipIf(process.platform === "win32")("POSIX child invocation identity",
         mode: "child",
         argv: [process.execPath, "-e", "process.stdout.write(process.argv0)"],
         argv0: executableAlias,
-        sessionId: `argv0-${mode}`,
-        backendId: "argv0-test",
         stdinMode: "pipe-closed" as const,
       });
 
