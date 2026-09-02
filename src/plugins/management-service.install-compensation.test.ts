@@ -78,7 +78,7 @@ const requests = [
     plugin: "demo",
     mode: "update",
   },
-] satisfies Parameters<typeof installManagedPlugin>[0]["request"][];
+] as const satisfies readonly Parameters<typeof installManagedPlugin>[0]["request"][];
 
 async function persistCommittedInstallRecords(
   params: Parameters<typeof mocks.commit>[0],
@@ -122,155 +122,174 @@ describe("managed plugin install transactions", () => {
 
   afterEach(() => closeOpenClawStateDatabaseForTest());
 
-  it.each(
-    requests.flatMap((request) =>
+  it.each([
+    ...requests.flatMap((request) =>
       (
         ["before-publication", "before-config", "before-commit", "after-commit", "none"] as const
-      ).map((failure) => ({ request, source: request.source, failure })),
+      ).map((failure) => ({ request, source: request.source, failure, authority: "caller" })),
     ),
-  )("settles $source payloads at $failure", async ({ request, failure }) => {
-    let authorityOpen = true;
-    const home = await fs.realpath(tempDirs.make("openclaw-managed-upgrade-"));
-    const env = { HOME: home, OPENCLAW_STATE_DIR: path.join(home, "state") };
-    const sourceDir = path.join(home, "incoming");
-    const targetDir = path.join(home, "extensions", "demo");
-    await fs.mkdir(sourceDir, { recursive: true });
-    await fs.mkdir(targetDir, { recursive: true });
-    createColdPluginFixture({
-      rootDir: sourceDir,
-      pluginId: "demo",
-      packageVersion: "2.0.0",
-      manifest: { contracts: { tools: ["demo.write"] } },
-    });
-    createColdPluginFixture({ rootDir: targetDir, pluginId: "demo", packageVersion: "1.0.0" });
-    await fs.writeFile(path.join(sourceDir, "version"), "2.0.0");
-    await fs.writeFile(path.join(targetDir, "version"), "1.0.0");
-    const conflict = new Error(failure);
-    const beforePersistentApply = () => {
-      if (!authorityOpen) {
-        throw conflict;
-      }
-    };
-    mocks.commit.mockImplementation(async (params) => {
-      params.writeOptions?.assertConfigPathForWrite?.();
-      expect(params.nextInstallRecords.demo?.acceptedSurface?.tools).toEqual(["demo.write"]);
-      if (request.source === "marketplace") {
-        expect(params.nextInstallRecords.demo).toMatchObject({
-          source: "marketplace",
-          marketplaceSource: request.marketplace,
-          marketplacePlugin: request.plugin,
-        });
-      }
-      if (failure === "before-commit") {
-        throw conflict;
-      }
-      return await persistCommittedInstallRecords(params);
-    });
-    mocks.install.mockImplementation(
-      async (params: {
-        onBeforePluginArtifactCommit?: PluginInstallArtifactConsentHandler;
-        beforePersistentApply?: () => void;
-      }) => {
-        const copy = {
-          sourceDir,
-          targetDir,
-          beforePersistentApply: params.beforePersistentApply,
-          mode: "update" as const,
-          timeoutMs: 1000,
-          copyErrorPrefix: "copy failed",
-          hasDeps: false,
-          depsLogMessage: "",
-          afterInstall: async (stagedArtifactDir: string) => {
-            await params.onBeforePluginArtifactCommit?.({
-              pluginId: "demo",
-              stagedArtifactDir,
-              currentArtifactDir: targetDir,
-              mode: "update",
-            });
-            return { ok: true as const };
-          },
-        };
-        const copied = await installPackageDir(
-          isPluginInstallCommitDeferred(params) ? requestDeferredPackageDirInstall(copy) : copy,
-        );
-        if (!copied.ok) {
-          throw new Error(copied.error);
-        }
-        const result = {
-          ok: true,
-          pluginId: "demo",
-          targetDir,
-          version: "2.0.0",
-          extensions: [],
-          marketplaceName: "Local",
-          marketplaceSource: "local/repo",
-          marketplacePlugin: "demo",
-          git: { url: "https://example.test/demo.git" },
-          packageName: "community/demo",
-          clawhub: {
-            source: "clawhub",
-            clawhubUrl: "https://clawhub.ai",
-            clawhubPackage: "community/demo",
-            clawhubFamily: "code-plugin",
-          },
-        };
-        if (failure === "before-config") {
-          authorityOpen = false;
-        }
-        const transaction = resolvePackageDirInstallTransaction(copied);
-        return transaction ? attachPluginInstallTransaction(result, transaction) : result;
-      },
-    );
-    const onCapabilityConsent = vi.fn<PluginCapabilityConsentHandler>(async (review) => {
-      expect(await fs.readFile(path.join(targetDir, "version"), "utf8")).toBe("1.0.0");
-      const acknowledgment = await acceptCapabilities(review);
-      if (failure === "before-publication") {
-        authorityOpen = false;
-      }
-      return acknowledgment;
-    });
-    const installed = installManagedPlugin({
-      request,
-      env,
-      onCapabilityConsent,
-      beforePersistentApply,
-      applyRuntime: async ({ pluginIds }) => {
-        expect(mocks.commit).toHaveBeenCalled();
-        if (failure === "after-commit") {
+    {
+      request: requests[1],
+      source: "npm",
+      failure: "before-publication",
+      authority: "config",
+    },
+  ])(
+    "settles $source payloads at $failure with $authority authority",
+    async ({ request, failure, authority }) => {
+      let authorityOpen = true;
+      const home = await fs.realpath(tempDirs.make("openclaw-managed-upgrade-"));
+      const env = { HOME: home, OPENCLAW_STATE_DIR: path.join(home, "state") };
+      const sourceDir = path.join(home, "incoming");
+      const targetDir = path.join(home, "extensions", "demo");
+      await fs.mkdir(sourceDir, { recursive: true });
+      await fs.mkdir(targetDir, { recursive: true });
+      createColdPluginFixture({
+        rootDir: sourceDir,
+        pluginId: "demo",
+        packageVersion: "2.0.0",
+        manifest: { contracts: { tools: ["demo.write"] } },
+      });
+      createColdPluginFixture({ rootDir: targetDir, pluginId: "demo", packageVersion: "1.0.0" });
+      await fs.writeFile(path.join(sourceDir, "version"), "2.0.0");
+      await fs.writeFile(path.join(targetDir, "version"), "1.0.0");
+      const conflict = new Error(failure);
+      const beforePersistentApply = () => {
+        if (!authorityOpen) {
           throw conflict;
         }
-        return { operationId: "install", generation: 1, pluginIds: [...pluginIds] };
-      },
-    });
-    if (failure === "none") {
-      await expect(installed).resolves.toMatchObject({ plugin: { id: "demo", installed: true } });
-    } else if (failure === "before-publication") {
-      await expect(installed).rejects.toThrow(conflict.message);
-      expect(mocks.commit).not.toHaveBeenCalled();
-    } else {
-      await expect(installed).rejects.toBe(conflict);
-    }
-    expect(onCapabilityConsent).toHaveBeenCalledOnce();
-    const installedIndex = readPersistedInstalledPluginIndexSync({ env });
-    if (failure === "after-commit" || failure === "none") {
-      expect(installedIndex).toMatchObject({
-        installRecords: {
-          demo: { installPath: targetDir, acceptedSurface: { tools: ["demo.write"] } },
-        },
-        plugins: expect.arrayContaining([
-          expect.objectContaining({ pluginId: "demo", installOwner: "demo", rootDir: targetDir }),
-        ]),
+      };
+      if (authority === "config") {
+        const prepared = configSnapshot(config);
+        mocks.readConfig.mockResolvedValue({
+          ...prepared,
+          writeOptions: {
+            ...prepared.writeOptions,
+            assertConfigPathForWrite: beforePersistentApply,
+          },
+        });
+      }
+      mocks.commit.mockImplementation(async (params) => {
+        params.writeOptions?.assertConfigPathForWrite?.();
+        expect(params.nextInstallRecords.demo?.acceptedSurface?.tools).toEqual(["demo.write"]);
+        if (request.source === "marketplace") {
+          expect(params.nextInstallRecords.demo).toMatchObject({
+            source: "marketplace",
+            marketplaceSource: request.marketplace,
+            marketplacePlugin: request.plugin,
+          });
+        }
+        if (failure === "before-commit") {
+          throw conflict;
+        }
+        return await persistCommittedInstallRecords(params);
       });
-    } else {
-      expect(installedIndex).toBeNull();
-    }
-    expect(await fs.readFile(path.join(targetDir, "version"), "utf8"), failure).toBe(
-      failure === "after-commit" || failure === "none" ? "2.0.0" : "1.0.0",
-    );
-    expect(await fs.readdir(path.join(home, "extensions", ".openclaw-install-backups"))).toEqual(
-      [],
-    );
-  });
+      mocks.install.mockImplementation(
+        async (params: {
+          onBeforePluginArtifactCommit?: PluginInstallArtifactConsentHandler;
+          beforePersistentApply?: () => void;
+        }) => {
+          const copy = {
+            sourceDir,
+            targetDir,
+            beforePersistentApply: params.beforePersistentApply,
+            mode: "update" as const,
+            timeoutMs: 1000,
+            copyErrorPrefix: "copy failed",
+            hasDeps: false,
+            depsLogMessage: "",
+            afterInstall: async (stagedArtifactDir: string) => {
+              await params.onBeforePluginArtifactCommit?.({
+                pluginId: "demo",
+                stagedArtifactDir,
+                currentArtifactDir: targetDir,
+                mode: "update",
+              });
+              return { ok: true as const };
+            },
+          };
+          const copied = await installPackageDir(
+            isPluginInstallCommitDeferred(params) ? requestDeferredPackageDirInstall(copy) : copy,
+          );
+          if (!copied.ok) {
+            throw new Error(copied.error);
+          }
+          const result = {
+            ok: true,
+            pluginId: "demo",
+            targetDir,
+            version: "2.0.0",
+            extensions: [],
+            marketplaceName: "Local",
+            marketplaceSource: "local/repo",
+            marketplacePlugin: "demo",
+            git: { url: "https://example.test/demo.git" },
+            packageName: "community/demo",
+            clawhub: {
+              source: "clawhub",
+              clawhubUrl: "https://clawhub.ai",
+              clawhubPackage: "community/demo",
+              clawhubFamily: "code-plugin",
+            },
+          };
+          if (failure === "before-config") {
+            authorityOpen = false;
+          }
+          const transaction = resolvePackageDirInstallTransaction(copied);
+          return transaction ? attachPluginInstallTransaction(result, transaction) : result;
+        },
+      );
+      const onCapabilityConsent = vi.fn<PluginCapabilityConsentHandler>(async (review) => {
+        expect(await fs.readFile(path.join(targetDir, "version"), "utf8")).toBe("1.0.0");
+        const acknowledgment = await acceptCapabilities(review);
+        if (failure === "before-publication") {
+          authorityOpen = false;
+        }
+        return acknowledgment;
+      });
+      const installed = installManagedPlugin({
+        request,
+        env,
+        onCapabilityConsent,
+        beforePersistentApply: authority === "caller" ? beforePersistentApply : undefined,
+        applyRuntime: async ({ pluginIds }) => {
+          expect(mocks.commit).toHaveBeenCalled();
+          if (failure === "after-commit") {
+            throw conflict;
+          }
+          return { operationId: "install", generation: 1, pluginIds: [...pluginIds] };
+        },
+      });
+      if (failure === "none") {
+        await expect(installed).resolves.toMatchObject({ plugin: { id: "demo", installed: true } });
+      } else if (failure === "before-publication") {
+        await expect(installed).rejects.toThrow(conflict.message);
+        expect(mocks.commit).not.toHaveBeenCalled();
+      } else {
+        await expect(installed).rejects.toBe(conflict);
+      }
+      expect(onCapabilityConsent).toHaveBeenCalledOnce();
+      const installedIndex = readPersistedInstalledPluginIndexSync({ env });
+      if (failure === "after-commit" || failure === "none") {
+        expect(installedIndex).toMatchObject({
+          installRecords: {
+            demo: { installPath: targetDir, acceptedSurface: { tools: ["demo.write"] } },
+          },
+          plugins: expect.arrayContaining([
+            expect.objectContaining({ pluginId: "demo", installOwner: "demo", rootDir: targetDir }),
+          ]),
+        });
+      } else {
+        expect(installedIndex).toBeNull();
+      }
+      expect(await fs.readFile(path.join(targetDir, "version"), "utf8"), failure).toBe(
+        failure === "after-commit" || failure === "none" ? "2.0.0" : "1.0.0",
+      );
+      expect(await fs.readdir(path.join(home, "extensions", ".openclaw-install-backups"))).toEqual(
+        [],
+      );
+    },
+  );
 
   it("leaves linked operator source untouched when persistence fails", async () => {
     const sourcePath = tempDirs.make("openclaw-managed-link-");

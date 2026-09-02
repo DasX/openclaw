@@ -68,6 +68,7 @@ export type GatewayGmailRestartAbortController = {
 export type GatewayHotReloadPublication = {
   publish: (commit: () => Promise<void>, isCommitted: () => boolean) => Promise<void>;
   isCurrent: () => boolean;
+  assertInvokerOwned?: () => void;
   sourceConfig: OpenClawConfig;
   prepareRestartRuntimeConfig?: () => Promise<OpenClawConfig>;
   runtimeEnv?: NodeJS.ProcessEnv;
@@ -184,6 +185,7 @@ export type GatewayReloadHandlerParams = {
     commitRuntime: (publication?: GatewayRuntimePublication) => Promise<void>;
     env: NodeJS.ProcessEnv;
     isAborted?: () => boolean;
+    assertInvokerOwned?: () => void;
   }) => Promise<GatewayPluginReloadResult>;
   logHooks: {
     info: (msg: string) => void;

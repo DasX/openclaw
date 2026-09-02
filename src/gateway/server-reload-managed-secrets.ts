@@ -296,6 +296,7 @@ export function createManagedReloadSecretHandlers(options: {
     // A deferred channel/plugin reload can overlap secrets.reload. Retry from
     // preparation unless the same active snapshot still owns publication.
     for (;;) {
+      transactionOwnership.assertInvokerOwned?.();
       if (!transactionOwnership.isCurrent()) {
         throw new GatewayConfigReloadSupersededError();
       }
@@ -369,6 +370,7 @@ export function createManagedReloadSecretHandlers(options: {
       try {
         const publication: GatewayHotReloadPublication = {
           isCurrent: transactionOwnership.isCurrent,
+          assertInvokerOwned: transactionOwnership.assertInvokerOwned,
           ...(transactionOwnership.runtimeEnv
             ? { runtimeEnv: transactionOwnership.runtimeEnv.env }
             : {}),
@@ -489,6 +491,16 @@ export function createManagedReloadSecretHandlers(options: {
             };
             const activateIfCurrent =
               params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent;
+            const canActivate = () => {
+              transactionOwnership.assertInvokerOwned?.();
+              return (
+                transactionOwnership.isCurrent() &&
+                isSharedGatewaySessionGenerationOwnershipCurrent(
+                  params.sharedGatewaySessionGenerationState,
+                  previousGenerationOwnership,
+                )
+              );
+            };
             if (activateIfCurrent) {
               const activated = await activateIfCurrent(
                 prepared,
@@ -499,12 +511,7 @@ export function createManagedReloadSecretHandlers(options: {
                   runtimeSourceConfig: sourceConfig,
                 },
                 publishRuntime,
-                () =>
-                  transactionOwnership.isCurrent() &&
-                  isSharedGatewaySessionGenerationOwnershipCurrent(
-                    params.sharedGatewaySessionGenerationState,
-                    previousGenerationOwnership,
-                  ),
+                canActivate,
               );
               if (!activated) {
                 throw new GatewayHotReloadStaleSecretsError();
@@ -515,12 +522,7 @@ export function createManagedReloadSecretHandlers(options: {
                   prepared,
                   previousSnapshotRevision,
                   {
-                    canActivate: () =>
-                      transactionOwnership.isCurrent() &&
-                      isSharedGatewaySessionGenerationOwnershipCurrent(
-                        params.sharedGatewaySessionGenerationState,
-                        previousGenerationOwnership,
-                      ),
+                    canActivate,
                     onActivated: claimGenerationOwnership,
                     runtimeSourceConfig: sourceConfig,
                   },

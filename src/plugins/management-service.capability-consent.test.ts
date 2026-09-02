@@ -337,7 +337,12 @@ describe("managed plugin capability consent", () => {
       pluginId: "diffs",
       application,
     });
-    expect(applyRuntime).toHaveBeenCalledWith({ config, pluginIds: ["diffs"], reason: "reload" });
+    expect(applyRuntime).toHaveBeenCalledWith({
+      config,
+      pluginIds: ["diffs"],
+      reason: "reload",
+      assertInvokerOwned: expect.any(Function),
+    });
     expect(mocks.writeRecords).not.toHaveBeenCalled();
     expect(collectPluginCapabilityConsentDiagnostics({ index, manifests: byPluginId })).toEqual([]);
     const catalog = await listManagedPlugins({ config, env });

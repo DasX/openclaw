@@ -177,6 +177,13 @@ export type ManagedPluginInspection = PluginsInspectResult;
 
 type ManagedPluginInstallRequest = PluginsInstallParams;
 
+type ManagedPluginMutationOptions = {
+  applyRuntime?: PluginLifecycleRuntimeApply;
+  beforePersistentApply?: () => void;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+};
+
 type ResolvedRegistryInstallOptions = {
   /** Preserve the operator's selector when the install targets a release cohort. */
   recordSpec?: string;
@@ -1093,12 +1100,35 @@ export const inspectManagedPlugin = withManagedPluginCache(
   },
 );
 
+function withManagedPluginMutation<T>(
+  params: ManagedPluginMutationOptions,
+  run: (beforePersistentApply: () => void) => Promise<T>,
+): Promise<T> {
+  return withPluginLifecycleLease(
+    { env: params.env ?? process.env, signal: params.signal },
+    (lease) => {
+      const beforePersistentApply = () => {
+        params.signal?.throwIfAborted();
+        lease.assertOwned();
+        params.beforePersistentApply?.();
+      };
+      beforePersistentApply();
+      return run(beforePersistentApply);
+    },
+  );
+}
+
 async function readPluginMutationSnapshot(
   env: NodeJS.ProcessEnv,
+  beforePersistentApply: () => void,
 ): Promise<ConfigSnapshotForInstallPersist> {
   try {
     assertConfigWriteAllowedInCurrentMode({ env });
-    return await loadConfigForInstall();
+    const snapshot = await loadConfigForInstall();
+    return {
+      ...snapshot,
+      writeOptions: selectInstallMutationWriteOptions(snapshot.writeOptions, beforePersistentApply),
+    };
   } catch (error) {
     throw new ManagedPluginLifecycleError(formatErrorMessage(error), { cause: error });
   }
@@ -1712,22 +1742,21 @@ function resolveManagedPluginInstallRequest(
 }
 
 /** Install a reviewed source through the canonical artifact and runtime lifecycle. */
-export async function installManagedPlugin(params: {
-  request: ManagedPluginInstallRequest;
-  applyRuntime?: PluginLifecycleRuntimeApply;
-  beforePersistentApply?: () => void;
-  onCapabilityConsent?: PluginCapabilityConsentHandler;
-  safetyOverrides?: InstallSafetyOverrides;
-  env?: NodeJS.ProcessEnv;
-  logger?: PluginInstallLogger;
-  confirmInstall?: () => Promise<boolean>;
-}): Promise<{
+export async function installManagedPlugin(
+  params: ManagedPluginMutationOptions & {
+    request: ManagedPluginInstallRequest;
+    onCapabilityConsent?: PluginCapabilityConsentHandler;
+    safetyOverrides?: InstallSafetyOverrides;
+    logger?: PluginInstallLogger;
+    confirmInstall?: () => Promise<boolean>;
+  },
+): Promise<{
   plugin: ManagedPluginCatalogEntry;
   warnings?: string[];
   application?: PluginRuntimeApplication;
 }> {
   const env = params.env ?? process.env;
-  return await withPluginLifecycleLease({ env }, async () => {
+  return await withManagedPluginMutation(params, async (beforePersistentApply) => {
     const officialCatalog = await loadOfficialCatalog();
     const warnings: string[] = [];
     const installLogger = {
@@ -1781,7 +1810,10 @@ export async function installManagedPlugin(params: {
       snapshot,
       env,
       applyRuntime: params.applyRuntime,
-      beforePersistentApply: params.beforePersistentApply,
+      beforePersistentApply: () => {
+        snapshot.writeOptions.assertConfigPathForWrite?.();
+        beforePersistentApply();
+      },
       clawManaged: params.request.clawManaged,
       logger: installLogger,
       onCapabilityConsent: params.onCapabilityConsent,
@@ -1852,23 +1884,23 @@ export async function installManagedPlugin(params: {
 }
 
 /** Persist desired plugin policy while preserving allow/deny, slot, include, and hash guards. */
-export async function setManagedPluginEnabled(params: {
-  pluginId: string;
-  enabled: boolean;
-  requestCapabilityConsent?: boolean;
-  acknowledgeCapabilities?: PluginCapabilityConsentAcknowledgment;
-  onCapabilityConsent?: PluginCapabilityConsentHandler;
-  applyRuntime?: PluginLifecycleRuntimeApply;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{
+export async function setManagedPluginEnabled(
+  params: ManagedPluginMutationOptions & {
+    pluginId: string;
+    enabled: boolean;
+    requestCapabilityConsent?: boolean;
+    acknowledgeCapabilities?: PluginCapabilityConsentAcknowledgment;
+    onCapabilityConsent?: PluginCapabilityConsentHandler;
+  },
+): Promise<{
   plugin: ManagedPluginCatalogEntry;
   changedPaths: string[];
   warnings?: string[];
   application?: PluginRuntimeApplication;
 }> {
   const env = params.env ?? process.env;
-  return await withPluginLifecycleLease({ env }, async () => {
-    const snapshot = await readPluginMutationSnapshot(env);
+  return await withManagedPluginMutation(params, async (beforePersistentApply) => {
+    const snapshot = await readPluginMutationSnapshot(env, beforePersistentApply);
     const metadata = loadFreshManagedPluginMetadata(snapshot.config, env);
     const pluginId = metadata.normalizePluginId(params.pluginId.trim());
     const installedPlugin = metadata.index.plugins.find((plugin) => plugin.pluginId === pluginId);
@@ -1890,6 +1922,7 @@ export async function setManagedPluginEnabled(params: {
         pluginId,
         acknowledge: params.acknowledgeCapabilities,
         onCapabilityConsent: params.onCapabilityConsent,
+        beforePersistentApply,
         metadata,
       });
     }
@@ -1912,6 +1945,7 @@ export async function setManagedPluginEnabled(params: {
       }
       next = enableResult.config;
       policyPluginId = enableResult.pluginId;
+      beforePersistentApply();
       const slotResult = applySlotSelectionForPlugin(next, pluginId, metadata);
       next = slotResult.config;
       warnings.push(...slotResult.warnings);
@@ -1946,6 +1980,7 @@ export async function setManagedPluginEnabled(params: {
       write,
       pluginIds: [policyPluginId],
       reason: params.enabled ? "enable" : "disable",
+      assertInvokerOwned: beforePersistentApply,
     });
     const catalog = await listManagedPlugins({ config: next, env, metadata: updatedMetadata });
     const plugin = catalog.plugins.find((entry) => entry.id === pluginId);
@@ -2102,15 +2137,14 @@ export async function planManagedPluginUninstall(params: {
 }
 
 /** Remove one package through the same durable and runtime lifecycle for every caller. */
-export async function uninstallManagedPlugin(params: {
-  pluginId: string;
-  keepFiles?: boolean;
-  clawManaged?: boolean;
-  invalidateRuntimeCache?: boolean;
-  applyRuntime?: PluginLifecycleRuntimeApply;
-  beforePersistentApply?: () => void;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{
+export async function uninstallManagedPlugin(
+  params: ManagedPluginMutationOptions & {
+    pluginId: string;
+    keepFiles?: boolean;
+    clawManaged?: boolean;
+    invalidateRuntimeCache?: boolean;
+  },
+): Promise<{
   pluginId: string;
   removed: string[];
   warnings?: string[];
@@ -2118,7 +2152,7 @@ export async function uninstallManagedPlugin(params: {
 }> {
   const env = params.env ?? process.env;
   assertConfigWriteAllowedInCurrentMode({ env });
-  return await withPluginLifecycleLease({ env }, async () => {
+  return await withManagedPluginMutation(params, async (beforePersistentApply) => {
     let prepared = await prepareManagedPluginUninstall(params);
     const { installOwner, ownedPluginIds, policyPluginIds, pluginId } = prepared;
     const uninstall = async () => {
@@ -2134,10 +2168,7 @@ export async function uninstallManagedPlugin(params: {
           nextConfig: disabledConfig,
           baseHash: snapshot.baseHash,
           writeOptions: {
-            ...selectInstallMutationWriteOptions(
-              snapshot.writeOptions,
-              params.beforePersistentApply,
-            ),
+            ...selectInstallMutationWriteOptions(snapshot.writeOptions, beforePersistentApply),
             afterWrite: params.applyRuntime
               ? { mode: "none", reason: "plugin lifecycle applies runtime" }
               : { mode: "auto" },
@@ -2149,12 +2180,13 @@ export async function uninstallManagedPlugin(params: {
           write,
           pluginIds: policyPluginIds,
           reason: "uninstall",
+          assertInvokerOwned: beforePersistentApply,
         });
         // Runtime teardown yields; revalidate before removing the stopped plugin source.
-        params.beforePersistentApply?.();
+        beforePersistentApply();
         directoryResult = await applyPluginUninstallDirectoryRemoval(
           plan.directoryRemoval,
-          params.beforePersistentApply,
+          beforePersistentApply,
         );
         if (pluginUninstallTargetExists(plan.directoryRemoval.target)) {
           throw new ManagedPluginLifecycleError(
@@ -2178,7 +2210,7 @@ export async function uninstallManagedPlugin(params: {
         nextConfig,
         baseHash: snapshot.baseHash,
         writeOptions: {
-          ...selectInstallMutationWriteOptions(snapshot.writeOptions, params.beforePersistentApply),
+          ...selectInstallMutationWriteOptions(snapshot.writeOptions, beforePersistentApply),
           allowConfigSizeDrop: true,
           ...(params.applyRuntime
             ? { afterWrite: { mode: "none" as const, reason: "plugin lifecycle applies runtime" } }
@@ -2208,6 +2240,7 @@ export async function uninstallManagedPlugin(params: {
         write,
         pluginIds: policyPluginIds,
         reason: "uninstall",
+        assertInvokerOwned: beforePersistentApply,
       });
       const removed = formatUninstallActionLabels({
         ...plan.actions,
@@ -2240,16 +2273,17 @@ export async function uninstallManagedPlugin(params: {
 }
 
 /** Reload the selected installed package through the running Gateway's lifecycle owner. */
-export async function reloadManagedPlugin(params: {
-  pluginId: string;
-  applyRuntime: PluginLifecycleRuntimeApply;
-  acknowledgeCapabilities?: PluginCapabilityConsentAcknowledgment;
-  onCapabilityConsent?: PluginCapabilityConsentHandler;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{ pluginId: string; application: PluginRuntimeApplication }> {
+export async function reloadManagedPlugin(
+  params: ManagedPluginMutationOptions & {
+    pluginId: string;
+    applyRuntime: PluginLifecycleRuntimeApply;
+    acknowledgeCapabilities?: PluginCapabilityConsentAcknowledgment;
+    onCapabilityConsent?: PluginCapabilityConsentHandler;
+  },
+): Promise<{ pluginId: string; application: PluginRuntimeApplication }> {
   const env = params.env ?? process.env;
-  return await withPluginLifecycleLease({ env }, async () => {
-    const snapshot = await readPluginMutationSnapshot(env);
+  return await withManagedPluginMutation(params, async (beforePersistentApply) => {
+    const snapshot = await readPluginMutationSnapshot(env, beforePersistentApply);
     const metadata = loadFreshManagedPluginMetadata(snapshot.config, env);
     const pluginId = metadata.normalizePluginId(params.pluginId.trim());
     if (!metadata.index.plugins.some((plugin) => plugin.pluginId === pluginId)) {
@@ -2265,6 +2299,7 @@ export async function reloadManagedPlugin(params: {
       metadata,
       acknowledge: params.acknowledgeCapabilities,
       onCapabilityConsent: params.onCapabilityConsent,
+      beforePersistentApply,
     });
     return {
       pluginId,
@@ -2272,25 +2307,28 @@ export async function reloadManagedPlugin(params: {
         config: snapshot.config,
         pluginIds,
         reason: "reload",
+        assertInvokerOwned: beforePersistentApply,
       }),
     };
   });
 }
 
 /** Apply an explicit metadata refresh under the same cross-process lifecycle lease. */
-export async function refreshManagedPlugins(params: {
-  applyRuntime: PluginLifecycleRuntimeApply;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{ application: PluginRuntimeApplication }> {
+export async function refreshManagedPlugins(
+  params: ManagedPluginMutationOptions & {
+    applyRuntime: PluginLifecycleRuntimeApply;
+  },
+): Promise<{ application: PluginRuntimeApplication }> {
   const env = params.env ?? process.env;
-  return await withPluginLifecycleLease({ env }, async () => {
-    const snapshot = await readPluginMutationSnapshot(env);
+  return await withManagedPluginMutation(params, async (beforePersistentApply) => {
+    const snapshot = await readPluginMutationSnapshot(env, beforePersistentApply);
     const metadata = refreshManagedPluginMetadata({ config: snapshot.config, env });
     return {
       application: await params.applyRuntime({
         config: snapshot.config,
         pluginIds: metadata.index.plugins.map((plugin) => plugin.pluginId),
         reason: "metadata",
+        assertInvokerOwned: beforePersistentApply,
       }),
     };
   });

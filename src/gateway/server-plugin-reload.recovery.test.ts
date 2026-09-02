@@ -8,6 +8,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { writePersistedInstalledPluginIndexSync } from "../plugins/installed-plugin-index-store-write.js";
 import { loadInstalledPluginIndex } from "../plugins/installed-plugin-index.js";
 import { activatePluginRegistry } from "../plugins/loader-shared.js";
+import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createPluginRegistry } from "../plugins/registry.js";
@@ -58,13 +59,12 @@ beforeEach(() => {
   mocks.loadPluginLookUpTable.mockReset();
   resetPluginRuntimeStateForTest();
   resetGatewayWorkAdmission();
-  const snapshot = createPluginMetadataSnapshotFixture({
-    plugins: [{ id: "first" }, { id: "sibling" }],
-  });
-  mocks.loadPluginMetadataSnapshot.mockReturnValue({
-    ...snapshot,
-    discovery: { candidates: [], diagnostics: [] },
-  });
+  mocks.loadPluginMetadataSnapshot.mockImplementation(() =>
+    Object.assign(
+      createPluginMetadataSnapshotFixture({ plugins: [{ id: "first" }, { id: "sibling" }] }),
+      { discovery: { candidates: [], diagnostics: [] } },
+    ),
+  );
 });
 
 afterEach(async () => {
@@ -83,6 +83,12 @@ afterEach(async () => {
 
 async function createRecoveryFixture(
   options: {
+    abortOnCandidateStart?: boolean;
+    prepareAttached?: () => Promise<void>;
+    initialStop?: () => Promise<void>;
+    beforePublish?: () => Promise<void>;
+    afterPublish?: () => Promise<void>;
+    assertInvokerOwned?: () => void;
     candidateStart?: () => void;
     candidateStop?: () => Promise<void>;
     recoveryStart?: () => Promise<void>;
@@ -112,6 +118,8 @@ async function createRecoveryFixture(
   const firstStop = vi.fn(async () => {
     if (firstStarts > 1) {
       await options.recoveryStop?.();
+    } else {
+      await options.initialStop?.();
     }
   });
   const firstRecord = createPluginRecord({ id: "first" });
@@ -131,6 +139,7 @@ async function createRecoveryFixture(
     stop: siblingStop,
   });
   setActivePluginRegistry(previous.registry);
+  const registryOwner = createPluginRegistryOwner(previous.registry);
   const initial = await startPluginServices({ registry: previous.registry, config });
   let currentServices: PluginServicesHandle | null = initial;
   const owner = createGatewayPluginRuntimeGeneration({
@@ -149,7 +158,7 @@ async function createRecoveryFixture(
     candidate.createApi(record, { config }).registerService({
       id: "first",
       start: () => {
-        aborted = true;
+        aborted = options.abortOnCandidateStart !== false;
         options.candidateStart?.();
       },
       stop: async () => await candidateStop(),
@@ -165,19 +174,23 @@ async function createRecoveryFixture(
     };
   };
   const runtime = {
-    pluginRuntime: { registry: previous.registry },
+    pluginRuntime: registryOwner,
     kernel: { pluginRuntimeGeneration: owner },
     runtimeState: { cronState: {} },
     ambientEnvTriggers: "suppress",
     coreGatewayMethodNames: [],
     baseMethods: [],
-    channelManager: { getPluginCommandCatalogAccounts: () => new Map() },
+    channelManager: {
+      getPluginCommandCatalogAccounts: () => new Map(),
+      setAmbientAutostartSuppressedChannelIds: vi.fn(),
+    },
     clients: new Set(),
     broadcast: vi.fn(),
   } as unknown as Parameters<typeof reloadGatewayPlugins>[0]["runtime"];
   cleanups.push(async () => {
     await currentServices?.stop().catch(() => {});
     await initial.stop().catch(() => {});
+    await registryOwner.close();
     for (const candidate of candidates) {
       await disposePluginRegistryInstances(candidate.registry, previous.registry);
     }
@@ -192,7 +205,22 @@ async function createRecoveryFixture(
         loadGatewayPluginBootstrapModule: async () => ({
           prepareGatewayPluginLoad: preparePlugins,
         }),
-        prepareAttachedPluginRuntime: async () => ({ publish: vi.fn(), afterCommit: vi.fn() }),
+        prepareAttachedPluginRuntime: async (candidate) => {
+          await options.prepareAttached?.();
+          return {
+            publish: () => {
+              activatePluginRegistry(
+                candidate.pluginRegistry,
+                null,
+                "gateway-bindable",
+                undefined,
+                registryOwner.registry,
+              );
+              registryOwner.publish(candidate.pluginRegistry);
+            },
+            afterCommit: vi.fn(),
+          };
+        },
         refreshAttachedGatewayDiscovery: async () => {},
       },
       {
@@ -204,18 +232,101 @@ async function createRecoveryFixture(
           operationId: "service-recovery",
           pluginIds: ["first"],
         },
-        commitRuntime: async () => {
-          throw new Error("Superseded candidate must not reach publication");
+        commitRuntime: async (publication) => {
+          await options.beforePublish?.();
+          publication?.publish();
+          publication?.afterCommit?.();
+          await options.afterPublish?.();
         },
         env: {},
         isAborted: () => aborted,
+        assertInvokerOwned: options.assertInvokerOwned,
       },
     );
   };
-  return { owner, reload, firstStart, firstStop, siblingStart, siblingStop, candidateStop };
+  return {
+    owner,
+    registryOwner,
+    previousRegistry: previous.registry,
+    reload,
+    firstStart,
+    firstStop,
+    siblingStart,
+    siblingStop,
+    candidateStop,
+  };
 }
 
 describe("Gateway plugin service recovery ownership", () => {
+  it.each(["prepare", "drain", "publish", "committed"] as const)(
+    "preserves the committed owner when its invoker closes during %s",
+    async (boundary) => {
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const failure = new Error("plugin invoker closed");
+      let invokerOpen = true;
+      const pause = async () => {
+        entered.resolve();
+        await release.promise;
+      };
+      const candidateStart = vi.fn();
+      const fixture = await createRecoveryFixture({
+        abortOnCandidateStart: false,
+        candidateStart,
+        ...(boundary === "prepare" ? { prepareAttached: pause } : {}),
+        ...(boundary === "drain" ? { initialStop: pause } : {}),
+        ...(boundary === "publish" ? { beforePublish: pause } : {}),
+        ...(boundary === "committed" ? { afterPublish: pause } : {}),
+        assertInvokerOwned: () => {
+          if (!invokerOpen) {
+            throw failure;
+          }
+        },
+      });
+      const pending = fixture.reload().catch((error: unknown) => error);
+      try {
+        await Promise.race([
+          entered.promise,
+          pending.then(() => {
+            throw new Error("plugin reload completed before its pause");
+          }),
+        ]);
+        invokerOpen = false;
+        release.resolve();
+        const result = await pending;
+        if (boundary === "committed") {
+          expect(result).toMatchObject({
+            runtime: { operationId: "service-recovery", pluginIds: ["first"] },
+          });
+          expect(fixture.registryOwner.registry).not.toBe(fixture.previousRegistry);
+          const previousRecord = fixture.previousRegistry.plugins.find(
+            (record) => record.id === "first",
+          );
+          assert.ok(previousRecord);
+          expect(getPluginInstance(previousRecord)?.lifecycle.signal.aborted).toBe(true);
+          expect(fixture.firstStart).toHaveBeenCalledOnce();
+          expect(fixture.candidateStop).not.toHaveBeenCalled();
+        } else {
+          expect(result).toMatchObject({
+            details: { phase: boundary === "publish" ? "activate" : boundary, committed: false },
+            cause: failure,
+          });
+          expect(fixture.registryOwner.registry).toBe(fixture.previousRegistry);
+          expect(fixture.firstStart).toHaveBeenCalledTimes(boundary === "prepare" ? 1 : 2);
+          expect(fixture.candidateStop).toHaveBeenCalledTimes(boundary === "publish" ? 1 : 0);
+        }
+        expect(candidateStart).toHaveBeenCalledTimes(
+          boundary === "publish" || boundary === "committed" ? 1 : 0,
+        );
+        expect(fixture.siblingStart).toHaveBeenCalledOnce();
+        expect(fixture.siblingStop).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await pending;
+      }
+    },
+  );
+
   it("keeps retained and failed-recovery services owned after recovery startup rejects", async () => {
     const startFailure = new Error("previous service failed to restart");
     const stopFailure = new Error("previous service cleanup failed");
@@ -429,12 +540,17 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
         respond,
         context: {} as GatewayRequestHandlerOptions["context"],
       });
-      expect(respond).toHaveBeenCalledWith(true, {
-        helper: expect.any(String),
-        instance: expect.any(String),
-        starts: 1,
-        stops: 0,
-      });
+      expect(respond).toHaveBeenCalledExactlyOnceWith(
+        true,
+        {
+          helper: expect.any(String),
+          instance: expect.any(String),
+          starts: 1,
+          stops: 0,
+        },
+        undefined,
+        undefined,
+      );
       const response = respond.mock.calls[0];
       assert.ok(response);
       return response[1];

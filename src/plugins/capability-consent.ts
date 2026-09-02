@@ -135,6 +135,7 @@ export async function resolvePluginCapabilityConsent(params: {
   acknowledge?: PluginCapabilityConsentAcknowledgment;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void | Promise<void>;
+  beforePersistentApply?: () => void;
   metadata?: PluginMetadataSnapshot;
 }): Promise<void> {
   const env = params.env ?? process.env;
@@ -216,6 +217,7 @@ export async function resolvePluginCapabilityConsent(params: {
     if (acknowledgment.reviewToken !== currentReview.reviewToken) {
       throwManagedPluginCapabilityConsentRequired(currentReview);
     }
+    params.beforePersistentApply?.();
     await writePersistedInstalledPluginIndexInstallRecordsWithLease(
       {
         ...records,

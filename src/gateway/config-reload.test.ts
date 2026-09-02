@@ -1234,8 +1234,9 @@ describe("startGatewayConfigReloader", () => {
   });
 
   it.each(["off", "restart"] as const)(
-    "applies an explicit same-config plugin reload in %s mode",
+    "finishes a committed plugin reload after its invoker closes in %s mode",
     async (mode) => {
+      let invokerOpen = true;
       const config: OpenClawConfig = { gateway: { reload: { mode } } };
       const runtime = { operationId: "runtime-owner", generation: 9, pluginIds: ["notes"] };
       const transactionEntered = vi.fn();
@@ -1251,6 +1252,9 @@ describe("startGatewayConfigReloader", () => {
           runTransaction,
           onHotReload: async (plan, nextConfig, ownership) => {
             ownership.markRuntimeCommitted(nextConfig, plan);
+            invokerOpen = false;
+            await Promise.resolve();
+            ownership.assertInvokerOwned?.();
             return { status: "applied", runtime };
           },
         },
@@ -1260,6 +1264,11 @@ describe("startGatewayConfigReloader", () => {
           config,
           pluginIds: ["notes"],
           reason: "reload",
+          assertInvokerOwned: () => {
+            if (!invokerOpen) {
+              throw new Error("plugin invoker closed");
+            }
+          },
         }),
       ).toBe(runtime);
       expect(harness.onHotReload).toHaveBeenCalledOnce();
@@ -1271,6 +1280,75 @@ describe("startGatewayConfigReloader", () => {
       expect(transactionEntered).not.toHaveBeenCalled();
       expect(harness.onRestart).not.toHaveBeenCalled();
       await harness.reloader.stop();
+    },
+  );
+
+  it.each(["queue", "snapshot"] as const)(
+    "rejects a plugin invoker closed while awaiting %s without blocking later reloads",
+    async (boundary) => {
+      const config: OpenClawConfig = { gateway: { reload: { mode: "off" } } };
+      const runtime = { operationId: "runtime-owner", generation: 9, pluginIds: ["notes"] };
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let waiting = true;
+      let invokerOpen = true;
+      const failure = new Error("plugin invoker closed");
+      const pause = async () => {
+        waiting = false;
+        entered.resolve();
+        await release.promise;
+      };
+      const readSnapshot = vi.fn(async () => {
+        if (boundary === "snapshot" && waiting) {
+          await pause();
+        }
+        return makeSnapshot({ config, sourceConfig: config, hash: "same" });
+      });
+      const harness = createReloaderHarness(readSnapshot, {
+        initialConfig: config,
+        onHotReload: async (plan, nextConfig, ownership) => {
+          if (boundary === "queue" && waiting) {
+            await pause();
+          }
+          ownership.markRuntimeCommitted(nextConfig, plan);
+          return { status: "applied", runtime };
+        },
+      });
+      const request = { config, pluginIds: ["notes"], reason: "reload" as const };
+      const first =
+        boundary === "queue" ? harness.reloader.applyPluginLifecycleChange(request) : undefined;
+      const pending = harness.reloader
+        .applyPluginLifecycleChange({
+          ...request,
+          assertInvokerOwned: () => {
+            if (!invokerOpen) {
+              throw failure;
+            }
+          },
+        })
+        .catch((error: unknown) => error);
+      try {
+        await Promise.race([
+          entered.promise,
+          pending.then(() => {
+            throw new Error("plugin reload completed before its pause");
+          }),
+        ]);
+        invokerOpen = false;
+        release.resolve();
+        expect(await pending).toMatchObject({ message: expect.stringContaining(failure.message) });
+        if (first) {
+          await expect(first).resolves.toBe(runtime);
+        }
+        expect(readSnapshot).toHaveBeenCalledOnce();
+        expect(harness.onHotReload).toHaveBeenCalledTimes(boundary === "queue" ? 1 : 0);
+        await expect(harness.reloader.applyPluginLifecycleChange(request)).resolves.toBe(runtime);
+        expect(harness.onRestart).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await Promise.allSettled([first, pending]);
+        await harness.reloader.stop();
+      }
     },
   );
 

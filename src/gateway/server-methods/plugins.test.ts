@@ -160,6 +160,7 @@ describe("plugin management Gateway handlers", () => {
     const result = await callHandler("plugins.refresh", {});
     expect(managementMocks.refreshMetadata).toHaveBeenCalledWith({
       applyRuntime: expect.any(Function),
+      beforePersistentApply: expect.any(Function),
     });
     expect(result).toEqual({
       ok: true,
@@ -202,11 +203,13 @@ describe("plugin management Gateway handlers", () => {
       pluginId: "workboard",
       acknowledgeCapabilities: { reviewToken },
       applyRuntime: expect.any(Function),
+      beforePersistentApply: expect.any(Function),
     });
     expect(applyRuntime).toHaveBeenCalledExactlyOnceWith({
       config: {},
       pluginIds: ["workboard"],
       reason: "reload",
+      assertInvokerOwned: expect.any(Function),
     });
   });
 
@@ -595,6 +598,7 @@ describe("plugin management Gateway handlers", () => {
 
     expect(managementMocks.setEnabled).toHaveBeenCalledWith({
       applyRuntime: expect.any(Function),
+      beforePersistentApply: expect.any(Function),
       pluginId: "workboard",
       enabled: true,
     });
@@ -621,6 +625,7 @@ describe("plugin management Gateway handlers", () => {
     expect(result.ok).toBe(true);
     expect(managementMocks.setEnabled).toHaveBeenCalledWith({
       applyRuntime: expect.any(Function),
+      beforePersistentApply: expect.any(Function),
       pluginId: "workboard",
       enabled: true,
       acknowledgeCapabilities: { reviewToken },
@@ -762,6 +767,7 @@ describe("plugin management Gateway handlers", () => {
 
     expect(managementMocks.install).toHaveBeenCalledWith({
       applyRuntime: expect.any(Function),
+      beforePersistentApply: expect.any(Function),
       request: {
         source: "clawhub",
         packageName: "@openclaw/diffs",
@@ -786,6 +792,7 @@ describe("plugin management Gateway handlers", () => {
 
     expect(managementMocks.install).toHaveBeenCalledWith({
       applyRuntime: expect.any(Function),
+      beforePersistentApply: expect.any(Function),
       request: {
         source: "official",
         pluginId: "diffs",
@@ -885,6 +892,7 @@ describe("plugin management Gateway handlers", () => {
     expect(managementMocks.uninstall).toHaveBeenCalledWith({
       pluginId: "diffs",
       applyRuntime: expect.any(Function),
+      beforePersistentApply: expect.any(Function),
     });
     expect(result).toEqual({
       ok: true,
@@ -930,7 +938,10 @@ describe("plugin management Gateway handlers", () => {
 
     const result = await callHandler("plugins.uninstall", { pluginId: "workboard" });
 
-    expect(applyRuntime).toHaveBeenCalledExactlyOnceWith(change);
+    expect(applyRuntime).toHaveBeenCalledExactlyOnceWith({
+      ...change,
+      assertInvokerOwned: expect.any(Function),
+    });
     expect(result).toEqual({
       ok: false,
       response: undefined,
@@ -980,8 +991,14 @@ describe("plugin management Gateway handlers", () => {
       const result = await callHandler("plugins.uninstall", { pluginId: "workboard" });
 
       expect(applyRuntime).toHaveBeenCalledTimes(2);
-      expect(applyRuntime).toHaveBeenNthCalledWith(1, changes[0]);
-      expect(applyRuntime).toHaveBeenNthCalledWith(2, changes[1]);
+      expect(applyRuntime).toHaveBeenNthCalledWith(1, {
+        ...changes[0],
+        assertInvokerOwned: expect.any(Function),
+      });
+      expect(applyRuntime).toHaveBeenNthCalledWith(2, {
+        ...changes[1],
+        assertInvokerOwned: expect.any(Function),
+      });
       expect(result).toEqual({
         ok: false,
         response: undefined,

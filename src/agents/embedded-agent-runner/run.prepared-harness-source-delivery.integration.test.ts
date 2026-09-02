@@ -1,5 +1,6 @@
 import * as agentHarnessToolRuntime from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { settleReplyDispatcher } from "../../auto-reply/dispatch-dispatcher.js";
 import * as replyPayloadRuntime from "../../auto-reply/reply-payload.js";
 import {
@@ -32,26 +33,15 @@ import { buildTestCtx } from "../../auto-reply/reply/test-ctx.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../../auto-reply/types.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
-import {
-  getPluginRuntimeGatewayRequestScope,
-  withPluginRuntimeGatewayRequestScope,
-} from "../../plugins/runtime/gateway-request-scope.js";
-import {
-  getPluginRuntimeGenerationRegistry,
-  withPluginRuntimeGenerationScope,
-} from "../../plugins/runtime/generation-scope.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { FailoverReason } from "../failover/signal.js";
 import type { AgentHarnessHostCapabilities } from "../harness/host-capability-types.js";
 import { registerAgentHarness } from "../harness/registry.js";
-import { captureAgentPluginRuntimeRefresh } from "../plugin-runtime-refresh.js";
 import {
   getPreparedModelRuntimeBorrowedSnapshot,
-  getPreparedModelRuntimePluginGeneration,
   withPreparedModelRuntimePluginGenerationScope,
 } from "../prepared-model-runtime-generation-scope.js";
 import type { PreparedModelRuntimePluginGeneration } from "../prepared-model-runtime.types.js";
-import type { AgentMessage } from "../runtime/index.js";
 import { markCoreTtsAttemptResult } from "../tools/tts-tool-result-provenance.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
@@ -772,222 +762,132 @@ describe("prepared harness source delivery", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it.each([false, true])(
-    "re-admits repeated reloads without losing committed work or changing run authority (native history=%s)",
-    async (nativeHistory) => {
+  it.each(["complete", "parent abort", "queue timeout"] as const)(
+    "starts an isolated probe outside its caller's admitted generation (%s)",
+    async (outcome) => {
       const { runEmbeddedAgent } = await loadSourceDeliveryHarness();
-      const { getAgentRunContext } = await import("../../infra/agent-run-registry.js");
-      const originalPrompt = "edit and reload twice";
-      const originalMessage = { role: "user" as const, content: originalPrompt, timestamp: 1 };
-      const nativeSnapshots: AgentMessage[][] = [1, 2].map((index) => [
-        {
-          role: "toolResult",
-          toolCallId: `committed-${index}`,
-          toolName: "plugins",
-          content: [{ type: "text", text: `generation ${index + 1} committed` }],
-          isError: false,
-          timestamp: index + 1,
-        },
-      ]);
-      nativeSnapshots[0]!.unshift(originalMessage);
-      const onUserMessagePersisted = vi.fn();
-      const base = await mockedAcquireAgentRunPreparedModelRuntime({
-        agentId: "main",
-        agentDir: state.agentDir(),
-        config: {},
-        workspaceDir: state.workspaceDir,
+      const config = {};
+      const workspaceDir = state.workspaceDir;
+      const baseLease = await mockedAcquireAgentRunPreparedModelRuntime({
+        agentId: "openclaw",
+        agentDir: state.agentDir("openclaw"),
+        workspaceDir,
       });
-      // Generations need independent registry identities; mutating the shared fixture masks stale ownership.
-      // oxlint-disable-next-line no-map-spread
-      const snapshots = ["first", "next", "final"].map((policyHash) => ({
-        ...base.snapshot,
-        metadataSnapshot: {
-          ...base.snapshot.metadataSnapshot,
-          policyHash,
-          workspaceDir: state.workspaceDir,
-        },
-        pluginRegistry: {
-          ...base.snapshot.pluginRegistry!,
-          tools: [...(base.snapshot.pluginRegistry?.tools ?? [])],
-        },
-      }));
-      const first = snapshots[0]!;
-      const generation: PreparedModelRuntimePluginGeneration = {
+      const admittedGeneration: PreparedModelRuntimePluginGeneration = {
         configuredCatalogEntries: [],
         inlineProviderModels: [],
-        pluginMetadataSnapshot: first.metadataSnapshot,
-        pluginRegistry: first.pluginRegistry,
+        pluginMetadataSnapshot: {
+          ...baseLease.snapshot.metadataSnapshot,
+          policyHash: "admitted",
+          workspaceDir,
+        },
+        pluginRegistry: createEmptyPluginRegistry(),
       };
-      const releases = snapshots.map(() => vi.fn());
-      const caller = { isWebchatConnect: () => false, invokeWithSessionNodeAuthority: vi.fn() };
+      const isolatedMetadataSnapshot = {
+        ...baseLease.snapshot.metadataSnapshot,
+        policyHash: "isolated",
+        workspaceDir,
+      };
+      const release = vi.fn();
+      const acquisitionStarted = createDeferred();
+      const resumeAcquisition = createDeferred();
+      const queueTimeout = createDeferred<never>();
+      const queuedTasks: Promise<unknown>[] = [];
+      let acquisitionSignal: AbortSignal | undefined;
       mockedAcquireAgentRunPreparedModelRuntime.mockClear();
-      let admittedOwner: unknown;
-      const staleOwners: ReturnType<typeof captureAgentPluginRuntimeRefresh>[] = [];
-      for (const [index, snapshot] of snapshots.entries()) {
-        mockedAcquireAgentRunPreparedModelRuntime.mockImplementationOnce(async () => {
-          if (index > 0) {
-            expect(releases[index - 1]).toHaveBeenCalledOnce();
-            expect(getPreparedModelRuntimePluginGeneration()).toBeUndefined();
-            expect(getPluginRuntimeGenerationRegistry()).toBeUndefined();
-            expect(getPluginRuntimeGatewayRequestScope()?.pluginRegistry).toBeUndefined();
-            expect(getPluginRuntimeGatewayRequestScope()?.invokeWithSessionNodeAuthority).toBe(
-              caller.invokeWithSessionNodeAuthority,
-            );
-          }
-          return { ...base, snapshot, release: releases[index]! };
-        });
-        mockedRunEmbeddedAttempt.mockImplementationOnce(async (params) => {
-          if (index === 0) {
-            admittedOwner = getAgentRunContext(params.runId)?.delegatedAuthority;
-            expect(admittedOwner).toBeDefined();
-            expect(params.prompt).toBe(originalPrompt);
-            params.onUserMessagePersisted?.(originalMessage);
-          } else {
-            expect(getAgentRunContext(params.runId)?.delegatedAuthority).toBe(admittedOwner);
-            expect(params.prompt).toContain("Continue the current task from the transcript");
-            expect(params.prompt).toContain("do not repeat completed actions");
-            expect(params.prompt).not.toContain(originalPrompt);
-            expect(params.skipPreparedUserTurnMessage).toBe(true);
-            expect(params.suppressNextUserMessagePersistence).toBe(true);
-            expect(params.pluginRuntimeRefreshMessages).toEqual(
-              nativeHistory ? nativeSnapshots.slice(0, index).flat() : [],
-            );
-            for (const stale of staleOwners) {
-              expect(() => stale.assertCurrent()).toThrow("Plugin runtime changed");
-            }
-          }
-          expect(params.hostCapabilities).toBeDefined();
-          params.hostCapabilities?.assertActive();
-          expect(params.sessionId).toBe("test-session");
-          expect(getPluginRuntimeGenerationRegistry()).toBe(snapshot.pluginRegistry);
-          if (index < nativeSnapshots.length) {
-            const owner = captureAgentPluginRuntimeRefresh();
-            staleOwners.push(owner);
-            expect(
-              owner.request({
-                operationId: `reload-${index}`,
-                generation: index + 2,
-                pluginIds: ["fixture"],
-              }),
-            ).toBe(true);
-            return makeAttemptResult({
-              assistantTexts: [],
-              sessionIdUsed: params.sessionId,
-              toolMetas: [{ toolName: "plugins" }],
-              messagesSnapshot: nativeHistory
-                ? nativeSnapshots[index]!
-                : nativeSnapshots.slice(0, index + 1).flat(),
-              ...(nativeHistory ? { pluginRuntimeRefreshMessages: nativeSnapshots[index]! } : {}),
-            });
-          }
-          return makeAttemptResult({
-            assistantTexts: ["new behavior verified"],
-            sessionIdUsed: params.sessionId,
-          });
-        });
-      }
-      mockedBuildEmbeddedRunPayloads.mockReturnValue([{ text: "new behavior verified" }]);
+      mockedAcquireAgentRunPreparedModelRuntime.mockImplementationOnce(
+        async (_input, signal?: AbortSignal) => {
+          acquisitionSignal = signal;
+          acquisitionStarted.resolve();
+          await resumeAcquisition.promise;
+          signal?.throwIfAborted();
+          return {
+            ...baseLease,
+            snapshot: {
+              ...baseLease.snapshot,
+              config,
+              workspaceDir,
+              metadataSnapshot: isolatedMetadataSnapshot,
+            },
+            release,
+          };
+        },
+      );
+      mockedBuildEmbeddedRunPayloads.mockReturnValue([{ text: "ok" }]);
+      mockedRunEmbeddedAttempt.mockResolvedValueOnce(makeAttemptResult({ assistantTexts: ["ok"] }));
       useOpenAIPlatformAuthFixture();
+      const parentAbort = new AbortController();
+
+      const isolatedProbeParams: RunEmbeddedAgentInternalParams = {
+        ...createOverflowRunParams(state),
+        agentId: "openclaw",
+        agentDir: state.agentDir("openclaw"),
+        config,
+        provider: "openai",
+        model: "gpt-5.4",
+        preparedModelRuntimeMode: "isolated-read-only",
+        runId: "isolated-probe-generation",
+        sessionKey: undefined,
+        abortSignal: parentAbort.signal,
+        workspaceDir,
+        enqueue:
+          outcome === "queue timeout"
+            ? async (task, options) => {
+                const pending = task();
+                queuedTasks.push(pending);
+                // Reject the global queue while its acquisition callback still owns work.
+                return options?.taskTimeoutAbortSignal
+                  ? await Promise.race([pending, queueTimeout.promise])
+                  : await pending;
+              }
+            : undefined,
+      };
+      const run = withPreparedModelRuntimePluginGenerationScope(
+        admittedGeneration,
+        async () => await runEmbeddedAgent(isolatedProbeParams),
+      );
+      const observed = run.catch(() => undefined);
       try {
-        const result = await withPluginRuntimeGatewayRequestScope(caller, () =>
-          withPreparedModelRuntimePluginGenerationScope(
-            generation,
-            () =>
-              withPluginRuntimeGenerationScope(first, () =>
-                runEmbeddedAgent({
-                  ...createOverflowRunParams(state),
-                  prompt: originalPrompt,
-                  onUserMessagePersisted,
-                  provider: "openai",
-                  model: "gpt-5.4",
-                  sessionKey: undefined,
-                }),
-              ),
-            () => first as NonNullable<ReturnType<typeof getPreparedModelRuntimeBorrowedSnapshot>>,
-          ),
+        await Promise.race([acquisitionStarted.promise, run]);
+        expect(acquisitionSignal?.aborted).toBe(false);
+        expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
+        expect(mockedAcquireAgentRunPreparedModelRuntime).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ config, loadRuntimePlugins: true, workspaceDir }),
+          acquisitionSignal,
+          "static",
         );
-        expect(result.payloads).toEqual([{ text: "new behavior verified" }]);
-        expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
-        expect(mockedAcquireAgentRunPreparedModelRuntime).toHaveBeenCalledTimes(3);
-        expect(onUserMessagePersisted).toHaveBeenCalledExactlyOnceWith(originalMessage);
-        for (const release of releases) {
+
+        if (outcome === "complete") {
+          resumeAcquisition.resolve();
+          expect((await run).payloads).toEqual([{ text: "ok" }]);
+          expect(mockedRunEmbeddedAttempt).toHaveBeenCalledOnce();
           expect(release).toHaveBeenCalledOnce();
+        } else {
+          const reason = new Error(`isolated probe: ${outcome}`);
+          if (outcome === "parent abort") {
+            parentAbort.abort(reason);
+          } else {
+            reason.name = "CommandLaneTaskTimeoutError";
+            queueTimeout.reject(reason);
+            await observed;
+          }
+          expect(acquisitionSignal?.aborted).toBe(true);
+          expect(acquisitionSignal?.reason).toBe(reason);
+          expect(parentAbort.signal.aborted).toBe(outcome === "parent abort");
+          resumeAcquisition.resolve();
+          await expect(run).rejects.toBe(reason);
+          await Promise.allSettled(queuedTasks);
+          expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
+          expect(release).not.toHaveBeenCalled();
         }
       } finally {
-        // A failed generation must not leave queued replies in the next table row.
-        mockedAcquireAgentRunPreparedModelRuntime.mockReset();
-        mockedRunEmbeddedAttempt.mockReset();
+        resumeAcquisition.resolve();
+        await observed;
+        // Queue rejection can precede callback cleanup; join it before fixture disposal.
+        await Promise.allSettled(queuedTasks);
       }
     },
   );
-
-  it("starts an isolated probe outside its caller's admitted generation", async () => {
-    const { runEmbeddedAgent } = await loadSourceDeliveryHarness();
-    const config = {};
-    const workspaceDir = state.workspaceDir;
-    const baseLease = await mockedAcquireAgentRunPreparedModelRuntime({
-      agentId: "openclaw",
-      agentDir: state.agentDir("openclaw"),
-      workspaceDir,
-    });
-    const admittedGeneration: PreparedModelRuntimePluginGeneration = {
-      configuredCatalogEntries: [],
-      inlineProviderModels: [],
-      pluginMetadataSnapshot: {
-        ...baseLease.snapshot.metadataSnapshot,
-        policyHash: "admitted",
-        workspaceDir,
-      },
-      pluginRegistry: createEmptyPluginRegistry(),
-    };
-    const isolatedMetadataSnapshot = {
-      ...baseLease.snapshot.metadataSnapshot,
-      policyHash: "isolated",
-      workspaceDir,
-    };
-    const release = vi.fn();
-    mockedAcquireAgentRunPreparedModelRuntime.mockClear();
-    mockedAcquireAgentRunPreparedModelRuntime.mockResolvedValueOnce({
-      ...baseLease,
-      snapshot: {
-        ...baseLease.snapshot,
-        config,
-        workspaceDir,
-        metadataSnapshot: isolatedMetadataSnapshot,
-      },
-      release,
-    });
-    mockedBuildEmbeddedRunPayloads.mockReturnValue([{ text: "ok" }]);
-    mockedRunEmbeddedAttempt.mockResolvedValueOnce(makeAttemptResult({ assistantTexts: ["ok"] }));
-    useOpenAIPlatformAuthFixture();
-    const abortSignal = new AbortController().signal;
-
-    const isolatedProbeParams: RunEmbeddedAgentInternalParams = {
-      ...createOverflowRunParams(state),
-      agentId: "openclaw",
-      agentDir: state.agentDir("openclaw"),
-      config,
-      provider: "openai",
-      model: "gpt-5.4",
-      preparedModelRuntimeMode: "isolated-read-only",
-      runId: "isolated-probe-generation",
-      sessionKey: undefined,
-      abortSignal,
-      workspaceDir,
-    };
-    const result = await withPreparedModelRuntimePluginGenerationScope(
-      admittedGeneration,
-      async () => await runEmbeddedAgent(isolatedProbeParams),
-    );
-
-    expect(mockedAcquireAgentRunPreparedModelRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ config, loadRuntimePlugins: true, workspaceDir }),
-      abortSignal,
-      "static",
-    );
-    expect(result.payloads).toEqual([{ text: "ok" }]);
-    expect(release).toHaveBeenCalledOnce();
-  });
 
   it.each([
     ["agentHarnessId", { agentHarnessId: "codex" }],

@@ -111,6 +111,7 @@ it("refreshes an externally changed install ledger before publishing management 
     config,
     pluginIds: [fixture.pluginId],
     reason: "metadata",
+    assertInvokerOwned: expect.any(Function),
   });
 
   expect((await listManagedPlugins({ config })).plugins).toContainEqual(

@@ -124,6 +124,7 @@ type InProcessConfigCandidate = {
 
 export type GatewayConfigReloadTransactionOwnership = {
   isCurrent: () => boolean;
+  assertInvokerOwned?: () => void;
   markRuntimeCommitted: (runtimeConfig: OpenClawConfig, plan: GatewayReloadPlan) => void;
   commitRuntimeEnv: () => void;
   publishRuntimeEnv: () => void;
@@ -473,6 +474,7 @@ export function startGatewayConfigReloader(opts: {
     application?: RuntimeConfigWriteApplicationClaim,
     pluginLifecycle?: GatewayReloadPlan["pluginLifecycle"],
     onRuntimeCommitted?: () => void,
+    pluginInvokerGuard?: () => void,
   ): Promise<PluginRuntimeApplication | undefined> => {
     const settleRuntimeApplication = (result: GatewayHotReloadApplication = "applied") => {
       const status = typeof result === "string" ? result : result.status;
@@ -498,7 +500,14 @@ export function startGatewayConfigReloader(opts: {
     let runtimeEnvCommitted = false;
     const nextSettings = resolveSettings(nextConfig);
     const isCurrent = () => configWriteEpoch === transactionEpoch;
+    const assertInvokerOwned = () => {
+      // Published work must finish its cleanup and receipt even if its invoker closes.
+      if (!committedRuntimeConfig) {
+        pluginInvokerGuard?.();
+      }
+    };
     const assertCurrent = () => {
+      assertInvokerOwned();
       if (!isCurrent()) {
         throw new GatewayConfigReloadSupersededError();
       }
@@ -510,6 +519,7 @@ export function startGatewayConfigReloader(opts: {
     };
     const ownership: GatewayConfigReloadTransactionOwnership = {
       isCurrent,
+      assertInvokerOwned,
       reapplyRuntimeOverlays: preparedCandidate?.reapplyRuntimeOverlays ?? ((config) => config),
       ...(preparedCandidate?.runtimeEnv ? { runtimeEnv: preparedCandidate.runtimeEnv } : {}),
       ...(runtimeRefresh ? { runtimeRefresh } : {}),
@@ -1161,11 +1171,13 @@ export function startGatewayConfigReloader(opts: {
     const previousOperation = pluginOperationTail;
     const operationId = randomUUID();
     const operation: Promise<PluginRuntimeApplication> = previousOperation.then(async () => {
+      params.assertInvokerOwned?.();
       // The awaited reload releases `running` in finally; a queued reload may take ownership next.
       // oxlint-disable-next-line no-unmodified-loop-condition
       while (running) {
         await activeReloadCompletion;
       }
+      params.assertInvokerOwned?.();
       if (stopped) {
         throw new Error("Gateway plugin lifecycle is stopped.");
       }
@@ -1185,6 +1197,7 @@ export function startGatewayConfigReloader(opts: {
         for (let attempt = 0; ; attempt += 1) {
           const epoch = configWriteEpoch;
           const snapshot = await opts.readSnapshot(currentRuntimeEnvSourceConfig);
+          params.assertInvokerOwned?.();
           if (!snapshot.valid || !snapshot.exists) {
             throw new Error("Plugin runtime application requires a valid persisted config.");
           }
@@ -1228,6 +1241,7 @@ export function startGatewayConfigReloader(opts: {
               () => {
                 committed = true;
               },
+              params.assertInvokerOwned,
             );
             if (!runtime) {
               throw new Error("Plugin runtime application did not produce a completed receipt.");

@@ -164,11 +164,13 @@ export async function reloadGatewayPlugins(
   };
   const replacement = kernel.pluginRuntimeGeneration.reserve();
   const assertCurrent = () => {
+    params.assertInvokerOwned?.();
     if (params.isAborted?.()) {
       throw new GatewayConfigReloadSupersededError();
     }
   };
   try {
+    assertCurrent();
     // Refresh this operation's cache while retaining the durable ledger of installed package roots.
     const nextMetadata = withPluginCache(cache, () =>
       loadPluginMetadataSnapshot({

@@ -24,10 +24,12 @@ import { enablePluginInConfig } from "./enable.js";
 import { commitPluginInstallRecordsWithConfig } from "./install-record-commit.js";
 import type { PluginInstallTransaction } from "./install-transaction.js";
 import {
+  clearLoadInstalledPluginIndexInstallRecordsCache,
   loadInstalledPluginIndexInstallRecords,
   recordPluginInstallInRecords,
   withoutPluginInstallRecords,
 } from "./installed-plugin-index-records.js";
+import { loadInstalledPluginIndex } from "./installed-plugin-index.js";
 import { reconcileNpmPluginLoadPath, type PluginInstallUpdate } from "./installs.js";
 import type { PluginLifecycleRuntimeApply, PluginRuntimeApplication } from "./lifecycle.js";
 import {
@@ -36,7 +38,9 @@ import {
 } from "./manifest-install-owner.js";
 import { loadPluginManifestRegistryCore, type PluginManifestRecord } from "./manifest-registry.js";
 import { safeRealpathSync } from "./path-safety.js";
+import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
 import { tracePluginLifecyclePhaseAsync } from "./plugin-lifecycle-trace.js";
+import { loadPluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
 import { refreshPluginRegistryAfterConfigMutation } from "./registry-refresh.js";
 import { validatePluginSchemaValue } from "./schema-validator.js";
 import { applySlotSelectionForPlugin } from "./slot-selection.js";
@@ -462,6 +466,7 @@ export async function persistPluginInstall(params: {
   application?: PluginRuntimeApplication;
 }> {
   const warnings: string[] = [];
+  const cache = createPluginCache();
   let committed = false;
   try {
     const installRecords = await tracePluginLifecyclePhaseAsync(
@@ -469,195 +474,216 @@ export async function persistPluginInstall(params: {
       () => loadInstalledPluginIndexInstallRecords(),
       { command: "install" },
     );
-    const previousInstall = installRecords[params.pluginId];
-    const replacedInstallRemoval = resolveReplacedManagedInstallRemoval({
-      pluginId: params.pluginId,
-      previousInstall,
-      nextInstall: params.install,
-    });
-    const nextInstallRecords = recordPluginInstallInRecords(installRecords, {
-      pluginId: params.pluginId,
-      ...params.install,
-    });
-    const reconciledConfig = reconcileNpmPluginLoadPath({
-      config: params.snapshot.config,
-      previousInstall,
-      nextInstall: params.install,
-    });
-    const installedDiscovery = discoverOpenClawPlugins({ installRecords: nextInstallRecords });
-    const realpathCache = new Map<string, string>();
-    const targetPathKeys = new Set(
-      [params.install.installPath, params.install.sourcePath]
-        .filter((candidate): candidate is string => Boolean(candidate?.trim()))
-        .map((candidate) => {
-          const resolved = resolveUserPath(candidate, process.env);
-          return safeRealpathSync(resolved, realpathCache) ?? path.resolve(resolved);
-        }),
-    );
-    const installedCandidates = installedDiscovery.candidates.filter((candidate) => {
-      if (resolvePluginCandidateInstallOwner(candidate) === params.pluginId) {
-        return true;
-      }
-      const candidatePath = candidate.packageDir ?? candidate.rootDir;
-      const resolved = resolveUserPath(candidatePath, process.env);
-      const pathKey = safeRealpathSync(resolved, realpathCache) ?? path.resolve(resolved);
-      return targetPathKeys.has(pathKey);
-    });
-    if (installedCandidates.some(isPluginCandidateInstallOwnerAmbiguous)) {
-      throw new Error(
-        `Plugin package "${params.pluginId}" has ambiguous install ownership. Refresh the plugin registry or reinstall the package before retrying.`,
+    // Validate published bytes in a fresh generation while retaining the prior ledger for cleanup.
+    return await withPluginCache(cache, async () => {
+      const previousInstall = installRecords[params.pluginId];
+      const replacedInstallRemoval = resolveReplacedManagedInstallRemoval({
+        pluginId: params.pluginId,
+        previousInstall,
+        nextInstall: params.install,
+      });
+      const nextInstallRecords = recordPluginInstallInRecords(installRecords, {
+        pluginId: params.pluginId,
+        ...params.install,
+      });
+      const reconciledConfig = reconcileNpmPluginLoadPath({
+        config: params.snapshot.config,
+        previousInstall,
+        nextInstall: params.install,
+      });
+      const installedDiscovery = discoverOpenClawPlugins({ installRecords: nextInstallRecords });
+      const realpathCache = new Map<string, string>();
+      const targetPathKeys = new Set(
+        [params.install.installPath, params.install.sourcePath]
+          .filter((candidate): candidate is string => Boolean(candidate?.trim()))
+          .map((candidate) => {
+            const resolved = resolveUserPath(candidate, process.env);
+            return safeRealpathSync(resolved, realpathCache) ?? path.resolve(resolved);
+          }),
       );
-    }
-    const installedRegistry = loadPluginManifestRegistryCore({
-      config: reconciledConfig,
-      candidates: installedCandidates,
-      diagnostics: installedDiscovery.diagnostics,
-      installRecords: nextInstallRecords,
-    });
-    if (installedRegistry.plugins.some(isPluginManifestInstallOwnerAmbiguous)) {
-      throw new Error(
-        `Plugin package "${params.pluginId}" has ambiguous install ownership. Refresh the plugin registry or reinstall the package before retrying.`,
-      );
-    }
-    const manifests = installedRegistry.plugins.filter(
-      (plugin) => resolvePluginManifestInstallOwner(plugin) === params.pluginId,
-    );
-    if (manifests.length === 0) {
-      throw new Error(
-        `Plugin package "${params.pluginId}" has no authoritative runtime child list. Refresh the plugin registry, then reinstall the package or run openclaw doctor before retrying.`,
-      );
-    }
-    const ownedPluginIds = manifests.map((plugin) => plugin.id).toSorted();
-    const manifestByPluginId = new Map(manifests.map((plugin) => [plugin.id, plugin]));
-    const enablementByPluginId = new Map(
-      ownedPluginIds.map((pluginId) => [
-        pluginId,
-        resolvePluginConfigEnablement({
-          config: reconciledConfig,
-          pluginId,
-          manifest: manifestByPluginId.get(pluginId),
-        }),
-      ]),
-    );
-    for (const [pluginId, configEnablement] of enablementByPluginId) {
-      if (configEnablement.mode === "invalid") {
+      const installedCandidates = installedDiscovery.candidates.filter((candidate) => {
+        if (resolvePluginCandidateInstallOwner(candidate) === params.pluginId) {
+          return true;
+        }
+        const candidatePath = candidate.packageDir ?? candidate.rootDir;
+        const resolved = resolveUserPath(candidatePath, process.env);
+        const pathKey = safeRealpathSync(resolved, realpathCache) ?? path.resolve(resolved);
+        return targetPathKeys.has(pathKey);
+      });
+      if (installedCandidates.some(isPluginCandidateInstallOwnerAmbiguous)) {
         throw new Error(
-          `Plugin "${pluginId}" has invalid configured settings: ${configEnablement.error}. Fix plugins.entries.${pluginId}.config, then rerun the install.`,
+          `Plugin package "${params.pluginId}" has ambiguous install ownership. Refresh the plugin registry or reinstall the package before retrying.`,
         );
       }
-    }
-
-    let next = reconciledConfig;
-    const enabledPluginIds: string[] = [];
-    for (const pluginId of ownedPluginIds) {
-      const configEnablement = enablementByPluginId.get(pluginId) ?? { mode: "ready" as const };
-      const explicitlyDisabled = reconciledConfig.plugins?.entries?.[pluginId]?.enabled === false;
-      if (configEnablement.mode === "missing") {
-        next = prepareConfigForDisabledInstall(next, pluginId);
+      const installedRegistry = loadPluginManifestRegistryCore({
+        config: reconciledConfig,
+        candidates: installedCandidates,
+        diagnostics: installedDiscovery.diagnostics,
+        installRecords: nextInstallRecords,
+      });
+      if (installedRegistry.plugins.some(isPluginManifestInstallOwnerAmbiguous)) {
+        throw new Error(
+          `Plugin package "${params.pluginId}" has ambiguous install ownership. Refresh the plugin registry or reinstall the package before retrying.`,
+        );
       }
-      if ((next.plugins?.allow?.length ?? 0) > 0) {
-        next = ensurePluginAllowlisted(next, pluginId);
-      }
-      next = removeInstalledPluginFromDenylist(next, pluginId);
-      if (configEnablement.mode !== "ready" || explicitlyDisabled) {
-        continue;
-      }
-      const enabled = enablePluginInConfig(next, pluginId, { updateChannelConfig: false });
-      next = enabled.config;
-      if (enabled.enabled) {
-        enabledPluginIds.push(pluginId);
-      }
-    }
-    const slotWarnings: string[] = [];
-    for (const pluginId of enabledPluginIds) {
-      const slotResult = await tracePluginLifecyclePhaseAsync(
-        "slot selection",
-        async () => applySlotSelectionForPlugin(next, pluginId),
-        { command: "install", pluginId },
+      const manifests = installedRegistry.plugins.filter(
+        (plugin) => resolvePluginManifestInstallOwner(plugin) === params.pluginId,
       );
-      next = slotResult.config;
-      slotWarnings.push(...slotResult.warnings);
-    }
-    next = withoutPluginInstallRecords(next);
-    const write = await tracePluginLifecyclePhaseAsync(
-      "config mutation",
-      () =>
-        commitPluginInstallRecordsWithConfig({
-          previousInstallRecords: installRecords,
-          nextInstallRecords,
-          nextConfig: next,
-          baseHash: params.snapshot.baseHash,
-          writeOptions: {
-            ...selectInstallMutationWriteOptions(
-              params.snapshot.writeOptions,
-              params.beforePersistentApply,
-            ),
-            afterWrite: params.applyRuntime
-              ? { mode: "none", reason: "plugin lifecycle applies runtime" }
-              : { mode: "restart", reason: "plugin source changed" },
-          },
-        }),
-      { command: "install" },
-    );
-    // The source transaction must survive later cleanup or registry-refresh failures.
-    committed = true;
-    const application = await params.applyRuntime?.({
-      config: next,
-      write,
-      pluginIds: ownedPluginIds,
-      reason: "install",
-    });
-    if (replacedInstallRemoval) {
-      const removalResult = await tracePluginLifecyclePhaseAsync(
-        "replaced install cleanup",
-        () => {
-          params.beforePersistentApply?.();
-          return applyPluginUninstallDirectoryRemoval(
-            replacedInstallRemoval,
-            params.beforePersistentApply,
+      if (manifests.length === 0) {
+        throw new Error(
+          `Plugin package "${params.pluginId}" has no authoritative runtime child list. Refresh the plugin registry, then reinstall the package or run openclaw doctor before retrying.`,
+        );
+      }
+      const ownedPluginIds = manifests.map((plugin) => plugin.id).toSorted();
+      const manifestByPluginId = new Map(manifests.map((plugin) => [plugin.id, plugin]));
+      const enablementByPluginId = new Map(
+        ownedPluginIds.map((pluginId) => [
+          pluginId,
+          resolvePluginConfigEnablement({
+            config: reconciledConfig,
+            pluginId,
+            manifest: manifestByPluginId.get(pluginId),
+          }),
+        ]),
+      );
+      for (const [pluginId, configEnablement] of enablementByPluginId) {
+        if (configEnablement.mode === "invalid") {
+          throw new Error(
+            `Plugin "${pluginId}" has invalid configured settings: ${configEnablement.error}. Fix plugins.entries.${pluginId}.config, then rerun the install.`,
           );
-        },
-        { command: "install", pluginId: params.pluginId },
+        }
+      }
+
+      let next = reconciledConfig;
+      const enabledPluginIds: string[] = [];
+      for (const pluginId of ownedPluginIds) {
+        const configEnablement = enablementByPluginId.get(pluginId) ?? { mode: "ready" as const };
+        const explicitlyDisabled = reconciledConfig.plugins?.entries?.[pluginId]?.enabled === false;
+        if (configEnablement.mode === "missing") {
+          next = prepareConfigForDisabledInstall(next, pluginId);
+        }
+        if ((next.plugins?.allow?.length ?? 0) > 0) {
+          next = ensurePluginAllowlisted(next, pluginId);
+        }
+        next = removeInstalledPluginFromDenylist(next, pluginId);
+        if (configEnablement.mode !== "ready" || explicitlyDisabled) {
+          continue;
+        }
+        const enabled = enablePluginInConfig(next, pluginId, { updateChannelConfig: false });
+        next = enabled.config;
+        if (enabled.enabled) {
+          enabledPluginIds.push(pluginId);
+        }
+      }
+      const slotWarnings: string[] = [];
+      // Select from the new package before its record reaches the durable index.
+      const slotMetadata = enabledPluginIds.length
+        ? loadPluginMetadataSnapshot({
+            allowCurrent: false,
+            config: next,
+            index: loadInstalledPluginIndex({
+              config: next,
+              candidates: installedCandidates,
+              diagnostics: installedDiscovery.diagnostics,
+              installRecords: nextInstallRecords,
+            }),
+          })
+        : undefined;
+      for (const pluginId of enabledPluginIds) {
+        const slotResult = await tracePluginLifecyclePhaseAsync(
+          "slot selection",
+          async () => {
+            // Legacy kind inspection executes plugin code after an awaited boundary.
+            params.beforePersistentApply?.();
+            return applySlotSelectionForPlugin(next, pluginId, slotMetadata);
+          },
+          { command: "install", pluginId },
+        );
+        next = slotResult.config;
+        slotWarnings.push(...slotResult.warnings);
+      }
+      next = withoutPluginInstallRecords(next);
+      const write = await tracePluginLifecyclePhaseAsync(
+        "config mutation",
+        () =>
+          commitPluginInstallRecordsWithConfig({
+            previousInstallRecords: installRecords,
+            nextInstallRecords,
+            nextConfig: next,
+            baseHash: params.snapshot.baseHash,
+            writeOptions: {
+              ...selectInstallMutationWriteOptions(
+                params.snapshot.writeOptions,
+                params.beforePersistentApply,
+              ),
+              afterWrite: params.applyRuntime
+                ? { mode: "none", reason: "plugin lifecycle applies runtime" }
+                : { mode: "restart", reason: "plugin source changed" },
+            },
+          }),
+        { command: "install" },
       );
-      if (removalResult.warnings.length > 0) {
+      // The source transaction must survive later cleanup or registry-refresh failures.
+      committed = true;
+      const application = await params.applyRuntime?.({
+        config: next,
+        write,
+        pluginIds: ownedPluginIds,
+        reason: "install",
+        assertInvokerOwned: params.beforePersistentApply,
+      });
+      if (replacedInstallRemoval) {
+        const removalResult = await tracePluginLifecyclePhaseAsync(
+          "replaced install cleanup",
+          () => {
+            params.beforePersistentApply?.();
+            return applyPluginUninstallDirectoryRemoval(
+              replacedInstallRemoval,
+              params.beforePersistentApply,
+            );
+          },
+          { command: "install", pluginId: params.pluginId },
+        );
+        if (removalResult.warnings.length > 0) {
+          warnings.push(
+            "A previous plugin installation could not be fully cleaned up. Run `openclaw plugins doctor`.",
+          );
+        }
+      }
+      await refreshPluginRegistryAfterConfigMutation({
+        config: next,
+        reason: "source-changed",
+        installRecords: nextInstallRecords,
+        invalidateRuntimeCache: false,
+        traceCommand: "install",
+        logger: {
+          warn: () =>
+            warnings.push(
+              "Plugin registry refresh failed. Run `openclaw plugins registry --refresh`.",
+            ),
+        },
+      });
+      warnings.push(...slotWarnings);
+      const configurationRequiredPluginIds = [...enablementByPluginId]
+        .filter(([, state]) => state.mode === "missing")
+        .map(([pluginId]) => pluginId);
+      if (configurationRequiredPluginIds.length > 0) {
         warnings.push(
-          "A previous plugin installation could not be fully cleaned up. Run `openclaw plugins doctor`.",
+          configurationRequiredPluginIds.length === 1
+            ? `Installed plugin "${configurationRequiredPluginIds[0]}" without enabling it because it requires configuration first. Configure it, then run \`openclaw plugins enable ${configurationRequiredPluginIds[0]}\`.`
+            : `Installed plugin entries ${configurationRequiredPluginIds.join(", ")} without enabling them because they require configuration first. Configure each entry, then run \`openclaw plugins enable <plugin-id>\`.`,
         );
       }
-    }
-    await refreshPluginRegistryAfterConfigMutation({
-      config: next,
-      reason: "source-changed",
-      installRecords: nextInstallRecords,
-      invalidateRuntimeCache: false,
-      traceCommand: "install",
-      logger: {
-        warn: () =>
-          warnings.push(
-            "Plugin registry refresh failed. Run `openclaw plugins registry --refresh`.",
-          ),
-      },
+      const shadowWarning = resolveShadowedNpmInstallWarning({
+        config: next,
+        pluginId: params.pluginId,
+        install: params.install,
+      });
+      if (shadowWarning) {
+        warnings.push(shadowWarning);
+      }
+      return { config: next, warnings, ...(application ? { application } : {}) };
     });
-    warnings.push(...slotWarnings);
-    const configurationRequiredPluginIds = [...enablementByPluginId]
-      .filter(([, state]) => state.mode === "missing")
-      .map(([pluginId]) => pluginId);
-    if (configurationRequiredPluginIds.length > 0) {
-      warnings.push(
-        configurationRequiredPluginIds.length === 1
-          ? `Installed plugin "${configurationRequiredPluginIds[0]}" without enabling it because it requires configuration first. Configure it, then run \`openclaw plugins enable ${configurationRequiredPluginIds[0]}\`.`
-          : `Installed plugin entries ${configurationRequiredPluginIds.join(", ")} without enabling them because they require configuration first. Configure each entry, then run \`openclaw plugins enable <plugin-id>\`.`,
-      );
-    }
-    const shadowWarning = resolveShadowedNpmInstallWarning({
-      config: next,
-      pluginId: params.pluginId,
-      install: params.install,
-    });
-    if (shadowWarning) {
-      warnings.push(shadowWarning);
-    }
-    return { config: next, warnings, ...(application ? { application } : {}) };
   } catch (error) {
     if (!committed) {
       const failures = [error];
@@ -678,6 +704,11 @@ export async function persistPluginInstall(params: {
       await params.transaction?.commit().catch(() => {
         warnings.push("Plugin install committed, but backup cleanup failed.");
       });
+    }
+    // Enclosing batch operations must reread the ledger after this isolated mutation.
+    clearLoadInstalledPluginIndexInstallRecordsCache();
+    if (cache.kind === "operation") {
+      await retirePluginCache(cache);
     }
   }
 }

@@ -8,25 +8,14 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { describeRootFileOpenFailure, openRootFileSync } from "../../infra/boundary-file-read.js";
 import { hasErrnoCode } from "../../infra/errno.js";
-import { isJavaScriptModulePath } from "../../plugins/native-module-require.js";
+import {
+  isJavaScriptModulePath,
+  PLUGIN_SOURCE_MODULE_EXTENSIONS,
+} from "../../plugins/native-module-require.js";
 import { getPluginCacheRoot, getPluginCacheSource } from "../../plugins/plugin-cache.js";
 import { getCachedPluginModuleLoader } from "../../plugins/plugin-module-loader-cache.js";
 
 const nodeRequire = createRequire(import.meta.url);
-const SOURCE_MODULE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts"]);
-const SOURCE_MODULE_RESOLUTION_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"] as const;
-
-function hasNativeSourceRequireHook(modulePath: string): boolean {
-  const extension = path.extname(modulePath).toLowerCase();
-  return (
-    SOURCE_MODULE_EXTENSIONS.has(extension) &&
-    typeof nodeRequire.extensions?.[extension] === "function"
-  );
-}
-
-function isSourceModulePath(modulePath: string): boolean {
-  return SOURCE_MODULE_EXTENSIONS.has(path.extname(modulePath).toLowerCase());
-}
 
 function loadModuleWithJiti(modulePath: string): unknown {
   const loadWithJiti = getCachedPluginModuleLoader({
@@ -40,8 +29,13 @@ function loadModuleWithJiti(modulePath: string): unknown {
 }
 
 function loadModule(modulePath: string): unknown {
-  if (!isJavaScriptModulePath(modulePath) && !hasNativeSourceRequireHook(modulePath)) {
-    if (isSourceModulePath(modulePath)) {
+  const extension = path.extname(modulePath).toLowerCase();
+  const isSource = PLUGIN_SOURCE_MODULE_EXTENSIONS.includes(extension);
+  if (
+    !isJavaScriptModulePath(modulePath) &&
+    !(isSource && typeof nodeRequire.extensions?.[extension] === "function")
+  ) {
+    if (isSource) {
       // Local source plugins need the TS loader unless the current runtime has
       // installed a native source require hook for that extension.
       return loadModuleWithJiti(modulePath);
@@ -51,7 +45,7 @@ function loadModule(modulePath: string): unknown {
   try {
     return nodeRequire(modulePath);
   } catch (error) {
-    if (isSourceModulePath(modulePath)) {
+    if (isSource) {
       // Native source hooks can still fail on ESM/TS edge cases; fall back to
       // the cached loader before surfacing the error.
       return loadModuleWithJiti(modulePath);
@@ -68,7 +62,7 @@ function resolveSourceModuleCandidates(rootDir: string, specifier: string): stri
   if (path.extname(resolvedPath)) {
     return [];
   }
-  return SOURCE_MODULE_RESOLUTION_EXTENSIONS.map((extension) => `${resolvedPath}${extension}`);
+  return PLUGIN_SOURCE_MODULE_EXTENSIONS.map((extension) => `${resolvedPath}${extension}`);
 }
 
 /**

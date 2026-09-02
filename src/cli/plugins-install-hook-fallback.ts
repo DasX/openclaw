@@ -10,6 +10,10 @@ import {
 } from "../hooks/install.js";
 import { resolveArchiveKind } from "../infra/archive.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import {
+  requestDeferredPackageDirInstall,
+  resolvePackageDirInstallTransaction,
+} from "../infra/install-package-dir.js";
 import { findBundledPluginSource } from "../plugins/bundled-sources.js";
 import {
   loadConfigForInstall,
@@ -64,15 +68,19 @@ export function resolveInstallSafetyOverrides(
 async function attemptHookInstall(
   source: HookCompatibleSource,
   params: InstallParams,
-  options?: { inspection?: "package-kind"; expectedPackageKind?: "hook-only" },
+  options?: {
+    inspection?: "package-kind";
+    expectedPackageKind?: "hook-only";
+    beforePersistentApply?: () => void;
+  },
 ): Promise<InstallHooksResult> {
-  const common = {
+  const common = requestDeferredPackageDirInstall({
     ...resolveInstallSafetyOverrides(params.safetyOverrides ?? {}),
     config: params.snapshot.config,
     mode: source.mode,
     logger: createHookPackInstallLogger(params.runtime),
     ...options,
-  };
+  });
   try {
     return source.source === "local"
       ? await installHooksFromPath({
@@ -96,7 +104,7 @@ async function installHookPack(
   expectedPackageKind?: "hook-only",
 ): Promise<InstallResult> {
   // Online plugin rejection can precede this fallback; acquire and reread only for the hook write.
-  return await withPluginLifecycleLease({}, async () => {
+  return await withPluginLifecycleLease({ signal: params.signal }, async (lease) => {
     const request = resolvePluginInstallRequestContext({
       rawSpec: source.source === "local" ? source.path : source.spec,
     });
@@ -122,16 +130,23 @@ async function installHookPack(
     if (linked && !fs.statSync(source.path).isDirectory()) {
       return { ok: false, error: "Linked hook pack paths must be directories." };
     }
+    const beforePersistentApply = () => {
+      params.signal?.throwIfAborted();
+      lease.assertOwned();
+      snapshot.writeOptions.assertConfigPathForWrite?.();
+      params.beforePersistentApply?.();
+    };
     const result = await attemptHookInstall(
       source,
       { ...params, snapshot },
-      { expectedPackageKind },
+      { expectedPackageKind, beforePersistentApply },
     );
     if (!result.ok) {
       return result;
     }
     const runtime = params.runtime ?? defaultRuntime;
     const config = snapshot.config;
+    const pinMessages: string[] = [];
     await persistHookPackInstall({
       snapshot: linked
         ? {
@@ -170,14 +185,20 @@ async function installHookPack(
               result.targetDir,
               result.version,
               result.npmResolution,
-              runtime.log,
+              (message) => pinMessages.push(message),
               theme.warn,
             ),
       ...(linked
         ? { successMessage: `Linked hook pack path: ${shortenHomePath(source.path)}` }
         : {}),
       runtime,
+      beforePersistentApply,
+      payloadTransaction: resolvePackageDirInstallTransaction(result),
     });
+    // Output failures must not strand a payload whose config has not committed.
+    for (const message of pinMessages) {
+      runtime.log(message);
+    }
     return { ok: true };
   });
 }

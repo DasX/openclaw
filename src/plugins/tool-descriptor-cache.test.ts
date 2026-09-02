@@ -18,13 +18,14 @@ vi.mock("../config/runtime-snapshot.js", () => ({
   resolveRuntimeConfigCacheKey: hoisted.resolveRuntimeConfigCacheKey,
 }));
 
+import { getProcessPluginCache, withPluginCache } from "./plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   buildPluginToolDescriptorCacheKey,
   capturePluginToolDescriptor,
   createPluginToolDescriptorConfigCacheKeyMemo,
-  pluginToolDescriptorCacheState,
+  getPluginToolDescriptorCacheState,
   readCachedPluginToolDescriptors,
   writeCachedPluginToolDescriptors,
 } from "./tool-descriptor-cache.js";
@@ -49,9 +50,12 @@ describe("plugin tool descriptor cache keys", () => {
 
     for (let index = 0; index < 25; index += 1) {
       buildPluginToolDescriptorCacheKey({
-        pluginId: `plugin-${index}`,
-        source: `/tmp/plugin-${index}.js`,
-        contractToolNames: [`tool_${index}`],
+        plugin: {
+          id: `plugin-${index}`,
+          source: `/tmp/plugin-${index}.js`,
+          rootDir: "/tmp",
+          contracts: { tools: [`tool_${index}`] },
+        },
         ctx: {
           config,
           runtimeConfig: config,
@@ -74,10 +78,12 @@ describe("plugin tool descriptor cache keys", () => {
 
     try {
       const params = {
-        pluginId: "demo",
-        source: "/tmp/demo.js",
-        rootDir: "/tmp/demo",
-        contractToolNames: ["demo_tool"],
+        plugin: {
+          id: "demo",
+          source: "/tmp/demo.js",
+          rootDir: "/tmp/demo",
+          contracts: { tools: ["demo_tool"] },
+        },
         ctx: { workspaceDir: "/tmp/workspace" },
       };
 
@@ -90,17 +96,21 @@ describe("plugin tool descriptor cache keys", () => {
     }
   });
 
-  it("retires cached descriptors and retained registries with plugin metadata", () => {
+  it("isolates cached descriptors and retained registries across metadata generations", () => {
     const params = {
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      rootDir: "/tmp/demo",
-      contractToolNames: ["demo_tool"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp/demo",
+        contracts: { tools: ["demo_tool"] },
+      },
       ctx: { workspaceDir: "/tmp/workspace" },
     };
     const cacheKey = buildPluginToolDescriptorCacheKey(params);
+    const retainedRegistry = createEmptyPluginRegistry();
     const descriptor = capturePluginToolDescriptor({
       pluginId: "demo",
+      registry: retainedRegistry,
       optional: false,
       tool: {
         name: "demo_tool",
@@ -110,30 +120,35 @@ describe("plugin tool descriptor cache keys", () => {
         execute: async () => ({ content: [], details: {} }),
       },
     });
-    const retainedRegistry = createEmptyPluginRegistry();
     const contextIdentity = {};
+    const previousCache = getProcessPluginCache();
+    const previousState = getPluginToolDescriptorCacheState();
 
     writeCachedPluginToolDescriptors({ cacheKey, descriptors: [descriptor] });
-    pluginToolDescriptorCacheState.objectIds.set(contextIdentity, 1);
-    pluginToolDescriptorCacheState.nextObjectId = 2;
-    pluginToolDescriptorCacheState.runtimeRegistries.set(descriptor, retainedRegistry);
+    previousState.objectIds.set(contextIdentity, 1);
+    previousState.nextObjectId = 2;
 
     expect(readCachedPluginToolDescriptors(cacheKey)).toEqual([descriptor]);
-    expect(pluginToolDescriptorCacheState.runtimeRegistries.get(descriptor)).toBe(retainedRegistry);
+    expect(descriptor.registry).toBe(retainedRegistry);
 
     clearPluginMetadataLifecycleCaches();
 
     expect(buildPluginToolDescriptorCacheKey(params)).toBe(cacheKey);
     expect(readCachedPluginToolDescriptors(cacheKey)).toBeUndefined();
-    expect(pluginToolDescriptorCacheState.objectIds.get(contextIdentity)).toBeUndefined();
-    expect(pluginToolDescriptorCacheState.nextObjectId).toBe(1);
-    expect(pluginToolDescriptorCacheState.runtimeRegistries.get(descriptor)).toBeUndefined();
+    const currentState = getPluginToolDescriptorCacheState();
+    expect(currentState.objectIds.get(contextIdentity)).toBeUndefined();
+    expect(currentState.nextObjectId).toBe(1);
+    expect(withPluginCache(previousCache, () => readCachedPluginToolDescriptors(cacheKey))).toEqual(
+      [descriptor],
+    );
+    expect(descriptor.registry).toBe(retainedRegistry);
   });
 
   it("preserves required gateway client capabilities in cached descriptors", () => {
     const outputSchema = { type: "object", properties: { ok: { type: "boolean" } } } as const;
     const cached = capturePluginToolDescriptor({
       pluginId: "demo",
+      registry: createEmptyPluginRegistry(),
       optional: false,
       tool: {
         name: "inline_demo",
@@ -155,6 +170,7 @@ describe("plugin tool descriptor cache keys", () => {
   it("does not add network provenance to descriptors for ordinary plugin tools", () => {
     const cached = capturePluginToolDescriptor({
       pluginId: "demo",
+      registry: createEmptyPluginRegistry(),
       optional: false,
       tool: {
         name: "ordinary_demo",
@@ -170,9 +186,12 @@ describe("plugin tool descriptor cache keys", () => {
 
   it("isolates descriptor caches by declared gateway client capabilities", () => {
     const base = {
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["show_widget"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["show_widget"] },
+      },
       ctx: { workspaceDir: "/tmp/workspace" },
     };
 
@@ -191,9 +210,12 @@ describe("plugin tool descriptor cache keys", () => {
     const configCacheKeyMemo = createPluginToolDescriptorConfigCacheKeyMemo();
 
     const firstKey = buildPluginToolDescriptorCacheKey({
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["demo"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["demo"] },
+      },
       ctx: {
         config: firstConfig,
         runtimeConfig: firstConfig,
@@ -202,9 +224,12 @@ describe("plugin tool descriptor cache keys", () => {
       configCacheKeyMemo,
     });
     const secondKey = buildPluginToolDescriptorCacheKey({
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["demo"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["demo"] },
+      },
       ctx: {
         config: secondConfig,
         runtimeConfig: secondConfig,
@@ -219,9 +244,12 @@ describe("plugin tool descriptor cache keys", () => {
 
   it("varies descriptor keys by active model metadata", () => {
     const base = {
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["demo"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["demo"] },
+      },
       ctx: {
         workspaceDir: "/tmp/workspace",
         agentId: "main",
@@ -251,9 +279,12 @@ describe("plugin tool descriptor cache keys", () => {
 
   it("varies descriptor keys by delivery availability", () => {
     const base = {
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["delivery_tool"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["delivery_tool"] },
+      },
       ctx: { workspaceDir: "/tmp/workspace" },
     };
 
@@ -271,9 +302,12 @@ describe("plugin tool descriptor cache keys", () => {
 
   it("varies descriptor keys by trusted owner state", () => {
     const base = {
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["owner_tool"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["owner_tool"] },
+      },
       ctx: {
         workspaceDir: "/tmp/workspace",
         agentId: "main",
@@ -294,9 +328,12 @@ describe("plugin tool descriptor cache keys", () => {
 
   it("varies descriptor keys by native channel identity", () => {
     const base = {
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["demo"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["demo"] },
+      },
       ctx: {
         messageChannel: "feishu",
         nativeChannelId: "oc_first",
@@ -338,9 +375,12 @@ describe("plugin tool descriptor cache keys", () => {
     } as never;
 
     const firstKey = buildPluginToolDescriptorCacheKey({
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["demo"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["demo"] },
+      },
       ctx: {
         config: firstConfig,
         runtimeConfig: firstConfig,
@@ -348,9 +388,12 @@ describe("plugin tool descriptor cache keys", () => {
       currentRuntimeConfig: firstConfig,
     });
     const secondKey = buildPluginToolDescriptorCacheKey({
-      pluginId: "demo",
-      source: "/tmp/demo.js",
-      contractToolNames: ["demo"],
+      plugin: {
+        id: "demo",
+        source: "/tmp/demo.js",
+        rootDir: "/tmp",
+        contracts: { tools: ["demo"] },
+      },
       ctx: {
         config: secondConfig,
         runtimeConfig: secondConfig,

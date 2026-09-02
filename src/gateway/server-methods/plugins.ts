@@ -28,7 +28,6 @@ import {
   capturePluginRuntimeApplications,
   getPluginRuntimeGeneration,
   projectPluginRuntimeFailure,
-  type PluginLifecycleRuntimeApply,
   type PluginRuntimeApplication,
 } from "../../plugins/lifecycle.js";
 import { ManagedPluginLifecycleError } from "../../plugins/management-lifecycle-error.js";
@@ -102,25 +101,45 @@ type PluginLifecycleResult = Partial<
     Pick<PluginsUninstallResult, "pluginId" | "removed">
 > & { application?: PluginRuntimeApplication };
 
+type PluginLifecycleOptions = Required<
+  Pick<Parameters<typeof installManagedPlugin>[0], "applyRuntime" | "beforePersistentApply">
+> & { signal?: AbortSignal };
+
 function lifecycleHandler<T>(
   method: string,
   validate: Validator<T>,
-  run: (params: T, applyRuntime: PluginLifecycleRuntimeApply) => Promise<PluginLifecycleResult>,
+  run: (params: T, lifecycle: PluginLifecycleOptions) => Promise<PluginLifecycleResult>,
 ): GatewayRequestHandler {
-  return async ({ params, respond, context }) => {
+  return async ({ params, respond, context, signal, sessionMutationCommitGuard }) => {
     if (!assertValidParams(params, validate, method, respond)) {
       return;
     }
     let captured: ReturnType<typeof capturePluginRuntimeApplications> | undefined;
     try {
-      if (!context.applyPluginLifecycleChange) {
+      const applyRuntime = context.applyPluginLifecycleChange;
+      if (!applyRuntime) {
         throw new Error("Plugin lifecycle changes require a running Gateway.");
       }
-      captured = capturePluginRuntimeApplications(context.applyPluginLifecycleChange);
-      const { application, plugin, pluginId, removed, warnings } = await run(
-        params,
-        captured.applyRuntime,
-      );
+      const beforePersistentApply = () => {
+        signal?.throwIfAborted();
+        sessionMutationCommitGuard?.();
+      };
+      beforePersistentApply();
+      captured = capturePluginRuntimeApplications((change) => {
+        beforePersistentApply();
+        return applyRuntime({
+          ...change,
+          assertInvokerOwned: () => {
+            beforePersistentApply();
+            change.assertInvokerOwned?.();
+          },
+        });
+      });
+      const { application, plugin, pluginId, removed, warnings } = await run(params, {
+        applyRuntime: captured.applyRuntime,
+        beforePersistentApply,
+        ...(signal ? { signal } : {}),
+      });
       if (!application) {
         throw new Error("Plugin lifecycle did not return a runtime application receipt.");
       }
@@ -148,12 +167,12 @@ export const pluginsHandlers: GatewayRequestHandlers = {
   "plugins.refresh": lifecycleHandler(
     "plugins.refresh",
     validatePluginsRefreshParams,
-    (_params, applyRuntime) => refreshManagedPlugins({ applyRuntime }),
+    (_params, lifecycle) => refreshManagedPlugins(lifecycle),
   ),
   "plugins.reload": lifecycleHandler(
     "plugins.reload",
     validatePluginsReloadParams,
-    (params, applyRuntime) => reloadManagedPlugin({ ...params, applyRuntime }),
+    (params, lifecycle) => reloadManagedPlugin({ ...params, ...lifecycle }),
   ),
   "plugins.list": async ({ params, respond }) => {
     if (!assertValidParams(params, validatePluginsListParams, "plugins.list", respond)) {
@@ -270,16 +289,16 @@ export const pluginsHandlers: GatewayRequestHandlers = {
   "plugins.install": lifecycleHandler(
     "plugins.install",
     validatePluginsInstallParams,
-    (params, applyRuntime) => installManagedPlugin({ request: params, applyRuntime }),
+    (params, lifecycle) => installManagedPlugin({ request: params, ...lifecycle }),
   ),
   "plugins.uninstall": lifecycleHandler(
     "plugins.uninstall",
     validatePluginsUninstallParams,
-    (params, applyRuntime) => uninstallManagedPlugin({ ...params, applyRuntime }),
+    (params, lifecycle) => uninstallManagedPlugin({ ...params, ...lifecycle }),
   ),
   "plugins.setEnabled": lifecycleHandler(
     "plugins.setEnabled",
     validatePluginsSetEnabledParams,
-    (params, applyRuntime) => setManagedPluginEnabled({ ...params, applyRuntime }),
+    (params, lifecycle) => setManagedPluginEnabled({ ...params, ...lifecycle }),
   ),
 };

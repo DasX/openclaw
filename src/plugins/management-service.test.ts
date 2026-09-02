@@ -498,6 +498,7 @@ describe("plugin management service", () => {
         write,
         pluginIds: ["workboard"],
         reason: enabled ? "enable" : "disable",
+        assertInvokerOwned: expect.any(Function),
       });
       expect(result.application).toBe(application);
     },

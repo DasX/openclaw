@@ -46,6 +46,8 @@ export type PluginLifecycleRuntimeApply = (params: {
   write?: Pick<ConfigReplaceResult, "persistedHash" | "persistedSourceConfig">;
   pluginIds: readonly string[];
   reason: PluginLifecycleReason;
+  /** Private invoker authority; never part of the published runtime receipt. */
+  assertInvokerOwned?: () => void;
 }) => Promise<PluginRuntimeApplication>;
 
 /** Capture publications independently of later management or authority failures. */

@@ -1,8 +1,8 @@
-import { pluginToolDescriptorCacheState } from "./tool-descriptor-cache.js";
+import { getPluginToolDescriptorCacheState } from "./tool-descriptor-cache.js";
 
 export function resetPluginToolDescriptorCacheForTest(): void {
-  pluginToolDescriptorCacheState.descriptors.clear();
-  pluginToolDescriptorCacheState.objectIds = new WeakMap();
-  pluginToolDescriptorCacheState.nextObjectId = 1;
-  pluginToolDescriptorCacheState.runtimeRegistries = new WeakMap();
+  const state = getPluginToolDescriptorCacheState();
+  state.descriptors.clear();
+  state.objectIds = new WeakMap();
+  state.nextObjectId = 1;
 }

@@ -96,6 +96,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     nextConfig: OpenClawConfig,
     publication?: GatewayHotReloadPublication,
   ): Promise<GatewayHotReloadApplication> => {
+    publication?.assertInvokerOwned?.();
     assertIrreversibleReloadPlanHasRecoveryOwner(plan, restartRecoveryAvailable);
     const isCurrent = () => !isRestartRetryStopped() && (publication?.isCurrent?.() ?? true);
     const state = params.getState();
@@ -188,6 +189,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         return;
       }
       const commit = async () => {
+        publication?.assertInvokerOwned?.();
         if (plan.restartHeartbeat || plan.reconcileSkillReviewJobs) {
           // Runtime publication promises that durable monitor rows reflect this config.
           // A retrying or superseded pass leaves the previous generation authoritative.
@@ -199,6 +201,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         }
         // Plugin publication can reject its prepared registry. Keep config and
         // secret rollback available until that selection succeeds.
+        publication?.assertInvokerOwned?.();
         runtime?.publish();
         if (runtime) {
           params.setState(nextState);
@@ -393,6 +396,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
           commitRuntime,
           env: publication?.runtimeEnv ?? process.env,
           isAborted: isPluginReloadAborted,
+          assertInvokerOwned: publication?.assertInvokerOwned,
         });
         pluginReloadAborted = result.cancelled === true || isPluginReloadAborted();
         if (!pluginReloadAborted) {

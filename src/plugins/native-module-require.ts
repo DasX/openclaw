@@ -3,6 +3,20 @@ import Module, { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// Resolution and Jiti must accept the same source family, including typed JSX variants.
+export const PLUGIN_SOURCE_MODULE_EXTENSIONS: readonly string[] = [
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".mtsx",
+  ".ctsx",
+];
+
+export function isPluginSourceModulePath(modulePath: string): boolean {
+  return PLUGIN_SOURCE_MODULE_EXTENSIONS.includes(path.extname(modulePath).toLowerCase());
+}
+
 // Failed ESM jobs survive require-cache eviction. Preserve an observed terminal error
 // if a retry hits that job, rather than transforming its rejected graph through Jiti.
 const nativeModuleLoadFailures = new Map<string, unknown>();
@@ -54,12 +68,26 @@ function isSourceTransformFallbackError(error: unknown, modulePath: string): boo
     code === "ERR_REQUIRE_ESM" ||
     code === "ERR_REQUIRE_ASYNC_MODULE" ||
     code === "ERR_REQUIRE_ESM_RACE_CONDITION" ||
+    code === "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX" ||
+    code === "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING" ||
+    code === "ERR_UNKNOWN_FILE_EXTENSION" ||
     isMissingTargetModuleError(candidate, modulePath)
   );
 }
 
 /** Attempts native require before falling back to source transform paths. */
 export function tryNativeRequireJavaScriptModule(
+  moduleSpecifier: string,
+  options: Parameters<typeof tryNativeRequireModule>[1] = {},
+): { ok: true; moduleExport: unknown } | { ok: false } {
+  if (!isJavaScriptModulePath(toNativeRequirePath(moduleSpecifier))) {
+    return { ok: false };
+  }
+  return tryNativeRequireModule(moduleSpecifier, options);
+}
+
+/** Loads prepared host aliases, including source SDK paths supported by the runtime. */
+export function tryNativeRequireModule(
   moduleSpecifier: string,
   options: {
     allowWindows?: boolean;
@@ -72,15 +100,19 @@ export function tryNativeRequireJavaScriptModule(
     return { ok: false };
   }
   const modulePath = toNativeRequirePath(moduleSpecifier);
-  if (!isJavaScriptModulePath(modulePath)) {
+  // A process-wide require retains evicted graphs through its parent's children.
+  // Keep that parent scoped to this load so retired graphs can be collected.
+  const require = createRequire(import.meta.url);
+  if (
+    isPluginSourceModulePath(modulePath) &&
+    !process.features.typescript &&
+    typeof require.extensions?.[path.extname(modulePath)] !== "function"
+  ) {
     return { ok: false };
   }
   let resolvedPath = modulePath;
   try {
     const moduleExport = withNativeRequireAliases(options.aliasMap, () => {
-      // A process-wide require retains evicted graphs through its parent's children.
-      // Keep that parent scoped to this load so retired graphs can be collected.
-      const require = createRequire(import.meta.url);
       resolvedPath = require.resolve(modulePath);
       // Requiring the resolved target could apply a second alias to the same request.
       return require(modulePath);
