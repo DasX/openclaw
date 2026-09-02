@@ -119,6 +119,16 @@ describe("runCodexAppServerAttempt pending questions", () => {
         path.join(tempDir, "question-workspace"),
       );
       params.toolAuthorityFingerprint = "question-context-authority";
+      params.trigger = "user";
+      params.senderId = "sender-context-proof";
+      params.permissionChange = {
+        owner: {},
+        baseExecOverrides: {},
+        notice: "Permission context proof.",
+        request: vi.fn(async () => true),
+        applied: () => true,
+        recordApplied: vi.fn(),
+      };
       const recorder = (workContext: string | null) =>
         ({
           message: {
@@ -148,6 +158,19 @@ describe("runCodexAppServerAttempt pending questions", () => {
       params.onRunProgress = onRunProgress;
       const run = runCodexAppServerAttempt(params);
       await turnStarted.promise;
+      const retainedContext = {
+        openclaw_current_sender: {
+          kind: "untrusted",
+          value: JSON.stringify({ sender: { id: params.senderId } }),
+        },
+        openclaw_permission_change: {
+          kind: "application",
+          value: params.permissionChange.notice,
+        },
+      };
+      expect(request.mock.calls.find(([method]) => method === "turn/start")?.[1]).toMatchObject({
+        additionalContext: retainedContext,
+      });
       await vi.waitFor(() => expect(handleRequest).toBeTypeOf("function"), fastWait);
 
       const response = handleRequest?.({
@@ -181,6 +204,9 @@ describe("runCodexAppServerAttempt pending questions", () => {
         fastWait,
       );
       const sourceSteer = request.mock.calls.findLast(([method]) => method === "turn/steer");
+      expect(sourceSteer?.[1]).toMatchObject({
+        additionalContext: retainedContext,
+      });
       const sourceMessageId = (sourceSteer?.[1] as { clientUserMessageId?: string } | undefined)
         ?.clientUserMessageId;
       if (!sourceMessageId) {
@@ -223,6 +249,7 @@ describe("runCodexAppServerAttempt pending questions", () => {
         expect(answerSteer).toMatchObject({
           input: [{ type: "text", text: "2" }],
           additionalContext: {
+            ...retainedContext,
             openclaw_work_context: {
               kind: "untrusted",
               value: expect.stringContaining(snapshot ?? "cleared"),

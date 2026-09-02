@@ -12,7 +12,7 @@ import {
   isCodexAppServerIndeterminateTransportError,
   type CodexAppServerClient,
 } from "./client.js";
-import type { CodexUserInput } from "./protocol.js";
+import type { CodexTurnStartParams, CodexUserInput } from "./protocol.js";
 import { buildCodexWorkContextEntry } from "./turn-params.js";
 
 const CODEX_STEER_ALL_DEBOUNCE_MS = 500;
@@ -56,6 +56,7 @@ export function createCodexSteeringQueue(params: {
   prepareMessage: (text: string, options: CodexSteeringQueueOptions) => Promise<CodexUserInput[]>;
   beforeConfirmConsumed?: (items: readonly CodexSteeringCommitItem[]) => Promise<void>;
   workContextMessage?: ReturnType<typeof resolveWorkContextMessage>;
+  additionalContext?: CodexTurnStartParams["additionalContext"];
 }) {
   type PendingSteerMessage = CodexSteeringQueueOptions & {
     acceptance: "open" | "accepted" | "rejected";
@@ -192,7 +193,11 @@ export function createCodexSteeringQueue(params: {
           item.userTurnTranscriptRecorder?.message,
         );
       }
-      const additionalContext = buildCodexWorkContextEntry(workContextMessage);
+      const workContext = buildCodexWorkContextEntry(workContextMessage);
+      // Codex replaces its entire context map; retain the accepted turn's other entries.
+      const additionalContext = workContext
+        ? { ...params.additionalContext, ...workContext }
+        : params.additionalContext;
       // No await between final owner validation and RPC dispatch. Only these
       // batches become accepted-unconfirmed if cancellation races the response.
       clientUserMessageId = `openclaw:${params.turnId}:steer:${++batchSequence}`;

@@ -154,6 +154,7 @@ export async function prepareCodexAttemptTurnRequest(
       );
       acceptedTurnId = startedTurn.turn.id;
       throwIfTurnStartAcceptedAfterAbort();
+      state.additionalContext = turnStartParams.additionalContext;
       return startedTurn;
     } catch (error) {
       if (acceptedTurnId || isCodexAppServerIndeterminateRequestCancellationError(error)) {

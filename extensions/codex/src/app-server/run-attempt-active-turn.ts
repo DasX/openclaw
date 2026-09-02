@@ -319,6 +319,7 @@ export function activateCodexAttemptTurn(
     requestTimeoutMs: connection.appServer.requestTimeoutMs,
     signal: runAbortController.signal,
     assertActive: assertSteeringActive,
+    additionalContext: state.additionalContext,
     workContextMessage: resolveWorkContextMessage(
       context.historyState.messages,
       runtime.runtimeParams.userTurnTranscriptRecorder?.message,
