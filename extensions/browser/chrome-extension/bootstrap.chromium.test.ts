@@ -567,19 +567,27 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
           .poll(() => extensionConnections, { timeout: 15_000 })
           .toBeGreaterThan(previousConnections);
         await expect.poll(() => relay.bridge.extensionConnected).toBe(true);
-        const reconnectedTabsResponse = await dispatcher.dispatch({
-          method: "GET",
-          path: "/tabs",
-          query: { profile: existingSessionProfile },
-        });
-        const reconnectedTarget = (
-          reconnectedTabsResponse.body as { tabs?: Array<{ targetId?: string; url?: string }> }
-        ).tabs?.find((tab) => tab.url === controlled.url())?.targetId;
-        if (!reconnectedTarget) {
-          throw new Error(
-            `Reconnected target missing: ${JSON.stringify(reconnectedTabsResponse.body)}`,
-          );
-        }
+        // Hello precedes restored CDP targets in each retained client. Wait for this
+        // MCP consumer's inventory before using its replacement target handle.
+        const reconnectedTarget = await vi.waitFor(
+          async () => {
+            const reconnectedTabsResponse = await dispatcher.dispatch({
+              method: "GET",
+              path: "/tabs",
+              query: { profile: existingSessionProfile },
+            });
+            const targetId = (
+              reconnectedTabsResponse.body as { tabs?: Array<{ targetId?: string; url?: string }> }
+            ).tabs?.find((tab) => tab.url === controlled.url())?.targetId;
+            if (!targetId) {
+              throw new Error(
+                `Reconnected target missing: ${JSON.stringify(reconnectedTabsResponse.body)}`,
+              );
+            }
+            return targetId;
+          },
+          { timeout: 15_000 },
+        );
         await proveLabeledRefScreenshot({
           dispatcher,
           controlled,
