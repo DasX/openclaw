@@ -312,7 +312,7 @@ Targeted local loop:
 pnpm lint:extensions:no-deprecated-channel-access
 pnpm test src/channels/message-access/message-access.test.ts src/plugin-sdk/channel-ingress-runtime.test.ts src/plugin-sdk/access-groups.test.ts
 pnpm test extensions/<changed-plugin>/src/...
-pnpm plugin-sdk:api:check
+pnpm plugin-sdk:api:diff --base "$(git merge-base origin/main HEAD)" --head HEAD
 pnpm config:docs:check
 pnpm check:docs
 git diff --check

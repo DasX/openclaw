@@ -9,7 +9,7 @@ import {
 } from "./api-baseline.js";
 
 describe("Plugin SDK API baseline", () => {
-  it("normalizes declaration import paths to repo-relative paths", () => {
+  it("normalizes declaration import paths to a stable repo placeholder", () => {
     const repoRoot = process.cwd();
     const modelCatalogPath = path.join(repoRoot, "src", "agents", "agent-model-discovery");
     const declaration = `export function setModelCatalogImportForTest(loader?: (() => Promise<typeof import("${modelCatalogPath}", { with: { "resolution-mode": "import" } })>) | undefined): void;`;
@@ -17,9 +17,7 @@ describe("Plugin SDK API baseline", () => {
     const normalized = normalizePluginSdkApiDeclarationText(repoRoot, declaration);
 
     expect(normalized).not.toContain(repoRoot);
-    expect(normalized).toContain(
-      'import("src/agents/agent-model-discovery", { with: { "resolution-mode": "import" } })',
-    );
+    expect(normalized).toContain('import("<repo>", { with: { "resolution-mode": "import" } })');
   });
 
   it("normalizes dependency source paths to stable node_modules paths", () => {

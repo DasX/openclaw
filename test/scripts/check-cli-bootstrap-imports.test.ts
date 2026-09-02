@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  checkCliBootstrapExternalImports,
   collectCliBootstrapExternalImportErrors,
   collectGatewayRunChunkBudgetErrors,
   listStaticImportSpecifiers,
@@ -73,6 +74,7 @@ describe("check-cli-bootstrap-imports", () => {
 
     expect(collectCliBootstrapExternalImportErrors({ rootDir: root })).toStrictEqual([]);
     expect(collectGatewayRunChunkBudgetErrors({ rootDir: root })).toStrictEqual([]);
+    expect(() => checkCliBootstrapExternalImports({ rootDir: root })).not.toThrow();
   });
 
   it("reports external packages in the static bootstrap graph", () => {

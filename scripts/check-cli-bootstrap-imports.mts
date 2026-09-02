@@ -352,6 +352,12 @@ export function collectGatewayRunChunkBudgetErrors(params: CliBootstrapCheckPara
 export function collectWorkerDeployArtifactErrors(params: CliBootstrapCheckParams = {}) {
   const rootDir = params.rootDir ?? process.cwd();
   const fsImpl = params.fs ?? fs;
+  // The pinned release tooling also serves frozen branches that predate the
+  // standalone worker deploy entrypoint. Only enforce its artifact closure
+  // when that product surface exists in the selected source tree.
+  if (!fsImpl.existsSync(path.resolve(rootDir, "src/worker/worker-deploy-entry.ts"))) {
+    return [];
+  }
   const entrypoints = WORKER_DEPLOY_ENTRYPOINTS.map((entrypoint) =>
     path.resolve(rootDir, entrypoint),
   );

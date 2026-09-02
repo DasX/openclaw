@@ -209,8 +209,5 @@ jobs:
       - name: Check config docs drift statefile
         run: pnpm config:docs:check
 
-      - name: Check plugin SDK API baseline drift
-        run: pnpm plugin-sdk:api:check
-
       - name: Check plugin SDK surface budget
         run: pnpm plugin-sdk:surface:check

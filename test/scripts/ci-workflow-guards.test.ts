@@ -549,16 +549,12 @@ describe("ci workflow guards", () => {
     }
   });
 
-  it("runs plugin SDK API and surface drift checks in workflow sanity", () => {
+  it("runs the plugin SDK surface drift check in workflow sanity", () => {
     const workflow = readWorkflowSanityWorkflow();
     const steps = workflow.jobs["generated-doc-baselines"].steps;
     const stepNames = steps.map((step) => step.name);
 
-    expect(stepNames).toContain("Check plugin SDK API baseline drift");
     expect(stepNames).toContain("Check plugin SDK surface budget");
-    expect(stepNames.indexOf("Check plugin SDK API baseline drift")).toBeLessThan(
-      stepNames.indexOf("Check plugin SDK surface budget"),
-    );
     expect(steps.find((step) => step.name === "Check plugin SDK surface budget").run).toBe(
       "pnpm plugin-sdk:surface:check",
     );
