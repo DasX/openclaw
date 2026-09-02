@@ -10,10 +10,13 @@ const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
  */
 export type NewSessionVisibility = "normal" | "draft" | "incognito";
 export type DraftSessionCreateOverrides = Partial<
-  Pick<SessionCreateParams, "message" | "attachments">
+  Pick<SessionCreateParams, "message" | "attachments" | "displayName">
 > & { visibility?: NewSessionVisibility };
 export type DraftSessionCreateSelection = Partial<
-  Pick<SessionCreateParams, "attachments" | "permissionMode" | "catalogId" | "category">
+  Pick<
+    SessionCreateParams,
+    "attachments" | "permissionMode" | "catalogId" | "category" | "displayName"
+  >
 > & {
   message: string;
   visibility: NewSessionVisibility;
@@ -39,7 +42,7 @@ export function buildDraftSessionCreateParams(draft: {
   key?: string;
   agentId: string;
   message: string;
-  label?: string;
+  displayName?: string;
   model?: string;
   contextWindow?: string;
   thinkingLevel?: string;
@@ -75,8 +78,8 @@ export function buildDraftSessionCreateParams(draft: {
     ...(normalizeOptionalString(draft.key) ? { key: normalizeOptionalString(draft.key) } : {}),
     agentId: normalizeAgentId(draft.agentId),
     message: draft.message,
-    ...(normalizeOptionalString(draft.label)
-      ? { label: normalizeOptionalString(draft.label) }
+    ...(normalizeOptionalString(draft.displayName)
+      ? { displayName: normalizeOptionalString(draft.displayName) }
       : {}),
     ...(draft.visibility === "incognito" ? { incognito: true } : {}),
     ...(draft.visibility === "draft" ? { visibility: "draft" } : {}),

@@ -9597,6 +9597,7 @@ public struct SessionsCreateParams: Codable, Sendable {
     public let idempotencykey: String?
     public let agentid: String?
     public let label: String?
+    public let displayname: String?
     public let category: String?
     public let model: String?
     public let contextwindow: String?
@@ -9629,6 +9630,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         idempotencykey: String? = nil,
         agentid: String? = nil,
         label: String? = nil,
+        displayname: String? = nil,
         category: String? = nil,
         model: String? = nil,
         contextwindow: String? = nil,
@@ -9660,6 +9662,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         self.idempotencykey = idempotencykey
         self.agentid = agentid
         self.label = label
+        self.displayname = displayname
         self.category = category
         self.model = model
         self.contextwindow = contextwindow
@@ -9693,6 +9696,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         case idempotencykey = "idempotencyKey"
         case agentid = "agentId"
         case label
+        case displayname = "displayName"
         case category
         case model
         case contextwindow = "contextWindow"

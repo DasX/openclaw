@@ -54,7 +54,7 @@ describe("prepared title creation handoff", () => {
     expect(flow.submitBlock()).toBeUndefined();
     await flow.submit();
     expect(context.sessions.createResult).toHaveBeenCalledWith(
-      expect.objectContaining({ label: "Repair naming", worktreeName: "my-explicit-branch" }),
+      expect.objectContaining({ displayName: "Repair naming", worktreeName: "my-explicit-branch" }),
       { reconciliation: "background" },
     );
     titles.hostDisconnected();
@@ -73,7 +73,9 @@ describe("prepared title creation handoff", () => {
     expect(flow.submitBlock()).toBeUndefined();
     await flow.submit();
     expect(context.sessions.createResult).toHaveBeenCalledOnce();
-    expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).not.toHaveProperty("label");
+    expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).not.toHaveProperty(
+      "displayName",
+    );
     finish({ title: "Too late" });
     await vi.advanceTimersByTimeAsync(0);
     expect(titles.preparedTitle()).toBeUndefined();
@@ -97,7 +99,9 @@ describe("prepared title creation handoff", () => {
     expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).toMatchObject({
       incognito: true,
     });
-    expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).not.toHaveProperty("label");
+    expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).not.toHaveProperty(
+      "displayName",
+    );
     titles.hostDisconnected();
     flow.disconnect();
   });
@@ -126,7 +130,9 @@ describe("prepared title creation handoff", () => {
     flow.setMessage("investigate a different reconnect bug");
     expect(flow.submitBlock()).toBeUndefined();
     await flow.submit();
-    expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).not.toHaveProperty("label");
+    expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).not.toHaveProperty(
+      "displayName",
+    );
     titles.hostDisconnected();
     flow.disconnect();
   });
