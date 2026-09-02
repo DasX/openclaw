@@ -82,6 +82,7 @@ export async function executeMutableUpdate(params: {
   prepareMutableUpdate: () => Promise<void>;
 }): Promise<MutableUpdateExecutionResult | null> {
   let preManagedServiceStop: PreManagedServiceStop | undefined;
+  let inspectedOwnedManagedUpdatePreflightStop: PreManagedServiceStop | undefined;
   let ownedManagedUpdateContext: OwnedManagedUpdateContext | undefined;
   let ownedManagedUpdatePreflightContext: OwnedManagedUpdatePreflightContext | undefined;
   const getTargetDatabaseSchemaContext = () => ({
@@ -152,6 +153,13 @@ export async function executeMutableUpdate(params: {
               stopProgress: params.stop,
             }),
         });
+        if (
+          phase === "inspect" &&
+          !inspectedOwnedManagedUpdatePreflightStop &&
+          preManagedServiceStop.serviceUpdateVerdict?.kind === "owned"
+        ) {
+          inspectedOwnedManagedUpdatePreflightStop = preManagedServiceStop;
+        }
         if (preManagedServiceStop.windowsTaskAutoStartRecovery) {
           params.recoveryState.windowsTaskAutoStartRecovery =
             preManagedServiceStop.windowsTaskAutoStartRecovery;
@@ -189,7 +197,7 @@ export async function executeMutableUpdate(params: {
     try {
       if (phase === "inspect") {
         ownedManagedUpdatePreflightContext = await captureOwnedManagedUpdatePreflightContext({
-          stopState: preManagedServiceStop,
+          stopState: inspectedOwnedManagedUpdatePreflightStop ?? preManagedServiceStop,
           processEnv: process.env,
           invocationCwd: params.invocationCwd,
         });
