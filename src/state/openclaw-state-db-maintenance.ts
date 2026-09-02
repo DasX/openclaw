@@ -306,7 +306,7 @@ export function resolveDatabasePath(options: OpenClawStateDatabaseOptions = {}):
 }
 
 /** Historical jobs lost the creator's origin; preserve attribution without guessing authority. */
-export function migrateCronCreatorNamespaces(db: DatabaseSync, previousVersion: number): boolean {
+function migrateCronCreatorNamespaces(db: DatabaseSync, previousVersion: number): boolean {
   if (previousVersion >= 14 || !tableExists(db, "cron_jobs")) {
     return false;
   }
@@ -320,10 +320,7 @@ export function migrateCronCreatorNamespaces(db: DatabaseSync, previousVersion: 
 }
 
 /** Keep opaque plugin targets independent of agent identity without rewriting binding records. */
-export function migrateConversationBindingTargets(
-  db: DatabaseSync,
-  previousVersion: number,
-): boolean {
+function migrateConversationBindingTargets(db: DatabaseSync, previousVersion: number): boolean {
   if (previousVersion >= 15) {
     return false;
   }
@@ -383,7 +380,7 @@ function staleReleasedWorkshopClaims(db: DatabaseSync): void {
 }
 
 /** Remove row provenance after the Workshop directory becomes the ownership boundary. */
-export function migrateSkillWorkshopDirectoryOwnership(
+function migrateSkillWorkshopDirectoryOwnership(
   db: DatabaseSync,
   previousVersion: number,
 ): boolean {
