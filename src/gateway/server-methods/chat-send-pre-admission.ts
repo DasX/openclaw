@@ -44,16 +44,6 @@ export function respondChatSessionRoutingChanged(respond: GatewayRequestHandlerO
   );
 }
 
-function respondChatActiveLeafChanged(respond: GatewayRequestHandlerOptions["respond"]) {
-  respond(
-    false,
-    undefined,
-    errorShape(ErrorCodes.INVALID_REQUEST, "active branch changed; review and retry", {
-      details: { reason: ACTIVE_LEAF_CHANGED_ERROR_REASON },
-    }),
-  );
-}
-
 export function respondChatSendAdmissionError(
   error: unknown,
   respond: GatewayRequestHandlerOptions["respond"],
@@ -75,7 +65,13 @@ export function respondChatSendAdmissionError(
     return;
   }
   if (error instanceof Error && error.message === ACTIVE_LEAF_CHANGED_ERROR_REASON) {
-    respondChatActiveLeafChanged(respond);
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.INVALID_REQUEST, "active branch changed; review and retry", {
+        details: { reason: ACTIVE_LEAF_CHANGED_ERROR_REASON },
+      }),
+    );
     return;
   }
   if (error instanceof Error && error.message === SESSION_SETTINGS_CHANGED_ERROR_REASON) {

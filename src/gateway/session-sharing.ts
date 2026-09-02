@@ -23,7 +23,6 @@ import type {
   GatewayRequestContext,
   SessionMutationAuthorization,
 } from "./server-methods/types.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
 import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "./session-creator.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import {
@@ -468,7 +467,7 @@ function loadSharingSnapshot(params: Parameters<typeof resolveSessionSharingTarg
 
 export function canReceiveSessionEvent(params: {
   cfg: OpenClawConfig;
-  client: GatewayWsClient;
+  client: GatewayClient;
   sessionKeys: readonly string[];
   agentId?: string;
   event?: string;
@@ -556,13 +555,22 @@ export function createSessionListEntryFilter(
   if (!identity) {
     return params.cfg?.gateway?.roles ? () => false : undefined;
   }
-  const hidesForeignSessions =
-    params.cfg && operatorSessionCap(params.client, params.cfg) === "none";
+  const sessionCap = params.cfg ? operatorSessionCap(params.client, params.cfg) : undefined;
+  return createProfileSessionEntryFilter({ profileId: identity.id, sessionCap }, isCreator);
+}
+
+export function createProfileSessionEntryFilter(
+  params: { profileId: string; sessionCap?: ReturnType<typeof operatorSessionCap> },
+  isCreator?: ReturnType<typeof prepareSessionCreatorProfile>,
+) {
   // Unprepared filters (notably preview) may survive yields and must read current aliases.
-  const creatorMatches = isCreator ?? ((actor) => isSessionCreatorProfile(actor, identity.id));
-  return (sessionKey, entry) =>
+  const creatorMatches = isCreator ?? ((actor) => isSessionCreatorProfile(actor, params.profileId));
+  return (
+    sessionKey: string | undefined,
+    entry: Pick<SessionEntry, "createdActor" | "visibility" | "incognito">,
+  ) =>
     entry.incognito !== true &&
     !isIncognitoSessionKey(sessionKey) &&
     (creatorMatches(entry.createdActor) ||
-      (!hidesForeignSessions && resolveSessionVisibility(entry) !== "draft"));
+      (params.sessionCap !== "none" && resolveSessionVisibility(entry) !== "draft"));
 }

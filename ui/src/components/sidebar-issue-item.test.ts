@@ -3,6 +3,7 @@
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
+import { SESSION_NAVIGATION_KEY_PARAM } from "../lib/sessions/route-navigation.ts";
 import type { SidebarAttentionItem } from "./sidebar-attention-entries.ts";
 import { renderSidebarIssueItem, renderSidebarMentionItem } from "./sidebar-issue-item.ts";
 
@@ -56,14 +57,19 @@ describe("renderSidebarMentionItem", () => {
     expiresAt: 1_780_003_600_000,
     excerpt: "Can you review the release notes?",
   };
+  const pathname = "/team/chat/writer/chat/12345678-90ab-cdef-1234-567890abcdef";
+  const navigation = {
+    pathname,
+    search: `?${SESSION_NAVIGATION_KEY_PARAM}=${encodeURIComponent(mention.sessionKey)}`,
+  };
 
   function renderMention(overrides: Partial<Parameters<typeof renderSidebarMentionItem>[0]> = {}) {
     const params = {
       mention,
-      basePath: "/team",
+      context: { basePath: "/team", navigate: vi.fn() },
       dismissing: false,
       onDismiss: vi.fn(),
-      onOpen: vi.fn(),
+      onClosePanel: vi.fn(),
       ...overrides,
     };
     render(renderSidebarMentionItem(params), container);
@@ -71,11 +77,9 @@ describe("renderSidebarMentionItem", () => {
   }
 
   it("opens the linked session without dismissing the mention", () => {
-    const { onOpen, onDismiss } = renderMention();
+    const { context, onClosePanel, onDismiss } = renderMention();
     const open = container.querySelector<HTMLAnchorElement>("a[data-issue-row-focus]")!;
-    expect(open.getAttribute("href")).toBe(
-      "/team/chat/writer/chat/12345678-90ab-cdef-1234-567890abcdef",
-    );
+    expect(open.getAttribute("href")).toBe(pathname);
 
     let nativeNavigationPreserved = false;
     open.addEventListener(
@@ -89,16 +93,19 @@ describe("renderSidebarMentionItem", () => {
     );
     open.dispatchEvent(new MouseEvent("click", { metaKey: true, cancelable: true }));
     expect(nativeNavigationPreserved).toBe(true);
-    expect(onOpen).not.toHaveBeenCalled();
+    expect(context.navigate).not.toHaveBeenCalled();
+    expect(onClosePanel).not.toHaveBeenCalled();
     expect(onDismiss).not.toHaveBeenCalled();
 
     open.click();
-    expect(onOpen).toHaveBeenCalledExactlyOnceWith(mention);
+    expect(context.navigate).toHaveBeenCalledExactlyOnceWith("chat", navigation);
+    expect(onClosePanel).toHaveBeenCalledOnce();
     expect(onDismiss).not.toHaveBeenCalled();
 
     container.querySelector<HTMLButtonElement>("[data-mention-id] button")!.click();
     expect(onDismiss).toHaveBeenCalledOnce();
-    expect(onOpen).toHaveBeenCalledOnce();
+    expect(context.navigate).toHaveBeenCalledOnce();
+    expect(onClosePanel).toHaveBeenCalledOnce();
   });
 
   it("renders the message excerpt as text rather than HTML or Markdown", () => {
@@ -111,13 +118,14 @@ describe("renderSidebarMentionItem", () => {
   });
 
   it("disables repeated dismissal while leaving the session link usable", () => {
-    const { onOpen, onDismiss } = renderMention({ dismissing: true });
+    const { context, onClosePanel, onDismiss } = renderMention({ dismissing: true });
     const dismiss = container.querySelector<HTMLButtonElement>("[data-mention-id] button")!;
     expect(dismiss.disabled).toBe(true);
     dismiss.click();
     expect(onDismiss).not.toHaveBeenCalled();
 
     container.querySelector<HTMLAnchorElement>("a[data-issue-row-focus]")!.click();
-    expect(onOpen).toHaveBeenCalledExactlyOnceWith(mention);
+    expect(context.navigate).toHaveBeenCalledExactlyOnceWith("chat", navigation);
+    expect(onClosePanel).toHaveBeenCalledOnce();
   });
 });

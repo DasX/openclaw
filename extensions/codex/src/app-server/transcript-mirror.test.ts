@@ -1030,8 +1030,6 @@ describe("mirrorCodexAppServerTranscript", () => {
     expect(raw).toContain('"idempotencyKey":"client-run:user"');
     expect(raw).toContain('"mirrorOrigin":"codex-app-server"');
     expect(raw).not.toContain('"idempotencyKey":"codex-app-server:thread-1:');
-    expect(first.userMessagesPresent).toHaveLength(1);
-    expect(second.userMessagesPresent).toHaveLength(1);
     expect(first.userMessageReceipts).toHaveLength(1);
     expect(second.userMessageReceipts).toHaveLength(1);
     expect(first.userMessageReceipts[0]?.appended).toBe(true);
@@ -1117,14 +1115,14 @@ describe("mirrorCodexAppServerTranscript", () => {
       idempotencyKey: "codex-app-server:thread-1:turn-1:prompt",
     });
     expect(updates[0]?.update?.messageSeq).toBe(1);
-    expect(firstMirror.userMessagesPresent).toHaveLength(1);
-    expect(firstMirror.userMessagesPresent[0]).toMatchObject({
+    expect(firstMirror.userMessageReceipts).toHaveLength(1);
+    expect(firstMirror.userMessageReceipts[0]?.message).toMatchObject({
       role: "user",
       content: [{ type: "text", text: "show me live" }],
       idempotencyKey: "codex-app-server:thread-1:turn-1:prompt",
     });
-    expect(secondMirror.userMessagesPresent).toHaveLength(1);
-    expect(secondMirror.userMessagesPresent[0]).toMatchObject({
+    expect(secondMirror.userMessageReceipts).toHaveLength(1);
+    expect(secondMirror.userMessageReceipts[0]?.message).toMatchObject({
       role: "user",
       content: [{ type: "text", text: "show me live" }],
       idempotencyKey: "codex-app-server:thread-1:turn-1:prompt",
@@ -1556,10 +1554,9 @@ describe("mirrorCodexAppServerTranscript", () => {
     expect((await readMirrorMessages(target)).filter((entry) => entry.role)).toEqual([
       { role: "user", text: "append once" },
     ]);
-    expect(results.map((result) => messageContent(result.userMessagesPresent[0]))).toEqual([
-      [{ type: "text", text: "append once" }],
-      [{ type: "text", text: "append once" }],
-    ]);
+    expect(results.map((result) => messageContent(result.userMessageReceipts[0]?.message))).toEqual(
+      [[{ type: "text", text: "append once" }], [{ type: "text", text: "append once" }]],
+    );
   });
 
   it("reports final assistant ownership for new and idempotent mirrors", async () => {
@@ -1706,13 +1703,13 @@ describe("mirrorCodexAppServerTranscript", () => {
       idempotencyScope: "scope-1",
     });
 
-    expect(first.userMessagesPresent[0]?.content).toEqual([
+    expect(first.userMessageReceipts[0]?.message.content).toEqual([
       { type: "text", text: "[redacted by hook]" },
     ]);
-    expect(second.userMessagesPresent[0]?.content).toEqual([
+    expect(second.userMessageReceipts[0]?.message.content).toEqual([
       { type: "text", text: "[redacted by hook]" },
     ]);
-    expect(JSON.stringify(second.userMessagesPresent)).not.toContain("secret prompt");
+    expect(JSON.stringify(second.userMessageReceipts)).not.toContain("secret prompt");
     expect(
       (await readMirrorMessages(target)).filter((message) => message.role === "user"),
     ).toHaveLength(1);

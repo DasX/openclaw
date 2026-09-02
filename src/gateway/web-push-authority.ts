@@ -9,7 +9,7 @@ import { listBoundWebPushSubscriptions, type BoundWebPushSubscription } from "..
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { resolveUserProfileId } from "../state/user-profiles.js";
 import { resolveOperatorRolePolicyForProfile } from "./operator-role-policy.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
+import type { GatewayClient } from "./server-methods/types.js";
 
 const OPERATOR_ROLE = "operator";
 
@@ -105,8 +105,8 @@ export function listCurrentWebPushTargets(params: {
   });
 }
 
-export function webPushTargetClient(target: CurrentWebPushTarget): GatewayWsClient {
-  const client = {
+export function webPushTargetClient(target: CurrentWebPushTarget): GatewayClient {
+  return {
     connect: {
       minProtocol: 1,
       maxProtocol: 1,
@@ -137,6 +137,4 @@ export function webPushTargetClient(target: CurrentWebPushTarget): GatewayWsClie
         }
       : {}),
   };
-  // SAFETY: visibility checks read only the projected connection identity and scopes.
-  return client as GatewayWsClient;
 }

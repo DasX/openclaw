@@ -52,6 +52,7 @@ function panelParams(
   return {
     context: {
       basePath: "",
+      navigate: vi.fn(),
       gateway: { snapshot: undefined },
       mentions: {
         snapshot: {
@@ -71,7 +72,6 @@ function panelParams(
     onKeydown: () => {},
     onNavigate: () => {},
     onOpen: () => {},
-    onOpenMention: () => {},
     onScroll: () => {},
     onSelectTab: () => {},
     overflowAbove: false,

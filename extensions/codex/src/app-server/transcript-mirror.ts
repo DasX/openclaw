@@ -53,12 +53,12 @@ type MirroredUserMessageReceipt = {
   appended: boolean;
   message: MirroredUserMessage;
 };
+type UserMessagePersistenceNotifier = (receipt: MirroredUserMessageReceipt) => void;
 type CodexAppServerTranscriptMirrorResult = {
   assistantMirrorIdentitiesAppended: string[];
   assistantMirrorIdentitiesOwned: string[];
   anchorsByMirrorIdentity: Map<string, TranscriptEntryAnchor>;
   messagesPresent: MirroredAgentMessage[];
-  userMessagesPresent: MirroredUserMessage[];
   userMessageReceipts: MirroredUserMessageReceipt[];
 };
 
@@ -115,11 +115,7 @@ export async function importCodexThreadHistoryToTranscript(params: {
 async function mirrorBestEffort(params: {
   params: EmbeddedRunAttemptParams;
   agentId?: string;
-  notifyUserMessagePersisted: (
-    message: Extract<AgentMessage, { role: "user" }>,
-    anchor: TranscriptEntryAnchor,
-    persistence: { appended: boolean },
-  ) => void;
+  notifyUserMessagePersisted: UserMessagePersistenceNotifier;
   result: EmbeddedRunAttemptResult;
   sessionKey?: string;
   cwd: string;
@@ -164,7 +160,7 @@ async function mirrorBestEffort(params: {
     });
     for (const receipt of mirrorResult.userMessageReceipts) {
       try {
-        params.notifyUserMessagePersisted(receipt.message, receipt.anchor, receipt);
+        params.notifyUserMessagePersisted(receipt);
       } catch (error) {
         embeddedAgentLog.warn("failed to notify codex app-server user-message persistence", {
           error: formatErrorMessage(error),
@@ -224,20 +220,20 @@ async function mirrorBestEffort(params: {
 
 export function createCodexAppServerUserMessagePersistenceNotifier(
   runParams: EmbeddedRunAttemptParams,
-): (
-  message: Extract<AgentMessage, { role: "user" }>,
-  anchor: TranscriptEntryAnchor,
-  persistence: { appended: boolean },
-) => void {
+): UserMessagePersistenceNotifier {
   let notified = false;
-  return (message, anchor, persistence) => {
+  return (receipt) => {
     if (notified) {
       return;
     }
     notified = true;
-    runParams.userTurnTranscriptRecorder?.markRuntimePersisted(message, anchor, persistence);
+    runParams.userTurnTranscriptRecorder?.markRuntimePersisted(
+      receipt.message,
+      receipt.anchor,
+      receipt,
+    );
     try {
-      runParams.onUserMessagePersisted?.(message);
+      runParams.onUserMessagePersisted?.(receipt.message);
     } catch (error) {
       embeddedAgentLog.warn("codex app-server user persistence notification failed", {
         error: formatErrorMessage(error),
@@ -249,11 +245,7 @@ export function createCodexAppServerUserMessagePersistenceNotifier(
 export async function mirrorPromptAtTurnStartBestEffort(params: {
   params: EmbeddedRunAttemptParams;
   agentId?: string;
-  notifyUserMessagePersisted: (
-    message: Extract<AgentMessage, { role: "user" }>,
-    anchor: TranscriptEntryAnchor,
-    persistence: { appended: boolean },
-  ) => void;
+  notifyUserMessagePersisted: UserMessagePersistenceNotifier;
   sessionKey?: string;
   cwd: string;
   threadId: string;
@@ -303,7 +295,7 @@ export async function mirrorPromptAtTurnStartBestEffort(params: {
         config: params.params.config,
       });
       for (const receipt of mirrorResult.userMessageReceipts) {
-        params.notifyUserMessagePersisted(receipt.message, receipt.anchor, receipt);
+        params.notifyUserMessagePersisted(receipt);
       }
     })();
     params.params.userTurnTranscriptRecorder?.markRuntimePersistencePending(mirrorPromise);
@@ -358,7 +350,6 @@ async function mirror(params: {
       anchorsByMirrorIdentity: new Map(),
       messagesPresent: [],
       userMessageReceipts: [],
-      userMessagesPresent: [],
     };
   }
 
@@ -395,7 +386,6 @@ async function mirror(params: {
       const nextAnchorsByMirrorIdentity = new Map<string, TranscriptEntryAnchor>();
       const nextMessagesPresent: MirroredAgentMessage[] = [];
       const nextUserMessageReceipts: MirroredUserMessageReceipt[] = [];
-      const nextUserMessagesPresent: MirroredUserMessage[] = [];
       const mirrorFacts = await transcript.readMessageFacts({
         idempotencyKeys: candidateIdempotencyKeys,
       });
@@ -424,15 +414,12 @@ async function mirror(params: {
           const persistedAnchor = mirrorFacts.anchorsByIdempotencyKey.get(idempotencyKey);
           if (persistedMessage && isMirroredAgentMessage(persistedMessage)) {
             nextMessagesPresent.push(persistedMessage);
-            if (persistedMessage.role === "user") {
-              nextUserMessagesPresent.push(persistedMessage);
-              if (persistedAnchor) {
-                nextUserMessageReceipts.push({
-                  anchor: persistedAnchor,
-                  appended: false,
-                  message: persistedMessage,
-                });
-              }
+            if (persistedMessage.role === "user" && persistedAnchor) {
+              nextUserMessageReceipts.push({
+                anchor: persistedAnchor,
+                appended: false,
+                message: persistedMessage,
+              });
             }
           }
           if (persistedAnchor) {
@@ -541,7 +528,6 @@ async function mirror(params: {
           nextAnchorsByMirrorIdentity.set(dedupeIdentity, appended.anchor);
         }
         if (appendedMessage.role === "user" && appended.anchor) {
-          nextUserMessagesPresent.push(appendedMessage);
           nextUserMessageReceipts.push({
             anchor: appended.anchor,
             appended: appended.appended,
@@ -572,7 +558,6 @@ async function mirror(params: {
         anchorsByMirrorIdentity: nextAnchorsByMirrorIdentity,
         messagesPresent: nextMessagesPresent,
         userMessageReceipts: nextUserMessageReceipts,
-        userMessagesPresent: nextUserMessagesPresent,
       };
     },
   );
@@ -584,7 +569,6 @@ async function mirror(params: {
     anchorsByMirrorIdentity,
     messagesPresent,
     userMessageReceipts,
-    userMessagesPresent,
   } = mirrorBatch;
 
   for (const update of appendedUpdates) {
@@ -623,7 +607,6 @@ async function mirror(params: {
     anchorsByMirrorIdentity,
     messagesPresent,
     userMessageReceipts,
-    userMessagesPresent,
   };
 }
 

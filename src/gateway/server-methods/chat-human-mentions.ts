@@ -23,20 +23,20 @@ function hasAsciiControlCharacter(text: string): boolean {
   return false;
 }
 
-/** Normalize selected spans with the same NFC, control stripping, and trim as chat text. */
+/** Normalize raw selected spans against the request boundary's sanitized message. */
 export function normalizeChatHumanMentions(
   text: string,
   mentions: readonly HumanMention[] | undefined,
+  sanitizedText: string,
 ): Result<HumanMention[] | undefined, string> {
   if (!mentions?.length) {
     return { ok: true, value: undefined };
   }
-  const sanitized = sanitizeChatSendMessageInput(text);
-  if (!sanitized.ok || mentions.length > MAX_HUMAN_MENTIONS) {
+  if (mentions.length > MAX_HUMAN_MENTIONS) {
     return { ok: false, error: INVALID_MENTIONS };
   }
-  const leadingSpace = sanitized.message.length - sanitized.message.trimStart().length;
-  const trimmed = sanitized.message.trim();
+  const leadingSpace = sanitizedText.length - sanitizedText.trimStart().length;
+  const trimmed = sanitizedText.trim();
   const normalized: HumanMention[] = [];
   let previousEnd = 0;
   for (const mention of mentions) {
@@ -58,7 +58,7 @@ export function normalizeChatHumanMentions(
     }
     const prefix = sanitizeChatSendMessageInput(text.slice(0, mention.start));
     const throughToken = sanitizeChatSendMessageInput(text.slice(0, mention.end));
-    if (!prefix.ok || !throughToken.ok || !sanitized.message.startsWith(throughToken.message)) {
+    if (!prefix.ok || !throughToken.ok || !sanitizedText.startsWith(throughToken.message)) {
       // A boundary inside a combining sequence cannot survive NFC as the selected token.
       return { ok: false, error: INVALID_MENTIONS };
     }

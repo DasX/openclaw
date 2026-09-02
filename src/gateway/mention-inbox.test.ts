@@ -449,6 +449,61 @@ describe("human mention directory", () => {
     });
   });
 
+  it.each([
+    ["administrator", "draft", true],
+    ["owner-only", "shared", false],
+  ] as const)(
+    "applies the offline %s recipient's policy to %s sessions",
+    async (role, visibility, visible) => {
+      const cfg: OpenClawConfig = {
+        gateway: {
+          roles: {
+            default: "reader",
+            definitions: {
+              reader: { agents: "*", scopes: ["operator.read"], sessions: { others: "view" } },
+              "owner-only": {
+                agents: "*",
+                scopes: ["operator.read"],
+                sessions: { others: "none" },
+              },
+              administrator: {
+                agents: "*",
+                scopes: ["operator.admin"],
+                sessions: { others: "none" },
+              },
+            },
+          },
+        },
+      };
+      await withInbox(async (f) => {
+        setUserProfileRole(f.alice.id, "administrator");
+        invalidateOperatorRolePolicy(f.alice.id);
+        setUserProfileRole(f.bob.id, role);
+        invalidateOperatorRolePolicy(f.bob.id);
+        f.aliceClient.connect.scopes = ["operator.admin"];
+        f.clients.length = 0;
+        await upsertSessionEntryCore(
+          { agentId: "main", sessionKey: SESSION_KEY },
+          {
+            sessionId: SESSION_ID,
+            updatedAt: Date.now(),
+            visibility,
+            createdActor: { type: "human", source: "profile", id: f.alice.id },
+          },
+        );
+        expect(
+          f.inbox.mentionable(f.aliceClient, { sessionKey: SESSION_KEY, query: "Bob" }),
+        ).toMatchObject({
+          ok: true,
+          value: { users: visible ? [{ profileId: f.bob.id, online: false }] : [] },
+        });
+        expect(
+          f.inbox.validateRecipients(f.aliceClient, { sessionKey: SESSION_KEY }, [f.bob.id]).ok,
+        ).toBe(visible);
+      }, cfg);
+    },
+  );
+
   it("applies creation and current visibility policy without accepting unavailable recipients", async () => {
     await withInbox(async (f) => {
       expect(f.inbox.mentionable(f.aliceClient, { agentId: "main" })).toMatchObject({

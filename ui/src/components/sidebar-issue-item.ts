@@ -48,12 +48,12 @@ function renderSidebarDismissButton(itemLabel: string, onDismiss?: () => void) {
 
 export function renderSidebarMentionItem(params: {
   mention: MentionInboxItem;
-  basePath: string;
+  context: Pick<ApplicationContext, "basePath" | "navigate">;
   dismissing: boolean;
   onDismiss: () => void;
-  onOpen: (item: MentionInboxItem) => void;
+  onClosePanel: () => void;
 }) {
-  const { mention } = params;
+  const { mention, context } = params;
   const sender: PresenceViewer = {
     id: mention.senderProfileId,
     identity: { type: "profile", id: mention.senderProfileId },
@@ -66,7 +66,7 @@ export function renderSidebarMentionItem(params: {
     face: "chat",
     sessionKey: mention.sessionKey,
     fallbackAgentId: mention.agentId,
-    basePath: params.basePath,
+    basePath: context.basePath,
     row: { key: mention.sessionKey, displayName: mention.sessionTitle },
     exactKey: true,
   });
@@ -110,7 +110,8 @@ export function renderSidebarMentionItem(params: {
                 return;
               }
               event.preventDefault();
-              params.onOpen(mention);
+              params.onClosePanel();
+              context.navigate("chat", target.options);
             }}
             >${t("attention.mentions.open")}</a
           >

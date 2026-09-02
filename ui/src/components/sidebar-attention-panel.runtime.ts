@@ -1,5 +1,4 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
 import type { NavigationRouteId } from "../app-navigation.ts";
 import { pathForRoute } from "../app-route-paths.ts";
 import type { ApplicationContext } from "../app/context.ts";
@@ -47,7 +46,6 @@ type SidebarAttentionPanelParams = {
   onKeydown: (event: KeyboardEvent) => void;
   onNavigate: (routeId: NavigationRouteId) => void;
   onOpen: (item: SidebarAttentionItem) => void;
-  onOpenMention: (item: MentionInboxItem) => void;
   onScroll: () => void;
   onSelectTab: (tab: IssueTab) => void;
   overflowAbove: boolean;
@@ -105,10 +103,10 @@ export function renderSidebarAttentionPanel(params: SidebarAttentionPanelParams)
       case "mention":
         return renderSidebarMentionItem({
           mention: entry.mention,
-          basePath: params.context.basePath,
+          context: params.context,
           dismissing: mentions.dismissing.includes(entry.mention.id),
           onDismiss: () => void params.context.mentions.dismiss([entry.mention.id]),
-          onOpen: params.onOpenMention,
+          onClosePanel: () => params.onClose(false),
         });
       case "scopeUpgrade":
         return renderSidebarScopeUpgradeItem({

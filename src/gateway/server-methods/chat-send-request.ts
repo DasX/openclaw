@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import type { FastMode } from "@openclaw/normalization-core/string-coerce";
+import type { Static } from "typebox";
 import {
   GATEWAY_CLIENT_CAPS,
   hasGatewayClientCap,
@@ -12,13 +12,9 @@ import {
   type HumanMention,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type {
-  ChatSendIntent,
+  ChatSendParamsSchema,
   QueueMode,
 } from "../../../packages/gateway-protocol/src/schema/logs-chat.js";
-import type {
-  SessionPermissionMode,
-  SessionToolOverrides,
-} from "../../../packages/gateway-protocol/src/schema/sessions-row.js";
 import { isBtwRequestText } from "../../auto-reply/reply/btw-command.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
@@ -43,39 +39,13 @@ import { resolveControlUiReconnectResumeParams } from "./chat-server-timing.js";
 import { fingerprintSessionGoalRequest } from "./session-goal-request.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
-type ChatSendRequestParams = {
-  sessionKey: string;
-  agentId?: string;
-  sessionId?: string;
-  message: string;
-  mentions?: HumanMention[];
-  intent?: ChatSendIntent;
-  thinking?: string;
-  fastMode?: FastMode;
-  fastAutoOnSeconds?: number;
+// TypeBox validates these string enums narrowly but infers them as string.
+type ChatSendRequestParams = Omit<
+  Static<typeof ChatSendParamsSchema>,
+  "queueMode" | "systemInputProvenance"
+> & {
   queueMode?: QueueMode;
-  deliver?: boolean;
-  originatingChannel?: string;
-  originatingTo?: string;
-  originatingAccountId?: string;
-  originatingThreadId?: string;
-  replyToId?: string;
-  attachments?: Array<{
-    type?: string;
-    mimeType?: string;
-    fileName?: string;
-    content?: unknown;
-  }>;
-  toolBindings?: Record<string, unknown>;
-  timeoutMs?: number;
   systemInputProvenance?: InputProvenance;
-  systemProvenanceReceipt?: string;
-  suppressCommandInterpretation?: boolean;
-  expectedLeafEntryId?: string | null;
-  expectedSessionRoutingContract?: string;
-  expectedPermissionMode?: SessionPermissionMode | null;
-  expectedToolOverrides?: SessionToolOverrides | null;
-  idempotencyKey: string;
 };
 
 export type NormalizedChatSendRequest = {
@@ -245,7 +215,11 @@ export function normalizeChatSendRequest(params: {
   if (!rawMessage && normalizedAttachments.length === 0) {
     return { ok: false, error: "message or attachment required" };
   }
-  const mentions = normalizeChatHumanMentions(p.message, p.mentions);
+  const mentions = normalizeChatHumanMentions(
+    p.message,
+    p.mentions,
+    sanitizedMessageResult.message,
+  );
   if (!mentions.ok) {
     return mentions;
   }

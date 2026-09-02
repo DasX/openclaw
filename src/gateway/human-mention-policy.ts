@@ -29,6 +29,7 @@ import { resolveOperatorSessionCreation } from "./server-methods/session-creatio
 import type { GatewayClient } from "./server-methods/types.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import {
+  createProfileSessionEntryFilter,
   createSessionListEntryFilter,
   isSessionVisibilityAllowed,
   resolveSessionSharingTarget,
@@ -166,27 +167,14 @@ export function createHumanMentionPolicy(params: {
     if (!scopesAllowRead(scopes)) {
       return undefined;
     }
-    const client: GatewayClient = {
-      connect: {
-        minProtocol: 1,
-        maxProtocol: 1,
-        client: {
-          id: "openclaw-control-ui",
-          version: "mentions",
-          platform: "web",
-          mode: "webchat",
-        },
-        role: "operator",
-        scopes,
-      },
-      authenticatedUserProfile: {
-        profileId: profile.profileId,
-        displayName: profile.label ?? null,
-        hasAvatar: profile.hasUploadedAvatar,
-        updatedAt: 0,
-      },
-    };
-    return canRead(client, target, cfg) ? profile : undefined;
+    if (scopes.includes(ADMIN_SCOPE)) {
+      return profile;
+    }
+    const entryFilter = createProfileSessionEntryFilter({
+      profileId: profile.profileId,
+      sessionCap: policy?.sessions.others,
+    });
+    return entryFilter(target.sessionKey, target.entry) ? profile : undefined;
   }
 
   function resolveContext(

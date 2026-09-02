@@ -133,7 +133,6 @@ describe("runCodexSettledTurnFinalization", () => {
               fingerprintCodexMirrorSourceMessage(assistant as never),
             ),
           ],
-          userMessagesPresent: [],
         };
       },
     );
@@ -370,7 +369,6 @@ describe("runCodexSettledTurnFinalization", () => {
               fingerprintCodexMirrorSourceMessage(staleAssistant as never),
             ),
           ],
-          userMessagesPresent: [],
         };
       },
     );
