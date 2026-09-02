@@ -1,6 +1,18 @@
 # OpenClaw Android Changelog
 
-## Unreleased
+## 2026.9.1 - 2026-09-02
+
+Aligns chat, the sidebar, session controls, and profile-synced appearance with the web UI. (#134939) Thanks @IWhatsskill and @obviyus.
+
+Adds Mermaid diagram previews, durable task progress cards, session hierarchies, and a desktop viewer for connected machines. (#135342, #125444, #128862, #123097) Thanks @IWhatsskill and @Solvely-Colin.
+
+Fixes messages stuck sending and stale offline history after reconnect, and keeps deleted queued messages from reappearing after delayed refreshes. (#135961, #132964, #136161)
+
+Keeps a newer chat selection intact when an earlier New request finishes. (#136078)
+
+Offers voice-note recording when dictation is unavailable, preserving the current draft. (#135794, #125322, #125323) Thanks @RaviTharuma.
+
+Refreshes native translations across all 21 supported languages.
 
 ## 2026.7.4 - 2026-07-30
 

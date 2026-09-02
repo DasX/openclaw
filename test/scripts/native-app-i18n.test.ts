@@ -3,6 +3,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
+import { findUnlocalizedAndroidUiLiterals } from "../../scripts/android-app-i18n.ts";
 import { buildMacosCatalog } from "../../scripts/apple-app-i18n.ts";
 import {
   assignNativeI18nIds,
@@ -243,6 +244,107 @@ describe("native app i18n inventory", () => {
       ),
     ).toBe(false);
   });
+
+  it.each([
+    {
+      name: "Kotlin Unicode beside escaped quotes",
+      surface: "android" as const,
+      source: String.raw`Text("Status \u263a \"ready\"")`,
+      expected: 'Status ☺ "ready"',
+    },
+    {
+      name: "Kotlin escaped backslashes",
+      surface: "android" as const,
+      source: String.raw`Text("Literal \\u263a and \\next")`,
+      expected: String.raw`Literal \u263a and \next`,
+    },
+    {
+      name: "Kotlin control escapes",
+      surface: "android" as const,
+      source: String.raw`Text("Column\tvalue\rend")`,
+      expected: "Column\tvalue\rend",
+    },
+    {
+      name: "Kotlin raw UI strings",
+      surface: "android" as const,
+      source: String.raw`Text("""Literal \u263a and \n""")`,
+      expected: String.raw`Literal \u263a and \n`,
+    },
+    {
+      name: "Kotlin raw helper strings",
+      surface: "android" as const,
+      source: String.raw`fun statusText(): String = """Literal \u263a and \n"""`,
+      expected: String.raw`Literal \u263a and \n`,
+    },
+    {
+      name: "Kotlin raw whitespace",
+      surface: "android" as const,
+      source: ['Text("""', String.raw`  Literal \u263a and \n`, '""")'].join("\n"),
+      expected: "\n  Literal \\u263a and \\n\n",
+    },
+    {
+      name: "Swift Unicode scalars",
+      surface: "apple" as const,
+      source: String.raw`Text("Status \u{263A} ready")`,
+      expected: "Status ☺ ready",
+    },
+    {
+      name: "Swift escaped backslashes",
+      surface: "apple" as const,
+      source: String.raw`Text("Literal \\u263a and \\next")`,
+      expected: String.raw`Literal \u263a and \next`,
+    },
+    {
+      name: "Swift multiline escapes",
+      surface: "apple" as const,
+      source: ['Text("""', String.raw`  Column\tvalue`, '  """)'].join("\n"),
+      expected: "Column\tvalue",
+    },
+    {
+      name: "Swift multiline escaped backslashes",
+      surface: "apple" as const,
+      source: ['Text("""', String.raw`  Literal \\next`, '  """)'].join("\n"),
+      expected: String.raw`Literal \next`,
+    },
+    {
+      name: "Swift closing-delimiter indentation",
+      surface: "apple" as const,
+      source: ['Text("""', "    Retained indentation", '  """)'].join("\n"),
+      expected: "  Retained indentation",
+    },
+    {
+      name: "Swift multiline blank-line indentation",
+      surface: "apple" as const,
+      source: ['Text("""', "    First line", "      ", "    Last line", '  """)'].join("\n"),
+      expected: "  First line\n    \n  Last line",
+    },
+    {
+      name: "Swift multiline surrounding blank lines",
+      surface: "apple" as const,
+      source: ['Text("""', "", "    Surrounded line", "", '  """)'].join("\n"),
+      expected: "\n  Surrounded line\n",
+    },
+    {
+      name: "Swift multiline tab indentation",
+      surface: "apple" as const,
+      source: ['Text("""', "\t  Retained indentation", '\t""")'].join("\n"),
+      expected: "  Retained indentation",
+    },
+  ])(
+    "decodes $name exactly once at native extraction boundaries",
+    ({ surface, source, expected }) => {
+      const fixturePath =
+        surface === "android"
+          ? "apps/android/app/src/main/java/ai/openclaw/app/ui/Fixture.kt"
+          : "apps/ios/Fixture.swift";
+      const entries = extractNativeI18nCandidates(surface, fixturePath, source);
+      expect(new Set(entries.map((entry) => entry.source))).toEqual(new Set([expected]));
+      if (surface === "android") {
+        const findings = findUnlocalizedAndroidUiLiterals(source, fixturePath);
+        expect(new Set(findings.map((finding) => finding.source))).toEqual(new Set([expected]));
+      }
+    },
+  );
 
   it("ignores generated Android resource entries", () => {
     const entries = extractNativeI18nCandidates(

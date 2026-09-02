@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectDefined } from "../packages/normalization-core/src/expect.js";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
+import { readNativeStringLiteral } from "./lib/native-i18n-literals.ts";
 import { NATIVE_I18N_LOCALES } from "./native-i18n-locales.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -385,30 +386,23 @@ function lineNumber(source: string, offset: number): number {
   return source.slice(0, offset).split("\n").length;
 }
 
-function decodeKotlinLiteral(value: string): string {
-  return value.replace(
-    /\\(?:u([0-9a-fA-F]{4})|[n"$\\])/gu,
-    (escape, codeUnit: string | undefined) => {
-      if (codeUnit) {
-        return String.fromCharCode(Number.parseInt(codeUnit, 16));
-      }
-      return escape === "\\n" ? "\n" : escape.slice(1);
-    },
-  );
-}
-
 function collectExplicitRuntimeSources(
   sourceFiles: readonly { path: string; source: string }[],
 ): Set<string> {
   const sources = new Set<string>();
-  const callPattern = /\bnativeString(?:Resource)?\(\s*"((?:\\.|[^"\\])+)"/gu;
+  const callPattern = /\bnativeString(?:Resource)?\(\s*/gu;
   for (const file of sourceFiles) {
     if (file.path.endsWith("/i18n/NativeStringResources.kt")) {
       continue;
     }
     for (const match of file.source.matchAll(callPattern)) {
-      if (match[1]) {
-        sources.add(decodeKotlinLiteral(match[1]));
+      const literal = readNativeStringLiteral(
+        "android",
+        file.source,
+        (match.index ?? 0) + match[0].length,
+      );
+      if (literal) {
+        sources.add(literal.value);
       }
     }
   }
@@ -779,15 +773,19 @@ function collectHelperLiteralFindings(source: string, repoPath: string): Android
       ...body.matchAll(UI_ELSE_BRANCH_RAW_LITERAL_RE),
     ];
     const seenOffsets = new Set<number>();
-    const addLiteral = (literal: string, literalOffset: number) => {
+    const addLiteral = (literalOffset: number) => {
       if (seenOffsets.has(literalOffset)) {
+        return;
+      }
+      const literal = readNativeStringLiteral("android", body, literalOffset);
+      if (!literal) {
         return;
       }
       seenOffsets.add(literalOffset);
       findings.push({
         line: lineNumber(source, start + literalOffset),
         path: repoPath,
-        source: decodeKotlinLiteral(literal),
+        source: literal.value,
       });
     };
     for (const match of matches) {
@@ -797,7 +795,7 @@ function collectHelperLiteralFindings(source: string, repoPath: string): Android
       }
       const delimiter = match[0]?.includes('"""') ? '"""' : '"';
       const literalOffset = body.indexOf(`${delimiter}${literal}${delimiter}`, match.index ?? 0);
-      addLiteral(literal, Math.max(0, literalOffset));
+      addLiteral(Math.max(0, literalOffset));
     }
     for (const match of body.matchAll(/\bif\s*/gu)) {
       let cursor = (match.index ?? 0) + match[0].length;
@@ -823,7 +821,7 @@ function collectHelperLiteralFindings(source: string, repoPath: string): Android
         expression.match(/^"""([\s\S]*?)"""/u)?.[1] ??
         expression.match(/^"((?:\\.|[^"\\])+)"/u)?.[1];
       if (literal) {
-        addLiteral(literal, cursor);
+        addLiteral(cursor);
       }
     }
   };
@@ -971,10 +969,14 @@ function collectTypedModelLiteralFindings(
           ) {
             continue;
           }
+          const parsed = readNativeStringLiteral("android", argument.value, literal.index ?? 0);
+          if (!parsed) {
+            continue;
+          }
           findings.push({
             line: lineNumber(source, argument.start + (literal.index ?? 0)),
             path: repoPath,
-            source: literal[1] === undefined ? decodeKotlinLiteral(literalValue) : literalValue,
+            source: parsed.value,
           });
         }
       }
@@ -1002,7 +1004,14 @@ export function findUnlocalizedAndroidUiLiterals(
         if (!literal) {
           continue;
         }
-        const findingSource = delimiter === '"' ? decodeKotlinLiteral(literal) : literal;
+        const matchText = match[0] ?? "";
+        const offset =
+          (match.index ?? 0) + matchText.lastIndexOf(`${delimiter}${literal}${delimiter}`);
+        const parsed = readNativeStringLiteral("android", source, offset);
+        if (!parsed) {
+          continue;
+        }
+        const findingSource = parsed.value;
         if (
           isAllowedUiLiteral(repoPath, findingSource) ||
           literal.startsWith("http") ||
@@ -1010,9 +1019,6 @@ export function findUnlocalizedAndroidUiLiterals(
         ) {
           continue;
         }
-        const matchText = match[0] ?? "";
-        const offset =
-          (match.index ?? 0) + matchText.lastIndexOf(`${delimiter}${literal}${delimiter}`);
         const finding = {
           line: lineNumber(source, Math.max(0, offset)),
           path: repoPath,

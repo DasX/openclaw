@@ -27,6 +27,15 @@ describe("Android app i18n resources", () => {
     expect(wearBase).toContain('<string name="current_session">Current session</string>');
   });
 
+  it("does not create an escaped duplicate for a Unicode runtime source", async () => {
+    const catalog = await buildAndroidAppI18nCatalog();
+    const source = "$activityLabel · $currentPosition/${steps.size}";
+    const escapedSource = "$activityLabel \\u00b7 $currentPosition/${steps.size}";
+    expect(
+      [...catalog.sources].filter((entry) => entry === source || entry === escapedSource),
+    ).toEqual([source]);
+  });
+
   it("routes compact token suffixes through generated resources", async () => {
     const inventory = JSON.parse(await readFile("apps/.i18n/native-source.json", "utf8")) as {
       entries: Array<{ sites: Array<{ kind: string; path: string }>; source: string }>;

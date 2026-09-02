@@ -7,9 +7,8 @@ import { expectDefined } from "../packages/normalization-core/src/expect.js";
 import { isRecord } from "../packages/normalization-core/src/record-coerce.js";
 import { selectDeterministicTranslation } from "./android-app-i18n.ts";
 import { translateNativeEntries } from "./control-ui-i18n.ts";
+import { readNativeStringLiteral, type NativeI18nSurface } from "./lib/native-i18n-literals.ts";
 import { NATIVE_I18N_LOCALES } from "./native-i18n-locales.ts";
-
-type NativeI18nSurface = "android" | "apple";
 
 export { NATIVE_I18N_LOCALES };
 
@@ -416,168 +415,6 @@ function findClosingBrace(source: string, openingBrace: number): number | null {
   return null;
 }
 
-function readSwiftStringLiteral(
-  source: string,
-  openingQuote: number,
-): { end: number; value: string } | null {
-  if (source[openingQuote] !== '"' || source.startsWith('"""', openingQuote)) {
-    return null;
-  }
-  let raw = "";
-  for (let index = openingQuote + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === "\\") {
-      const next = source[index + 1];
-      if (next === undefined) {
-        return null;
-      }
-      if (next === "(") {
-        let depth = 1;
-        let quoted = false;
-        let escaped = false;
-        let end = index + 2;
-        for (; end < source.length; end += 1) {
-          const interpolationCharacter = source[end];
-          if (escaped) {
-            escaped = false;
-          } else if (quoted && interpolationCharacter === "\\") {
-            escaped = true;
-          } else if (interpolationCharacter === '"') {
-            quoted = !quoted;
-          } else if (!quoted && interpolationCharacter === "(") {
-            depth += 1;
-          } else if (!quoted && interpolationCharacter === ")") {
-            depth -= 1;
-            if (depth === 0) {
-              break;
-            }
-          }
-        }
-        if (depth !== 0) {
-          return null;
-        }
-        raw += source.slice(index, end + 1);
-        index = end;
-        continue;
-      }
-      if (next === "n") {
-        raw += "\n";
-      } else if (next === "r") {
-        raw += "\r";
-      } else if (next === "t") {
-        raw += "\t";
-      } else if (next === '"' || next === "\\") {
-        raw += next;
-      } else {
-        raw += character + next;
-      }
-      index += 1;
-      continue;
-    }
-    if (character === '"') {
-      return { end: index + 1, value: raw };
-    }
-    raw += character;
-  }
-  return null;
-}
-
-function readKotlinStringLiteral(
-  source: string,
-  openingQuote: number,
-): { end: number; value: string } | null {
-  if (source[openingQuote] !== '"' || source.startsWith('"""', openingQuote)) {
-    return null;
-  }
-  let raw = "";
-  for (let index = openingQuote + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === "$" && source[index + 1] === "{") {
-      let depth = 1;
-      let quoted = false;
-      let escaped = false;
-      let end = index + 2;
-      for (; end < source.length; end += 1) {
-        const interpolationCharacter = source[end];
-        if (escaped) {
-          escaped = false;
-        } else if (quoted && interpolationCharacter === "\\") {
-          escaped = true;
-        } else if (interpolationCharacter === '"') {
-          quoted = !quoted;
-        } else if (!quoted && interpolationCharacter === "{") {
-          depth += 1;
-        } else if (!quoted && interpolationCharacter === "}") {
-          depth -= 1;
-          if (depth === 0) {
-            break;
-          }
-        }
-      }
-      if (depth !== 0) {
-        return null;
-      }
-      raw += source.slice(index, end + 1);
-      index = end;
-      continue;
-    }
-    if (character === "\\") {
-      const next = source[index + 1];
-      if (next === undefined) {
-        return null;
-      }
-      if (next === "n") {
-        raw += "\n";
-      } else if (next === "r") {
-        raw += "\r";
-      } else if (next === "t") {
-        raw += "\t";
-      } else if (next === '"' || next === "\\" || next === "$") {
-        raw += next;
-      } else {
-        raw += character + next;
-      }
-      index += 1;
-      continue;
-    }
-    if (character === '"') {
-      return { end: index + 1, value: raw };
-    }
-    raw += character;
-  }
-  return null;
-}
-
-function readMultilineStringLiteral(
-  source: string,
-  openingQuote: number,
-): { end: number; value: string } | null {
-  if (!source.startsWith('"""', openingQuote)) {
-    return null;
-  }
-  const closingQuote = source.indexOf('"""', openingQuote + 3);
-  if (closingQuote < 0) {
-    return null;
-  }
-  return {
-    end: closingQuote + 3,
-    value: decodeMultilineLiteral(source.slice(openingQuote + 3, closingQuote)),
-  };
-}
-
-function readNativeStringLiteral(
-  surface: NativeI18nSurface,
-  source: string,
-  openingQuote: number,
-): { end: number; value: string } | null {
-  return (
-    readMultilineStringLiteral(source, openingQuote) ??
-    (surface === "apple"
-      ? readSwiftStringLiteral(source, openingQuote)
-      : readKotlinStringLiteral(source, openingQuote))
-  );
-}
-
 function readAdjacentStringLiterals(
   surface: NativeI18nSurface,
   source: string,
@@ -628,43 +465,12 @@ function extractUiCalls(
   }
 }
 
-function decodeMultilineLiteral(raw: string): string {
-  const lines = raw.replaceAll("\r\n", "\n").split("\n");
-  if (lines[0]?.trim() === "") {
-    lines.shift();
-  }
-  if (lines.at(-1)?.trim() === "") {
-    lines.pop();
-  }
-  const indents = lines
-    .filter((line) => line.trim())
-    .map((line) => line.match(/^[ \t]*/u)?.[0].length ?? 0);
-  const indent = indents.length > 0 ? Math.min(...indents) : 0;
-  const deindented = lines.map((line) => line.slice(Math.min(indent, line.length)));
-  return deindented
-    .map((line, index) => {
-      if (index === deindented.length - 1) {
-        return line;
-      }
-      const trailingBackslashes = line.match(/\\+$/u)?.[0].length ?? 0;
-      return trailingBackslashes % 2 === 1 ? line.slice(0, -1) : `${line}\n`;
-    })
-    .join("");
-}
-
-function decodeLiteral(raw: string, kind: string): string {
-  if (kind.endsWith("-multiline")) {
-    return decodeMultilineLiteral(raw);
-  }
+function decodeResourceLiteral(raw: string): string {
   try {
-    return JSON.parse(`"${raw}"`) as string;
+    return JSON.parse('"' + raw + '"') as string;
   } catch {
     return raw;
   }
-}
-
-function normalizeSource(source: string): string {
-  return source;
 }
 
 function identifierBefore(source: string, offset: number): string | null {
@@ -742,21 +548,20 @@ function addCandidate(
   kind: string,
   line: number,
 ) {
-  const normalized = normalizeSource(decodeLiteral(source, kind));
-  if (!normalized.trim() || !/\p{L}/u.test(normalized)) {
+  if (!source.trim() || !/\p{L}/u.test(source)) {
     return;
   }
-  if (!isTranslatableCandidate(normalized, kind)) {
+  if (!isTranslatableCandidate(source, kind)) {
     return;
   }
   if (
-    normalized.length > 500 ||
-    extractSwiftInterpolations(normalized) === null ||
-    extractKotlinInterpolations(normalized) === null
+    source.length > 500 ||
+    extractSwiftInterpolations(source) === null ||
+    extractKotlinInterpolations(source) === null
   ) {
     return;
   }
-  entries.push({ kind, line, path: repoPath, source: normalized, surface });
+  entries.push({ kind, line, path: repoPath, source, surface });
 }
 
 function findCapturedLiteralOffset(
@@ -1107,7 +912,7 @@ export function extractNativeI18nCandidates(
           entries,
           surface,
           repoPath,
-          match[2],
+          decodeResourceLiteral(match[2]),
           "resource-string",
           lineNumber(source, match.index ?? 0),
         );
@@ -1128,7 +933,7 @@ export function extractNativeI18nCandidates(
             entries,
             surface,
             repoPath,
-            value,
+            decodeResourceLiteral(value),
             "resource-item",
             lineNumber(source, bodyOffset + (item.index ?? 0)),
           );
