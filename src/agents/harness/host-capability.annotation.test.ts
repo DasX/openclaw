@@ -26,6 +26,7 @@ import { markSessionTranscriptIndexDirtyInTransaction } from "../../config/sessi
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngine } from "../../context-engine/types.js";
 import { createWorkerSessionPlacementStore } from "../../gateway/worker-environments/placement-store.js";
+import { seedAttachedPlacementEnvironment } from "../../gateway/worker-environments/placement-test-fixtures.js";
 import { readCodexSessionTranscriptEventsBeforeAdmission } from "../../plugin-sdk/codex-session-transcript-runtime.js";
 import { readSessionTranscriptVisibleMessageDelta } from "../../plugin-sdk/session-transcript-runtime.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
@@ -38,6 +39,7 @@ import type {
   UserTurnTranscriptAnnotation,
 } from "../../sessions/user-turn-transcript.types.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { normalizeMessagesForLlmBoundary } from "../embedded-agent-runner/run/attempt-llm-boundary.js";
 import { convertToLlm } from "../sessions/messages.js";
@@ -633,7 +635,13 @@ describe("host-owned current admission annotation", () => {
 
   it("revalidates the captured host-owned worker claim inside the write transaction", async () => {
     await withAdmission(async (f) => {
-      const placements = createWorkerSessionPlacementStore();
+      const database = openOpenClawStateDatabase();
+      const placements = createWorkerSessionPlacementStore({ database });
+      seedAttachedPlacementEnvironment(database, {
+        environmentId: "annotation-worker",
+        sessionId: f.target.sessionId,
+        ownerEpoch: 7,
+      });
       let placement = placements.startDispatch(f.target);
       placement = placements.transition({
         sessionId: f.target.sessionId,

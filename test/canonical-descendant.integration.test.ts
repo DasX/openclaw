@@ -33,7 +33,9 @@ import { writeSessionEntry } from "../src/config/sessions/session-accessor.sqlit
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { sessionRewindHandlers } from "../src/gateway/server-methods/sessions-rewind.js";
 import type { GatewayRequestContext } from "../src/gateway/server-methods/types.js";
+import { hashWorkerCredential } from "../src/gateway/worker-environments/credential.js";
 import { createWorkerSessionPlacementStore } from "../src/gateway/worker-environments/placement-store.js";
+import { createWorkerEnvironmentStore } from "../src/gateway/worker-environments/store.js";
 import { readCodexSessionTranscriptEventsBeforeAdmission } from "../src/plugin-sdk/codex-session-transcript-runtime.js";
 import { appendSessionTranscriptMessagesByIdentity } from "../src/plugin-sdk/session-transcript-runtime.js";
 import {
@@ -138,8 +140,8 @@ async function withFixture(
       agent: createRuntimeAgent(),
       config: { current: () => config },
       state: {
-        openSyncKeyedStore: <T>(options: OpenKeyedStoreOptions) =>
-          createPluginStateSyncKeyedStore<T>("codex", options),
+        openSyncKeyedStore: <T>(storeOptions: OpenKeyedStoreOptions) =>
+          createPluginStateSyncKeyedStore<T>("codex", storeOptions),
       },
     });
     const admissions: Array<{ recorder: UserTurnTranscriptRecorder; before: unknown[] }> = [];
@@ -189,13 +191,53 @@ async function withFixture(
         const placements = workerOwned ? createWorkerSessionPlacementStore() : undefined;
         let workerClaim: ReturnType<NonNullable<typeof placements>["claimTurn"]> | undefined;
         if (placements) {
+          const environments = createWorkerEnvironmentStore();
+          const environmentId = `policy-worker-${runId}`;
+          const credential = (boundSessionId: string | null) => ({
+            credentialHash: hashWorkerCredential(`${environmentId}:${boundSessionId}`),
+            sessionId: boundSessionId,
+            rpcSetVersion: 1,
+            expiresAtMs: Date.now() + 60_000,
+          });
+          environments.createIntent({
+            environmentId,
+            providerId: "policy-provider",
+            profileId: "policy-profile",
+            profileSnapshot: { settings: {}, executionMode: "worker-turn" },
+            provisionOperationId: `provision:${environmentId}`,
+          });
+          environments.transition({ environmentId, from: "requested", to: "provisioning" });
+          environments.transition({
+            environmentId,
+            from: "provisioning",
+            to: "ready",
+            patch: {
+              leaseId: `lease:${environmentId}`,
+              nodeDeviceId: `node:${environmentId}`,
+              bootstrapReceipt: {
+                bundleHash: "a".repeat(64),
+                openclawVersion: "2026.9.1",
+                protocolFeatures: ["worker-execution-context-v2"],
+              },
+              credential: credential(null),
+            },
+          });
+          const attached = environments.transition({
+            environmentId,
+            from: "ready",
+            to: "attached",
+            patch: {
+              attachedSessionIds: [sessionId],
+              credential: credential(sessionId),
+            },
+          });
           let placement = placements.startDispatch(target);
           placement = placements.transition({
             sessionId,
             from: "requested",
             to: "provisioning",
             expectedGeneration: placement.generation,
-            patch: { environmentId: "policy-worker" },
+            patch: { environmentId },
           });
           placement = placements.transition({
             sessionId,
@@ -219,13 +261,13 @@ async function withFixture(
             from: "starting",
             to: "active",
             expectedGeneration: placement.generation,
-            patch: { activeOwnerEpoch: 7 },
+            patch: { activeOwnerEpoch: attached.ownerEpoch },
           });
           workerClaim = placements.claimTurn({
             ...target,
             runId,
             claimId: "policy-claim",
-            owner: { kind: "worker", environmentId: "policy-worker", ownerEpoch: 7 },
+            owner: { kind: "worker", environmentId, ownerEpoch: attached.ownerEpoch },
           });
         }
         const capturedWorkerClaim = workerClaim;
@@ -265,7 +307,9 @@ async function withFixture(
           abortController,
           invalidate: async (reason) => {
             if (reason === "claim") {
-              if (capturedWorkerClaim) placements?.releaseTurn(capturedWorkerClaim);
+              if (capturedWorkerClaim) {
+                placements?.releaseTurn(capturedWorkerClaim);
+              }
               workerClaim = undefined;
             } else if (reason === "aborted") {
               abortController.abort();
@@ -291,7 +335,9 @@ async function withFixture(
           userTurnTranscriptRecorder: recorder,
           close: () => {
             host.close();
-            if (workerClaim) placements?.releaseTurn(workerClaim);
+            if (workerClaim) {
+              placements?.releaseTurn(workerClaim);
+            }
             admission.close();
             successor?.close();
           },
@@ -326,7 +372,7 @@ async function withFixture(
         source: `${rootDir}index.ts`,
       });
       registry.plugins.push(record);
-      await plugin.register(
+      plugin.register(
         createApi(record, {
           config,
           pluginConfig: config.plugins.entries?.[plugin.id]?.config,
@@ -467,7 +513,7 @@ describe("canonical descendant lifecycle through real owners", () => {
           calls.findIndex((call) => call.method === "turn/start"),
         );
         expect(
-          admissions.at(-1)?.recorder.getPersistedMessage?.()?.__openclaw?.mirrorIdentity,
+          admissions.at(-1)?.recorder.getPersistedMessage?.()?.["__openclaw"]?.mirrorIdentity,
         ).toMatch(/:prompt$/);
       }
       expect(
@@ -504,9 +550,9 @@ describe("canonical descendant lifecycle through real owners", () => {
           before,
         );
         expect(fixture.native.threads.get(binding.threadId)?.thread.turns).toEqual(history);
-        expect(admissions.at(-1)?.recorder.getPersistedMessage?.()?.__openclaw).not.toHaveProperty(
-          "mirrorIdentity",
-        );
+        expect(
+          admissions.at(-1)?.recorder.getPersistedMessage?.()?.["__openclaw"],
+        ).not.toHaveProperty("mirrorIdentity");
         const lastClient = calls.find((call) => call.method === "thread/inject_items")?.client;
         // A separately admitted cold run may reassert once on a new physical client.
         await fixture.turn(source.sessionKey, "independent retry");
@@ -578,7 +624,9 @@ describe("canonical descendant lifecycle through real owners", () => {
           await fixture.withClient(async (client) => {
             const request = client.request.bind(client);
             const spy = vi.spyOn(client, "request").mockImplementation((method, input, options) => {
-              if (method === "thread/inject_items") revoke(target, source.sessionKey);
+              if (method === "thread/inject_items") {
+                revoke(target, source.sessionKey);
+              }
               return request(method, input, options);
             });
             restore = () => spy.mockRestore();
@@ -701,7 +749,9 @@ describe("canonical descendant lifecycle through real owners", () => {
                     const spy = vi
                       .spyOn(client, "request")
                       .mockImplementation(async (method, input, options) => {
-                        if (method === "thread/inject_items") await invalidate(reason);
+                        if (method === "thread/inject_items") {
+                          await invalidate(reason);
+                        }
                         return request(method, input, options);
                       });
                     restore = () => spy.mockRestore();
@@ -1318,7 +1368,7 @@ describe("canonical descendant lifecycle through real owners", () => {
     const calls: string[] = [];
     const resolutions: string[] = [];
     let initializations = 0;
-    const server = http.createServer(async (request, response) => {
+    const handleRequest = async (request: http.IncomingMessage, response: http.ServerResponse) => {
       const sessionId = request.headers["mcp-session-id"];
       if (request.method === "DELETE") {
         if (typeof sessionId === "string") {
@@ -1381,8 +1431,15 @@ describe("canonical descendant lifecycle through real owners", () => {
       }
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    };
+    const server = http.createServer((request, response) => {
+      void handleRequest(request, response).catch((error: unknown) => {
+        response.destroy(error instanceof Error ? error : new Error(String(error)));
+      });
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
     const address = server.address();
     if (!address || typeof address === "string") {
       throw new Error("requester MCP server did not bind a TCP port");
@@ -1508,9 +1565,9 @@ describe("canonical descendant lifecycle through real owners", () => {
         },
       );
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   }, 180_000);
 

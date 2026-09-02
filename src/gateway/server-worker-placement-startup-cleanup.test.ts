@@ -24,8 +24,15 @@ vi.mock("./worker-environments/placement-disk-space.js", async (importOriginal) 
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
 import { createPlacementFailureActions } from "./worker-environments/placement-dispatch-failure.js";
 import { createPlacementRecoveryActions } from "./worker-environments/placement-dispatch-recovery.js";
-import { seedActivePlacement } from "./worker-environments/placement-dispatch-test-fixtures.js";
+import {
+  REQUEST,
+  seedActivePlacement,
+} from "./worker-environments/placement-dispatch-test-fixtures.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
+import {
+  seedAttachedPlacementEnvironment,
+  writePlacementEnvironmentFixture,
+} from "./worker-environments/placement-test-fixtures.js";
 import * as workerEnvironmentSupport from "./worker-environments/service.test-support.js";
 import { createWorkerWorkspaceOperationCoordinator } from "./worker-environments/workspace-operation-coordinator.js";
 
@@ -134,7 +141,7 @@ describe("worker placement startup cleanup ownership", () => {
         from: requestedEnvironment.state,
         to: "provisioning",
       });
-      workerEnvironmentSupport.testState.store.requestDestroy({
+      const pendingEnvironment = workerEnvironmentSupport.testState.store.requestDestroy({
         environmentId,
         state: "provisioning",
       });
@@ -168,6 +175,11 @@ describe("worker placement startup cleanup ownership", () => {
           .run(environmentId, failed.sessionId);
         failed = placements.get(failed.sessionId);
       } else {
+        seedAttachedPlacementEnvironment(workerEnvironmentSupport.testState.stateDb, {
+          environmentId,
+          sessionId: REQUEST.sessionId,
+          ownerEpoch: 1,
+        });
         const active = seedActivePlacement(placements, {
           environmentId,
           ownerEpoch: 1,
@@ -193,6 +205,12 @@ describe("worker placement startup cleanup ownership", () => {
           expectedGeneration: reconciling.generation,
           recoveryError: "startup worker placement failed before its owner epoch was released",
         });
+        // Restore the crash-era mismatch under test only after valid activation:
+        // a failed placement retains its epoch while its environment is unleased.
+        writePlacementEnvironmentFixture(
+          workerEnvironmentSupport.testState.stateDb,
+          pendingEnvironment,
+        );
       }
       expect(failed).toMatchObject({
         state: "failed",
