@@ -2,7 +2,6 @@ import {
   withOpenClawStateLease,
   type OpenClawStateLeaseContext,
 } from "../../state/openclaw-state-lease.js";
-import { withSkillCollectionReviewClaim } from "./collection-review-state.js";
 import { hashSkillProposalContent } from "./proposal-hash.js";
 import {
   databaseOptions,
@@ -13,14 +12,26 @@ import type { SkillProposalRecord } from "./types.js";
 
 const TARGET_LEASE_MS = 60_000;
 const TARGET_LEASE_WAIT_MS = 5_000;
+const COLLECTION_LEASE_MS = 11 * 60_000;
 
-/** The global collection lock aliases the review lease so every tree writer shares one owner. */
+/** One Workshop skills tree means one collection lock; every writer serializes on this key. */
 export async function withSkillCollectionLock<T>(
   fn: (lease: OpenClawStateLeaseContext) => Promise<T>,
   options: SkillWorkshopStoreOptions = {},
 ): Promise<T> {
   ensureSkillWorkshopSchema(options);
-  return await withSkillCollectionReviewClaim(fn, databaseOptions(options));
+  return await withOpenClawStateLease(
+    {
+      scope: "skill-collection",
+      key: "workshop",
+      database: { scope: "shared", options: databaseOptions(options) },
+      leaseMs: COLLECTION_LEASE_MS,
+      waitMs: TARGET_LEASE_WAIT_MS,
+      leaseLabel: "skill collection review claim",
+      operationLabel: "skill-collection.review",
+    },
+    fn,
+  );
 }
 
 export async function withSkillProposalTargetLock<T>(
