@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { hashConfigIncludeRaw } from "../config/includes.js";
 import type { ClawHubPackageChannel } from "../infra/clawhub-packages.js";
+import { findBundledPluginSourceInMap } from "../plugins/bundled-sources.js";
 import { loadInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
+import { clearManagedPluginOfficialCatalogCache } from "../plugins/management-service.js";
 import { recordPluginManifestInstallOwner } from "../plugins/manifest-install-owner.js";
 import * as officialCatalog from "../plugins/official-external-plugin-catalog.js";
 import * as slotSelection from "../plugins/slot-selection.js";
@@ -607,6 +609,7 @@ function primeBlockedHookConfigMutation(config = {} as OpenClawConfig): void {
 describe("plugins cli install", () => {
   beforeEach(() => {
     resetPluginsCliTestState();
+    clearManagedPluginOfficialCatalogCache();
   });
 
   afterEach(() => {
@@ -659,19 +662,22 @@ describe("plugins cli install", () => {
     { source: "official primary ClawHub", pluginId: "brave", raw: "brave" },
     { source: "official secondary ClawHub", pluginId: "matrix", raw: "matrix" },
     { source: "bundled", pluginId: "demo", raw: "demo" },
-    { source: "bundled fallback", pluginId: "demo", raw: "demo" },
+    { source: "bundled fallback", pluginId: "demo", raw: "demo-package" },
     { source: "hook fallback", pluginId: "demo", raw: "npm:demo" },
   ])(
     "rejects $source install when write authority closes without recording or enabling it",
     async ({ source, pluginId, raw }) => {
       const { cfg } = primeSuccessfulPluginPersistence(pluginId);
+      const bundled = new Map(
+        source === "bundled" || source === "bundled fallback"
+          ? [[pluginId, { pluginId, localPath: cliInstallPath(pluginId), npmSpec: raw }]]
+          : [],
+      );
       findBundledPluginSourceMock.mockImplementation((input) => {
         const { lookup } = input as Parameters<
           typeof import("../plugins/bundled-sources.js").findBundledPluginSource
         >[0];
-        return source === "bundled" || (source === "bundled fallback" && lookup.kind === "npmSpec")
-          ? { pluginId, localPath: cliInstallPath(pluginId) }
-          : undefined;
+        return findBundledPluginSourceInMap({ bundled, lookup });
       });
       installPluginFromNpmSpecMock.mockResolvedValue(
         source === "official secondary ClawHub" ||
@@ -757,6 +763,11 @@ describe("plugins cli install", () => {
         expect(installPluginFromNpmSpecMock).toHaveBeenCalledTimes(
           source === "official secondary ClawHub" ? 1 : 0,
         );
+        expect(installHooksFromNpmSpecMock).not.toHaveBeenCalled();
+      }
+      if (source === "bundled fallback") {
+        expect(installPluginFromNpmSpecMock).toHaveBeenCalledTimes(1);
+        expect(npmInstallCall().spec).toBe(raw);
         expect(installHooksFromNpmSpecMock).not.toHaveBeenCalled();
       }
       expect(configWriteMock).not.toHaveBeenCalled();

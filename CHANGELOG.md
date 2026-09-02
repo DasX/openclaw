@@ -7,6 +7,7 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
+- **Plugin lifecycle:** install, enable, disable, uninstall, and reload edited TypeScript plugins without restarting the Gateway; keep unrelated plugins running and resume managed agent turns with fresh tools and completed results.
 - **macOS releases:** retain signed artifacts and Apple submission IDs so interrupted notarization can resume without rebuilding the app or symbols, while preserving source, hash, signature, and approval checks.
 - **Release validation:** defer beta candidate Parallels smoke to postpublish `release:beta-smoke` by default, keep stable/full prepublish coverage, and bound nested release workflow monitors with explicit job timeouts.
 - **Developer workflow:** remove the obsolete scoped-commit helper and use standard Git commands in isolated worktrees.

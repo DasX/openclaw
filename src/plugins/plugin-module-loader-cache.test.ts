@@ -128,7 +128,7 @@ describe("getCachedPluginModuleLoader", () => {
       await build({
         stdin: {
           contents:
-            'export * from "./src/plugins/plugin-module-loader-cache.ts"; export { resetPluginCache } from "./src/plugins/plugin-cache.ts";',
+            'export * from "./src/plugins/plugin-module-loader-cache.ts"; export { resetPluginCache } from "./src/plugins/plugin-cache.ts"; export { PluginInstance } from "./src/plugins/plugin-instance.ts";',
           resolveDir: process.cwd(),
         },
         bundle: true,
@@ -138,6 +138,11 @@ describe("getCachedPluginModuleLoader", () => {
         outfile: ownerPath,
         logLevel: "silent",
       });
+      // Bundling the instance owner relocates its adjacent source schema asset.
+      fs.copyFileSync(
+        path.resolve("src/state/openclaw-state-schema.sql"),
+        path.join(root, "openclaw-state-schema.sql"),
+      );
       fs.symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "junction");
       const result = spawnNodeEvalSync(
         `
@@ -145,7 +150,7 @@ describe("getCachedPluginModuleLoader", () => {
           import fs from "node:fs";
           import path from "node:path";
           import { pathToFileURL } from "node:url";
-          import { getCachedPluginModuleLoader, resetPluginCache } from ${JSON.stringify(pathToFileURL(ownerPath).href)};
+          import { bindPluginInstanceModuleLoader, getCachedPluginModuleLoader, PluginInstance, resetPluginCache } from ${JSON.stringify(pathToFileURL(ownerPath).href)};
           const root = ${JSON.stringify(root)};
           for (const transformOpenClawDependencies of [false, true]) {
             const sdk = path.join(root, "sdk-" + transformOpenClawDependencies + ".mts");
@@ -157,21 +162,38 @@ describe("getCachedPluginModuleLoader", () => {
             const dependency = path.join(rootDir, "dependency.ts");
             fs.writeFileSync(modulePath, 'export { state } from "openclaw/plugin-sdk/fixture"; export { value } from "./dependency.ts";\\n');
             fs.writeFileSync(dependency, "export const value: number = 1;\\n");
-            const load = () => getCachedPluginModuleLoader({
-              modulePath, rootDir, importerUrl: import.meta.url, tryNative: false,
-              transformOpenClawDependencies,
-              aliasMap: { "openclaw/plugin-sdk/fixture": sdk },
-            })(modulePath);
-            const first = load();
-            assert.equal(first.state === native.state, !transformOpenClawDependencies, "SDK loading mode must preserve its graph contract");
-            fs.writeFileSync(dependency, "export const value: number = 2;\\n");
-            assert.equal(load(), first);
-            assert.equal(first.value, 1);
-            resetPluginCache();
-            const second = load();
-            assert.equal(second.value, 2, "plugin dependencies reload with their generation");
-            assert.equal(second.state, first.state, "host SDK state survives plugin reload");
-            resetPluginCache();
+            const instances = [];
+            const createGeneration = () => {
+              const instance = new PluginInstance("sdk-graph");
+              instances.push(instance);
+              bindPluginInstanceModuleLoader({
+                instance, source: modulePath, rootDir,
+                loadHostModule: getCachedPluginModuleLoader({
+                  modulePath, importerUrl: import.meta.url, tryNative: false,
+                  transformOpenClawDependencies,
+                  aliasMap: { "openclaw/plugin-sdk/fixture": sdk },
+                }),
+              });
+              return instance;
+            };
+            try {
+              const firstGeneration = createGeneration();
+              const first = firstGeneration.loadModule(modulePath);
+              const sharedState = first.state;
+              assert.equal(sharedState === native.state, !transformOpenClawDependencies, "SDK loading mode must preserve its graph contract");
+              fs.writeFileSync(dependency, "export const value: number = 2;\\n");
+              assert.equal(firstGeneration.loadModule(modulePath), first);
+              assert.equal(first.value, 1);
+              await firstGeneration.dispose();
+              assert.throws(() => firstGeneration.loadModule(modulePath), /reloaded or disabled/);
+              resetPluginCache();
+              const second = createGeneration().loadModule(modulePath);
+              assert.equal(second.value, 2, "plugin dependencies reload with their generation");
+              assert.equal(second.state, sharedState, "host SDK state survives plugin reload");
+            } finally {
+              await Promise.all(instances.map((instance) => instance.dispose()));
+              resetPluginCache();
+            }
           }
           const loadSdkFixture = (name, source) => {
             const sdk = path.join(root, name + ".mts");
@@ -180,7 +202,7 @@ describe("getCachedPluginModuleLoader", () => {
             fs.writeFileSync(sdk, source);
             fs.writeFileSync(modulePath, 'export * from "openclaw/plugin-sdk/fixture";\\n');
             const loader = getCachedPluginModuleLoader({
-              modulePath, rootDir: root, importerUrl: import.meta.url, tryNative: false,
+              modulePath, importerUrl: import.meta.url, tryNative: false,
               aliasMap: { "openclaw/plugin-sdk/fixture": sdk },
             });
             return () => loader(modulePath);
@@ -211,7 +233,7 @@ describe("getCachedPluginModuleLoader", () => {
           const root = ${JSON.stringify(root)};
           const modulePath = root + "/enum-entry.ts";
           const load = getCachedPluginModuleLoader({
-            modulePath, rootDir: root, importerUrl: import.meta.url, tryNative: false,
+            modulePath, importerUrl: import.meta.url, tryNative: false,
             aliasMap: { "openclaw/plugin-sdk/fixture": root + "/enum.mts" },
           });
           assert.equal(load(modulePath).ready, 0);

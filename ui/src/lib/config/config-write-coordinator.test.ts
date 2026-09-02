@@ -633,6 +633,164 @@ describe("config write coordinator", () => {
     runtimeConfig.dispose();
   });
 
+  it.each([
+    { latestCompleted: true, latestFails: false },
+    { latestCompleted: false, latestFails: false },
+    { latestCompleted: true, latestFails: true },
+    { latestCompleted: false, latestFails: true },
+  ])(
+    "uses the newer refresh after a mutation (completed=$latestCompleted, fails=$latestFails)",
+    async ({ latestCompleted, latestFails }) => {
+      vi.useFakeTimers();
+      const mutationRead = deferred<ConfigSnapshot>();
+      const latestRead = deferred<ConfigSnapshot>();
+      const mutationReadStarted = deferred<void>();
+      const snapshot = (count: number): ConfigSnapshot => ({
+        config: { count },
+        raw: JSON.stringify({ count }),
+        hash: `hash-${count}`,
+        valid: true,
+        issues: [],
+      });
+      let getCalls = 0;
+      const request = vi.fn((method: string) => {
+        if (method === "config.get") {
+          getCalls += 1;
+          if (getCalls === 2) {
+            mutationReadStarted.resolve();
+            return mutationRead.promise;
+          }
+          return getCalls === 3 ? latestRead.promise : Promise.resolve(snapshot(1));
+        }
+        return Promise.resolve({ ok: true });
+      });
+      const { runtimeConfig } = createConfigCapabilityHarness(
+        request as GatewayBrowserClient["request"],
+      );
+      try {
+        await runtimeConfig.ensureLoaded();
+        let mutationSettled = false;
+        const mutation = runtimeConfig
+          .runExternalMutation((client) =>
+            client.request("plugins.reload", { pluginId: "fixture" }),
+          )
+          .then((result) => {
+            mutationSettled = true;
+            return result;
+          });
+        await mutationReadStarted.promise;
+        // config.changed starts an independent read after the mutation's own refresh.
+        const refresh = runtimeConfig.refresh();
+        const rawDraft = '{\n  "count": 7\n}\n';
+        runtimeConfig.setRaw(rawDraft);
+        const settleLatest = () =>
+          latestFails
+            ? latestRead.reject(new Error("latest refresh unavailable"))
+            : latestRead.resolve(snapshot(2));
+        if (latestCompleted) {
+          settleLatest();
+          await refresh;
+        }
+        mutationRead.resolve(snapshot(999));
+        let settledBeforeLatest: boolean | undefined;
+        if (!latestCompleted) {
+          await vi.advanceTimersByTimeAsync(0);
+          settledBeforeLatest = mutationSettled;
+          settleLatest();
+        }
+        await refresh;
+        await expect(mutation).resolves.toEqual({
+          ok: true,
+          value: { ok: true },
+          refresh: latestFails ? { ok: false, error: "latest refresh unavailable" } : { ok: true },
+        });
+        if (!latestCompleted) {
+          expect(settledBeforeLatest).toBe(false);
+        }
+        expect(request.mock.calls.map(([method]) => method)).toEqual([
+          "config.get",
+          "plugins.reload",
+          "config.get",
+          "config.get",
+        ]);
+        expect(runtimeConfig.state.configSnapshot).toEqual(snapshot(latestFails ? 1 : 2));
+        expect(runtimeConfig.state.configRaw).toBe(rawDraft);
+        expect(runtimeConfig.state.configFormMode).toBe("raw");
+        expect(runtimeConfig.state.configFormDirty).toBe(true);
+        expect(runtimeConfig.state.configDraftBaseHash).toBe("hash-1");
+      } finally {
+        runtimeConfig.dispose();
+      }
+    },
+  );
+
+  it("clears foreground loading when an applied-config poll supersedes the save refresh", async () => {
+    vi.useFakeTimers();
+    const oldRead = deferred<ConfigSnapshot>();
+    const backgroundRead = deferred<ConfigSnapshot>();
+    const oldReadStarted = deferred<void>();
+    const snapshot = (count: number): ConfigSnapshot => ({
+      config: { count },
+      raw: JSON.stringify({ count }),
+      hash: `hash-${count}`,
+      configRevisionHash: `hash-${count}`,
+      appliedConfigHash: `hash-${count}`,
+      valid: true,
+      issues: [],
+    });
+    let gets = 0;
+    const request = vi.fn((method: string) => {
+      if (method === "config.get") {
+        gets += 1;
+        if (gets === 1) {
+          return Promise.resolve(snapshot(1));
+        }
+        if (gets === 2) {
+          oldReadStarted.resolve();
+          return oldRead.promise;
+        }
+        return backgroundRead.promise;
+      }
+      return Promise.resolve({ hash: "hash-2" });
+    });
+    const { runtimeConfig } = createConfigCapabilityHarness(
+      request as GatewayBrowserClient["request"],
+    );
+    let save: Promise<boolean> | undefined;
+    try {
+      await runtimeConfig.ensureLoaded();
+      runtimeConfig.setRaw('{"count":2}');
+      save = runtimeConfig.save();
+      await oldReadStarted.promise;
+      expect(runtimeConfig.state.configLoading).toBe(true);
+
+      // Opening another editor reconciles the applied revision during the save's read.
+      await runtimeConfig.ensureLoaded();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(gets).toBe(3);
+      backgroundRead.resolve(snapshot(2));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runtimeConfig.state.configLoading).toBe(false);
+      expect(runtimeConfig.state.configNeedsApply).toBe(false);
+
+      oldRead.resolve(snapshot(999));
+      await expect(save).resolves.toBe(true);
+      expect(runtimeConfig.state.configLoading).toBe(false);
+      expect(runtimeConfig.state.configSnapshot).toEqual(snapshot(2));
+      expect(request.mock.calls.map(([method]) => method)).toEqual([
+        "config.get",
+        "config.set",
+        "config.get",
+        "config.get",
+      ]);
+    } finally {
+      backgroundRead.resolve(snapshot(2));
+      oldRead.resolve(snapshot(999));
+      await save;
+      runtimeConfig.dispose();
+    }
+  });
+
   it("preserves a committed external mutation when its authoritative refresh fails", async () => {
     let getCalls = 0;
     const request = vi.fn(async (method: string) => {

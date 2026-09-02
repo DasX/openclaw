@@ -64,6 +64,7 @@ import type {
 } from "./install-types.js";
 import { hasRetainedManagedNpmInstallMarker } from "./managed-npm-retention.js";
 import { listNpmPackageDirs } from "./npm-package-dirs.js";
+import { isOfficialCatalogLookupPluginIdReplacement } from "./official-external-install-records.js";
 import {
   auditDeclaredOpenClawHostDependency,
   relinkOpenClawPeerDependenciesInManagedNpmRoot,
@@ -487,7 +488,11 @@ export async function installPluginFromManagedNpmRoot(
       if (
         manifestResult.ok &&
         manifestResult.manifest.id === params.expectedReplacementPluginId &&
-        manifestResult.manifest.legacyPluginIds?.includes(expectedPluginId)
+        (manifestResult.manifest.legacyPluginIds?.includes(expectedPluginId) ||
+          isOfficialCatalogLookupPluginIdReplacement({
+            expectedPluginId,
+            expectedReplacementPluginId: params.expectedReplacementPluginId,
+          }))
       ) {
         // Only managed npm updates may replace an expected id, after the downloaded
         // official manifest corroborates the catalog-declared migration.
