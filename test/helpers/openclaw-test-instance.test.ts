@@ -904,6 +904,8 @@ describe("openclaw test instance", () => {
   ])("observes Windows $label after blocking termination", async (scenario) => {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
+    const stopLog: string[] = [];
+    const privateOutput = "taskkill fixture output must stay private";
     const processState = createGatewayProcessState();
     // SAFETY: The stub supplies every process and pipe member consumed by the stopper.
     const child = Object.assign(processState, {
@@ -931,15 +933,39 @@ describe("openclaw test instance", () => {
           observed.resolve();
         });
       }
-      return { status: scenario.taskkillStatus };
+      return {
+        status: scenario.taskkillStatus,
+        stdout: privateOutput,
+        stderr: privateOutput,
+        ...(scenario.taskkillStatus === 0
+          ? {}
+          : { error: Object.assign(new Error(privateOutput), { code: "ETESTKILL" }) }),
+      };
     });
     try {
-      const stopped = await testing.stopGatewayProcess(child, Date.now() + 500, 250, {
-        platform: "win32",
-        runTaskkill,
-      });
+      const stopped = await testing.stopGatewayProcess(
+        child,
+        Date.now() + 500,
+        250,
+        { platform: "win32", runTaskkill },
+        stopLog,
+      );
       expect(stopped).toBe(scenario.stopped);
       expect(runTaskkill).toHaveBeenCalledTimes(scenario.taskkillStatus === 0 ? 1 : 2);
+      if (stopped) {
+        expect(stopLog).toEqual([]);
+      } else {
+        expect(stopLog).toHaveLength(1);
+        const diagnostic = stopLog.join("");
+        expect(diagnostic).toContain(
+          `"reason":"${scenario.closePipes ? "termination-indeterminate" : "close-incomplete"}"`,
+        );
+        expect(diagnostic).toContain(`"status":${scenario.taskkillStatus}`);
+        expect(diagnostic).not.toContain(privateOutput);
+        if (scenario.taskkillStatus !== 0) {
+          expect(diagnostic).toContain('"errorCode":"ETESTKILL"');
+        }
+      }
       if (!scenario.closePipes) {
         expect(stderr.closed).toBe(false);
       }

@@ -495,6 +495,8 @@ class GatewayBootstrapAuthTest {
   @Test
   fun nodeConnectStartsOperatorAfterBootstrapHandoffWhenOperatorWasConnecting() {
     val (app, prefs, runtime) = gatewayFixture()
+    // Manual endpoints take transport policy from prefs, not the plaintext fixture's hint.
+    prefs.setManualTls(false)
     val deviceId = DeviceIdentityStore.withPrefs(app, prefs).loadOrCreate().deviceId
     val endpoint = gatewayEndpoint()
     DeviceAuthStore(prefs).saveToken(endpoint.stableId, deviceId, "operator", "bootstrap-operator-token")
@@ -509,6 +511,7 @@ class GatewayBootstrapAuthTest {
     val desired = desiredConnection(runtime, "operatorSession")
     assertNotNull(desired)
     assertNull(readField<String?>(desired!!, "bootstrapToken"))
+    assertNull("The loopback fixture serves plain HTTP", readField<GatewayTlsParams?>(desired, "tls"))
   }
 
   @Test
