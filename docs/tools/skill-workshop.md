@@ -119,6 +119,11 @@ to automations. To grant shell access on purpose, add the command to the exec
 allowlist or choose a standing grant from the approval card. `propose` and
 `off` do not run collection review.
 
+If an enabled sandbox uses `workspaceAccess: "rw"`, the review uses the Workshop
+directory as its sandbox workspace. If the sandbox uses `"ro"` or `"none"`, the
+review records `sandbox workspace is not read-write; collection review skipped`,
+does not run, and does not commit a backup or advance the skill snapshot.
+
 The review prompt asks the agent to stay inside the Workshop directory. The
 agent edits files directly during this scheduled turn. A full-tree snapshot is
 created before the turn; changed or added `SKILL.md` files are scanned after it,
