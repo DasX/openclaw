@@ -309,10 +309,7 @@ export function copyBundledPluginMetadata(params: CopyMetadataParams = {}): void
 
     const distNodeModules = path.join(distPluginDir, "node_modules");
     // Metadata cleanup must never traverse a previous source-dependency link.
-    if (
-      hasExternalLocalDist &&
-      fs.lstatSync(distNodeModules, { throwIfNoEntry: false })?.isSymbolicLink()
-    ) {
+    if (fs.lstatSync(distNodeModules, { throwIfNoEntry: false })?.isSymbolicLink()) {
       fs.unlinkSync(distNodeModules);
     }
 
@@ -375,11 +372,7 @@ export function copyBundledPluginMetadata(params: CopyMetadataParams = {}): void
 
     writeTextFileIfChanged(distPackageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
     const sourceNodeModules = path.resolve(pluginDir, "node_modules");
-    if (
-      hasExternalLocalDist &&
-      fs.existsSync(sourceNodeModules) &&
-      !fs.existsSync(distNodeModules)
-    ) {
+    if (fs.existsSync(sourceNodeModules) && !fs.existsSync(distNodeModules)) {
       // Published source builds move as a complete checkout; POSIX links must
       // keep each plugin's dependency owner without retaining the build path.
       const target =
