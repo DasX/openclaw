@@ -57,6 +57,11 @@ export function renderNewSessionDraftView(options: {
       @compositionend=${() => {
         titlePreparation.setComposing(false);
       }}
+      @focusout=${() => {
+        // Browsers can drop compositionend on blur/detach mid-IME; a stuck
+        // composing flag would silently disable naming for the mounted page.
+        titlePreparation.setComposing(false);
+      }}
     >
       ${renderTargetBar()}
       ${worktreeNameInvalid ? renderDraftError(t("newSession.worktreeNameInvalid")) : nothing}

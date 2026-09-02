@@ -26,7 +26,7 @@ suite.define(() => {
       expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
       await page.getByRole("button", { name: "Start session" }).click();
       expect(await gateway.waitForRequest("sessions.create")).toMatchObject({
-        params: { label: "Repair sidebar naming", message: "repair the sidebar naming" },
+        params: { displayName: "Repair sidebar naming", message: "repair the sidebar naming" },
       });
       await page.waitForURL(
         (url) => url.pathname === controlUiSessionPath("agent:main:prepared-title"),
@@ -37,6 +37,26 @@ suite.define(() => {
         .fill("another topic in the ongoing chat");
       await page.clock.runFor(2_000);
       expect(await gateway.getRequests("sessions.title.prepare")).toHaveLength(1);
+    });
+  });
+
+  it("recovers title preparation when blur drops compositionend", async () => {
+    await suite.withPage({}, async ({ page }) => {
+      const gateway = await installMockGateway(page, {
+        featureMethods: methods,
+        methodResponses: { "sessions.title.prepare": { title: "Composed draft" } },
+      });
+      await page.goto(`${suite.server.baseUrl}new`);
+      await page.clock.install();
+      const message = page.locator(".new-session-page__message");
+      await message.dispatchEvent("compositionstart");
+      await message.fill("compose a draft through an input method editor");
+      await page.clock.runFor(2_000);
+      expect(await gateway.getRequests("sessions.title.prepare")).toHaveLength(0);
+      await message.blur();
+      await page.clock.runFor(1_500);
+      expect(await gateway.getRequests("sessions.title.prepare")).toHaveLength(1);
+      await page.getByText("Session name: Composed draft", { exact: true }).waitFor();
     });
   });
 
@@ -55,7 +75,7 @@ suite.define(() => {
       await gateway.waitForRequest("sessions.title.prepare");
       await page.getByRole("button", { name: "Start session" }).click();
       const created = await gateway.waitForRequest("sessions.create");
-      expect(created.params).not.toHaveProperty("label");
+      expect(created.params).not.toHaveProperty("displayName");
       await gateway.resolveDeferred("sessions.title.prepare", { title: "Too late to rename" });
       await page.waitForURL(
         (url) => url.pathname === controlUiSessionPath("agent:main:pending-title"),
