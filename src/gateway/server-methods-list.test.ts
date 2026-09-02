@@ -248,6 +248,16 @@ describe("listGatewayMethods", () => {
     expect(methods).not.toContain("sessions.usage");
   });
 
+  it("rate-limits speculative inference under operator write authority", () => {
+    const descriptors = createCoreGatewayMethodDescriptors(coreGatewayHandlers);
+    expect(
+      descriptors.find((descriptor) => descriptor.name === "sessions.title.prepare"),
+    ).toMatchObject({
+      scope: "operator.write",
+      controlPlaneWrite: true,
+    });
+  });
+
   it("registers the hidden node protocol feature publication method", () => {
     const descriptor = createCoreGatewayMethodDescriptors(coreGatewayHandlers).find(
       (candidate) => candidate.name === "node.runnerInventory.update",
