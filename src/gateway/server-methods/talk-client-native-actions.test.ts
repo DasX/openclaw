@@ -2,11 +2,13 @@ import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
+import { extractText } from "../../../ui/src/lib/chat/message-extract.ts";
 import {
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
   ACTIVE_EMBEDDED_RUNS,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
 } from "../../agents/embedded-agent-runner/run-state.js";
+import { guardSessionManager } from "../../agents/session-tool-result-guard-wrapper.js";
 import {
   createAssistant,
   createAssistantResultStream,
@@ -15,13 +17,30 @@ import {
   streamMocks,
   testModel,
 } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
-import { readSessionTranscriptMessageEvents } from "../../config/sessions/session-accessor.js";
+import { SessionManager } from "../../agents/sessions/session-manager.js";
+import {
+  loadTranscriptEventsSync,
+  readSessionTranscriptMessageEvents,
+} from "../../config/sessions/session-accessor.js";
+import { readTranscriptEventRows } from "../../config/sessions/session-accessor.sqlite-read.js";
+import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import {
+  closeOpenClawAgentDatabaseByPath,
+  openOpenClawAgentDatabase,
+  resolveOpenClawAgentSqlitePath,
+} from "../../state/openclaw-agent-db.js";
 import {
   flushClientVoiceSessionWrites,
   registerClientVoiceConsultRun,
   resolveClientVoiceRunBinding,
 } from "../../talk/client-voice-session.js";
+import { projectChatDisplayMessages } from "../chat-display-projection.js";
+import { createTranscriptUpdateBroadcastHandler } from "../server-session-events.js";
+import {
+  readSessionMessagesAsync,
+  readSessionPreviewItemsFromTranscript,
+} from "../session-transcript-readers.js";
 import { closeTalkClientGatewayControlSession } from "../talk-client-gateway-control.js";
 import {
   AGENT_ID,
@@ -37,6 +56,10 @@ import {
   withParkedNativeTask,
   withNativePlugin,
 } from "./talk-client-native-control.test-support.js";
+
+function rawTranscriptRows() {
+  return readTranscriptEventRows(openOpenClawAgentDatabase({ agentId: AGENT_ID }), SESSION_ID);
+}
 
 function nativeTranscript(text: string) {
   return { type: "turn.done", turn: { role: "user", transcript: text } };
@@ -89,6 +112,202 @@ const activeControls = [
 describe("native Talk action ownership through public plugin registration", () => {
   installNativePluginTestHooks();
   registerAgentSessionLoopTestLifecycle();
+
+  it("keeps native generated input in current-turn custody but out of display and future calls", async () => {
+    const spoken = "Keep the literal labels Context: and Spoken style: in my note.";
+    const delegated =
+      "Check the note requested by the speaker. Context: preserve both labels. Spoken style: one sentence.";
+    const answer = createAssistant(testModel, [
+      { type: "text", text: "Both labels are preserved." },
+    ]);
+    const providerStream = createAssistantMessageEventStream();
+    streamMocks.streamSimple.mockImplementation(() => providerStream);
+    await withNativePlugin(async (fixture) => {
+      const scope = {
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+        sessionKey: SESSION_KEY,
+        storePath: resolveOpenClawAgentSqlitePath({ agentId: AGENT_ID }),
+      };
+      const publications: Promise<void>[] = [];
+      const published = vi.fn();
+      const publish = createTranscriptUpdateBroadcastHandler({
+        broadcastToConnIds: published,
+        sessionEventSubscribers: { getAll: () => new Set([CONNECTION_ID]) },
+        sessionMessageSubscribers: { get: () => new Set([CONNECTION_ID]) },
+        chatAbortControllers: fixture.chatAbortControllers,
+      });
+      const unsubscribe = onInternalSessionTranscriptUpdate((update) => {
+        if ((update.target?.sessionId ?? update.sessionId) === SESSION_ID) {
+          publications.push(publish(update));
+        }
+      });
+      let modelRun: Promise<void> | undefined;
+      upstream.runEmbeddedAgent.mockImplementationOnce(async (params) => {
+        const { agentId, sessionId, sessionKey, storePath } = params.sessionTarget ?? {};
+        if (!agentId || !sessionId || !sessionKey || !storePath || !params.preparedRunAdmission) {
+          throw new Error("Missing native target/admission");
+        }
+        await params.preparedRunAdmission.admit("embedded", "native-history-backend");
+        const recorder = params.userTurnTranscriptRecorder;
+        const manager = guardSessionManager(
+          SessionManager.open({ agentId, sessionId, sessionKey, storePath }),
+          {
+            agentId: AGENT_ID,
+            sessionKey: SESSION_KEY,
+            runId: params.runId,
+            preparedUserTurnMessage: await recorder?.resolveMessage(),
+            preparedUserTurnTranscriptRecorder: recorder,
+          },
+        );
+        const { session } = await createTestSession({ sessionManager: manager });
+        modelRun = session.prompt(params.prompt);
+        await modelRun;
+        await recorder?.waitForRuntimePersistence();
+        return { payloads: [{ text: "Both labels are preserved." }], meta: { durationMs: 0 } };
+      });
+      try {
+        const { socket, result } = await connectNativeSession(fixture);
+        socket.serverEvent(nativeTranscript(spoken));
+        await flushNativeTranscript(result);
+        socket.serverEvent(nativeDelegation("custody-request", delegated));
+        await vi.waitFor(() => expect(streamMocks.streamSimple).toHaveBeenCalledOnce());
+        const run = upstream.runEmbeddedAgent.mock.calls[0]![0];
+        expect(run.prompt).toContain(delegated);
+        const modelMessages = streamMocks.streamSimple.mock.calls[0]![1].messages;
+        expect(
+          modelMessages.filter((message: unknown) => JSON.stringify(message).includes(delegated)),
+        ).toHaveLength(1);
+        expect(modelMessages.map(extractText)).toContain(run.prompt);
+        await Promise.all(publications);
+        const raw = loadTranscriptEventsSync(scope);
+        const generated = raw.filter(
+          (event) =>
+            isRecord(event) &&
+            isRecord(event.message) &&
+            JSON.stringify(event.message).includes(delegated),
+        );
+        expect(generated).toHaveLength(1);
+        expect.soft(generated[0]).toMatchObject({
+          message: {
+            role: "user",
+            display: false,
+            excludeFromContext: true,
+          },
+        });
+        expect(extractText((generated[0] as { message: unknown }).message)).toBe(run.prompt);
+        const history = await readSessionMessagesAsync(scope, {
+          mode: "full",
+          reason: "native custody",
+        });
+        expect.soft(JSON.stringify(projectChatDisplayMessages(history))).not.toContain(delegated);
+        expect(JSON.stringify(projectChatDisplayMessages(history))).toContain(spoken);
+        const live = published.mock.calls.flatMap(([event, payload]) =>
+          event === "session.message" ? [payload.message] : [],
+        );
+        expect.soft(JSON.stringify(live)).not.toContain(delegated);
+        const spokenFrames = fixture.broadcast.mock.calls.flatMap(([event, payload]) =>
+          event === "talk.event" && payload.talkEvent?.type === "transcript.done"
+            ? [payload.talkEvent.payload.text]
+            : [],
+        );
+        expect(spokenFrames).toEqual([spoken]);
+        expect(JSON.stringify(fixture.broadcast.mock.calls)).not.toContain(delegated);
+        providerStream.push({ type: "done", reason: "stop", message: answer });
+        providerStream.end();
+        await modelRun;
+        await vi.waitFor(() =>
+          expect(spokenMessages(socket.sent)).toContain("Both labels are preserved."),
+        );
+        await Promise.all(publications);
+        await fixture.invoke("talk.client.close", { voiceSessionId: result.voiceSessionId });
+        const rawCompleted = rawTranscriptRows();
+        expect(
+          closeOpenClawAgentDatabaseByPath(resolveOpenClawAgentSqlitePath({ agentId: AGENT_ID })),
+        ).toBe(true);
+        await connectNativeSession(fixture);
+        const body = upstream.fetch.mock.calls.at(-1)?.[1]?.body;
+        expect(typeof body).toBe("string");
+        const request = JSON.parse(body as string);
+        expect.soft(JSON.stringify(request.session.initial_items)).not.toContain(delegated);
+        expect(JSON.stringify(request.session.initial_items)).toContain(spoken);
+        expect(JSON.stringify(request.session.initial_items)).toContain(
+          "Both labels are preserved.",
+        );
+        expect(request.session.delegation.ack_filler).toBe(false);
+        expect(rawTranscriptRows()).toEqual(rawCompleted);
+      } finally {
+        providerStream.push({ type: "done", reason: "stop", message: answer });
+        providerStream.end();
+        await modelRun;
+        await Promise.all(publications);
+        unsubscribe();
+      }
+    });
+  });
+
+  it("selects eligible native history before projection and the item cap", async () => {
+    await withNativePlugin(async (fixture) => {
+      const scope = {
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+        sessionKey: SESSION_KEY,
+        storePath: resolveOpenClawAgentSqlitePath({ agentId: AGENT_ID }),
+      };
+      const manager = SessionManager.open(scope);
+      const append = (
+        content: string,
+        flags: { display?: false; excludeFromContext?: true } = {},
+      ) => manager.appendMessage({ role: "user", content, timestamp: 1, ...flags });
+      append("ordinary");
+      append("context only", { display: false });
+      append("display only", { excludeFromContext: true });
+      for (let index = 0; index < 70; index++) {
+        append(`excluded sentinel ${index}`, { display: false, excludeFromContext: true });
+      }
+      const raw = rawTranscriptRows();
+      const display = readSessionPreviewItemsFromTranscript(scope, 16, 800);
+      expect.soft(display.map((item) => item.text)).toEqual(["ordinary", "display only"]);
+      const context = readSessionPreviewItemsFromTranscript(scope, 16, 800, "model-context");
+      expect.soft(context.map((item) => item.text)).toEqual(["ordinary", "context only"]);
+      await connectNativeSession(fixture);
+      const body = upstream.fetch.mock.calls.at(-1)?.[1]?.body;
+      expect(typeof body).toBe("string");
+      const request = JSON.parse(body as string);
+      expect(
+        request.session.initial_items?.map(
+          (item: { content: Array<{ text: string }> }) => item.content[0]?.text,
+        ),
+      ).toEqual(["ordinary", "context only"]);
+      expect(rawTranscriptRows()).toEqual(raw);
+      // Reset retention is intentional model context, even for a hidden/excluded user row.
+      const kept = append("reset-kept", { display: false, excludeFromContext: true });
+      manager.appendResetBoundary("new", kept);
+      append("post-reset excluded", { display: false, excludeFromContext: true });
+      const resetRaw = rawTranscriptRows();
+      expect(
+        readSessionPreviewItemsFromTranscript(scope, 16, 800, "model-context").map(
+          (item) => item.text,
+        ),
+      ).toEqual(["reset-kept"]);
+      expect(readSessionPreviewItemsFromTranscript(scope, 16, 800)).toEqual([]);
+      await connectNativeSession(fixture);
+      const resetRequest = JSON.parse(upstream.fetch.mock.calls.at(-1)![1]!.body as string);
+      expect(
+        resetRequest.session.initial_items.map(
+          (item: { content: Array<{ text: string }> }) => item.content[0]?.text,
+        ),
+      ).toEqual(["reset-kept"]);
+      expect(rawTranscriptRows()).toEqual(resetRaw);
+      for (let index = 0; index < 20; index++) {
+        append(`${index}:` + "x".repeat(30));
+      }
+      const bounded = readSessionPreviewItemsFromTranscript(scope, 3, 20, "model-context");
+      expect(bounded).toEqual(
+        [17, 18, 19].map((index) => ({ role: "user", text: `${index}:` + "x".repeat(14) + "..." })),
+      );
+    });
+  });
 
   it.each([
     ["open", "open"],

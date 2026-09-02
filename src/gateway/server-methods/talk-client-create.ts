@@ -195,6 +195,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
               },
               REALTIME_VOICE_CONTEXT_MAX_ITEMS,
               REALTIME_VOICE_CONTEXT_MAX_ITEM_CHARS,
+              "model-context",
             ).filter(
               (
                 item,

@@ -8,6 +8,10 @@ import {
   runOutsideGatewayRootWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
+import {
+  buildRunUserTurnIdempotencyKey,
+  createUserTurnTranscriptRecorder,
+} from "../sessions/user-turn-transcript.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import {
   consultRealtimeVoiceAgent,
@@ -42,22 +46,22 @@ const loadTalkAgentExecution = createLazyRuntimeModule(async () => {
   };
 });
 
-function createTalkClientAgentRuntime(params: {
-  config: OpenClawConfig;
-  agentId: string;
-  rawSourceRef?: string;
-}) {
+function createTalkClientAgentRuntime(params: { config: OpenClawConfig; rawSourceRef?: string }) {
   const agentRuntime = createPluginRuntime().agent;
   const runEmbeddedAgent: typeof agentRuntime.runEmbeddedAgent = async (runParams) => {
     runParams.abortSignal?.throwIfAborted();
     const execution = await loadTalkAgentExecution();
     runParams.abortSignal?.throwIfAborted();
+    const { agentId, sessionId, sessionKey, storePath } = runParams.sessionTarget ?? {};
+    if (!agentId || !sessionId || !sessionKey || !storePath) {
+      throw new Error("Talk consult requires its prepared transcript target");
+    }
     const preparedRunAdmission = execution.prepareAgentRunAdmission({
       cfg: params.config,
       operationalRunInstance: execution.createOperationalRunInstanceRef(runParams.runId),
       facts: {
         runId: runParams.runId,
-        agentId: runParams.sessionTarget?.agentId ?? runParams.agentId ?? params.agentId,
+        agentId,
         ingress: {
           kind: "gateway-client",
           boundary: "talk-agent-consult",
@@ -78,7 +82,30 @@ function createTalkClientAgentRuntime(params: {
     runParams.abortSignal?.addEventListener("abort", close, { once: true });
     try {
       runParams.abortSignal?.throwIfAborted();
-      return await execution.runEmbeddedAgent({ ...runParams, preparedRunAdmission });
+      return await execution.runEmbeddedAgent({
+        ...runParams,
+        preparedRunAdmission,
+        // Speech is mirrored separately. Keep generated input in current-turn custody,
+        // but never display it or replay it as a later user request.
+        userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
+          input: {
+            text: runParams.prompt,
+            display: false,
+            excludeFromContext: true,
+            idempotencyKey: buildRunUserTurnIdempotencyKey(runParams.runId),
+          },
+          target: {
+            agentId,
+            sessionId,
+            sessionKey,
+            storePath,
+            expectedSessionId: sessionId,
+            sessionEntry: undefined,
+            config: params.config,
+            cwd: runParams.workspaceDir,
+          },
+        }),
+      });
     } finally {
       runParams.abortSignal?.removeEventListener("abort", close);
       close();
@@ -165,7 +192,6 @@ export function createTalkClientAgentConsultRunner(params: {
       : undefined;
     const runtime = (agentRuntime ??= createTalkClientAgentRuntime({
       config: params.config,
-      agentId,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
     }));
     const talkConfig = normalizeTalkSection(params.config.talk);
@@ -240,7 +266,6 @@ export function createTalkClientAgentConsultRunner(params: {
         source,
         agentRuntime: (agentRuntime ??= createTalkClientAgentRuntime({
           config: params.config,
-          agentId,
         })),
       }),
     runArgs,
