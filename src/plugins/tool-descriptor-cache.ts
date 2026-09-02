@@ -33,7 +33,7 @@ function createPluginToolDescriptorCacheState() {
 const caches = new WeakMap<PluginCache, ReturnType<typeof createPluginToolDescriptorCacheState>>();
 
 /** Reloaded code gets fresh descriptors; retained tools keep their exact generation's state. */
-export function getPluginToolDescriptorCacheState() {
+function getPluginToolDescriptorCacheState() {
   const cache = getPluginCache();
   let state = caches.get(cache);
   if (!state) {

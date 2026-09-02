@@ -90,7 +90,6 @@ let resolvePluginTools: typeof import("./tools.js").resolvePluginTools;
 let ensureStandalonePluginToolRegistryLoaded: typeof import("./tools.js").ensureStandalonePluginToolRegistryLoaded;
 let buildPluginToolMetadataKey: typeof import("./tool-metadata.js").buildPluginToolMetadataKey;
 let getPluginToolMeta: typeof import("./tool-metadata.js").getPluginToolMeta;
-let resetPluginToolDescriptorCacheForTest: typeof import("./tools.test-fixtures.js").resetPluginToolDescriptorCacheForTest;
 let getActivePluginRegistry: typeof import("./runtime.js").getActivePluginRegistry;
 let resetPluginRuntimeStateForTest: typeof import("./runtime.js").resetPluginRuntimeStateForTest;
 let setActivePluginRegistry: typeof import("./runtime.js").setActivePluginRegistry;
@@ -589,7 +588,6 @@ describe("resolvePluginTools optional tools", () => {
     ({ clearPluginMetadataLifecycleCaches } = await import("./plugin-metadata-lifecycle.js"));
     ({ setCurrentPluginMetadataSnapshot } =
       await import("./current-plugin-metadata.test-support.js"));
-    ({ resetPluginToolDescriptorCacheForTest } = await import("./tools.test-fixtures.js"));
   });
 
   beforeEach(() => {
@@ -615,13 +613,11 @@ describe("resolvePluginTools optional tools", () => {
     });
     resetPluginRuntimeStateForTest?.();
     clearPluginMetadataLifecycleCaches?.();
-    resetPluginToolDescriptorCacheForTest?.();
   });
 
   afterEach(() => {
     resetPluginRuntimeStateForTest?.();
     clearPluginMetadataLifecycleCaches?.();
-    resetPluginToolDescriptorCacheForTest?.();
     setLoggerOverride(null);
     loggingState.rawConsole = null;
     resetLogger();

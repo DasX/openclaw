@@ -453,8 +453,12 @@ describe("prepareGatewayPluginBootstrap startup plugins", () => {
   ])(
     "keeps the pre-bind registry local without runtime loading (minimal=$minimalTestGateway, enabled=$pluginsEnabled)",
     async ({ minimalTestGateway, pluginsEnabled, reuseAmbientRegistry }) => {
+      const { capturePluginRegistryLifecycleEpoch, markPluginRegistryActive } =
+        await import("../plugins/registry-lifecycle.js");
       const ambientRegistry = createEmptyPluginRegistry();
       ambientRegistry.gatewayHandlers.fixture = vi.fn();
+      markPluginRegistryActive(ambientRegistry);
+      const ambientEpoch = capturePluginRegistryLifecycleEpoch(ambientRegistry);
       getActivePluginRegistry.mockReturnValue(ambientRegistry);
 
       const result = await prepareBootstrapWithRuntimeConfig(
@@ -467,6 +471,8 @@ describe("prepareGatewayPluginBootstrap startup plugins", () => {
       } else {
         expect(result.pluginRegistry.gatewayHandlers).toEqual({});
       }
+      expect(capturePluginRegistryLifecycleEpoch(result.pluginRegistry)).toBeDefined();
+      expect(capturePluginRegistryLifecycleEpoch(ambientRegistry)).toBe(ambientEpoch);
       expect(setActivePluginRegistry).not.toHaveBeenCalled();
       expect(getActivePluginRegistry()).toBe(ambientRegistry);
       expect(prepareGatewayPluginLoad).not.toHaveBeenCalled();

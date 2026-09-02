@@ -18,23 +18,21 @@ vi.mock("../config/runtime-snapshot.js", () => ({
   resolveRuntimeConfigCacheKey: hoisted.resolveRuntimeConfigCacheKey,
 }));
 
-import { getProcessPluginCache, withPluginCache } from "./plugin-cache.js";
+import { getProcessPluginCache, resetPluginCache, withPluginCache } from "./plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   buildPluginToolDescriptorCacheKey,
   capturePluginToolDescriptor,
   createPluginToolDescriptorConfigCacheKeyMemo,
-  getPluginToolDescriptorCacheState,
   readCachedPluginToolDescriptors,
   writeCachedPluginToolDescriptors,
 } from "./tool-descriptor-cache.js";
-import { resetPluginToolDescriptorCacheForTest } from "./tools.test-fixtures.js";
 
 describe("plugin tool descriptor cache keys", () => {
   afterEach(() => {
     hoisted.resolveRuntimeConfigCacheKey.mockClear();
-    resetPluginToolDescriptorCacheForTest();
+    resetPluginCache();
   });
 
   it("memoizes config cache keys across plugin descriptor keys in one resolution pass", () => {
@@ -120,13 +118,9 @@ describe("plugin tool descriptor cache keys", () => {
         execute: async () => ({ content: [], details: {} }),
       },
     });
-    const contextIdentity = {};
     const previousCache = getProcessPluginCache();
-    const previousState = getPluginToolDescriptorCacheState();
 
     writeCachedPluginToolDescriptors({ cacheKey, descriptors: [descriptor] });
-    previousState.objectIds.set(contextIdentity, 1);
-    previousState.nextObjectId = 2;
 
     expect(readCachedPluginToolDescriptors(cacheKey)).toEqual([descriptor]);
     expect(descriptor.registry).toBe(retainedRegistry);
@@ -135,9 +129,6 @@ describe("plugin tool descriptor cache keys", () => {
 
     expect(buildPluginToolDescriptorCacheKey(params)).toBe(cacheKey);
     expect(readCachedPluginToolDescriptors(cacheKey)).toBeUndefined();
-    const currentState = getPluginToolDescriptorCacheState();
-    expect(currentState.objectIds.get(contextIdentity)).toBeUndefined();
-    expect(currentState.nextObjectId).toBe(1);
     expect(withPluginCache(previousCache, () => readCachedPluginToolDescriptors(cacheKey))).toEqual(
       [descriptor],
     );

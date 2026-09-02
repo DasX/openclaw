@@ -12,7 +12,10 @@ import {
 } from "../plugins/channel-plugin-ids.js";
 import { loadPluginLookUpTable } from "../plugins/plugin-lookup-table.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
-import { withPluginRegistryPreparationScope } from "../plugins/registry-lifecycle.js";
+import {
+  markPluginRegistryActive,
+  withPluginRegistryPreparationScope,
+} from "../plugins/registry-lifecycle.js";
 import type { PluginRegistry, PluginRegistryParams } from "../plugins/registry-types.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { disposePluginRegistryInstances, getActivePluginRegistry } from "../plugins/runtime.js";
@@ -174,8 +177,9 @@ export async function prepareGatewayPluginBootstrap(params: {
       : new Set<string>();
 
   const baseMethods = listGatewayMethods();
+  // Core requests need a live local registry without displacing another Gateway's plugins.
   const emptyPluginRegistry = createEmptyPluginRegistry();
-  // Keep pre-bind state local: a failed listener must not displace another Gateway's plugins.
+  markPluginRegistryActive(emptyPluginRegistry);
   const pluginRegistry =
     params.minimalTestGateway && !pluginsGloballyDisabled
       ? (getActivePluginRegistry() ?? emptyPluginRegistry)

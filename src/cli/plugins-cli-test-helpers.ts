@@ -6,6 +6,7 @@ import { getRuntimeConfig } from "../config/config.js";
 import type { HookInstallRecord } from "../config/types.hooks.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
+import { parseClawHubPluginSpec } from "../infra/clawhub-spec.js";
 import { PLUGIN_INSTALL_ERROR_CODE } from "../plugins/install-types.js";
 import type { InstalledPluginIndex } from "../plugins/installed-plugin-index.js";
 import { loadInstalledPluginIndexWithDiscovery } from "../plugins/installed-plugin-index.js";
@@ -181,6 +182,7 @@ export const installPluginFromPathMock: AsyncUnknownMock = vi.fn();
 export const installPluginFromClawHubMock: AsyncUnknownMock = vi.fn();
 export const reportClawHubPluginInstallTelemetryMock: Mock<ReportClawHubPluginInstallTelemetryFn> =
   vi.fn(async () => undefined);
+export const parseClawHubPluginSpecMock = vi.mocked(parseClawHubPluginSpec);
 export const findBundledPluginSourceMock: UnknownMock = vi.fn();
 export const installHooksFromNpmSpecMock: AsyncUnknownMock = vi.fn();
 export const installHooksFromPathMock: AsyncUnknownMock = vi.fn();
@@ -887,6 +889,8 @@ vi.mock("../plugins/clawhub.js", () => ({
     )) as (typeof import("../plugins/clawhub.js"))["installPluginFromClawHub"],
 }));
 
+vi.mock("../infra/clawhub-spec.js", { spy: true });
+
 vi.mock("../infra/clawhub-packages.js", () => ({
   reportClawHubPluginInstallTelemetry: ((
     ...args: Parameters<
@@ -961,6 +965,7 @@ export function resetPluginsCliTestState() {
   installPluginFromNpmPackArchiveMock.mockReset();
   installPluginFromPathMock.mockReset();
   installPluginFromClawHubMock.mockReset();
+  parseClawHubPluginSpecMock.mockReset();
   reportClawHubPluginInstallTelemetryMock.mockReset();
   reportClawHubPluginInstallTelemetryMock.mockResolvedValue(undefined);
   findBundledPluginSourceMock.mockReset();

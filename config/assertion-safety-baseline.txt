@@ -2362,7 +2362,7 @@ src/cli/pairing-cli.ts	1
 src/cli/parse-duration.ts	2
 src/cli/plugins-authoring-command.ts	8
 src/cli/plugins-command-helpers.ts	1
-src/cli/plugins-update-command.ts	5
+src/cli/plugins-update-command.ts	1
 src/cli/ports.ts	9
 src/cli/precomputed-help.ts	1
 src/cli/profile.ts	4
@@ -3526,7 +3526,7 @@ src/plugins/setup-registry.ts	11
 src/plugins/slots.ts	3
 src/plugins/toggle-config.ts	3
 src/plugins/tool-descriptor-cache.ts	4
-src/plugins/tools.ts	6
+src/plugins/tools.ts	4
 src/plugins/trusted-tool-policy.ts	1
 src/plugins/uninstall-config.ts	3
 src/plugins/uninstall-package-config.ts	2

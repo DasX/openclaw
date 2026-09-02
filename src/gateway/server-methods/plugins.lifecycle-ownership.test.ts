@@ -1,6 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ErrorShape } from "../../../packages/gateway-protocol/src/index.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { installManagedPlugin } from "../../plugins/management-service.js";
 import type { GatewayRequestContext, GatewayRequestHandlerOptions } from "./types.js";
 
@@ -24,7 +25,10 @@ vi.mock("../../plugins/catalog-search.js", () => ({ searchInstallablePluginPacka
 
 const { pluginsHandlers } = await import("./plugins.js");
 const application = { operationId: "test-operation", generation: 42, pluginIds: ["workboard"] };
-const applyRuntime = vi.fn();
+const applyRuntime = vi.fn<NonNullable<GatewayRequestContext["applyPluginLifecycleChange"]>>();
+const context: Pick<GatewayRequestContext, "applyPluginLifecycleChange"> = {
+  applyPluginLifecycleChange: applyRuntime,
+};
 const lifecycleRequests = [
   {
     method: "plugins.install",
@@ -69,8 +73,8 @@ async function callHandler(
     params,
     client: null,
     isWebchatConnect: () => false,
-    // This boundary reads only the Gateway's runtime application owner.
-    context: { applyPluginLifecycleChange: applyRuntime } as GatewayRequestContext,
+    // This fixture supplies the sole Gateway capability consumed by these lifecycle handlers.
+    context: context as GatewayRequestContext,
     respond: (success, _result, requestError) => {
       ok = success;
       error = requestError;
@@ -90,8 +94,8 @@ describe("plugin lifecycle invoker ownership", () => {
   it("preserves the management lease guard while the request remains open", async () => {
     const controller = new AbortController();
     const requestGuard = vi.fn();
-    const entered = Promise.withResolvers<void>();
-    const released = Promise.withResolvers<void>();
+    const entered = createDeferred();
+    const released = createDeferred();
     const publish = vi.fn();
     const failure = new Error("plugin mutation lease lost");
     let leaseOwned = true;
@@ -191,9 +195,11 @@ describe("plugin lifecycle invoker ownership", () => {
     );
 
     it.each(
-      lifecycleRequests.flatMap((request) =>
+      lifecycleRequests.flatMap(({ method, params, operation }) =>
         (["persistence", "runtime", "publication"] as const).map((checkpoint) => ({
-          ...request,
+          method,
+          params,
+          operation,
           checkpoint,
         })),
       ),
@@ -201,7 +207,7 @@ describe("plugin lifecycle invoker ownership", () => {
       "rejects retained $method $checkpoint work after an await",
       async ({ method, params, operation, checkpoint }) => {
         const owner = createInvocation();
-        const paused = Promise.withResolvers<void>();
+        const paused = createDeferred();
         const persist = vi.fn();
         if (checkpoint === "publication") {
           applyRuntime.mockImplementation(

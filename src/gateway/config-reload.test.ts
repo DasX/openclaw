@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import chokidar from "chokidar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import {
@@ -1288,8 +1289,8 @@ describe("startGatewayConfigReloader", () => {
     async (boundary) => {
       const config: OpenClawConfig = { gateway: { reload: { mode: "off" } } };
       const runtime = { operationId: "runtime-owner", generation: 9, pluginIds: ["notes"] };
-      const entered = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
+      const entered = createDeferred();
+      const release = createDeferred();
       let waiting = true;
       let invokerOpen = true;
       const failure = new Error("plugin invoker closed");
