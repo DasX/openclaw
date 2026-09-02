@@ -2165,7 +2165,10 @@ button.chat-reply-preview--message:disabled {
    covers it. The solid tail sits behind rounded corners, so card silhouettes
    cannot expose unfaded text; its chat-surface color is invisible when there
    is no transcript behind it. */
-.chat-main__conversation > .agent-chat__composer-shell::before {
+.chat-main__conversation > .agent-chat__composer-shell::before,
+.chat-main__conversation
+  > openclaw-plugin-view[data-plugin-composer]
+  .agent-chat__composer-shell::before {
   position: absolute;
   inset: calc(0px - var(--chat-transcript-fade-height, 20px)) 0 auto;
   height: calc(
@@ -7260,7 +7263,10 @@ button.chat-pr__diff {
     gap: 6px;
   }
 
-  .chat-main__conversation > .agent-chat__composer-shell::before {
+  .chat-main__conversation > .agent-chat__composer-shell::before,
+  .chat-main__conversation
+    > openclaw-plugin-view[data-plugin-composer]
+    .agent-chat__composer-shell::before {
     inset-inline: calc(var(--chat-thread-gutter) - var(--chat-mobile-edge-inset, 4px));
   }
 
