@@ -1,8 +1,15 @@
-// Control UI tests cover cron schedule presentation.
+// Control UI tests cover cron schedule and session token presentation.
 import { afterEach, describe, expect, it } from "vitest";
-import type { CronJob } from "../api/types.ts";
+import type { CronJob, GatewaySessionRow } from "../api/types.ts";
 import { i18n } from "../i18n/index.ts";
-import { formatCronPayload, formatCronSchedule } from "./presenter.ts";
+import {
+  CATALOG_CONTEXT_TOKENS,
+  COMPACTION_RESERVE_TOKENS,
+  createContextBudgetStatusFixture,
+  PRESSURED_PROMPT_TOKENS,
+  SESSION_CONTEXT_TOKEN_BUDGET,
+} from "../test-helpers/context-budget-status-fixture.ts";
+import { formatCronPayload, formatCronSchedule, formatSessionTokens } from "./presenter.ts";
 
 function job(schedule: CronJob["schedule"]): CronJob {
   return {
@@ -78,5 +85,38 @@ describe("formatCronPayload", () => {
         payload: { kind: "agentTurn", message: "Review the Workshop collection." },
       }),
     ).toBe("Agent: Review the Workshop collection.");
+  });
+});
+
+describe("formatSessionTokens", () => {
+  function sessionRow(contextBudgetStatus?: GatewaySessionRow["contextBudgetStatus"]) {
+    return {
+      key: "agent:main:main",
+      kind: "direct",
+      updatedAt: null,
+      totalTokens: PRESSURED_PROMPT_TOKENS,
+      contextTokens: CATALOG_CONTEXT_TOKENS,
+      contextBudgetStatus,
+    } satisfies GatewaySessionRow;
+  }
+
+  // The sessions detail row sits directly under the context meter, so it has to
+  // name the same limit the meter divides by.
+  it("prints the budget compaction triggers on", () => {
+    expect(
+      formatSessionTokens(
+        sessionRow(
+          createContextBudgetStatusFixture({
+            contextTokenBudget: SESSION_CONTEXT_TOKEN_BUDGET,
+            reserveTokens: COMPACTION_RESERVE_TOKENS,
+            estimatedPromptTokens: PRESSURED_PROMPT_TOKENS,
+          }),
+        ),
+      ),
+    ).toBe("160000 / 180000");
+  });
+
+  it("falls back to the catalog window without a budget snapshot", () => {
+    expect(formatSessionTokens(sessionRow())).toBe("160000 / 262144");
   });
 });
