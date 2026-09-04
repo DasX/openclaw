@@ -131,7 +131,7 @@ function registerCronToggleCommand(params: {
  * same value; supplying two different ids is a mistake we surface instead of
  * silently picking one.
  */
-export function resolveCronRunsJobId(positional: unknown, option: unknown): string {
+function resolveCronRunsJobId(positional: unknown, option: unknown): string {
   const fromArg = typeof positional === "string" ? positional.trim() : "";
   const fromOpt = typeof option === "string" ? option.trim() : "";
   if (fromArg && fromOpt && fromArg !== fromOpt) {
