@@ -125,6 +125,25 @@ function registerCronToggleCommand(params: {
   );
 }
 
+/**
+ * `runs` accepts the job id positionally like its sibling commands (`show`, `run`,
+ * `edit`) and keeps `--id` for callers that already use it. Both forms are the
+ * same value; supplying two different ids is a mistake we surface instead of
+ * silently picking one.
+ */
+export function resolveCronRunsJobId(positional: unknown, option: unknown): string {
+  const fromArg = typeof positional === "string" ? positional.trim() : "";
+  const fromOpt = typeof option === "string" ? option.trim() : "";
+  if (fromArg && fromOpt && fromArg !== fromOpt) {
+    throw new Error(`Conflicting job ids: positional "${fromArg}" and --id "${fromOpt}".`);
+  }
+  const id = fromArg || fromOpt;
+  if (!id) {
+    throw new Error("Missing job id. Pass it as an argument: openclaw automations runs <id>");
+  }
+  return id;
+}
+
 export function registerCronSimpleCommands(cron: Command) {
   addGatewayClientOptions(
     createCronOutputCommand(cron, "rm")
@@ -195,16 +214,17 @@ export function registerCronSimpleCommands(cron: Command) {
   addGatewayClientOptions(
     createCronOutputCommand(cron, "runs")
       .description("Show automation run history")
-      .requiredOption("--id <id>", "Job id")
+      .argument("[id]", "Job id")
+      .option("--id <id>", "Job id (same as the positional argument)")
       .option("--run-id <runId>", "Filter by cron run id")
       .option("--limit <n>", "Max entries (default 50)", "50")
-      .action(async (opts) => {
+      .action(async (idArg, opts) => {
         try {
           const limit = parseStrictPositiveInteger(opts.limit ?? "50");
           if (limit === undefined) {
             throw new Error("Invalid --limit (must be a positive integer).");
           }
-          const id = String(opts.id);
+          const id = resolveCronRunsJobId(idArg, opts.id);
           if (typeof opts.runId === "string" && !opts.runId.trim()) {
             throw new Error("--run-id must not be blank");
           }

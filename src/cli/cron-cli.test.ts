@@ -575,6 +575,38 @@ describe("cron cli", () => {
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
   });
 
+  it("accepts the job id as a positional argument like its sibling commands", async () => {
+    await runCronCommand(["cron", "runs", "job-1"]);
+
+    const runsCall = callGatewayFromCli.mock.calls.find((call) => call[0] === "cron.runs");
+    expect(runsCall?.[2]).toMatchObject({ id: "job-1", limit: 50 });
+    expect(defaultRuntime.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps --id working and accepts it alongside a matching positional id", async () => {
+    await runCronCommand(["cron", "runs", "job-1", "--id", "job-1", "--limit", "5"]);
+
+    const runsCall = callGatewayFromCli.mock.calls.find((call) => call[0] === "cron.runs");
+    expect(runsCall?.[2]).toMatchObject({ id: "job-1", limit: 5 });
+    expect(defaultRuntime.error).not.toHaveBeenCalled();
+  });
+
+  it("rejects conflicting positional and --id job ids before calling the gateway", async () => {
+    await expectCronCommandExit(["cron", "runs", "job-1", "--id", "job-2"]);
+
+    expect(callGatewayFromCli.mock.calls.some((call) => call[0] === "cron.runs")).toBe(false);
+    expect(defaultRuntime.error).toHaveBeenCalledWith(
+      expect.stringContaining("Conflicting job ids"),
+    );
+  });
+
+  it("rejects a missing job id before calling the gateway", async () => {
+    await expectCronCommandExit(["cron", "runs"]);
+
+    expect(callGatewayFromCli.mock.calls.some((call) => call[0] === "cron.runs")).toBe(false);
+    expect(defaultRuntime.error).toHaveBeenCalledWith(expect.stringContaining("Missing job id"));
+  });
+
   it.each([
     {
       name: "bounds the default history RPC by the wait deadline",

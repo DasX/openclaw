@@ -318,7 +318,7 @@ flowchart TD
     openclaw gateway status
     openclaw cron status
     openclaw cron list
-    openclaw cron runs --id <jobId> --limit 20
+    openclaw cron runs <jobId> --limit 20
     openclaw logs --follow
     ```
 
