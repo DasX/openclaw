@@ -23,7 +23,7 @@ import { formatTimestamp } from "../../logging/timestamps.js";
 import { defaultRuntime, ExitError, type RuntimeEnv } from "../../runtime.js";
 import { isOffsetlessIsoDateTime } from "../../shared/iso-time.js";
 import { formatLookupMiss } from "../error-format.js";
-import { rethrowExpectedCliError } from "../failure-output.js";
+import { ExpectedCliError, rethrowExpectedCliError } from "../failure-output.js";
 import type { GatewayRpcOpts } from "../gateway-rpc.js";
 import { callGatewayFromCli } from "../gateway-rpc.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
@@ -237,7 +237,9 @@ export function handleCronCliError(err: unknown) {
   const missingJob = readCronJobNotFoundError(err);
   const message = missingJob ? formatCronLookupMiss(missingJob.jobId) : formatErrorMessage(err);
   if (isJsonOutputModeActive(process.argv)) {
-    throw missingJob ? new Error(message) : err;
+    // The root renderer owns the machine-output envelope; an operator-facing cron
+    // failure is an expected condition there, not a CLI startup crash.
+    throw new ExpectedCliError({ message, humanOutput: danger(message), machineOutput: message });
   }
   defaultRuntime.error(danger(message));
   exitCliAfterOutput(defaultRuntime, 1);

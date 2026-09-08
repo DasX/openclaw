@@ -4,6 +4,11 @@ import { visibleWidth } from "../../../packages/terminal-core/src/ansi.js";
 import type { CronJob } from "../../cron/types.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
+import {
+  ExpectedCliError,
+  formatCliFailureLines,
+  formatCliJsonFailure,
+} from "../failure-output.js";
 import { resolveCronCreateScheduleFromArgs } from "./schedule-options.js";
 import {
   coerceCronDeliveryPreviews,
@@ -64,6 +69,54 @@ describe("handleCronCliError", () => {
     errorOutput.mockRestore();
     exit.mockRestore();
   });
+
+  it.each([
+    {
+      label: "typed lookup miss",
+      error: new GatewayClientRequestError({
+        code: "INVALID_REQUEST",
+        message: "transport-neutral lookup miss",
+        details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing-job" },
+      }),
+      message:
+        "Automation not found: missing-job. Run `openclaw cron list` to see recent automation ids.",
+    },
+    {
+      label: "local validation failure",
+      error: new Error("Invalid --stagger; use e.g. 30s, 1m, 5m"),
+      message: "Invalid --stagger; use e.g. 30s, 1m, 5m",
+    },
+  ])(
+    "hands a $label to the root renderer as an expected machine-output failure",
+    ({ error, message }) => {
+      const argv = process.argv;
+      process.argv = [...argv.slice(0, 2), "cron", "show", "missing-job", "--json"];
+      try {
+        let thrown: unknown;
+        try {
+          handleCronCliError(error);
+        } catch (caught) {
+          thrown = caught;
+        }
+        expect(thrown).toBeInstanceOf(ExpectedCliError);
+        expect(formatCliJsonFailure(thrown)).toEqual({
+          ok: false,
+          error: { type: "cli_error", message },
+        });
+        const stderr = formatCliFailureLines({
+          title: "Could not start the CLI.",
+          error: thrown,
+          argv: process.argv,
+        }).join("\n");
+        expect(stderr).toContain(message);
+        expect(stderr).not.toContain("Could not start the CLI.");
+        expect(stderr).not.toContain("openclaw doctor");
+        expect(stderr).not.toContain("OPENCLAW_DEBUG");
+      } finally {
+        process.argv = argv;
+      }
+    },
+  );
 });
 
 function createBaseJob(overrides: Partial<CronJob>): CronJob {
