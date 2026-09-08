@@ -117,6 +117,49 @@ describe("handleCronCliError", () => {
       }
     },
   );
+
+  // A legacy gateway without cron.get makes `cron edit <id> --exact` wrap the
+  // lookup miss; the renderer only reveals such causes on explicit debug intent.
+  it.each([
+    {
+      label: "stays terse without debug intent",
+      flags: [] as string[],
+      debug: "",
+      causeShown: false,
+    },
+    { label: "keeps causes for --debug", flags: ["--debug"], debug: "", causeShown: true },
+    { label: "keeps causes for OPENCLAW_DEBUG", flags: [], debug: "1", causeShown: true },
+  ])("machine output for a wrapped cron failure $label", ({ flags, debug, causeShown }) => {
+    const wrapped = new Error("unknown automation id: missing-job", {
+      cause: new Error("unknown method: cron.get"),
+    });
+    const argv = process.argv;
+    process.argv = [
+      ...argv.slice(0, 2),
+      "cron",
+      "edit",
+      "missing-job",
+      "--exact",
+      "--json",
+      ...flags,
+    ];
+    vi.stubEnv("OPENCLAW_DEBUG", debug);
+    try {
+      let thrown: unknown;
+      try {
+        handleCronCliError(wrapped);
+      } catch (caught) {
+        thrown = caught;
+      }
+      expect(thrown).toBeInstanceOf(ExpectedCliError);
+      const machineMessage = formatCliJsonFailure(thrown).error.message;
+      expect(machineMessage).toContain("unknown automation id: missing-job");
+      expect(machineMessage.includes("unknown method: cron.get")).toBe(causeShown);
+    } finally {
+      vi.unstubAllEnvs();
+      process.argv = argv;
+    }
+  });
 });
 
 function createBaseJob(overrides: Partial<CronJob>): CronJob {

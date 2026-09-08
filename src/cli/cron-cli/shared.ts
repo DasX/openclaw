@@ -23,7 +23,11 @@ import { formatTimestamp } from "../../logging/timestamps.js";
 import { defaultRuntime, ExitError, type RuntimeEnv } from "../../runtime.js";
 import { isOffsetlessIsoDateTime } from "../../shared/iso-time.js";
 import { formatLookupMiss } from "../error-format.js";
-import { ExpectedCliError, rethrowExpectedCliError } from "../failure-output.js";
+import {
+  ExpectedCliError,
+  formatCliOperatorError,
+  rethrowExpectedCliError,
+} from "../failure-output.js";
 import type { GatewayRpcOpts } from "../gateway-rpc.js";
 import { callGatewayFromCli } from "../gateway-rpc.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
@@ -238,8 +242,13 @@ export function handleCronCliError(err: unknown) {
   const message = missingJob ? formatCronLookupMiss(missingJob.jobId) : formatErrorMessage(err);
   if (isJsonOutputModeActive(process.argv)) {
     // The root renderer owns the machine-output envelope; an operator-facing cron
-    // failure is an expected condition there, not a CLI startup crash.
-    throw new ExpectedCliError({ message, humanOutput: danger(message), machineOutput: message });
+    // failure is an expected condition there, not a CLI startup crash. Machine
+    // output keeps the renderer's debug gate, so nested causes stay opt-in.
+    throw new ExpectedCliError({
+      message,
+      humanOutput: danger(message),
+      machineOutput: missingJob ? message : formatCliOperatorError(err),
+    });
   }
   defaultRuntime.error(danger(message));
   exitCliAfterOutput(defaultRuntime, 1);
