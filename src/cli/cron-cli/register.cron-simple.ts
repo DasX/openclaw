@@ -37,20 +37,25 @@ type CronRunCommandResult = {
   runId?: string;
 };
 
-function parseCronRunWaitDuration(raw: unknown, label: string): number {
+function parseCronRunWaitDuration(raw: unknown): number {
   const input =
     typeof raw === "string" || typeof raw === "number" || typeof raw === "bigint"
       ? String(raw)
       : "";
-  const durationMs = parseDurationMs(input, { defaultUnit: "ms" });
-  if (!Number.isFinite(durationMs) || durationMs < 0) {
-    throw new CronCliError(`invalid ${label}`);
+  let durationMs: number;
+  try {
+    durationMs = parseDurationMs(input, { defaultUnit: "ms" });
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new CronCliError(error);
+    }
+    throw error;
   }
   return resolveTimerTimeoutMs(durationMs, 0, 0);
 }
 
 function parseCronRunPollInterval(raw: unknown): number {
-  const durationMs = parseCronRunWaitDuration(raw, "--poll-interval");
+  const durationMs = parseCronRunWaitDuration(raw);
   if (durationMs <= 0) {
     throw new CronCliError("invalid --poll-interval");
   }
@@ -254,7 +259,7 @@ export function registerCronSimpleCommands(cron: Command) {
           let waitTimeoutMs = 0;
           let pollIntervalMs = 0;
           if (opts.wait) {
-            waitTimeoutMs = parseCronRunWaitDuration(opts.waitTimeout, "--wait-timeout");
+            waitTimeoutMs = parseCronRunWaitDuration(opts.waitTimeout);
             pollIntervalMs = parseCronRunPollInterval(opts.pollInterval);
           }
           if (command.getOptionValueSource("timeout") === "default") {
