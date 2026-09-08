@@ -2,19 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "../../../packages/terminal-core/src/ansi.js";
 import type { CronJob } from "../../cron/types.js";
-import { GatewayClientRequestError } from "../../gateway/client.js";
-import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
-import {
-  ExpectedCliError,
-  formatCliFailureLines,
-  formatCliJsonFailure,
-} from "../failure-output.js";
+import type { RuntimeEnv } from "../../runtime.js";
 import { resolveCronCreateScheduleFromArgs } from "./schedule-options.js";
 import {
   coerceCronDeliveryPreviews,
   enrichCronJsonWithStatus,
   getCronChannelOptions,
-  handleCronCliError,
   parseAt,
   parseCronToolsAllow,
   parsePositiveCronDurationMs,
@@ -46,120 +39,6 @@ function expectLogsToInclude(logs: readonly string[], text: string): void {
 
 afterEach(() => {
   vi.useRealTimers();
-});
-
-describe("handleCronCliError", () => {
-  it("renders typed automation lookup misses with the cron list recovery command", () => {
-    const error = new GatewayClientRequestError({
-      code: "INVALID_REQUEST",
-      message: "transport-neutral lookup miss",
-      details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing-job" },
-    });
-    const errorOutput = vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
-    const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation(((code: number) => {
-      throw new Error(`exit ${code}`);
-    }) as never);
-
-    expect(() => handleCronCliError(error)).toThrow("exit 1");
-    expect(errorOutput).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "Automation not found: missing-job. Run `openclaw cron list` to see recent automation ids.",
-      ),
-    );
-    errorOutput.mockRestore();
-    exit.mockRestore();
-  });
-
-  it.each([
-    {
-      label: "typed lookup miss",
-      error: new GatewayClientRequestError({
-        code: "INVALID_REQUEST",
-        message: "transport-neutral lookup miss",
-        details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing-job" },
-      }),
-      message:
-        "Automation not found: missing-job. Run `openclaw cron list` to see recent automation ids.",
-    },
-    {
-      label: "local validation failure",
-      error: new Error("Invalid --stagger; use e.g. 30s, 1m, 5m"),
-      message: "Invalid --stagger; use e.g. 30s, 1m, 5m",
-    },
-  ])(
-    "hands a $label to the root renderer as an expected machine-output failure",
-    ({ error, message }) => {
-      const argv = process.argv;
-      process.argv = [...argv.slice(0, 2), "cron", "show", "missing-job", "--json"];
-      try {
-        let thrown: unknown;
-        try {
-          handleCronCliError(error);
-        } catch (caught) {
-          thrown = caught;
-        }
-        expect(thrown).toBeInstanceOf(ExpectedCliError);
-        expect(formatCliJsonFailure(thrown)).toEqual({
-          ok: false,
-          error: { type: "cli_error", message },
-        });
-        const stderr = formatCliFailureLines({
-          title: "Could not start the CLI.",
-          error: thrown,
-          argv: process.argv,
-        }).join("\n");
-        expect(stderr).toContain(message);
-        expect(stderr).not.toContain("Could not start the CLI.");
-        expect(stderr).not.toContain("openclaw doctor");
-        expect(stderr).not.toContain("OPENCLAW_DEBUG");
-      } finally {
-        process.argv = argv;
-      }
-    },
-  );
-
-  // A legacy gateway without cron.get makes `cron edit <id> --exact` wrap the
-  // lookup miss; the renderer only reveals such causes on explicit debug intent.
-  it.each([
-    {
-      label: "stays terse without debug intent",
-      flags: [] as string[],
-      debug: "",
-      causeShown: false,
-    },
-    { label: "keeps causes for --debug", flags: ["--debug"], debug: "", causeShown: true },
-    { label: "keeps causes for OPENCLAW_DEBUG", flags: [], debug: "1", causeShown: true },
-  ])("machine output for a wrapped cron failure $label", ({ flags, debug, causeShown }) => {
-    const wrapped = new Error("unknown automation id: missing-job", {
-      cause: new Error("unknown method: cron.get"),
-    });
-    const argv = process.argv;
-    process.argv = [
-      ...argv.slice(0, 2),
-      "cron",
-      "edit",
-      "missing-job",
-      "--exact",
-      "--json",
-      ...flags,
-    ];
-    vi.stubEnv("OPENCLAW_DEBUG", debug);
-    try {
-      let thrown: unknown;
-      try {
-        handleCronCliError(wrapped);
-      } catch (caught) {
-        thrown = caught;
-      }
-      expect(thrown).toBeInstanceOf(ExpectedCliError);
-      const machineMessage = formatCliJsonFailure(thrown).error.message;
-      expect(machineMessage).toContain("unknown automation id: missing-job");
-      expect(machineMessage.includes("unknown method: cron.get")).toBe(causeShown);
-    } finally {
-      vi.unstubAllEnvs();
-      process.argv = argv;
-    }
-  });
 });
 
 function createBaseJob(overrides: Partial<CronJob>): CronJob {

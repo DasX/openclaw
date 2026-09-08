@@ -6,6 +6,7 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { GatewayClientRequestError } from "../../../packages/gateway-client/src/request-error.js";
 import { readCronJobNotFoundError } from "../../../packages/gateway-protocol/src/index.js";
 import { truncateToVisibleWidth, visibleWidth } from "../../../packages/terminal-core/src/ansi.js";
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
@@ -33,6 +34,7 @@ import { callGatewayFromCli } from "../gateway-rpc.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { parseDurationMs as parseSharedDurationMs } from "../parse-duration.js";
+import { CronCliError } from "./cron-cli-error.js";
 
 function parseCronArgv(value: unknown, flag: string): string[] | undefined {
   if (typeof value !== "string") {
@@ -42,14 +44,14 @@ function parseCronArgv(value: unknown, flag: string): string[] | undefined {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error(`${flag} must be a JSON array of strings`);
+    throw new CronCliError(`${flag} must be a JSON array of strings`);
   }
   if (
     !Array.isArray(parsed) ||
     parsed.length === 0 ||
     parsed.some((entry) => typeof entry !== "string" || entry.length === 0)
   ) {
-    throw new Error(`${flag} must be a non-empty JSON array of non-empty strings`);
+    throw new CronCliError(`${flag} must be a non-empty JSON array of non-empty strings`);
   }
   return parsed;
 }
@@ -70,12 +72,12 @@ export function parseCronCommandEnv(values: unknown): Record<string, string> | u
   const env: Record<string, string> = {};
   for (const raw of rawValues) {
     if (typeof raw !== "string") {
-      throw new Error("--command-env must be KEY=VALUE");
+      throw new CronCliError("--command-env must be KEY=VALUE");
     }
     const idx = raw.indexOf("=");
     const key = idx > 0 ? raw.slice(0, idx).trim() : "";
     if (!key) {
-      throw new Error("--command-env must be KEY=VALUE");
+      throw new CronCliError("--command-env must be KEY=VALUE");
     }
     env[key] = raw.slice(idx + 1);
   }
@@ -239,17 +241,29 @@ export function handleCronCliError(err: unknown) {
   }
   rethrowExpectedCliError(err);
   const missingJob = readCronJobNotFoundError(err);
-  const message = missingJob ? formatCronLookupMiss(missingJob.jobId) : formatErrorMessage(err);
+  const diagnostic = err instanceof CronCliError ? (err.originalError ?? err) : err;
   if (isJsonOutputModeActive(process.argv)) {
-    // The root renderer owns the machine-output envelope; an operator-facing cron
-    // failure is an expected condition there, not a CLI startup crash. Machine
-    // output keeps the renderer's debug gate, so nested causes stay opt-in.
+    if (
+      !missingJob &&
+      !(err instanceof CronCliError) &&
+      !(err instanceof GatewayClientRequestError)
+    ) {
+      throw err;
+    }
+    // Both machine-mode streams share the canonical debug gate. Unexpected
+    // exceptions keep their identity and reach the root crash renderer.
+    const message = missingJob
+      ? formatCronLookupMiss(missingJob.jobId)
+      : formatCliOperatorError(diagnostic);
     throw new ExpectedCliError({
       message,
       humanOutput: danger(message),
-      machineOutput: missingJob ? message : formatCliOperatorError(err),
+      machineOutput: message,
     });
   }
+  const message = missingJob
+    ? formatCronLookupMiss(missingJob.jobId)
+    : formatErrorMessage(diagnostic);
   defaultRuntime.error(danger(message));
   exitCliAfterOutput(defaultRuntime, 1);
 }
@@ -315,7 +329,7 @@ export function parseCronStaggerMs(params: {
   }
   const parsed = parsePositiveCronDurationMs(params.staggerRaw);
   if (!parsed) {
-    throw new Error("Invalid --stagger; use e.g. 30s, 1m, 5m");
+    throw new CronCliError("Invalid --stagger; use e.g. 30s, 1m, 5m");
   }
   return parsed;
 }
