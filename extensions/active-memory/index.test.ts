@@ -819,21 +819,6 @@ describe("active-memory plugin", () => {
     expect(assertActive).toHaveBeenCalled();
     expect(hoisted.getActiveMemorySearchManager).not.toHaveBeenCalled();
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
-  });
-
-  it("names the skip reason at info level when the turn authority denies recall tools", async () => {
-    const result = await runPromptBuild(
-      { prompt: "what wings should i order?" },
-      {
-        toolAuthority: {
-          fingerprint: "denied-memory-authority",
-          allows: () => false,
-          assertActive: () => undefined,
-        },
-      },
-    );
-
-    expect(result).toBeUndefined();
     expect(hasInfoLine("active-memory: recall skipped reason=policy-disabled")).toBe(true);
   });
 
