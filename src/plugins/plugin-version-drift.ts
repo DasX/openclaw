@@ -1,6 +1,10 @@
 // Detects plugin version drift between config, manifests, and installs.
 import type { OpenClawConfig } from "../config/types.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
+import {
+  fetchClawHubPackageDetail,
+  resolveLatestVersionFromPackage,
+} from "../infra/clawhub-packages.js";
 import { parseClawHubPluginSpec } from "../infra/clawhub-spec.js";
 import {
   parseRegistryNpmSpec,
@@ -10,6 +14,7 @@ import { fetchNpmPackageTargetStatus } from "../infra/update-check-package-targe
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
 import {
   resolveTrustedSourceLinkedOfficialClawHubInstall,
+  resolveTrustedSourceLinkedOfficialClawHubSpec,
   resolveTrustedSourceLinkedOfficialNpmSpec,
 } from "./official-external-install-records.js";
 
@@ -25,6 +30,8 @@ type PluginVersionDriftEntry = {
   source: PluginInstallRecord["source"];
   packageName?: string;
   spec?: string;
+  /** ClawHub package name for installs whose upgrade target lives in ClawHub, not npm. */
+  clawhubPackage?: string;
   targetResolution?: PluginVersionDriftTargetResolution;
 };
 
@@ -79,9 +86,68 @@ export function resolvePluginVersionDriftUpdateCommand(
   return `openclaw plugins update ${entry.pluginId}`;
 }
 
+/**
+ * ClawHub publishes plugins on its own release train, so its latest version can sit
+ * below the running OpenClaw version. Resolve the upgrade target from ClawHub instead
+ * of assuming the host version is available there.
+ *
+ * Returns `null` when the install already holds the newest version ClawHub offers: that
+ * is not drift, and reporting it would demand a version no update can reach.
+ */
+async function fetchClawHubLatestVersion(
+  packageName: string,
+): Promise<{ version: string | null; error?: string }> {
+  // Mirror the npm helper: convert lookup failures to data so callers stay total.
+  try {
+    return {
+      version: resolveLatestVersionFromPackage(
+        await fetchClawHubPackageDetail({ name: packageName }),
+      ),
+    };
+  } catch (err) {
+    return { version: null, error: `ClawHub did not resolve ${packageName}: ${String(err)}` };
+  }
+}
+
+async function resolveClawHubEntryTarget(
+  entry: PluginVersionDriftEntry,
+): Promise<PluginVersionDriftEntry | null> {
+  const packageName = entry.clawhubPackage;
+  if (!packageName) {
+    return entry;
+  }
+  const requestedTarget = resolveOpenClawReleaseCohortVersion(entry.gatewayVersion);
+  const { version: latestVersion, error } = await fetchClawHubLatestVersion(packageName);
+  if (!latestVersion) {
+    // Leave drift reported when ClawHub cannot answer: silence would hide a real gap.
+    return {
+      ...entry,
+      targetResolution: {
+        status: "unresolved",
+        packageName,
+        requestedTarget,
+        error: error ?? `ClawHub reported no latest version for ${packageName}`,
+      },
+    };
+  }
+  if (
+    resolveOpenClawReleaseCohortVersion(latestVersion) ===
+    resolveOpenClawReleaseCohortVersion(entry.installedVersion)
+  ) {
+    return null;
+  }
+  return {
+    ...entry,
+    targetResolution: { status: "resolved", packageName, requestedTarget, version: latestVersion },
+  };
+}
+
 async function resolveEntryTarget(
   entry: PluginVersionDriftEntry,
-): Promise<PluginVersionDriftEntry> {
+): Promise<PluginVersionDriftEntry | null> {
+  if (entry.source === "clawhub") {
+    return await resolveClawHubEntryTarget(entry);
+  }
   const packageName = resolveExactNpmPinPackageName(entry);
   if (!packageName) {
     return entry;
@@ -106,11 +172,15 @@ async function resolveEntryTarget(
   return { ...entry, targetResolution };
 }
 
-/** Resolve exact npm repair targets only for diagnostics that display repair guidance. */
+/** Resolve registry repair targets only for diagnostics that display repair guidance. */
 export async function resolvePluginVersionDriftTargets(
   report: PluginVersionDriftReport,
 ): Promise<PluginVersionDriftReport> {
-  return { ...report, drifts: await Promise.all(report.drifts.map(resolveEntryTarget)) };
+  const resolved = await Promise.all(report.drifts.map(resolveEntryTarget));
+  return {
+    ...report,
+    drifts: resolved.filter((entry): entry is PluginVersionDriftEntry => entry !== null),
+  };
 }
 
 function isPluginEnabled(config: OpenClawConfig | undefined, pluginId: string): boolean {
@@ -141,6 +211,15 @@ function shouldCompareOfficialInstallToGateway(params: {
     );
   }
   return false;
+}
+
+/** The ClawHub package that owns this install's upgrade target, when the install is trusted. */
+function resolveOfficialClawHubPackageName(params: {
+  pluginId: string;
+  record: PluginInstallRecord;
+}): string | undefined {
+  const clawhubSpec = resolveTrustedSourceLinkedOfficialClawHubSpec(params);
+  return clawhubSpec ? parseClawHubPluginSpec(clawhubSpec)?.name : undefined;
 }
 
 export function hasOfficialPluginVersionCandidates(params: {
@@ -201,6 +280,7 @@ export function detectPluginVersionDrift(params: {
     if (resolveOpenClawReleaseCohortVersion(installedVersion) === normalizedGateway) {
       continue;
     }
+    const clawhubPackage = resolveOfficialClawHubPackageName({ pluginId, record });
     drifts.push({
       pluginId,
       installedVersion,
@@ -208,6 +288,7 @@ export function detectPluginVersionDrift(params: {
       source: record.source,
       ...(record.resolvedName ? { packageName: record.resolvedName } : {}),
       ...(record.spec ? { spec: record.spec } : {}),
+      ...(clawhubPackage ? { clawhubPackage } : {}),
     });
   }
 
