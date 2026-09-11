@@ -10,13 +10,21 @@ import {
   parseRegistryNpmSpec,
   resolveOpenClawReleaseCohortVersion,
 } from "../infra/npm-registry-spec.js";
+import {
+  normalizeUpdateChannel,
+  resolveRegistryUpdateChannel,
+  type UpdateChannel,
+} from "../infra/update-channels.js";
 import { fetchNpmPackageTargetStatus } from "../infra/update-check-package-target.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
+import { resolveClawHubInstallSpecsForUpdateChannel } from "./install-channel-specs.js";
+import { checkMinHostVersion } from "./min-host-version.js";
 import {
   resolveTrustedSourceLinkedOfficialClawHubInstall,
   resolveTrustedSourceLinkedOfficialClawHubSpec,
   resolveTrustedSourceLinkedOfficialNpmSpec,
 } from "./official-external-install-records.js";
+import { satisfiesPluginApiRange } from "./package-compat.js";
 
 type PluginVersionDriftTargetResolution = {
   packageName: string;
@@ -32,6 +40,8 @@ type PluginVersionDriftEntry = {
   spec?: string;
   /** ClawHub package name for installs whose upgrade target lives in ClawHub, not npm. */
   clawhubPackage?: string;
+  clawhubUrl?: string;
+  clawhubUpdateChannel?: UpdateChannel;
   targetResolution?: PluginVersionDriftTargetResolution;
 };
 
@@ -67,6 +77,9 @@ function resolveExactNpmPinPackageName(entry: PluginVersionDriftEntry): string |
 export function resolvePluginVersionDriftUpdateCommand(
   entry: PluginVersionDriftEntry,
 ): string | undefined {
+  if (entry.source === "clawhub" && entry.targetResolution?.status === "unresolved") {
+    return undefined;
+  }
   const exactNpmPackageName = resolveExactNpmPinPackageName(entry);
   if (exactNpmPackageName) {
     if (
@@ -96,13 +109,34 @@ export function resolvePluginVersionDriftUpdateCommand(
  */
 async function fetchClawHubLatestVersion(
   packageName: string,
+  gatewayVersion: string,
+  baseUrl: string | undefined,
 ): Promise<{ version: string | null; error?: string }> {
   // Mirror the npm helper: convert lookup failures to data so callers stay total.
   try {
+    const detail = await fetchClawHubPackageDetail({ name: packageName, baseUrl });
+    const compatibility = detail.package?.compatibility;
+    if (!satisfiesPluginApiRange(gatewayVersion, compatibility?.pluginApiRange)) {
+      return {
+        version: null,
+        error: `ClawHub ${packageName} requires plugin API ${compatibility?.pluginApiRange}, but the target Gateway is ${gatewayVersion}`,
+      };
+    }
+    if (
+      compatibility?.minGatewayVersion &&
+      !checkMinHostVersion({
+        currentVersion: gatewayVersion,
+        minHostVersion: compatibility.minGatewayVersion,
+        allowLegacyBareSemver: true,
+      }).ok
+    ) {
+      return {
+        version: null,
+        error: `ClawHub ${packageName} declares minGatewayVersion ${compatibility.minGatewayVersion}, which the target Gateway ${gatewayVersion} does not satisfy`,
+      };
+    }
     return {
-      version: resolveLatestVersionFromPackage(
-        await fetchClawHubPackageDetail({ name: packageName }),
-      ),
+      version: resolveLatestVersionFromPackage(detail),
     };
   } catch (err) {
     return { version: null, error: `ClawHub did not resolve ${packageName}: ${String(err)}` };
@@ -117,7 +151,38 @@ async function resolveClawHubEntryTarget(
     return entry;
   }
   const requestedTarget = resolveOpenClawReleaseCohortVersion(entry.gatewayVersion);
-  const { version: latestVersion, error } = await fetchClawHubLatestVersion(packageName);
+  // Only suppress a mismatch for a verified latest intent. The update owner may
+  // select a tag, an exact version, or the extended-stable core cohort instead.
+  try {
+    const { installSpec } = resolveClawHubInstallSpecsForUpdateChannel({
+      spec: entry.spec ?? `clawhub:${packageName}`,
+      updateChannel: entry.clawhubUpdateChannel,
+      officialPackageName: packageName,
+      coreVersion: entry.gatewayVersion,
+    });
+    const parsed = parseClawHubPluginSpec(installSpec);
+    if (!parsed || (parsed.version && parsed.version.toLowerCase() !== "latest")) {
+      return {
+        ...entry,
+        targetResolution: {
+          status: "unresolved",
+          packageName,
+          requestedTarget,
+          error: `ClawHub latest metadata cannot confirm the selected target ${installSpec}`,
+        },
+      };
+    }
+  } catch (err) {
+    return {
+      ...entry,
+      targetResolution: { status: "unresolved", packageName, requestedTarget, error: String(err) },
+    };
+  }
+  const { version: latestVersion, error } = await fetchClawHubLatestVersion(
+    packageName,
+    entry.gatewayVersion,
+    entry.clawhubUrl,
+  );
   if (!latestVersion) {
     // Leave drift reported when ClawHub cannot answer: silence would hide a real gap.
     return {
@@ -288,7 +353,16 @@ export function detectPluginVersionDrift(params: {
       source: record.source,
       ...(record.resolvedName ? { packageName: record.resolvedName } : {}),
       ...(record.spec ? { spec: record.spec } : {}),
-      ...(clawhubPackage ? { clawhubPackage } : {}),
+      ...(clawhubPackage
+        ? {
+            clawhubPackage,
+            spec: record.spec ?? record.resolvedSpec ?? `clawhub:${clawhubPackage}`,
+            clawhubUrl: record.clawhubUrl ?? "https://clawhub.ai",
+            clawhubUpdateChannel:
+              normalizeUpdateChannel(config?.update?.channel) ??
+              resolveRegistryUpdateChannel({ currentVersion: gatewayVersion }),
+          }
+        : {}),
     });
   }
 

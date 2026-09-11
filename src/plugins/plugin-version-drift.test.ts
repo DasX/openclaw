@@ -447,7 +447,10 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
   it("drops drift when the install already holds the newest ClawHub version", async () => {
     vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
     const report = await resolvePluginVersionDriftTargets(clawhubDriftReport("2026.9.3"));
-    expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({ name: "@openclaw/whatsapp" });
+    expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({
+      name: "@openclaw/whatsapp",
+      baseUrl: "https://clawhub.ai",
+    });
     expect(report.drifts).toEqual([]);
   });
 
@@ -463,6 +466,89 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
     });
     expect(resolvePluginVersionDriftUpdateCommand(entry)).toBe("openclaw plugins update whatsapp");
   });
+
+  it("uses the recorded registry even when the environment selects a different registry", async () => {
+    vi.stubEnv("OPENCLAW_CLAWHUB_URL", "https://alternate.example.test");
+    try {
+      vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+      const report = await resolvePluginVersionDriftTargets(
+        detectPluginVersionDrift({
+          gatewayVersion: "2026.9.4",
+          installRecords: {
+            whatsapp: clawhubRecord("2026.9.3", {
+              clawhubUrl: "https://clawhub.ai",
+              clawhubChannel: "official",
+            }),
+          },
+        }),
+      );
+      expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({
+        name: "@openclaw/whatsapp",
+        baseUrl: "https://clawhub.ai",
+      });
+      expect(report.drifts).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([
+    { spec: "clawhub:@openclaw/whatsapp@beta", channel: "stable" as const },
+    { spec: "clawhub:@openclaw/whatsapp@2026.9.2", channel: "stable" as const },
+    { spec: "clawhub:@openclaw/whatsapp", channel: "beta" as const },
+    { spec: "clawhub:@openclaw/whatsapp@latest", channel: "extended-stable" as const },
+  ])(
+    "does not replace selected target with latest: $spec / $channel",
+    async ({ spec, channel }) => {
+      vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+      const report = await resolvePluginVersionDriftTargets(
+        detectPluginVersionDrift({
+          gatewayVersion: "2026.9.4",
+          config: { update: { channel } },
+          installRecords: { whatsapp: clawhubRecord("2026.9.3", { spec }) },
+        }),
+      );
+      const entry = expectDefined(report.drifts[0], "non-latest ClawHub target");
+      expect(entry.targetResolution?.status).toBe("unresolved");
+      expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
+      expect(fetchClawHubPackageDetail).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses the installed beta channel when none is configured", async () => {
+    vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+    const report = await resolvePluginVersionDriftTargets(
+      clawhubDriftReport("2026.9.3", "2026.9.4-beta.1"),
+    );
+    expect(report.drifts[0]?.targetResolution?.status).toBe("unresolved");
+    expect(fetchClawHubPackageDetail).not.toHaveBeenCalled();
+  });
+
+  it.each([{ pluginApiRange: ">=2026.10.1" }, { minGatewayVersion: "2026.10.1" }])(
+    "keeps incompatible latest installs visible: %j",
+    async (compatibility) => {
+      vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+      vi.mocked(fetchClawHubPackageDetail).mockResolvedValue({
+        package: {
+          name: "@openclaw/whatsapp",
+          displayName: "WhatsApp",
+          family: "code-plugin",
+          channel: "official",
+          isOfficial: true,
+          createdAt: 0,
+          updatedAt: 0,
+          compatibility,
+        },
+      });
+      const report = await resolvePluginVersionDriftTargets(clawhubDriftReport("2026.9.3"));
+      const entry = expectDefined(report.drifts[0], "incompatible ClawHub install");
+      expect(entry.targetResolution).toMatchObject({
+        status: "unresolved",
+        error: expect.stringContaining("2026.10.1"),
+      });
+      expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
+    },
+  );
 
   it.each([
     {
