@@ -443,7 +443,14 @@ export async function recoverStuckDiagnosticSession(
 
     if (aborted || forceCleared || released > 0 || clearStaleSession) {
       retireStaleFollowupDrain?.();
-      const action = aborted || forceCleared ? "abort_embedded_run" : "release_lane";
+      // A force-clear releases the lane without the owner ever acknowledging an
+      // abort, so it must not be reported as one: otherwise a release that
+      // stopped nothing reads exactly like a run recovery actually aborted.
+      const action = aborted
+        ? "abort_embedded_run"
+        : forceCleared
+          ? "force_clear_embedded_run"
+          : "release_lane";
       const stoppedFields = formatStoppedCronSessionDiagnosticFields(
         resolveCronSessionDiagnosticContext({ sessionKey: params.sessionKey, activeSessionId }),
       );
@@ -454,31 +461,32 @@ export async function recoverStuckDiagnosticSession(
           stoppedFields ? ` ${stoppedFields}` : ""
         }`,
       );
+      const reclaimFields = {
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        activeSessionId,
+        activeWorkKind: "embedded_run" as const,
+        aborted,
+        drained,
+        forceCleared,
+        released,
+        lane: sessionLane ?? undefined,
+        ...(queuedCount > 0 ? { queuedCount } : {}),
+      };
       return reportRecoveryOutcome(
-        aborted || forceCleared
-          ? {
-              status: "aborted",
-              action: "abort_embedded_run",
-              sessionId: params.sessionId,
-              sessionKey: params.sessionKey,
-              activeSessionId,
-              activeWorkKind: "embedded_run",
-              aborted,
-              drained,
-              forceCleared,
-              released,
-              lane: sessionLane ?? undefined,
-              ...(queuedCount > 0 ? { queuedCount } : {}),
-            }
-          : {
-              status: "released",
-              action: "release_lane",
-              sessionId: params.sessionId,
-              sessionKey: params.sessionKey,
-              released,
-              lane: sessionLane ?? undefined,
-              ...(clearStaleSession ? { reason: "no_active_work" as const } : {}),
-            },
+        aborted
+          ? { status: "aborted", action: "abort_embedded_run", ...reclaimFields }
+          : forceCleared
+            ? { status: "force_cleared", action: "force_clear_embedded_run", ...reclaimFields }
+            : {
+                status: "released",
+                action: "release_lane",
+                sessionId: params.sessionId,
+                sessionKey: params.sessionKey,
+                released,
+                lane: sessionLane ?? undefined,
+                ...(clearStaleSession ? { reason: "no_active_work" as const } : {}),
+              },
       );
     }
     // An active run that neither aborted nor released still owns its work. Reporting

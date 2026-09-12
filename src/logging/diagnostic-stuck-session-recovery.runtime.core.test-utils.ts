@@ -324,7 +324,7 @@ describe("stuck session recovery", () => {
     });
   });
 
-  it("reports queued lane work when aborting active work releases a lane", async () => {
+  it("reports a force-clear that releases a lane as a force-clear, not an abort", async () => {
     mocks.resolveActiveEmbeddedRunSessionId.mockReturnValue("queued-reply-session");
     mocks.resolveActiveEmbeddedRunHandleSessionId.mockReturnValue(undefined);
     mocks.isEmbeddedAgentRunActive.mockReturnValue(true);
@@ -351,13 +351,15 @@ describe("stuck session recovery", () => {
     });
 
     expect(outcome).toMatchObject({
-      status: "aborted",
-      action: "abort_embedded_run",
+      status: "force_cleared",
+      action: "force_clear_embedded_run",
+      aborted: false,
+      forceCleared: true,
       released: 1,
       queuedCount: 1,
     });
     expect(warnLogMessages()).toContain(
-      "stuck session recovery outcome: status=aborted action=abort_embedded_run sessionId=queued-reply-session sessionKey=agent:main:main activeSessionId=queued-reply-session activeWorkKind=embedded_run lane=session:agent:main:main aborted=false drained=false forceCleared=true released=1 queuedCount=1",
+      "stuck session recovery outcome: status=force_cleared action=force_clear_embedded_run sessionId=queued-reply-session sessionKey=agent:main:main activeSessionId=queued-reply-session activeWorkKind=embedded_run lane=session:agent:main:main aborted=false drained=false forceCleared=true released=1 queuedCount=1",
     );
   });
 
