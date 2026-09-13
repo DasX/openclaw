@@ -210,6 +210,93 @@ describe("dispatch input custody after a question response", () => {
     }
   });
 
+  it("reports an incomplete multi-question answer and keeps the question open", async () => {
+    const fixture = createQuestionDispatch("incomplete-answer");
+    const dispatcher = createDispatcher();
+    const resolves: unknown[] = [];
+    const gatewayCall = vi.fn(async (method: string, _headers: unknown, params: unknown) => {
+      if (method !== "question.resolve") {
+        return {};
+      }
+      resolves.push(params);
+      const answers = (params as { answers: { answers: Record<string, string[]> } }).answers
+        .answers;
+      const unanswered = Object.keys(answers).find((id) => answers[id]?.length === 0);
+      if (unanswered) {
+        const rejection = new Error(`question '${unanswered}' requires an answer`);
+        rejection.name = "GatewayClientRequestError";
+        throw Object.assign(rejection, {
+          gatewayCode: "INVALID_REQUEST",
+          details: { reason: "QUESTION_INVALID_ANSWER" },
+          retryable: false,
+        });
+      }
+      return {};
+    });
+    const question = registerPendingAgentQuestion({
+      sessionKey: fixture.operation.key,
+      questionId: "ask_incomplete_answer",
+      questions: [
+        { id: "destination", header: "Where", question: "Where to?" },
+        { id: "budget", header: "Budget", question: "How much?" },
+      ],
+      gatewayCall,
+      answer: Promise.resolve({ status: "pending" }),
+    });
+    question.attachRegistration(Promise.resolve());
+    try {
+      // One unkeyed line for two questions: the second question stays empty and
+      // the gateway rejects the whole answer before it is committed.
+      await dispatchReplyFromConfig({
+        ctx: fixture.ctx,
+        cfg: { ...automaticDirectReplyConfig, diagnostics: { enabled: true } },
+        dispatcher,
+        replyOptions: { turnAdoptionLifecycle: { onAdopted: async () => {} } },
+        replyResolver: async (ctx, opts) => {
+          const result = await runReplyQuestionInput({
+            commandBody: "Lisbon",
+            followupRun: createQueueTestRun({ prompt: "Lisbon" }),
+            sessionKey: fixture.operation.key,
+            sessionCtx: ctx,
+            opts,
+          });
+          expect(result.handled).toBe(true);
+          return result.handled ? result.payload : undefined;
+        },
+      });
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("The answer was not accepted: question 'budget'"),
+          isError: true,
+        }),
+      );
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining("still open") }),
+      );
+      expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "error", reason: "question-response-rejected" }),
+      );
+      expect(question.isResolving()).toBe(false);
+      expect(fixture.cancel).not.toHaveBeenCalled();
+
+      // The question survived the rejection, so a complete answer still lands.
+      const retry = await runReplyQuestionInput({
+        commandBody: "Lisbon\n2000",
+        followupRun: createQueueTestRun({ prompt: "Lisbon\n2000" }),
+        sessionKey: fixture.operation.key,
+        sessionCtx: fixture.ctx,
+      });
+      expect(retry).toEqual({ handled: true, payload: undefined });
+      expect(resolves).toHaveLength(2);
+      expect(resolves[1]).toMatchObject({
+        answers: { answers: { destination: ["Lisbon"], budget: ["2000"] } },
+      });
+    } finally {
+      question.dispose();
+      fixture.operation.complete();
+    }
+  });
+
   it("still permits retry when the source failed before any input custody transfer", async () => {
     const fixture = createQuestionDispatch("before-custody");
     const error = new Error("failure before input dispatch");
