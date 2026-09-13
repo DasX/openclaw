@@ -236,9 +236,10 @@ describe("stuck session recovery", () => {
     mocks.resolveActiveEmbeddedRunHandleSessionId.mockReturnValue("session-1");
     mocks.abortEmbeddedAgentRun.mockReturnValue(true);
     mocks.waitForEmbeddedAgentRunEnd.mockResolvedValue(false);
+    mocks.forceClearEmbeddedAgentRun.mockReturnValue(true);
     mocks.resetCommandLane.mockReturnValue(1);
 
-    await recoverStuckDiagnosticSession({
+    const outcome = await recoverStuckDiagnosticSession({
       sessionId: "session-1",
       sessionKey: "agent:main:main",
       ageMs: 240_000,
@@ -251,6 +252,18 @@ describe("stuck session recovery", () => {
       "stuck_recovery",
     );
     expect(mocks.resetCommandLane).toHaveBeenCalledWith("session:agent:main:main");
+    // The owner accepted the abort but never drained, so the force-clear is what
+    // actually reclaimed it. Both flags are set here and the force-clear wins.
+    expect(outcome).toMatchObject({
+      status: "force_cleared",
+      action: "force_clear_embedded_run",
+      aborted: true,
+      drained: false,
+      forceCleared: true,
+    });
+    expect(warnLogMessages()).toContain(
+      "stuck session recovery: sessionId=session-1 sessionKey=agent:main:main age=240s action=force_clear_embedded_run aborted=true drained=false released=1",
+    );
   });
 
   it("force-clears and releases the session lane when an active run cannot be aborted", async () => {

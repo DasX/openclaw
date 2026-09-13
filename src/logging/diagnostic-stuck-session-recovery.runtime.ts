@@ -446,10 +446,12 @@ export async function recoverStuckDiagnosticSession(
       // A force-clear releases the lane without the owner ever acknowledging an
       // abort, so it must not be reported as one: otherwise a release that
       // stopped nothing reads exactly like a run recovery actually aborted.
-      const action = aborted
-        ? "abort_embedded_run"
-        : forceCleared
-          ? "force_clear_embedded_run"
+      // It outranks `aborted` because an accepted abort whose cleanup timed out
+      // returns both flags, and there the force-clear is what freed the owner.
+      const action = forceCleared
+        ? "force_clear_embedded_run"
+        : aborted
+          ? "abort_embedded_run"
           : "release_lane";
       const stoppedFields = formatStoppedCronSessionDiagnosticFields(
         resolveCronSessionDiagnosticContext({ sessionKey: params.sessionKey, activeSessionId }),
@@ -474,10 +476,10 @@ export async function recoverStuckDiagnosticSession(
         ...(queuedCount > 0 ? { queuedCount } : {}),
       };
       return reportRecoveryOutcome(
-        aborted
-          ? { status: "aborted", action: "abort_embedded_run", ...reclaimFields }
-          : forceCleared
-            ? { status: "force_cleared", action: "force_clear_embedded_run", ...reclaimFields }
+        forceCleared
+          ? { status: "force_cleared", action: "force_clear_embedded_run", ...reclaimFields }
+          : aborted
+            ? { status: "aborted", action: "abort_embedded_run", ...reclaimFields }
             : {
                 status: "released",
                 action: "release_lane",
