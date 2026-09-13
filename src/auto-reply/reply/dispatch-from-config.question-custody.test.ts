@@ -1,5 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerPendingAgentQuestion } from "../../agents/harness/gateway-question.js";
+import {
+  createAgentQuestionAnswerAuthority,
+  withAgentQuestionAnswerAuthority,
+} from "../../agents/harness/host-private-capabilities.js";
 import { clearAgentHarnesses } from "../../agents/harness/registry.js";
 import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
@@ -214,35 +218,50 @@ describe("dispatch input custody after a question response", () => {
     const fixture = createQuestionDispatch("incomplete-answer");
     const dispatcher = createDispatcher();
     const resolves: unknown[] = [];
-    const gatewayCall = vi.fn(async (method: string, _headers: unknown, params: unknown) => {
-      if (method !== "question.resolve") {
+    // Mirrors QuestionManager.validateAnswers: an unanswered question is
+    // rejected with QUESTION_INVALID_ANSWER before the resolve commits.
+    const gatewayCall = {
+      version: 2 as const,
+      call: async (request: { method: string; params?: unknown }) => {
+        if (request.method !== "question.resolve") {
+          return {};
+        }
+        resolves.push(request.params);
+        const answers = (request.params as { answers: { answers: Record<string, string[]> } })
+          .answers.answers;
+        const unanswered = Object.keys(answers).find((id) => answers[id]?.length === 0);
+        if (unanswered) {
+          const rejection = new Error(`question '${unanswered}' requires an answer`);
+          rejection.name = "GatewayClientRequestError";
+          throw Object.assign(rejection, {
+            gatewayCode: "INVALID_REQUEST",
+            details: { reason: "QUESTION_INVALID_ANSWER" },
+            retryable: false,
+          });
+        }
         return {};
-      }
-      resolves.push(params);
-      const answers = (params as { answers: { answers: Record<string, string[]> } }).answers
-        .answers;
-      const unanswered = Object.keys(answers).find((id) => answers[id]?.length === 0);
-      if (unanswered) {
-        const rejection = new Error(`question '${unanswered}' requires an answer`);
-        rejection.name = "GatewayClientRequestError";
-        throw Object.assign(rejection, {
-          gatewayCode: "INVALID_REQUEST",
-          details: { reason: "QUESTION_INVALID_ANSWER" },
-          retryable: false,
-        });
-      }
-      return {};
-    });
-    const question = registerPendingAgentQuestion({
+      },
+    };
+    // The creator authority the source-bound claim path requires; this fixture
+    // accepts any caller so the test exercises answer validation, not policy.
+    const authority = createAgentQuestionAnswerAuthority({
       sessionKey: fixture.operation.key,
-      questionId: "ask_incomplete_answer",
-      questions: [
-        { id: "destination", header: "Where", question: "Where to?" },
-        { id: "budget", header: "Budget", question: "How much?" },
-      ],
-      gatewayCall,
-      answer: Promise.resolve({ status: "pending" }),
+      fingerprint: "question-custody-fixture",
+      project: () => "question-custody-fixture",
+      assertActive: () => {},
     });
+    const question = withAgentQuestionAnswerAuthority(authority, () =>
+      registerPendingAgentQuestion({
+        sessionKey: fixture.operation.key,
+        questionId: "ask_incomplete_answer",
+        questions: [
+          { id: "destination", header: "Where", question: "Where to?" },
+          { id: "budget", header: "Budget", question: "How much?" },
+        ],
+        gatewayCall,
+        answer: Promise.resolve({ status: "pending" }),
+      }),
+    );
     question.attachRegistration(Promise.resolve());
     try {
       // One unkeyed line for two questions: the second question stays empty and
