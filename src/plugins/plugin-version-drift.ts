@@ -21,7 +21,6 @@ import { resolveClawHubInstallSpecsForUpdateChannel } from "./install-channel-sp
 import { checkMinHostVersion } from "./min-host-version.js";
 import {
   resolveTrustedSourceLinkedOfficialClawHubInstall,
-  resolveTrustedSourceLinkedOfficialClawHubSpec,
   resolveTrustedSourceLinkedOfficialNpmSpec,
 } from "./official-external-install-records.js";
 import { satisfiesPluginApiRange } from "./package-compat.js";
@@ -278,15 +277,6 @@ function shouldCompareOfficialInstallToGateway(params: {
   return false;
 }
 
-/** The ClawHub package that owns this install's upgrade target, when the install is trusted. */
-function resolveOfficialClawHubPackageName(params: {
-  pluginId: string;
-  record: PluginInstallRecord;
-}): string | undefined {
-  const clawhubSpec = resolveTrustedSourceLinkedOfficialClawHubSpec(params);
-  return clawhubSpec ? parseClawHubPluginSpec(clawhubSpec)?.name : undefined;
-}
-
 export function hasOfficialPluginVersionCandidates(params: {
   installRecords: Record<string, PluginInstallRecord>;
   config?: OpenClawConfig;
@@ -345,7 +335,12 @@ export function detectPluginVersionDrift(params: {
     if (resolveOpenClawReleaseCohortVersion(installedVersion) === normalizedGateway) {
       continue;
     }
-    const clawhubPackage = resolveOfficialClawHubPackageName({ pluginId, record });
+    // Admission above bound the recorded identities to the official catalog.
+    // The installed source owns its package even when the catalog only advertises npm.
+    const clawhubPackage =
+      record.source === "clawhub"
+        ? record.clawhubPackage?.trim() ?? parseClawHubPluginSpec(record.spec ?? "")?.name
+        : undefined;
     drifts.push({
       pluginId,
       installedVersion,

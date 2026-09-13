@@ -127,16 +127,16 @@ describe("detectPluginVersionDrift", () => {
     const result = detectPluginVersionDrift({
       gatewayVersion: "2026.5.4",
       installRecords: {
-        discord: clawhubRecord("2026.5.3", {
-          spec: "clawhub:@openclaw/discord",
-          clawhubPackage: "@openclaw/discord",
+        slack: clawhubRecord("2026.5.3", {
+          spec: "clawhub:@openclaw/slack",
+          clawhubPackage: "@openclaw/slack",
           clawhubChannel: "official",
           clawhubUrl: "https://clawhub.ai",
         }),
       },
     });
 
-    expect(result.drifts.map((d) => d.pluginId)).toEqual(["discord"]);
+    expect(result.drifts.map((d) => d.pluginId)).toEqual(["slack"]);
   });
 
   it("ignores community npm installs without an official lockstep contract", () => {
@@ -466,6 +466,62 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
     });
     expect(resolvePluginVersionDriftUpdateCommand(entry)).toBe("openclaw plugins update whatsapp");
   });
+
+  it.each([
+    { spec: "clawhub:@openclaw/slack", clawhubPackage: "@openclaw/slack" },
+    { spec: "clawhub:@openclaw/slack", clawhubPackage: undefined },
+    { spec: undefined, clawhubPackage: "@openclaw/slack" },
+  ])(
+    "resolves npm-only catalog entries from recorded ClawHub identity: %j",
+    async (identity) => {
+      vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+      const report = await resolvePluginVersionDriftTargets(
+        detectPluginVersionDrift({
+          gatewayVersion: "2026.9.4",
+          installRecords: {
+            slack: clawhubRecord("2026.9.3", {
+              ...identity,
+              clawhubChannel: "official",
+              clawhubUrl: "https://clawhub.ai",
+            }),
+          },
+        }),
+      );
+      expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({
+        name: "@openclaw/slack",
+        baseUrl: "https://clawhub.ai",
+      });
+      expect(report.drifts).toEqual([]);
+    },
+  );
+
+  it.each([
+    { clawhubUrl: "https://registry.example.test" },
+    { clawhubChannel: "community" },
+    { resolvedName: "@vendor/slack" },
+    { clawhubPackage: "@vendor/slack" },
+    { spec: undefined, clawhubPackage: undefined, resolvedSpec: "clawhub:@openclaw/slack" },
+  ] satisfies Partial<PluginInstallRecord>[])(
+    "does not resolve untrusted or mismatched ClawHub identities: %j",
+    async (overrides) => {
+      const report = await resolvePluginVersionDriftTargets(
+        detectPluginVersionDrift({
+          gatewayVersion: "2026.9.4",
+          installRecords: {
+            slack: clawhubRecord("2026.9.3", {
+              spec: "clawhub:@openclaw/slack",
+              clawhubPackage: "@openclaw/slack",
+              clawhubChannel: "official",
+              clawhubUrl: "https://clawhub.ai",
+              ...overrides,
+            }),
+          },
+        }),
+      );
+      expect(report.drifts).toEqual([]);
+      expect(fetchClawHubPackageDetail).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses the recorded registry even when the environment selects a different registry", async () => {
     vi.stubEnv("OPENCLAW_CLAWHUB_URL", "https://alternate.example.test");

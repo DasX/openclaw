@@ -1,12 +1,21 @@
-// Focused QA evidence for official Codex plugin drift through doctor diagnostics.
+// Focused QA evidence for official plugin drift through doctor diagnostics.
 import { describe, expect, it, vi } from "vitest";
 import * as noteModule from "../../packages/terminal-core/src/note.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { detectPluginVersionDrift } from "../plugins/plugin-version-drift.js";
+import { fetchClawHubPackageDetail } from "../infra/clawhub-packages.js";
+import {
+  detectPluginVersionDrift,
+  resolvePluginVersionDriftTargets,
+} from "../plugins/plugin-version-drift.js";
 import {
   collectWorkspaceStatusHealthFindings,
   noteWorkspaceStatus,
 } from "./doctor-workspace-status.js";
+
+vi.mock("../infra/clawhub-packages.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/clawhub-packages.js")>()),
+  fetchClawHubPackageDetail: vi.fn(),
+}));
 
 vi.mock("../agents/agent-scope.js", () => ({
   listAgentIds: () => [],
@@ -158,7 +167,7 @@ describe("official Codex plugin version drift doctor evidence", () => {
         {
           checkId: "core/doctor/workspace-status",
           severity: "warning",
-          message: `Plugin codex is ${installedVersion}, but a Gateway restart will load OpenClaw ${gatewayVersion}.`,
+          message: `Plugin codex is ${installedVersion}, but a Gateway restart will load OpenClaw ${gatewayVersion}. The confirmed plugin target is ${gatewayVersion}.`,
           path: "plugins.entries.codex",
           target: "codex",
           requirement: "plugin-version-drift",
@@ -205,4 +214,76 @@ describe("official Codex plugin version drift doctor evidence", () => {
       ).toEqual([]);
     }
   });
+});
+
+describe("ClawHub plugin version drift doctor evidence", () => {
+  it.each([
+    { installedVersion: "2026.9.2", pluginApiRange: ">=2026.9.3", result: "resolved" },
+    { installedVersion: "2026.9.3", pluginApiRange: ">=2026.9.3", result: "current" },
+    { installedVersion: "2026.9.3", pluginApiRange: ">=2026.10.1", result: "unresolved" },
+  ])(
+    "renders $result ClawHub targets consistently",
+    async ({ installedVersion, pluginApiRange, result }) => {
+      vi.mocked(fetchClawHubPackageDetail).mockResolvedValueOnce({
+        package: {
+          name: "@openclaw/whatsapp",
+          displayName: "WhatsApp",
+          family: "code-plugin",
+          channel: "official",
+          isOfficial: true,
+          createdAt: 0,
+          updatedAt: 0,
+          latestVersion: "2026.9.3",
+          compatibility: { pluginApiRange },
+        },
+      });
+      const report = await resolvePluginVersionDriftTargets(
+        detectPluginVersionDrift({
+          gatewayVersion: "2026.9.4",
+          installRecords: {
+            whatsapp: {
+              source: "clawhub",
+              spec: "clawhub:@openclaw/whatsapp",
+              clawhubPackage: "@openclaw/whatsapp",
+              resolvedVersion: installedVersion,
+            },
+          },
+        }),
+      );
+      const readiness = { status: "resolved" as const, report };
+      const findings = collectWorkspaceStatusHealthFindings(
+        {},
+        { pluginVersionReadiness: readiness },
+      );
+      const noteSpy = vi.spyOn(noteModule, "note").mockImplementation(() => {});
+      try {
+        noteWorkspaceStatus({}, { pluginVersionReadiness: readiness });
+        if (result === "current") {
+          expect(findings).toEqual([]);
+          expect(noteSpy).not.toHaveBeenCalled();
+        } else {
+          expect(findings).toHaveLength(1);
+          expect(noteSpy).toHaveBeenCalledOnce();
+          const output = String(noteSpy.mock.calls[0]?.[0]);
+          if (result === "resolved") {
+            expect(findings[0]?.message).toContain("confirmed plugin target is 2026.9.3");
+            expect(output).toContain("whatsapp: 2026.9.2 (clawhub) -> expected 2026.9.3");
+            expect(output).not.toContain("expected 2026.9.4");
+            expect(findings[0]?.fixHint).toBe(
+              "openclaw plugins update whatsapp && openclaw gateway restart",
+            );
+            expect(output).toContain(findings[0]?.fixHint);
+          } else {
+            expect(findings[0]?.message).toContain("requires plugin API >=2026.10.1");
+            expect(output).toContain("requires plugin API >=2026.10.1");
+            expect(output).toContain("No install command generated");
+            expect(output).not.toContain("openclaw plugins update");
+            expect(findings[0]?.fixHint).not.toContain("openclaw plugins update");
+          }
+        }
+      } finally {
+        noteSpy.mockRestore();
+      }
+    },
+  );
 });
