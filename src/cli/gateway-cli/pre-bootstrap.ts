@@ -262,6 +262,7 @@ async function guardGatewayRunSelectedConfig(
     { normalizeStateDirEnv, resolveStateDir },
     { resolveConfigDir },
     { collectEnvSecretRefIds },
+    { collectConfigEnvSecretRefIds },
     { clearMissingManagedServiceEnvKeys, readManagedSystemdServiceEnvKeysFromEnvironment },
   ] = await Promise.all([
     import("node:path"),
@@ -271,6 +272,7 @@ async function guardGatewayRunSelectedConfig(
     import("../../config/paths.js"),
     import("../../utils.js"),
     import("../../config/types.secrets.js"),
+    import("../../config/resolution-facts.js"),
     import("../../daemon/service-managed-env.js"),
   ]);
   const invocationDestructiveOverride = resolveInvocationDestructiveOverride();
@@ -362,11 +364,16 @@ async function guardGatewayRunSelectedConfig(
     }
     // The service marker also owns config SecretRefs. Only dotenv-absent keys with no current
     // config reference are stale; clearing the broad marker blindly would drop file-backed refs.
+    // `${VAR}` shorthand is already substituted in sourceConfig, so its variable name survives only
+    // in the resolution facts the config read recorded; scanning values alone would drop it.
     clearMissingManagedServiceEnvKeys({
       environment: process.env,
       managedKeys: readManagedSystemdServiceEnvKeysFromEnvironment(process.env),
       presentKeys: trustedEnvLoad.dotenvPresentKeys,
-      preserveKeys: collectEnvSecretRefIds(trustedSnapshot.sourceConfig),
+      preserveKeys: new Set([
+        ...collectEnvSecretRefIds(trustedSnapshot.sourceConfig),
+        ...collectConfigEnvSecretRefIds(trustedSnapshot.sourceConfig),
+      ]),
     });
     const selectionSignature = resolveGatewayConfigSelectionSignature(process.env);
     applySelectedConfigEnv(trustedSnapshot);

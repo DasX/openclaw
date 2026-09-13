@@ -1742,6 +1742,49 @@ describe("gateway run option collisions", () => {
     );
   });
 
+  it("keeps managed keys referenced by substituted ${VAR} shorthand", async () => {
+    detectRespawnSupervisor.mockReturnValue("systemd");
+    const { createConfigResolutionFacts, setConfigResolutionFacts } =
+      await import("../../config/resolution-facts.js");
+    // Substitution already replaced the shorthand, so only the recorded facts still name the
+    // variable. Scanning sourceConfig values alone deletes it and breaks the next config read.
+    const sourceConfig = {
+      models: { providers: { minimax: { apiKey: "substituted-not-a-real-key" } } },
+    };
+    setConfigResolutionFacts(
+      sourceConfig,
+      createConfigResolutionFacts(
+        [],
+        new Map(),
+        "default",
+        new Map([["models.providers.minimax.apiKey", "SHORTHAND_KEY"]]),
+      ),
+    );
+    configState.snapshot = { config: {}, exists: true, sourceConfig, valid: true };
+    loadGlobalRuntimeDotEnvFiles.mockReturnValue({
+      dotenvPresentKeys: [],
+      gatewayEnvAppliedKeys: [],
+      stateEnvAppliedKeys: [],
+    });
+
+    await withMockedPlatform("linux", () =>
+      withEnvAsync(
+        {
+          INVOCATION_ID: "systemd-invocation",
+          OPENCLAW_SERVICE_MANAGED_ENV_KEYS: "SHORTHAND_KEY,REMOVED_KEY",
+          SHORTHAND_KEY: "environment-file-value",
+          REMOVED_KEY: "stale-service-value",
+        },
+        async () => {
+          const { selectGatewayRunEnvironment } = await import("./pre-bootstrap.js");
+          await selectGatewayRunEnvironment({ opts: {}, runtime: defaultRuntime });
+          expect(process.env.SHORTHAND_KEY).toBe("environment-file-value");
+          expect(process.env.REMOVED_KEY).toBeUndefined();
+        },
+      ),
+    );
+  });
+
   it("re-inspects crash-loop breaker state for each boot iteration", async () => {
     let firstBootRecovery: (() => boolean) | undefined;
     bootLifecycle.record.mockReturnValueOnce("boot-1").mockReturnValueOnce("boot-2");

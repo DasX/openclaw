@@ -149,6 +149,25 @@ export function getResolvedConfigEnvSecretRef(target: unknown, path: string): Se
   return fact?.state === "resolved" ? fact.ref : null;
 }
 
+/**
+ * Collects every env variable name the config read recorded as an inline reference.
+ *
+ * Substitution replaces `${VAR}` with its value, so the resolved config no longer names the
+ * variable. Callers that need the authored variable names must read them here instead of
+ * rescanning the substituted tree.
+ */
+export function collectConfigEnvSecretRefIds(target: unknown): Set<string> {
+  const facts = getConfigResolutionFacts(target);
+  const ids = new Set<string>();
+  if (facts === null) {
+    return ids;
+  }
+  for (const fact of envSecretRefsByFacts.get(facts)?.values() ?? []) {
+    ids.add(fact.ref.id);
+  }
+  return ids;
+}
+
 /** Reads inline references from authored facts and structured references from their values. */
 export function resolveConfigSecretRef(params: {
   config: unknown;

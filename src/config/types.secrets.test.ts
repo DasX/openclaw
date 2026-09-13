@@ -1,6 +1,11 @@
 // Verifies secret config type guards and normalization helpers.
 import { describe, expect, it } from "vitest";
 import {
+  collectConfigEnvSecretRefIds,
+  createConfigResolutionFacts,
+  setConfigResolutionFacts,
+} from "./resolution-facts.js";
+import {
   coerceSecretRef,
   collectEnvSecretRefIds,
   parseEnvTemplateSecretRef,
@@ -58,6 +63,32 @@ describe("collectEnvSecretRefIds", () => {
         ignored: { source: "file", provider: "default", id: "/run/secret" },
       }),
     ).toEqual(new Set(["OPENAI_API_KEY", "LEGACY_API_KEY", "DISCORD_BOT_TOKEN"]));
+  });
+
+  it("cannot see shorthand refs once substitution replaced the value", () => {
+    expect(collectEnvSecretRefIds({ apiKey: "substituted-secret-value" })).toEqual(new Set());
+  });
+});
+
+describe("collectConfigEnvSecretRefIds", () => {
+  it("recovers resolved and pending shorthand ids from recorded resolution facts", () => {
+    const sourceConfig = { models: { providers: { minimax: { apiKey: "substituted" } } } };
+    setConfigResolutionFacts(
+      sourceConfig,
+      createConfigResolutionFacts(
+        [],
+        new Map([["channels.discord.token", "DISCORD_BOT_TOKEN"]]),
+        "default",
+        new Map([["models.providers.minimax.apiKey", "MINIMAX_API_KEY"]]),
+      ),
+    );
+    expect(collectConfigEnvSecretRefIds(sourceConfig)).toEqual(
+      new Set(["MINIMAX_API_KEY", "DISCORD_BOT_TOKEN"]),
+    );
+  });
+
+  it("returns nothing for a config that never passed through substitution", () => {
+    expect(collectConfigEnvSecretRefIds({ apiKey: "${MINIMAX_API_KEY}" })).toEqual(new Set());
   });
 });
 
