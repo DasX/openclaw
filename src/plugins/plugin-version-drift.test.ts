@@ -471,29 +471,26 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
     { spec: "clawhub:@openclaw/slack", clawhubPackage: "@openclaw/slack" },
     { spec: "clawhub:@openclaw/slack", clawhubPackage: undefined },
     { spec: undefined, clawhubPackage: "@openclaw/slack" },
-  ])(
-    "resolves npm-only catalog entries from recorded ClawHub identity: %j",
-    async (identity) => {
-      vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
-      const report = await resolvePluginVersionDriftTargets(
-        detectPluginVersionDrift({
-          gatewayVersion: "2026.9.4",
-          installRecords: {
-            slack: clawhubRecord("2026.9.3", {
-              ...identity,
-              clawhubChannel: "official",
-              clawhubUrl: "https://clawhub.ai",
-            }),
-          },
-        }),
-      );
-      expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({
-        name: "@openclaw/slack",
-        baseUrl: "https://clawhub.ai",
-      });
-      expect(report.drifts).toEqual([]);
-    },
-  );
+  ])("resolves npm-only catalog entries from recorded ClawHub identity: %j", async (identity) => {
+    vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+    const report = await resolvePluginVersionDriftTargets(
+      detectPluginVersionDrift({
+        gatewayVersion: "2026.9.4",
+        installRecords: {
+          slack: clawhubRecord("2026.9.3", {
+            ...identity,
+            clawhubChannel: "official",
+            clawhubUrl: "https://clawhub.ai",
+          }),
+        },
+      }),
+    );
+    expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({
+      name: "@openclaw/slack",
+      baseUrl: "https://clawhub.ai",
+    });
+    expect(report.drifts).toEqual([]);
+  });
 
   it.each([
     { clawhubUrl: "https://registry.example.test" },

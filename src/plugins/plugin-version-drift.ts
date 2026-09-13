@@ -339,7 +339,7 @@ export function detectPluginVersionDrift(params: {
     // The installed source owns its package even when the catalog only advertises npm.
     const clawhubPackage =
       record.source === "clawhub"
-        ? record.clawhubPackage?.trim() ?? parseClawHubPluginSpec(record.spec ?? "")?.name
+        ? (record.clawhubPackage?.trim() ?? parseClawHubPluginSpec(record.spec ?? "")?.name)
         : undefined;
     drifts.push({
       pluginId,
