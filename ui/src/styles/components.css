@@ -2214,13 +2214,12 @@ select.input {
 
 /* Pending routes reserve the content layout without exposing transient panel text. */
 .lazy-view-state--loading {
-  display: grid;
+  display: flex;
   flex: 1 1 auto;
-  place-items: center;
   min-width: 0;
   min-height: min(50dvh, 360px);
   width: 100%;
-  margin: auto;
+  margin: 0;
 }
 
 /* Lazy route load failure — a centered panel state, not a stretched callout. */
@@ -3883,16 +3882,11 @@ td.data-table-key-col {
   object-fit: cover;
 }
 
-.agent-select__avatar--text,
 .agent-select__avatar--icon {
   background: var(--secondary);
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
-}
-
-.agent-select__avatar--text::before {
-  content: attr(data-avatar);
 }
 
 .agent-select__avatar--icon svg,
@@ -3928,6 +3922,23 @@ td.data-table-key-col {
 
 .agent-select__option[data-selected] {
   background: var(--menu-selected);
+}
+
+.agent-select__option-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-select__option-check {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.agent-select__option-check svg {
+  width: 14px;
+  height: 14px;
 }
 
 .agent-select__separator {

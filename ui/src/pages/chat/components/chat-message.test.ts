@@ -705,6 +705,27 @@ afterEach(() => {
 });
 
 describe("grouped chat rendering", () => {
+  it.each([
+    { customType: "run-failed-before-reply", label: "Error" },
+    { customType: "cloud-workspace-recovery-failed", label: "Error" },
+    { customType: "system-notice", label: "System" },
+  ])("labels $customType notices as $label", ({ customType, label }) => {
+    const container = document.createElement("div");
+    renderGroupedMessage(
+      container,
+      {
+        role: "custom",
+        customType,
+        content: "Notice details",
+        display: true,
+        timestamp: Date.now(),
+      },
+      "custom",
+    );
+    expect(container.querySelector(".chat-sender-name")?.textContent).toBe(label);
+    expect(container.textContent).toContain("Notice details");
+  });
+
   it("preserves paragraph breaks around assistant attachments in rendered markdown", () => {
     const container = document.createElement("div");
 
@@ -909,8 +930,9 @@ describe("grouped chat rendering", () => {
     { state: "failed", label: "Not sent", actionLabel: undefined },
     { state: "unconfirmed", label: "Delivery unconfirmed", actionLabel: undefined },
     { state: "unconfirmed", label: "Delivery unconfirmed", actionLabel: "Check delivery" },
+    { state: "waiting-reconnect", label: "Waiting for reconnect", actionLabel: undefined },
   ] as const)(
-    "shows a $state footer with its diagnostic and retry action ($actionLabel)",
+    "shows a $state footer with its diagnostic and recovery actions ($actionLabel)",
     ({ state, label, actionLabel }) => {
       const container = document.createElement("div");
       const onRetryQueuedMessage = vi.fn();
@@ -938,16 +960,23 @@ describe("grouped chat rendering", () => {
       const status = expectElement(container, ".chat-group.user .chat-send-status", HTMLElement);
       expect(status.dataset.sendState).toBe(state);
       expect(status.title).toBe("Delivery diagnostic");
+      const reconnecting = state === "waiting-reconnect";
+      const canDiscard = (state === "unconfirmed" || reconnecting) && !actionLabel;
       expect(status.textContent?.replace(/\s+/g, " ").trim()).toBe(
-        `· ${label} · ${actionLabel ?? "Retry"}${state === "unconfirmed" && !actionLabel ? " · Discard" : ""}`,
+        `· ${label}${reconnecting ? "" : ` · ${actionLabel ?? "Retry"}`}${canDiscard ? " · Discard" : ""}`,
       );
-      expect(status.querySelector("button")?.getAttribute("aria-label")).toBe(
-        actionLabel ?? "Retry queued message",
+      const retry = status.querySelector<HTMLButtonElement>(".chat-send-status__retry");
+      expect(retry?.getAttribute("aria-label")).toBe(
+        reconnecting ? undefined : (actionLabel ?? "Retry queued message"),
       );
-      status.querySelector<HTMLButtonElement>(".chat-send-status__retry")?.click();
-      expect(onRetryQueuedMessage).toHaveBeenCalledWith("attempted-send");
+      retry?.click();
+      if (reconnecting) {
+        expect(onRetryQueuedMessage).not.toHaveBeenCalled();
+      } else {
+        expect(onRetryQueuedMessage).toHaveBeenCalledWith("attempted-send");
+      }
       const discard = status.querySelector<HTMLButtonElement>(".chat-send-status__discard");
-      if (state === "unconfirmed" && !actionLabel) {
+      if (canDiscard) {
         expect(discard?.title).toBe(
           "Discard this local pending copy. This does not cancel a message already received by the Gateway.",
         );
@@ -955,7 +984,7 @@ describe("grouped chat rendering", () => {
         expect(onDiscardQueuedMessage).toHaveBeenCalledWith("attempted-send");
         discard?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
         expect(onDiscardQueuedMessage).toHaveBeenCalledTimes(1);
-        expect(onRetryQueuedMessage).toHaveBeenCalledTimes(1);
+        expect(onRetryQueuedMessage).toHaveBeenCalledTimes(reconnecting ? 0 : 1);
       } else {
         expect(discard).toBeNull();
       }
@@ -2560,15 +2589,14 @@ describe("grouped chat rendering", () => {
 
   it.each([
     { agentId: "research", avatar: "blob:research-avatar", expected: "image" },
-    { agentId: "research", avatar: null, expected: "initials" },
-    { agentId: "research", avatar: "https://example.test/avatar.png", expected: "initials" },
-    // Same-agent sources wear the current agent's own avatar (fallback logo here).
-    { agentId: "main", avatar: "blob:main-avatar", expected: "assistant" },
+    { agentId: "research", avatar: null, expected: "face" },
+    { agentId: "research", avatar: "https://example.test/avatar.png", expected: "face" },
+    { agentId: "main", avatar: "blob:main-avatar", expected: "face" },
     { agentId: "removed", avatar: "blob:stale-avatar", expected: "glyph" },
     { agentId: undefined, avatar: null, expected: "glyph" },
   ])(
     "renders $expected for forwarded agent $agentId with $avatar",
-    ({ agentId, avatar, expected }) => {
+    async ({ agentId, avatar, expected }) => {
       const container = document.createElement("div");
       const group = createMessageGroup(createAssistantMessage("forwarded report"), "assistant", {
         senderSession: { agentId },
@@ -2580,24 +2608,21 @@ describe("grouped chat rendering", () => {
       };
       render(renderTestMessageGroup(group, options), container);
 
-      const image = container.querySelector("img.chat-avatar:not(.chat-avatar--logo)");
-      const initials = container.querySelector<HTMLElement>(".chat-avatar--sender-initials");
+      const image = container.querySelector("img.chat-avatar.assistant");
       expect(image !== null).toBe(expected === "image");
-      expect(initials !== null).toBe(expected === "initials");
       expect(container.querySelector(".chat-avatar--forwarded") !== null).toBe(
         expected === "glyph",
       );
-      if (expected === "assistant") {
-        expect(container.querySelector(".chat-avatar")).not.toBeNull();
-      }
       if (expected === "image") {
         expect(image?.getAttribute("src")).toBe(avatar);
         expect(image?.getAttribute("alt")).toBe("Research Agent");
       }
-      if (expected === "initials") {
-        expect(initials?.textContent?.trim()).toBe("RA");
-        expect(initials?.getAttribute("aria-label")).toBe("Research Agent");
-        expect(initials?.style.background).not.toBe("");
+      if (expected === "face") {
+        await vi.dynamicImportSettled();
+        await vi.waitFor(() =>
+          expect(container.querySelector(".identity-avatar__agent-face")).not.toBeNull(),
+        );
+        expect(container.querySelector(".chat-avatar--sender-initials")).toBeNull();
       }
     },
   );
@@ -3205,7 +3230,8 @@ describe("grouped chat rendering", () => {
     expect(activitySummary.classList.contains("chat-activity-group__summary--error")).toBe(false);
     expect(activitySummary.getAttribute("aria-label")).toBeNull();
     expect(activitySummary.getAttribute("aria-expanded")).toBe("false");
-    expect(activitySummary.textContent).not.toContain("failed");
+    expect(activitySummary.textContent).toContain("1 failed");
+    expect(container.textContent).not.toContain("Read failed");
     expect(activitySummary.querySelector(".chat-activity-group__badge")).toBeNull();
     expect(container.querySelector(".chat-tool-msg-body")).toBeNull();
     selectText(expectElement(activitySummary, ".chat-activity-group__label", HTMLElement));

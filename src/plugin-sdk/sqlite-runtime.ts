@@ -18,6 +18,7 @@ export {
   withOpenClawAgentDatabaseAsync,
 } from "../state/openclaw-agent-db.js";
 export { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
+export { withOpenClawAgentDatabaseWrite } from "../state/openclaw-agent-db-write.js";
 export { assertOpenClawAgentDatabaseForMaintenance } from "../state/openclaw-agent-db-maintenance.js";
 export { ensureOpenClawAgentStandingIntentsSchema } from "../state/openclaw-agent-standing-intents-schema.js";
 export {
@@ -27,6 +28,7 @@ export {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   iterateSqliteQuerySync,
+  prepareSqliteQuerySync,
   sqliteStringSet,
 } from "../infra/kysely-sync.js";
 export { openNodeSqliteDatabase } from "../infra/node-sqlite.js";

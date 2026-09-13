@@ -1,16 +1,22 @@
 import { isDeepStrictEqual } from "node:util";
 import { detectCurrentSqliteCapabilities, nodeRuntimeFailure } from "../../../node-sqlite.mjs";
 import { formatUnsupportedNodeVersionMessage } from "../../../node-version.mjs";
+import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
 import { assertConfigWriteAllowedInCurrentMode } from "../../config/config.js";
+import { resolveConfigPath } from "../../config/paths.js";
+import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
+import { resolveGatewayNativeServiceIdentityConflict } from "../../daemon/constants.js";
 import { disableCurrentOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
 import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
 import { resolveManagedGatewayServiceCommand } from "../../daemon/service-types.js";
 import { resolveGatewayService } from "../../daemon/service.js";
+import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   formatExternalSupervisorUpdateRequired,
   isGatewayExternallySupervised,
 } from "../../infra/gateway-supervision.js";
+import { resolveOpenClawPackageRootSync } from "../../infra/openclaw-root.js";
 import { assertNoPendingPackageActivation } from "../../infra/package-update-activation.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
 import { resolveUpdateInstallKind } from "../../infra/update-check.js";
@@ -23,10 +29,7 @@ import {
   type DevUpdateTarget,
   UPDATE_DEV_TARGET_REF_ENV,
 } from "../../infra/update-dev-target.js";
-import {
-  resolveUpdateInstallRoot,
-  updateInstallRootsMatch,
-} from "../../infra/update-install-root.js";
+import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import {
   POST_CORE_UPDATE_CHANNEL_ENV,
   POST_CORE_UPDATE_ENV,
@@ -61,6 +64,7 @@ import { registerSignalExitBarrier, waitForSignalExitBarriers } from "../signal-
 import type { UpdateDisplayProgress } from "./progress.js";
 import { parseUpdateTimeoutMs, resolveUpdateRoot, type UpdateCommandOptions } from "./shared.js";
 import { suppressDeprecations } from "./suppress-deprecations.js";
+import { revalidateUpdateDatabaseContext } from "./update-command-managed-context.js";
 import {
   admitMutableUpdateSignalRun,
   withMutableUpdateSignals,
@@ -72,6 +76,7 @@ import {
 } from "./update-command-service-env.js";
 import {
   GatewayServiceUpdateOwnershipError,
+  assertGatewayServiceManagementAllowedForUpdate,
   gatewayServiceCommandUsesRoot,
   isGatewayServiceManagementAllowedForUpdate,
   resolveManagedServicePackageUpdatePlan,
@@ -84,7 +89,7 @@ const previewAdmissions = new WeakMap<
   { record: UpdateRunRecord; env: NodeJS.ProcessEnv }
 >();
 
-async function resolveUpdateCommandAdmissionEnv(params: {
+export async function resolveUpdateCommandAdmissionEnv(params: {
   opts: UpdateCommandOptions;
   root: string;
   invocationCwd?: string;
@@ -126,6 +131,10 @@ async function resolveUpdateCommandAdmissionEnv(params: {
           serviceDefinitionEnv: resolveManagedGatewayServiceCommand(command)?.environment,
           invocationCwd: params.invocationCwd,
         });
+        // Contradictory native identity must refuse before database or target selection.
+        if (resolveGatewayNativeServiceIdentityConflict(env)) {
+          assertGatewayServiceManagementAllowedForUpdate(env);
+        }
       }
     }
   }
@@ -159,6 +168,16 @@ export async function admitUpdateCommandRun(params: {
   opts: UpdateCommandOptions;
   root: string;
   invocationCwd?: string;
+  initialization?: {
+    env: NodeJS.ProcessEnv;
+    runId: string;
+    databasePath: string;
+    configPath: string;
+    target: {
+      configSnapshot: ConfigFileSnapshot;
+      legacyConfigPlan?: LegacyConfigUpdatePlan;
+    };
+  };
 }): Promise<NonNullable<UpdateCommandOptions["run"]>> {
   assertUpdatePackageActivationAdmission(params.root);
   const env = await resolveUpdateCommandAdmissionEnv(params);
@@ -171,11 +190,34 @@ export async function admitUpdateCommandRun(params: {
     env,
     recoverOrphanedSidecars: false,
   });
+  if (params.initialization) {
+    const initialized = params.initialization;
+    if (
+      resolvePathViaExistingAncestorSync(resolveOpenClawStateSqlitePath(env)) !==
+        initialized.databasePath ||
+      resolvePathViaExistingAncestorSync(resolveConfigPath(env)) !== initialized.configPath
+    ) {
+      throw new GatewayServiceUpdateOwnershipError(
+        "Gateway state or configuration selectors changed during target initialization. Retry from the installation's current owning account.",
+        undefined,
+      );
+    }
+    await revalidateUpdateDatabaseContext({
+      env,
+      readEnv: env,
+      config: initialized.target.configSnapshot.sourceConfig,
+      configSnapshot: initialized.target.configSnapshot,
+      ...(initialized.target.legacyConfigPlan
+        ? { legacyConfigPlan: initialized.target.legacyConfigPlan }
+        : {}),
+    });
+  }
   const driver = readUpdateRunDriver();
   const created = createUpdateRun(
     {
-      runId: env[UPDATE_RUN_ID_ENV]?.trim() || undefined,
+      runId: env[UPDATE_RUN_ID_ENV]?.trim() || params.initialization?.runId,
       trigger: "cli",
+      preview: params.opts.dryRun === true,
       origin: { driver },
       supersedeStaleIdentityless:
         !env[UPDATE_RUN_ID_ENV]?.trim() && env[POST_CORE_UPDATE_ENV] !== "1",
@@ -472,6 +514,8 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   if (!postCoreUpdateResume && opts.dryRun !== true && isGatewayExternallySupervised()) {
     throw new Error(formatExternalSupervisorUpdateRequired());
   }
+  // The shim can move during preparation; the loaded module owns the executing generation.
+  const executingRoot = resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });
   const discoveredRoot = await resolveUpdateRoot();
   const installKind = await resolveUpdateInstallKind(discoveredRoot);
   // A post-core marker cannot bypass pending recovery without the live original
@@ -498,10 +542,16 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   const controlPlaneUpdateSentinelMeta = await readControlPlaneUpdateSentinelMeta();
   opts.run?.executorFence?.assertCurrent();
   const handoffRoot = controlPlaneUpdateSentinelMeta?.root;
-  if (handoffRoot && !updateInstallRootsMatch(handoffRoot, discoveredRoot)) {
-    throw new Error(
-      `Managed update handoff root mismatch: expected ${handoffRoot}, running from ${discoveredRoot}.`,
-    );
+  if (handoffRoot) {
+    const { assertManagedServiceUpdateHandoffRoot } =
+      await import("../../infra/update-managed-service-handoff.js");
+    await assertManagedServiceUpdateHandoffRoot({
+      expectedRoot: handoffRoot,
+      root: discoveredRoot,
+      executingRoot,
+      postCore: postCoreUpdateResume,
+    });
+    opts.run?.executorFence?.assertCurrent();
   }
   if (opts.dryRun !== true) {
     try {

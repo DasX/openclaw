@@ -9,6 +9,7 @@ import type {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolvePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { CODEX_NATIVE_TOOL_REQUIREMENTS } from "./native-tool-policy.js";
 import { readCodexRuntimeModelId } from "./src/app-server/model-runtime.js";
 import { sessionBindingIdentity } from "./src/app-server/session-binding-record.js";
 import type { CodexAppServerBindingStore } from "./src/app-server/session-binding.js";
@@ -116,6 +117,7 @@ export function createCodexAppServerAgentHarness(
     contextEngineHostCapabilities: CODEX_APP_SERVER_CONTEXT_ENGINE_HOST_CAPABILITIES,
     conversationToolPolicySupport: "exact",
     conversationToolPolicySafeDenyTools: CODEX_TOOL_POLICY_SAFE_DENY_NAMES,
+    conversationToolPolicyNativeTools: CODEX_NATIVE_TOOL_REQUIREMENTS,
     deliveryDefaults: {
       visibleReplies: "message_tool",
     },
@@ -377,9 +379,17 @@ export function createCodexAppServerAgentHarness(
           fallbackModel: plan.model,
         });
       }
-      // A Daybreak target the workspace cannot use leaves the original refusal
-      // as the honest outcome for this turn.
-      return outcome.unavailable ? result : escalated;
+      // Preserve the fallback's result identity for effects, tool progress, or
+      // interruption; its receipts and continuation ownership must reach the runner.
+      if (
+        outcome.unavailable &&
+        outcome.replaySafe &&
+        escalated.terminal.kind === "failed" &&
+        escalated.toolMetas.length === 0
+      ) {
+        return result;
+      }
+      return escalated;
     },
     runIsolatedCompletionV2: async (params) => {
       if (params.authorization.owner === "host") {

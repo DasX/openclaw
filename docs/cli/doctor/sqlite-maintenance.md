@@ -76,6 +76,21 @@ migration sources. Hot transcript JSONL files are imported and archived after
 successful import; archive-tier JSONL files remain support artifacts, not
 runtime fallbacks.
 
+Doctor also discovers primary conversation transcripts omitted from the legacy
+registry, including timestamp-prefixed filenames. It verifies the session header,
+file identity, and logical owner before importing. Known historical generations
+remain attached to their existing session without changing its current generation
+or settings. History with no registry owner is recovered as an archived session
+only when its agent owner is unambiguous.
+
+Rerunning import can recover primary history swept into protected archives by an
+earlier migration. Doctor uses retained migration manifests and archived registry
+lineage; it does not restore stale settings over live SQLite state. Originals stay
+protected, and completed recovery is recorded so later runs do not resurrect
+history explicitly deleted by the user. Diagnostic trajectory envelopes, deleted
+artifacts, unsupported files, conflicting identities, and ambiguous ownership are
+not converted into conversations. Deferred files remain available for recovery.
+
 The public Doctor migration path stages transcript payloads and performs branch
 and provider repairs in a private, temporary SQLite database instead of retaining
 complete histories in memory. It keeps the raw transcript untouched until archiving it through an
@@ -95,8 +110,10 @@ Staging is removed when the operation finishes and is never used as a runtime
 store or resumed after an interruption; retries use the original sources and
 committed session data. After import, Doctor checkpoints and incrementally vacuums databases that already
 support auto-vacuum, retaining full integrity and foreign-key checks before and
-after cleanup. Databases without auto-vacuum still need a full `VACUUM` to enable
-it. Incremental cleanup frees unused pages but does not repack partially filled
+after cleanup. If a database is already in incremental auto-vacuum mode, has no
+free pages, and has no WAL to checkpoint, import finalization verifies it once
+and leaves its contents unchanged. Databases without auto-vacuum still need a
+full `VACUUM` to enable it. Incremental cleanup frees unused pages but does not repack partially filled
 pages; explicit session and shared-state `compact` modes still run a full `VACUUM`.
 
 The regular `openclaw doctor` pass also reports canonical SQLite transcripts

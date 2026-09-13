@@ -31,6 +31,7 @@ import { ChatPaneLifecycle } from "./chat-pane-lifecycle.ts";
 import { resolvePlacementComposer } from "./chat-pane-placement.ts";
 import {
   applySelectedSessionProjection,
+  dismissChatError,
   resolveAssistantAttachmentAuthToken,
 } from "./chat-pane-state.ts";
 import { markQueuedChatSendsWaitingForReconnect } from "./chat-queue.ts";
@@ -123,6 +124,10 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       return;
     }
     const onRestartingChange = (restartingKey: string | null) => {
+      if (restartingKey !== null && this.state) {
+        dismissChatError(this.state);
+        this.state.chatRunError = null;
+      }
       if (restartingKey !== null || this.headerPlacementRestartingKey === row.key) {
         this.headerPlacementRestartingKey = restartingKey;
       }
@@ -340,8 +345,6 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       invalidateChatAvatarCache(state);
       state.assistantIdentityRequestVersion += 1;
       retireChatMetadataRequests(state);
-      this.swarmHydrator?.dispose();
-      this.swarmHydrator = null;
       this.taskSuggestionsRequestVersion += 1;
       this.setTaskSuggestions([]);
       this.taskSuggestionBusyIds.clear();
@@ -382,6 +385,8 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
         isUiSelectedGlobalSessionKey(state, state.sessionKey))
     ) {
       retireChatModelSelectionOwnership(state);
+      this.swarmHydrator?.dispose();
+      this.swarmHydrator = null;
     }
     state.client = snapshot.client;
     state.connected = snapshot.phase === "connected";

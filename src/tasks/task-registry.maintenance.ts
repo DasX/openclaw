@@ -13,6 +13,7 @@ import {
   formatSubagentRecoveryWedgedReason,
   isSubagentRecoveryWedgedEntry,
 } from "../agents/subagents/registry/subagent-recovery-state.js";
+import { hasSubagentTaskOwner } from "../agents/subagents/registry/subagent-registry-read.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { resolveSessionStorePathCore } from "../config/sessions.js";
 import type { SessionEntry } from "../config/sessions.js";
@@ -59,8 +60,10 @@ import {
   resolveTaskForLookupToken,
   setTaskCleanupAfterById,
 } from "./runtime-internal.js";
+import { readTaskBackingInstance } from "./task-backing-authority.js";
 import { runTaskFlowRegistryMaintenance } from "./task-flow-registry.maintenance.js";
 import { getTaskRegistryMaintenanceSnapshot } from "./task-registry-maintenance-snapshot.js";
+import { withTaskRegistryMutation } from "./task-registry-state.js";
 import {
   configureTaskAuditTaskProvider,
   listTaskAuditFindings,
@@ -110,6 +113,7 @@ type TaskRegistryMaintenanceRuntime = {
   deriveSessionChatTypeFromKey?: typeof deriveSessionChatTypeFromKey;
   isCronJobActive: typeof isCronJobActive;
   getAgentRunContext: typeof getAgentRunContext;
+  hasSubagentTaskOwner?: typeof hasSubagentTaskOwner;
   isBackgroundExecSessionActive?: typeof isBackgroundExecSessionActive;
   hasActiveAcpTurn: (sessionKey: string, agentId?: string) => boolean;
   parseAgentSessionKey: typeof parseAgentSessionKey;
@@ -151,6 +155,7 @@ const defaultTaskRegistryMaintenanceRuntime: TaskRegistryMaintenanceRuntime = {
   deriveSessionChatTypeFromKey,
   isCronJobActive,
   getAgentRunContext,
+  hasSubagentTaskOwner,
   isBackgroundExecSessionActive,
   hasActiveAcpTurn: (sessionKey, agentId) =>
     isAcpTurnActive(resolveAcpSessionTarget({ cfg: getRuntimeConfig(), sessionKey, agentId })),
@@ -194,7 +199,8 @@ export type TaskRegistryMaintenanceTaskDiagnostic = {
     | "cli_runtime_not_authoritative"
     | "cron_runtime_not_authoritative"
     | "lost_grace_pending"
-    | "subagent_recovery_wedged";
+    | "subagent_recovery_wedged"
+    | "subagent_owner_missing";
   detail?: string;
   ageMs: number;
   childSessionKey?: string;
@@ -455,9 +461,43 @@ function hasBackingSession(task: TaskRecord, context?: BackingSessionLookupConte
         return false;
       }
     }
+    const registryBackedSubagent =
+      task.runtime === "subagent" && readTaskBackingInstance(task.detail)?.runtime === "subagent";
+    if (
+      registryBackedSubagent &&
+      task.runId &&
+      taskRegistryMaintenanceRuntime.getAgentRunContext(task.runId)
+    ) {
+      return true;
+    }
     const entry = findTaskSessionEntry(task, context);
     if (task.runtime === "subagent" && isSubagentRecoveryWedgedEntry(entry)) {
       return false;
+    }
+    if (registryBackedSubagent) {
+      // Only the Gateway can rule out a live owner. A retained session is not
+      // that owner; the registry also preserves yielded and recovery obligations.
+      const taskRunId = task.runId?.trim();
+      if (
+        !taskRunId ||
+        !taskRegistryMaintenanceRuntime.isRuntimeAuthoritative() ||
+        !taskRegistryMaintenanceRuntime.hasSubagentTaskOwner
+      ) {
+        return true;
+      }
+      try {
+        return taskRegistryMaintenanceRuntime.hasSubagentTaskOwner({
+          taskRunId,
+          childSessionKey,
+          requesterSessionKey: task.ownerKey,
+        });
+      } catch (error) {
+        log.warn("Unable to establish subagent task ownership during maintenance", {
+          taskId: task.taskId,
+          error,
+        });
+        return true;
+      }
     }
     return Boolean(entry);
   }
@@ -476,6 +516,9 @@ function resolveTaskLostError(task: TaskRecord, context?: BackingSessionLookupCo
     const entry = findTaskSessionEntry(task, context);
     if (entry && isSubagentRecoveryWedgedEntry(entry)) {
       return formatSubagentRecoveryWedgedReason(entry);
+    }
+    if (readTaskBackingInstance(task.detail)?.runtime === "subagent") {
+      return "subagent run ownership missing";
     }
   }
   return "backing session missing";
@@ -979,7 +1022,14 @@ function explainActiveTaskRetention(params: {
     }
   }
   if (!hasBackingSession(params.task, params.context)) {
-    return { decision: "would_reconcile", reason: "backing_session_missing" };
+    return {
+      decision: "would_reconcile",
+      reason:
+        params.task.runtime === "subagent" &&
+        readTaskBackingInstance(params.task.detail)?.runtime === "subagent"
+          ? "subagent_owner_missing"
+          : "backing_session_missing",
+    };
   }
   if (params.task.runtime === "cron" && !taskRegistryMaintenanceRuntime.isRuntimeAuthoritative()) {
     return { decision: "retained", reason: "cron_runtime_not_authoritative" };
@@ -1096,39 +1146,32 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
         task: current,
         now,
       });
-      const freshAfterHook = taskRegistryMaintenanceRuntime.getTaskById(current.taskId);
-      if (!freshAfterHook) {
-        processed += 1;
-        if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
-          await yieldToEventLoop();
-        }
-        continue;
-      }
-      // Recovery yields to runtime owners. Recheck every liveness source from a
-      // fresh snapshot when recovery could have changed persisted backing.
-      const lostContext =
-        recoveryHookRegistered || hasTaskLostDecisionInputChanged(current, freshAfterHook)
-          ? createBackingSessionLookupContext()
-          : backingSessionContext;
-      if (!shouldMarkLost(freshAfterHook, now, lostContext)) {
-        processed += 1;
-        if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
-          await yieldToEventLoop();
-        }
-        continue;
-      }
-      if (recovery.recovered) {
-        recovered += 1;
-        processed += 1;
-        if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
-          await yieldToEventLoop();
-        }
-        continue;
-      }
-      const next = markTaskLost(freshAfterHook, now, lostContext);
-      if (next.status === "lost") {
-        reconciled += 1;
-      }
+      withTaskRegistryMutation(
+        () => {
+          const freshAfterHook = taskRegistryMaintenanceRuntime.getTaskById(current.taskId);
+          if (!freshAfterHook) {
+            return;
+          }
+          // Recovery yields to runtime owners. Recheck persisted backing while
+          // retaining writer custody through the decision and lost-task update.
+          const lostContext =
+            recoveryHookRegistered || hasTaskLostDecisionInputChanged(current, freshAfterHook)
+              ? createBackingSessionLookupContext()
+              : backingSessionContext;
+          if (!shouldMarkLost(freshAfterHook, now, lostContext)) {
+            return;
+          }
+          if (recovery.recovered) {
+            recovered += 1;
+            return;
+          }
+          const next = markTaskLost(freshAfterHook, now, lostContext);
+          if (next.status === "lost") {
+            reconciled += 1;
+          }
+        },
+        () => undefined,
+      );
       processed += 1;
       if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
         await yieldToEventLoop();

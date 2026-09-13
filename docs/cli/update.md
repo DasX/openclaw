@@ -16,6 +16,27 @@ If you installed via **npm/pnpm/bun** (global install, no git metadata),
 updates go through the package-manager flow described in
 [Updating](/install/updating).
 
+Custom npm prefixes such as `~/.npm-global` are recognized from npm's configured
+prefix and the installed OpenClaw launcher. A prefix configured in `~/.npmrc`
+does not need a matching `NPM_CONFIG_PREFIX` environment variable. If no owner
+can be identified, the CLI includes the inspected package, prefix, and launcher
+paths and the package-manager probe results in its guidance.
+
+An older updater that stops before staging cannot use this repair. For a known
+npm installation, supply its configured prefix explicitly for that update:
+`NPM_CONFIG_PREFIX="$(npm prefix -g)" openclaw update`.
+
+An installation without a detected package-manager owner records a **skipped**
+update, exits successfully, and leaves the Gateway running. For Docker/container
+images, pull or build the new image and recreate the container with the same
+state/config mounts. For a standalone or extracted tarball installation, reinstall
+using the original method; Yarn global installations must be updated with Yarn.
+The CLI displays this next action. Existing profiles also record it in update
+history and include it in JSON as `run.origin.nextAction`. With `--json`, a fresh
+profile emits the guidance to stderr and does not create a state database for a
+skipped update. These non-outcomes do not run rollback verification or offer an
+update failure report.
+
 ## Usage
 
 ```bash
@@ -38,6 +59,21 @@ openclaw --update
 
 `openclaw --update` rewrites to `openclaw update` (useful for shells and
 launcher scripts).
+
+Update admission recognizes orphan `task_delivery_state` rows whose parent tasks
+are missing as repairable. When it can acquire Doctor's ownership fences, it runs
+the same [preservation-first recovery](/reference/database-schemas/integrity-and-recovery#doctor-reports-orphan-task-delivery-rows)
+before creating update history. Recovery and its ledger entry commit together;
+the entry records the row count and recovery directory. A live Gateway owner,
+read-only store, or failed preservation prevents repair and reports
+`openclaw doctor --fix` as the next action. Other foreign-key violations and
+structural damage still refuse admission.
+`--dry-run` reports the repairable condition without recovering rows or creating
+an update ledger entry for that refused preview.
+
+The installed 2026.9.4 updater cannot use this recovery before updating itself.
+If it refuses with a database integrity error, install the corrective release
+manually and run `openclaw doctor --fix`.
 
 Failed update and repair attempts enter [recovery triage](/cli/update#recover-a-failed-update)
 after service recovery and cleanup finish.
@@ -160,6 +196,21 @@ restoring that link and its launchers does not verify the mutable checkout's
 runtime. Recovery stays unverified and does not authorize an automatic restart;
 inspect the checkout and recovery report before restarting it.
 
+For a profile without a runtime database, an older npm target initializes its
+compatible state before the updater records history. The selected release's
+Doctor runs before activation, including when npm's install hooks already created
+the database. Existing databases retain their downgrade protections.
+
+Explicit package specs on a fresh profile first stage with a temporary OpenClaw
+profile. The updater inspects the staged runtime's declared schema and Node
+requirements before admitting changes to the selected profile. Artifacts without
+declared schema support are refused without creating the profile's runtime database.
+Preparation uses the original package spec and owning package manager.
+
+A fresh-profile `--dry-run` leaves the database absent and does not record a run.
+If package metadata cannot be resolved, retry with an exact published `--tag`;
+failed target selection does not initialize the profile with the updater's schema.
+
 `--yes` also skips the optional shell-completion setup prompt. Existing
 completion profiles and caches are still repaired when needed; installing
 completion in a new shell profile remains an interactive choice.
@@ -170,13 +221,16 @@ install. Use `--channel` to change that policy.
 
 For explicit package artifacts, configured plugin availability is checked against the privately staged package version before rehearsal or activation. `--dry-run` does not stage the artifact and reports that this check remains pending.
 
+Managed update handoffs preserve the selected artifact, including already-current
+repeats, so target checks use that artifact's database schema and runtime requirements.
+
 For source checkouts, `--dry-run` previews the update flow without fetching Git
 refs or checking working-tree changes. The real update checks for uncommitted
 changes before modifying the checkout. Use `openclaw update status` to inspect
 the current branch, version, and update availability.
 
 <Note>
-In Nix mode (`OPENCLAW_NIX_MODE=1`), mutating `openclaw update` runs are disabled. Update the Nix source or flake input for this install instead; for nix-openclaw, use the agent-first [Quick Start](https://github.com/openclaw/nix-openclaw#quick-start). `openclaw update status` remains read-only. `openclaw update --dry-run` previews the flow and records a skipped run without changing the installation.
+In Nix mode (`OPENCLAW_NIX_MODE=1`), mutating `openclaw update` runs are disabled. Update the Nix source or flake input for this install instead; for nix-openclaw, use the agent-first [Quick Start](https://github.com/openclaw/nix-openclaw#quick-start). `openclaw update status` remains read-only. `openclaw update --dry-run` previews the flow without changing the installation. It records a skipped run only when the profile already has a runtime database.
 </Note>
 
 <Warning>

@@ -650,6 +650,7 @@ export function createGatewayHttpServer(opts: {
               req,
               res,
               ...routeAuth,
+              getResolvedAuth,
               requestPath: scopedRequestPath,
               resolveOperatorScopes: resolvePluginRouteRuntimeOperatorScopes,
             });
@@ -708,8 +709,9 @@ export function createGatewayHttpServer(opts: {
           async () => (await loadHandler())(req, res, controlUiRouteOptions),
         );
       }
+      // Authenticated media also serves non-browser clients when dashboard hosting is disabled.
       addRequestStage(
-        controlUiEnabled,
+        scopedRequestPath === resolveAssistantMediaRoutePath(controlUiBasePath),
         async () =>
           (await loadControlUi())?.handleControlUiAssistantMediaRequest(req, res, {
             ...controlUiRouteOptions,

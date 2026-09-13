@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { resolveRuntimeWorkerUrl } from "../../src/infra/runtime-worker-url.js";
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "../../src/infra/update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "../../src/infra/update-managed-service-handoff-runtime.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import buildConfigs from "../../tsdown.config.ts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -48,7 +49,7 @@ it("loads the staged production handoff runtime without neighboring SQL or JSON 
   const outDir = tempDirs.make("openclaw-handoff-build-");
   const directory = tempDirs.make("openclaw-handoff-stage-");
   // Use the production graph unchanged, not the invocation compiler's extra plugins.
-  const bundles = await build({ ...config, config: false, outDir, logLevel: "silent" });
+  const { bundles } = await build({ ...config, config: false, outDir, logLevel: "silent" });
   try {
     vi.mocked(resolveRuntimeWorkerUrl).mockReturnValue(
       pathToFileURL(path.join(outDir, MANAGED_HANDOFF_RUNTIME_ENTRY)),
@@ -60,7 +61,7 @@ it("loads the staged production handoff runtime without neighboring SQL or JSON 
     expect(readdirSync(path.dirname(entry))).toEqual([MANAGED_HANDOFF_RUNTIME_ENTRY]);
 
     const result = spawnSync(
-      process.execPath,
+      resolveTestNodeExecPath(),
       [
         "--input-type=module",
         "--eval",

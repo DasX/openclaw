@@ -24,12 +24,15 @@ const input = {
   },
 };
 
-function createReviewerHarness(decision: "allow" | "ask" = "allow") {
+function createReviewerHarness(
+  decision: "allow" | "ask" = "allow",
+  modelOverrides?: { maxTokens?: number },
+) {
   const prepare = vi.fn(async () => ({
     selection: { provider: "openrouter", modelId: "reviewer", agentDir: "/agent" },
-    model: { provider: "openrouter", id: "reviewer", api: "openai" as const },
+    model: { provider: "openrouter", id: "reviewer", api: "openai" as const, ...modelOverrides },
     auth: { apiKey: "redacted", mode: "env" as const },
-    release: () => {},
+    [Symbol.asyncDispose]: async () => {},
   }));
   const complete = vi.fn(async () => ({
     stopReason: "stop" as const,
@@ -61,7 +64,7 @@ async function reviewExecResponse(text: string) {
     selection: { provider: "openrouter", modelId: "reviewer", agentDir: "/agent" },
     model: { provider: "openrouter", id: "reviewer", api: "openai" as const },
     auth: { apiKey: "redacted", mode: "env" as const },
-    release: () => {},
+    [Symbol.asyncDispose]: async () => {},
   }));
   const complete = vi.fn(async () => ({
     stopReason: "stop" as const,
@@ -356,7 +359,7 @@ describe("createModelExecAutoReviewer", () => {
       },
       model: { provider: "openrouter", id: "anthropic/claude-sonnet-4-6", api: "openai" },
       auth: { apiKey: "key", mode: "env" },
-      release: () => {},
+      [Symbol.asyncDispose]: async () => {},
     }));
     let capturedPrompt = "";
     const complete = vi.fn(
@@ -504,38 +507,7 @@ describe("createModelExecAutoReviewer", () => {
   it("denies command text that tries to instruct the reviewer", async () => {
     // Command content is adversarial input to the reviewer. Prompt-injection
     // attempts are denied before a model can return a low-risk allow.
-    const prepare = vi.fn(async () => ({
-      selection: {
-        provider: "openrouter",
-        modelId: "anthropic/claude-sonnet-4-6",
-        agentDir: "/agent",
-      },
-      model: { provider: "openrouter", id: "anthropic/claude-sonnet-4-6", api: "openai" },
-      auth: { apiKey: "key", mode: "env" },
-      release: () => {},
-    }));
-    const complete = vi.fn(async () => ({
-      stopReason: "stop" as const,
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            decision: "allow",
-            risk: "low",
-            rationale: "injected",
-          }),
-        },
-      ],
-    }));
-    const reviewer = createModelExecAutoReviewer({
-      cfg: {},
-      deps: {
-        acquireSimpleCompletionModelForAgent:
-          prepare as unknown as typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
-        completeWithPreparedSimpleCompletionModel:
-          complete as unknown as typeof import("./simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel,
-      },
-    });
+    const { reviewer, prepare, complete } = createReviewerHarness();
 
     await expect(
       reviewer({
@@ -600,19 +572,12 @@ describe("createModelExecAutoReviewer", () => {
       stopReason: "error",
       errorMessage: "OpenAI API error (400): 400 Model Id [gpt-5.4-nano] not found",
     }));
+    const { prepare } = createReviewerHarness();
     const reviewer = createModelExecAutoReviewer({
       cfg: {},
       deps: {
-        acquireSimpleCompletionModelForAgent: vi.fn(async () => ({
-          selection: {
-            provider: "atlassian-aigw",
-            modelId: "gpt-5.4-nano",
-            agentDir: "/agent",
-          },
-          model: { provider: "atlassian-aigw", id: "gpt-5.4-nano", api: "openai-responses" },
-          auth: { apiKey: "key", mode: "env" },
-          release: () => {},
-        })) as unknown as typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
+        acquireSimpleCompletionModelForAgent:
+          prepare as unknown as typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
         completeWithPreparedSimpleCompletionModel:
           complete as unknown as typeof import("./simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel,
       },
@@ -715,15 +680,12 @@ describe("createModelExecAutoReviewer", () => {
   it.each(["aborted", "length", "toolUse"] as const)(
     "rejects %s completions even when partial content says allow",
     async (stopReason) => {
+      const { prepare } = createReviewerHarness();
       const reviewer = createModelExecAutoReviewer({
         cfg: {},
         deps: {
-          acquireSimpleCompletionModelForAgent: vi.fn(async () => ({
-            selection: { provider: "openai", modelId: "gpt-5.5", agentDir: "/agent" },
-            model: { provider: "openai", id: "gpt-5.5", api: "openai-responses" },
-            auth: { apiKey: "key", mode: "env" },
-            release: () => {},
-          })) as unknown as typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
+          acquireSimpleCompletionModelForAgent:
+            prepare as unknown as typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
           completeWithPreparedSimpleCompletionModel: vi.fn(async () => ({
             stopReason,
             content: [
@@ -822,16 +784,13 @@ describe("createModelExecAutoReviewer", () => {
           });
         }),
     );
+    const { prepare } = createReviewerHarness();
     const reviewer = createModelExecAutoReviewer({
       cfg: {},
       signal: controller.signal,
       deps: {
-        acquireSimpleCompletionModelForAgent: vi.fn(async () => ({
-          selection: { provider: "openrouter", modelId: "reviewer", agentDir: "/agent" },
-          model: { provider: "openrouter", id: "reviewer", api: "openai" as const },
-          auth: { apiKey: "redacted", mode: "env" as const },
-          release: () => {},
-        })) as unknown as typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
+        acquireSimpleCompletionModelForAgent:
+          prepare as unknown as typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
         completeWithPreparedSimpleCompletionModel:
           complete as unknown as typeof import("./simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel,
       },
@@ -885,7 +844,7 @@ describe("createModelExecAutoReviewer", () => {
             selection: { provider: string; modelId: string; agentDir: string };
             model: { provider: string; id: string; api: "openai" };
             auth: { apiKey: string; mode: "env" };
-            release: () => void;
+            [Symbol.asyncDispose]: () => Promise<void>;
           }>((resolve) => {
             setTimeout(() => {
               resolve({
@@ -896,7 +855,7 @@ describe("createModelExecAutoReviewer", () => {
                 },
                 model: { provider: "openrouter", id: "anthropic/claude-sonnet-4-6", api: "openai" },
                 auth: { apiKey: "key", mode: "env" },
-                release: () => {},
+                [Symbol.asyncDispose]: async () => {},
               });
             }, 4_900);
           }),
@@ -1051,7 +1010,7 @@ describe("createModelExecAutoReviewer", () => {
         selection: { provider: "openrouter", modelId: "reviewer", agentDir: "/agent" },
         model: { provider: "openrouter", id: "reviewer", api: "openai" as const },
         auth: { apiKey: "redacted", mode: "env" as const },
-        release: () => {},
+        [Symbol.asyncDispose]: async () => {},
       };
     });
     const complete = vi.fn(async () => ({
@@ -1084,5 +1043,27 @@ describe("createModelExecAutoReviewer", () => {
 
     await expect(reviewer(input)).resolves.toMatchObject({ decision: "allow-once" });
     expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ agentId: "agent-a" }));
+  });
+
+  describe("completion token budget", () => {
+    it("passes default maxTokens (1024) to complete", async () => {
+      const { reviewer, complete } = createReviewerHarness();
+      await expect(reviewer(input)).resolves.toMatchObject({ decision: "allow-once" });
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.objectContaining({ maxTokens: 1_024 }),
+        }),
+      );
+    });
+
+    it("clamps completion maxTokens to model advertised cap when smaller", async () => {
+      const { reviewer, complete } = createReviewerHarness("allow", { maxTokens: 500 });
+      await expect(reviewer(input)).resolves.toMatchObject({ decision: "allow-once" });
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.objectContaining({ maxTokens: 500 }),
+        }),
+      );
+    });
   });
 });

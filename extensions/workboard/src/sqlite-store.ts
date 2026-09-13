@@ -27,6 +27,7 @@ import {
   iterateSqliteQuerySync,
   openNodeSqliteDatabase,
   runSqliteImmediateTransactionSync,
+  sqliteStringSet,
 } from "openclaw/plugin-sdk/sqlite-runtime";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -36,6 +37,7 @@ import type {
   PersistedWorkboardCard,
   PersistedWorkboardNotificationSubscription,
   WorkboardCardStore,
+  WorkboardCardStatsAggregate,
   WorkboardKeyedStore,
   WorkboardOwnerClaimResult,
 } from "./persistence-types.js";
@@ -491,27 +493,30 @@ function groupByCardId(rows: Iterable<Row>): Map<string, Row[]> {
   return grouped;
 }
 
-function loadCardChildRows(db: DatabaseSync): CardChildRows {
+function loadCardChildRows(db: DatabaseSync, cardIds?: string[]): CardChildRows {
   // Group raw rows only: every preload must finish before card decoding can fail.
   const query = getNodeSqliteKysely<WorkboardCardDatabase>(db);
+  // Scope to captured IDs so a concurrent board move cannot discard a selected card's children.
+  const selectedIds = cardIds ? sqliteStringSet(cardIds) : undefined;
   const byTable = new Map<string, Map<string, Row[]>>();
   for (const table of CARD_CHILD_TABLES) {
     // Same order the per-card query produces, so grouped buckets stay ordinal-sorted.
-    byTable.set(
-      table,
-      groupByCardId(
-        iterateSqliteQuerySync(
-          db,
-          query.selectFrom(table).selectAll().orderBy("card_id", "asc").orderBy("ordinal", "asc"),
-        ),
-      ),
-    );
+    let rows = query
+      .selectFrom(table)
+      .selectAll()
+      .orderBy("card_id", "asc")
+      .orderBy("ordinal", "asc");
+    if (selectedIds) {
+      rows = rows.where("card_id", "in", selectedIds);
+    }
+    byTable.set(table, groupByCardId(iterateSqliteQuerySync(db, rows)));
   }
   const workerProtocol = new Map<string, Row>();
-  for (const row of iterateSqliteQuerySync(
-    db,
-    query.selectFrom("workboard_worker_protocol").selectAll(),
-  )) {
+  let protocols = query.selectFrom("workboard_worker_protocol").selectAll();
+  if (selectedIds) {
+    protocols = protocols.where("card_id", "in", selectedIds);
+  }
+  for (const row of iterateSqliteQuerySync(db, protocols)) {
     const cardId = stringValue(row, "card_id");
     if (cardId) {
       workerProtocol.set(cardId, row);
@@ -1271,17 +1276,53 @@ class WorkboardSqliteCardStore implements WorkboardCardStore {
   ): Promise<WorkboardOwnerClaimResult> {
     this.validatePayload(key, value);
     return runSqliteImmediateTransactionSync(this.db, () => {
-      if (!this.matchesUpdatedAt(key, expectedUpdatedAt)) {
+      const query = getNodeSqliteKysely<WorkboardCardDatabase>(this.db);
+      const current = executeSqliteQueryTakeFirstSync(
+        this.db,
+        query
+          .selectFrom("workboard_cards")
+          .selectAll()
+          .where("id", "=", key)
+          .where("updated_at", "=", expectedUpdatedAt),
+      );
+      if (!current) {
         return "conflict";
       }
-      const rows: Row[] = this.db.prepare("SELECT * FROM workboard_cards WHERE id <> ?").all(key);
-      const preloaded = loadCardChildRows(this.db);
-      for (const row of rows) {
-        const card = readCard(this.db, row, preloaded);
+      // Child records cannot occupy an owner slot. Keep lease and owner decisions
+      // with the shared policy, after SQLite excludes archived and inactive cards.
+      const candidates = query
+        .selectFrom("workboard_cards")
+        .select(["status", "agent_id", "claim_json", "execution_id", "execution_status"])
+        .where("id", "!=", key)
+        .where((eb) => eb.or([eb("archived_at", "is", null), eb("archived_at", "=", 0)]))
+        .where((eb) =>
+          eb.or([
+            eb("status", "=", "running"),
+            eb.and([eb("execution_id", "!=", ""), eb("execution_status", "=", "running")]),
+            eb.and([eb("claim_json", "is not", null), eb("status", "!=", "done")]),
+          ]),
+        );
+      for (const row of iterateSqliteQuerySync(this.db, candidates)) {
+        const card = {
+          // SAFETY: insertCard persists WorkboardCard.status; this keeps readCard's required-string boundary.
+          status: requiredString(row, "status") as WorkboardCard["status"],
+          agentId: stringValue(row, "agent_id"),
+          // SAFETY: insertCard serializes WorkboardMetadata.claim; this keeps readMetadata's optional JSON boundary.
+          metadata: { claim: parseJson(row.claim_json) as WorkboardMetadata["claim"] },
+          execution: stringValue(row, "execution_id")
+            ? {
+                // SAFETY: insertCard persists WorkboardExecution.status; this keeps readExecution's required-string boundary.
+                status: requiredString(row, "execution_status") as WorkboardExecution["status"],
+              }
+            : undefined,
+        };
         if (workboardCardConsumesOwnerSlot(card, now) && workboardCardSlotOwner(card) === ownerId) {
           return "owner_busy";
         }
       }
+      // Validate the target's stored tree before replacing it, without decoding
+      // unrelated cards as an incidental prerequisite for claiming this one.
+      readCard(this.db, current);
       insertCard(this.db, value.card);
       return "updated";
     });
@@ -1323,13 +1364,24 @@ class WorkboardSqliteCardStore implements WorkboardCardStore {
     return this.db.prepare("DELETE FROM workboard_cards WHERE id = ?").run(key);
   }
 
-  async entries(): Promise<Array<{ key: string; value: PersistedWorkboardCard }>> {
-    const rows = this.db
-      .prepare("SELECT * FROM workboard_cards ORDER BY created_at ASC, id ASC")
-      .all() as Row[];
-    // One query per child table for the whole board instead of one per table per card.
-    // node:sqlite is synchronous, so those queries run on the event loop thread.
-    const preloaded = loadCardChildRows(this.db);
+  async entries(boardId?: string): Promise<Array<{ key: string; value: PersistedWorkboardCard }>> {
+    let query = getNodeSqliteKysely<WorkboardCardDatabase>(this.db)
+      .selectFrom("workboard_cards")
+      .selectAll()
+      .orderBy("created_at", "asc")
+      .orderBy("id", "asc");
+    if (boardId !== undefined) {
+      query = query.where("board_id", "=", boardId);
+    }
+    const rows = Array.from(iterateSqliteQuerySync(this.db, query));
+    if (boardId !== undefined && rows.length === 0) {
+      return [];
+    }
+    // One query per child table for the selected cards instead of one per table per card.
+    const preloaded = loadCardChildRows(
+      this.db,
+      boardId === undefined ? undefined : rows.map((row) => requiredString(row, "id")),
+    );
     return rows.map((row) => ({
       key: requiredString(row, "id"),
       value: { version: 1, card: readCard(this.db, row, preloaded) },
@@ -1359,6 +1411,68 @@ class WorkboardSqliteCardStore implements WorkboardCardStore {
       archived: requiredNumber(row, "archived"),
       updatedAt: requiredNumber(row, "updated_at"),
     }));
+  }
+
+  async listStatsAggregates(boardId?: string): Promise<WorkboardCardStatsAggregate[]> {
+    let query = getNodeSqliteKysely<WorkboardCardDatabase>(this.db)
+      .selectFrom("workboard_cards")
+      .select((eb) => [
+        "status",
+        "agent_id",
+        eb.fn.countAll<number>().as("total"),
+        eb.fn
+          .sum<number>(
+            eb
+              .case()
+              .when(eb.and([eb("archived_at", "is not", null), eb("archived_at", "!=", 0)]))
+              .then(1)
+              .else(0)
+              .end(),
+          )
+          .as("archived"),
+        eb.fn.max<number>("updated_at").as("updated_at"),
+        eb.fn
+          .min<number>(
+            eb
+              .case()
+              .when(
+                eb.and([
+                  eb("status", "=", "ready"),
+                  eb.or([eb("archived_at", "is", null), eb("archived_at", "=", 0)]),
+                ]),
+              )
+              .then(eb.ref("updated_at"))
+              .else(null)
+              .end(),
+          )
+          .as("oldest_ready_at"),
+      ])
+      .groupBy(["status", "agent_id"]);
+    if (boardId !== undefined) {
+      query = query.where("board_id", "=", boardId);
+    }
+    return Array.from(iterateSqliteQuerySync(this.db, query), (row) => ({
+      // SAFETY: insertCard persists the normalized WorkboardCard status unchanged.
+      status: requiredString(row, "status") as WorkboardCard["status"],
+      agentId: stringValue(row, "agent_id"),
+      total: requiredNumber(row, "total"),
+      archived: requiredNumber(row, "archived"),
+      updatedAt: requiredNumber(row, "updated_at"),
+      oldestReadyAt: numberValue(row, "oldest_ready_at"),
+    }));
+  }
+
+  async hasCards(boardId: string): Promise<boolean> {
+    return (
+      executeSqliteQueryTakeFirstSync(
+        this.db,
+        getNodeSqliteKysely<WorkboardCardDatabase>(this.db)
+          .selectFrom("workboard_cards")
+          .select("id")
+          .where("board_id", "=", boardId)
+          .limit(1),
+      ) !== undefined
+    );
   }
 }
 

@@ -11,6 +11,7 @@ import {
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
 import { isMainSessionRestartRecoveryInputProvenance } from "../../../sessions/input-provenance.js";
+import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
 import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
 import {
   applyAgentAutoCompactionGuard,
@@ -33,6 +34,7 @@ import {
   SessionManager,
 } from "../../sessions/index.js";
 import { createAgentSessionForEmbeddedRunner } from "../../sessions/sdk.js";
+import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
 import { resolveToolSearchCatalogTool } from "../../tool-search.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
@@ -279,7 +281,10 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     };
   });
   const previousPrepareNextTurn = activeSession.agent.prepareNextTurn;
-  activeSession.agent.prepareNextTurn = async (signal) => {
+  const prepareNextTurn: typeof activeSession.agent.prepareNextTurn = async (signal) => {
+    if (attempt.pluginRuntimeRefreshPending?.()) {
+      return { stop: true };
+    }
     const snapshot = await previousPrepareNextTurn?.call(activeSession.agent, signal);
     const refreshedPrompt = await refreshPermissionPrompt(snapshot?.context?.systemPrompt, signal);
     return snapshot?.context && refreshedPrompt !== undefined
@@ -293,6 +298,13 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
         }
       : snapshot;
   };
+  activeSession.agent.prepareNextTurn = prepareNextTurn;
+  attempt.registerPluginRuntimeRefreshConsumer?.(
+    () =>
+      activeSession.agent.prepareNextTurn === prepareNextTurn &&
+      activeSession.agent.state.isStreaming &&
+      !input.runAbortSignal.aborted,
+  );
   setActiveSessionSystemPrompt(input.initialSystemPrompt);
   let didDeliverSourceReplyViaMessageTool = false;
   const markSourceReplyDelivered = () => {
@@ -364,7 +376,7 @@ export async function prepareEmbeddedAttemptSessionBoundary(input: {
   attempt: SessionBoundaryAttempt;
   getUserTranscriptContexts: () => LlmBoundaryOptions["userTranscriptContexts"];
   isRawModelRun: boolean;
-  preparedUserTurnMessage: AgentMessage | undefined;
+  preparedUserTurnMessage: PersistedUserTurnMessage | undefined;
   sessionManager: ReturnType<typeof guardSessionManager>;
   setActiveSessionSystemPrompt: (systemPrompt: string) => void;
 }): Promise<{
@@ -410,26 +422,29 @@ export async function prepareEmbeddedAttemptSessionBoundary(input: {
     });
   const orphanRepair = reconciledCurrentUser ? undefined : orphanRepairCandidate;
   if (orphanRepair?.removeLeaf) {
-    input.abortSignal?.throwIfAborted();
-    if (orphanRepair.messageEntry.parentId) {
-      sessionManager.branch(orphanRepair.messageEntry.parentId);
-    } else {
-      sessionManager.resetLeaf();
-    }
-    const target = sessionManager.getSessionTarget();
-    if (target) {
-      // Commit the repaired cursor even when no metadata follows the orphan.
-      // Its owning attempt must settle the projection before the next append adopts it.
-      sessionManager.appendLeafControl({
-        targetId: sessionManager.getLeafId(),
-        appendParentId: sessionManager.getAppendParentId(),
-      });
-    }
-    replayTrailingEntriesForOrphanRepair(sessionManager, orphanRepair.trailingEntries);
-    if (target) {
+    const repairedTarget = await withSessionManagerWrite(sessionManager, () => {
+      input.abortSignal?.throwIfAborted();
+      if (orphanRepair.messageEntry.parentId) {
+        sessionManager.branch(orphanRepair.messageEntry.parentId);
+      } else {
+        sessionManager.resetLeaf();
+      }
+      const target = sessionManager.getSessionTarget();
+      if (target) {
+        // Commit the repaired cursor even when no metadata follows the orphan.
+        // Its owning attempt must settle the projection before the next append adopts it.
+        sessionManager.appendLeafControl({
+          targetId: sessionManager.getLeafId(),
+          appendParentId: sessionManager.getAppendParentId(),
+        });
+      }
+      replayTrailingEntriesForOrphanRepair(sessionManager, orphanRepair.trailingEntries);
+      return target;
+    });
+    if (repairedTarget) {
       const { waitForSessionTranscriptProjection } =
         await import("../../../config/sessions/session-transcript-reconcile.js");
-      await waitForSessionTranscriptProjection(target, input.abortSignal);
+      await waitForSessionTranscriptProjection(repairedTarget, input.abortSignal);
       input.abortSignal?.throwIfAborted();
     }
     // The old canonical user turn is gone. Its persistence suppression must not

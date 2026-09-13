@@ -202,6 +202,9 @@ describe("production lint suppressions", () => {
         // Gateway metadata uses __openclaw; execFile error causes can expose credential argv.
         "scripts/e2e/lib/upgrade-survivor/probe-volume-gateway.mjs|no-underscore-dangle|1",
         "scripts/e2e/lib/upgrade-survivor/probe-volume-gateway.mjs|preserve-caught-error|1",
+        // Keep explicit removal markers beside temporary upstream Bun workarounds.
+        "scripts/e2e/parallels/host-command.ts|no-warning-comments|1",
+        "scripts/lib/plain-gh.mjs|no-warning-comments|1",
         "src/agents/agent-bundle-mcp-runtime.ts|unicorn/prefer-add-event-listener|1",
         "src/agents/agent-tools.abort.ts|typescript/prefer-promise-reject-errors|1",
         // Cleanup stays in AggregateError.errors; the initiating failure remains cause for classification and remediation.
@@ -232,6 +235,7 @@ describe("production lint suppressions", () => {
         "src/infra/device-pairing-store.ts|typescript/no-unnecessary-type-parameters|1",
         "src/infra/exec-approvals-effective.ts|typescript/no-unnecessary-type-parameters|1",
         "src/infra/json-file.ts|typescript-eslint/no-unnecessary-type-parameters|1",
+        "src/infra/net/fetch-guard.ts|no-warning-comments|1",
         // Undici invokes its method-shaped clientFactory callback without an options receiver.
         "src/infra/net/undici-dispatcher-options.ts|typescript/unbound-method|1",
         // NUL delimiters identify protected code spans without colliding with escaped user text.
@@ -253,6 +257,9 @@ describe("production lint suppressions", () => {
         "src/plugins/lazy-service-module.ts|typescript/no-unnecessary-type-parameters|1",
         // These snapshots own their arrays, so sorting in place avoids another copy.
         "src/plugins/loader-load-context.ts|unicorn/no-array-sort|1",
+        // Preserve native Promise rejection values and one-read, receiver-correct thenable assimilation.
+        "src/plugins/plugin-return-value.ts|typescript/prefer-promise-reject-errors|1",
+        "src/plugins/plugin-return-value.ts|unicorn/no-thenable|1",
         // Cleanup stays in AggregateError.errors; the initiating failure remains cause for classification and remediation.
         "src/plugins/provider-auth-persistence.ts|preserve-caught-error|2",
         "src/plugins/public-surface-loader.ts|typescript/no-unnecessary-type-parameters|3",

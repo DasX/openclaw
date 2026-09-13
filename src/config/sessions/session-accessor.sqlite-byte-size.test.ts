@@ -13,11 +13,15 @@ import {
 } from "./session-accessor.sqlite-active-events.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import { readTranscriptRawDelta } from "./session-accessor.sqlite-delta.js";
-import { readRecentSessionTranscriptHistoryEvents } from "./session-accessor.sqlite-history-events.js";
+import {
+  readRecentSessionTranscriptHistoryEvents,
+  readTranscriptDisplayDelta,
+} from "./session-accessor.sqlite-history-events.js";
 import {
   shouldRebuildSessionTranscriptIndexSynchronously,
   SYNC_REBUILD_MAX_BYTES,
 } from "./session-transcript-index.js";
+import { transcriptMessage } from "./transcript-message.test-support.js";
 
 type SqliteInstruction = {
   opcode: string;
@@ -40,6 +44,7 @@ const readers: Array<
       ),
   ],
   ["raw delta", (scope) => readTranscriptRawDelta(scope, { maxBytes: 1024 })],
+  ["display delta", (scope) => readTranscriptDisplayDelta(scope, { maxBytes: 1024 })],
   [
     "visible delta",
     (scope) => readSessionTranscriptVisibleMessageDeltaCore(scope, { maxBytes: 1024 }),
@@ -88,19 +93,15 @@ it.each(readers)("sizes %s without reading transcript overflow payloads", async 
     };
     await persistSessionTranscriptTurn(scope, {
       messages: [
-        { eventId: "large", parentId: null, message: { role: "user", content: "🦞".repeat(4096) } },
-        {
-          eventId: "display",
-          parentId: "large",
-          message: {
-            role: "custom",
-            customType: "activity",
-            excludeFromContext: true,
-            display: true,
-            content: "🦞".repeat(4096),
-          },
-        },
-        { eventId: "small", parentId: "display", message: { role: "assistant", content: "done" } },
+        transcriptMessage("large", null, { role: "user", content: "🦞".repeat(4096) }),
+        transcriptMessage("display", "large", {
+          role: "custom",
+          customType: "activity",
+          excludeFromContext: true,
+          display: true,
+          content: "🦞".repeat(4096),
+        }),
+        transcriptMessage("small", "display", { role: "assistant", content: "done" }),
       ],
       touchSessionEntry: false,
     });
@@ -133,7 +134,7 @@ it.each(readers)("sizes %s without reading transcript overflow payloads", async 
       }
       if (
         query.includes("context_eligible") &&
-        statement.columns().some(({ name }) => name === "session_id")
+        statement.columns().some(({ name }) => name === "session_id" || name === "has_unclassified")
       ) {
         readinessQueries.push(query);
       }

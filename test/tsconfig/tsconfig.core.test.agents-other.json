@@ -15,7 +15,11 @@
     "../../src/agents/command/**/*.test.tsx",
     "../../src/agents/*.test.ts",
     "../../src/agents/*.test.tsx",
+    "../../src/agents/sandbox/**/*.test.ts",
+    "../../src/agents/sandbox/**/*.test.tsx",
     "../../src/agents/tools/**/*.test.ts",
-    "../../src/agents/tools/**/*.test.tsx"
+    "../../src/agents/tools/**/*.test.tsx",
+    "../../src/agents/worktrees/**/*.test.ts",
+    "../../src/agents/worktrees/**/*.test.tsx"
   ]
 }

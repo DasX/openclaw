@@ -105,6 +105,7 @@ import {
   commitMainSessionRecovery,
 } from "./main-session-recovery-store.js";
 import { dispatchRestartRecoveryUntilStarted } from "./main-session-restart-dispatch-start.js";
+import { readStartupRecoveryWarning } from "./main-session-restart-recovery-diagnostics.js";
 import {
   discoverRestartRecoveryStoreTargets,
   mainSessionRecoveryLog,
@@ -138,6 +139,7 @@ const sendRecoveryNotice = vi.fn<GatewayRecoveryRuntime["sendRecoveryNotice"]>(a
   suppressed: false,
 }));
 const mockRecoveryRuntime = {
+  dispatchSessionMethod: vi.fn(),
   dispatchAgent: async <T>(
     params: Record<string, unknown>,
     timeoutMs?: number,
@@ -4088,6 +4090,77 @@ describe("main-session-restart-recovery", () => {
     }
   });
 
+  it.each([false, true])(
+    "resumes healthy stores when another startup marker fails (transient=%s)",
+    async (transient) => {
+      const cfg = { agents: { entries: { main: { default: true }, worker: {} } } };
+      for (const agentId of ["main", "worker"]) {
+        const sessionsDir = await makeSessionsDir(agentId);
+        await writeStore(sessionsDir, {
+          [`agent:${agentId}:main`]: {
+            sessionId: `${agentId}-session`,
+            updatedAt: 1,
+            status: "running",
+            lifecycleRunId: `${agentId}-run`,
+            abortedLastRun: false,
+          },
+        });
+        await writeTranscript(sessionsDir, `${agentId}-session`, [
+          { role: "user", content: "finish the interrupted work" },
+          { role: "toolResult", content: "ready" },
+        ]);
+      }
+      const apply = sessionAccessor.applySessionEntryReplacements;
+      const failedMark = createDeferred();
+      let failedOnce = false;
+      const replacementSpy = vi
+        .spyOn(sessionAccessor, "applySessionEntryReplacements")
+        .mockImplementation(async (params) => {
+          if (params.agentId === "main" && (!transient || !failedOnce)) {
+            failedOnce = true;
+            failedMark.resolve();
+            throw new Error("startup store temporarily locked");
+          }
+          return await apply(params);
+        });
+      const recovery = scheduleRestartAbortedMainSessionRecovery({
+        getConfig: () => cfg,
+        delayMs: transient ? 1 : 0,
+        maxRetries: transient ? 2 : 1,
+        stateDir: tmpDir,
+      });
+      try {
+        await failedMark.promise;
+        if (transient) {
+          await waitForFast(() => expect(callGateway).toHaveBeenCalledTimes(2));
+        }
+        await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+        await recovery.stop();
+        expect(callGateway).toHaveBeenCalledTimes(transient ? 2 : 1);
+        expect(gatewayParams()).toMatchObject({
+          agentId: "worker",
+          sessionKey: "agent:worker:main",
+        });
+        expect(
+          loadSessionEntry({
+            agentId: "main",
+            sessionKey: "agent:main:main",
+            storePath: path.join(tmpDir, "agents", "main", "sessions", "sessions.json"),
+          }),
+        ).toMatchObject({ status: "running", abortedLastRun: false });
+        if (transient) {
+          expect(readStartupRecoveryWarning()).toBeUndefined();
+        } else {
+          expect(readStartupRecoveryWarning()).toContain("startup store temporarily locked");
+        }
+      } finally {
+        await recovery.stop();
+        replacementSpy.mockRestore();
+        rotateAgentEventLifecycleGeneration();
+      }
+    },
+  );
+
   it("retains canonical retry backoff when startup recovery begins immediately", async () => {
     const sessionsDir = await makeSessionsDir();
     await writeMainSession({
@@ -4772,6 +4845,7 @@ describe("main-session-restart-recovery", () => {
       sessionKey: "agent:main:main",
       storePath,
       gatewayRuntime: {
+        dispatchSessionMethod: vi.fn(),
         dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
         waitForAgent: vi.fn(),
         sendRecoveryNotice: vi.fn(),
@@ -4830,6 +4904,7 @@ describe("main-session-restart-recovery", () => {
           sessionKey: "agent:main:main",
         },
         gatewayRuntime: {
+          dispatchSessionMethod: vi.fn(),
           dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
           sendRecoveryNotice: vi.fn(),
           waitForAgent: vi.fn(),
@@ -4887,6 +4962,7 @@ describe("main-session-restart-recovery", () => {
         sessionKey: "agent:main:main",
         storePath,
         gatewayRuntime: {
+          dispatchSessionMethod: vi.fn(),
           dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
           waitForAgent: vi.fn(async () => ({
             runId: "recovery-main",
@@ -5026,6 +5102,7 @@ describe("main-session-restart-recovery", () => {
           sessionKey: "agent:main:main",
           storePath,
           gatewayRuntime: {
+            dispatchSessionMethod: vi.fn(),
             dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
             waitForAgent: vi.fn(async () => ({
               runId: "recovery-main",

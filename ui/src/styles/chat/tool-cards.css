@@ -1103,6 +1103,12 @@
   color: inherit;
 }
 
+.chat-activity-group__duration {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .chat-group--activity .chat-activity-group__label {
   color: inherit;
 }
@@ -1458,4 +1464,8 @@ openclaw-tooltip.chat-tasks-status__preview {
   .chat-tool-card__block-content {
     max-height: min(360px, 55vh);
   }
+}
+.chat-tool-failure {
+  flex: none;
+  white-space: nowrap;
 }

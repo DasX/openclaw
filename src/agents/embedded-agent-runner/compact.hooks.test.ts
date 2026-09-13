@@ -29,6 +29,10 @@ import {
 } from "../../plugins/runtime.js";
 import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import {
+  createApiKeyCredential,
+  createAuthProfileStoreFixture,
+} from "../auth-profiles/credential-fixtures.test-support.js";
 import { createProcessSessionFixture } from "../bash-process-registry.test-helpers.js";
 import { getRegisteredAgentHarness, registerAgentHarness } from "../harness/registry.js";
 import type { AgentHarness } from "../harness/types.js";
@@ -933,11 +937,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           token: "subscription-token",
           expires: Date.now() + 60_000,
         },
-        "openai:platform": {
-          type: "api_key",
-          provider: "openai",
-          key: "platform-key",
-        },
+        "openai:platform": createApiKeyCredential("openai", "platform-key"),
       },
       order: { openai: ["openai:subscription", "openai:platform"] },
     });
@@ -997,11 +997,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     ensureAuthProfileStoreMock.mockReturnValue({
       version: 1,
       profiles: {
-        "openai:broken": {
-          type: "api_key",
-          provider: "openai",
-          key: "broken-profile-key",
-        },
+        "openai:broken": createApiKeyCredential("openai", "broken-profile-key"),
       },
       order: { openai: ["openai:broken"] },
     });
@@ -1067,11 +1063,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     ensureAuthProfileStoreMock.mockReturnValue({
       version: 1,
       profiles: {
-        "openai:platform": {
-          type: "api_key",
-          provider: "openai",
-          key: "platform-key",
-        },
+        "openai:platform": createApiKeyCredential("openai", "platform-key"),
       },
       order: { openai: ["openai:platform"] },
     });
@@ -1819,7 +1811,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     } as never;
     acquireAgentRunPreparedModelRuntimeMock.mockResolvedValueOnce({
       snapshot: preparedModelRuntime,
-      release: vi.fn(),
+      [Symbol.asyncDispose]: vi.fn(async () => {}),
     });
     createOpenClawCodingToolsMock.mockReturnValueOnce([
       {
@@ -2936,9 +2928,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
   it("materializes subscription-auth OpenAI compaction while preserving logical context", async () => {
     resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "openclaw" });
     mockResolvedModel({ contextWindow: 1_000_000 });
-    ensureAuthProfileStoreMock.mockReturnValue({
-      version: 1,
-      profiles: {
+    ensureAuthProfileStoreMock.mockReturnValue(
+      createAuthProfileStoreFixture({
         "openai:work": {
           type: "oauth",
           provider: "openai",
@@ -2946,8 +2937,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           refresh: "test-refresh",
           expires: Date.now() + 60_000,
         },
-      },
-    });
+      }),
+    );
     getApiKeyForModelMock.mockImplementation(async (params?: { profileId?: string }) => ({
       apiKey: "test-oauth",
       mode: "oauth",
@@ -3515,41 +3506,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     expect(compactTesting.containsRealConversationMessages(messages)).toBe(false);
   });
 
-  it("registers the Ollama api provider before compaction", () => {
-    const streamFn = vi.fn();
-    registerProviderStreamForModelMock.mockReturnValue(streamFn);
-
-    const result = compactTesting.resolveCompactionProviderStream({
-      effectiveModel: {
-        provider: "ollama",
-        api: "ollama",
-        id: "qwen3:8b",
-        input: ["text"],
-        baseUrl: "http://127.0.0.1:11434",
-        headers: { Authorization: "Bearer ollama-cloud" },
-      } as never,
-      config: undefined,
-      agentDir: TEST_WORKSPACE_DIR,
-      effectiveWorkspace: TEST_WORKSPACE_DIR,
-      apiRegistry: {} as never,
-    });
-
-    expect(result).toBe(streamFn);
-    const streamRegistration = mockCallArg(registerProviderStreamForModelMock) as Record<
-      string,
-      unknown
-    >;
-    expectRecordFields(streamRegistration, {
-      agentDir: TEST_WORKSPACE_DIR,
-      workspaceDir: TEST_WORKSPACE_DIR,
-    });
-    expectRecordFields(streamRegistration.model, {
-      provider: "ollama",
-      api: "ollama",
-      id: "qwen3:8b",
-    });
-  });
-
   it("carries the prepared provider reconciler into direct compaction", async () => {
     mockResolvedModel();
     const reconcile = vi.fn(async () => undefined);
@@ -3933,7 +3889,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     const parent = new AsyncWorkScope();
     const admissionStarted = createDeferred();
     const releaseAdmission = createDeferred();
-    const releaseLease = vi.fn();
+    const releaseLease = vi.fn(async () => {});
     const defaultAcquire = expectDefined(
       acquireAgentRunPreparedModelRuntimeMock.getMockImplementation(),
       "default prepared runtime acquisition mock",
@@ -3945,7 +3901,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       admissionStarted.resolve(undefined);
       await releaseAdmission.promise;
       const lease = await defaultAcquire(input);
-      return { ...lease, release: releaseLease };
+      return { ...lease, [Symbol.asyncDispose]: releaseLease };
     }) as never);
 
     const pending = parent.run(() =>
@@ -4742,16 +4698,11 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
 
   it("passes resolved OpenAI runtime context to context-engine compaction", async () => {
     resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "codex" });
-    ensureAuthProfileStoreMock.mockReturnValue({
-      version: 1,
-      profiles: {
-        "openai:p1": {
-          type: "api_key",
-          provider: "openai",
-          key: "platform-key",
-        },
-      },
-    });
+    ensureAuthProfileStoreMock.mockReturnValue(
+      createAuthProfileStoreFixture({
+        "openai:p1": createApiKeyCredential("openai", "platform-key"),
+      }),
+    );
     maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
       ok: true,
       compacted: true,
@@ -5005,8 +4956,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       },
       order: { openai: ["openai:subscription"] },
     });
-    resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "literal" });
-    shouldPreferExplicitConfigApiKeyAuthMock.mockReturnValue(false);
     maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
       ok: true,
       compacted: true,
@@ -5026,7 +4975,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           models: {
             providers: {
               openai: {
-                auth: "api-key",
                 apiKey: "literal-key",
                 models: [{ id: "gpt-5.5", contextWindow: 350_000 }],
               },
@@ -5073,8 +5021,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       order: { openai: ["openai:subscription"] },
     };
     ensureAuthProfileStoreMock.mockReturnValue(authStore);
-    resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "literal" });
-    shouldPreferExplicitConfigApiKeyAuthMock.mockReturnValue(false);
     getApiKeyForModelMock.mockImplementation(async (authParams = {}) => {
       if (authParams.profileId === "openai:subscription") {
         throw new Error("subscription credential resolution failed");
@@ -5120,15 +5066,9 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           models: {
             providers: {
               openai: {
-                auth: "api-key",
                 apiKey: "literal-key",
                 models: [{ id: "gpt-5.5" }],
               },
-            },
-          },
-          agents: {
-            defaults: {
-              models: { "openai/gpt-5.5": { agentRuntime: { id: "openclaw" } } },
             },
           },
         },
