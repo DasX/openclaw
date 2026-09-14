@@ -1,7 +1,10 @@
 import { isSessionBoundaryCommandText } from "../../auto-reply/command-detection.js";
 import type { HistoryEntry } from "../../auto-reply/reply/history.types.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
-import { readRecentUserAssistantTextForSession } from "../../config/sessions/transcript.js";
+import {
+  readDiscardedBranchConversationTextForSession,
+  readRecentUserAssistantTextForSession,
+} from "../../config/sessions/transcript.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { stripInlineDirectiveTagsForDelivery } from "../../utils/directive-tags.js";
 
@@ -86,6 +89,51 @@ function mergeMessages(params: {
   };
 }
 
+function discardedBodyText(text: string): string {
+  return text.trim();
+}
+
+/**
+ * Collects body text that a rewind left off the active branch.
+ *
+ * Channel caches outlive the cut, so a discarded turn can return through the chat
+ * window the channel prepared for this message. Matching is on body text alone:
+ * cached channel entries and canonical transcript turns carry independent
+ * timestamps, so a timestamp-scoped key would miss the reintroduced turn. Text
+ * that also survives on the active branch is never excluded, which keeps a repeated
+ * phrase that exists on both sides of the cut.
+ */
+async function resolveDiscardedBranchBodies(params: {
+  agentId: string;
+  sessionKey: string;
+  storePath: string;
+}): Promise<Set<string>> {
+  const { discarded, retained } = await readDiscardedBranchConversationTextForSession(params);
+  if (discarded.length === 0 || !retained) {
+    return new Set<string>();
+  }
+  const retainedBodies = new Set(retained.map((turn) => discardedBodyText(turn.text)));
+  return new Set(
+    discarded
+      .map((turn) => discardedBodyText(turn.text))
+      .filter((body) => body.length > 0 && !retainedBodies.has(body)),
+  );
+}
+
+function withoutDiscardedBodies<T>(
+  entries: T[],
+  discardedBodies: Set<string>,
+  readBody: (entry: T) => unknown,
+): T[] {
+  if (discardedBodies.size === 0) {
+    return entries;
+  }
+  return entries.filter((entry) => {
+    const body = readBody(entry);
+    return typeof body !== "string" || !discardedBodies.has(discardedBodyText(body));
+  });
+}
+
 function mergeableChatWindowEntries(ctx: FinalizedMsgContext) {
   return (ctx.ChannelStructuredContext ?? []).filter(
     (entry): entry is typeof entry & { payload: Record<string, unknown> } =>
@@ -121,6 +169,11 @@ export async function mergeSessionTranscriptContext(params: {
     throw new Error("Session transcript context requires an agent owner.");
   }
   const windows = mergeableChatWindowEntries(params.ctx);
+  const discardedBodies = await resolveDiscardedBranchBodies({
+    agentId,
+    sessionKey: params.sessionKey,
+    storePath: params.storePath,
+  });
   const turns = await readRecentUserAssistantTextForSession({
     agentId,
     sessionKey: params.sessionKey,
@@ -156,6 +209,27 @@ export async function mergeSessionTranscriptContext(params: {
     }
     return item;
   });
+  if (discardedBodies.size > 0) {
+    if (params.ctx.InboundHistory) {
+      params.ctx.InboundHistory = withoutDiscardedBodies(
+        params.ctx.InboundHistory,
+        discardedBodies,
+        (entry) => entry.body,
+      );
+    }
+    for (const window of windows) {
+      if (Array.isArray(window.payload.messages)) {
+        window.payload = {
+          ...window.payload,
+          messages: withoutDiscardedBodies(window.payload.messages, discardedBodies, (message) =>
+            message && typeof message === "object" && !Array.isArray(message)
+              ? (message as Record<string, unknown>).body
+              : undefined,
+          ),
+        };
+      }
+    }
+  }
   if (transcript.length === 0) {
     return;
   }

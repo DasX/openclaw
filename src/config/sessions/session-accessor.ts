@@ -309,6 +309,10 @@ export {
   withRecentSessionTranscriptActiveEvents,
 } from "./session-accessor.sqlite-active-events.js";
 export {
+  readSessionTranscriptDiscardedMessages,
+  type SessionTranscriptDiscardedMessages,
+} from "./session-accessor.sqlite-discarded-branch.js";
+export {
   readSessionTranscriptTitleProbeBatch,
   type SessionTranscriptTitleProbe,
 } from "./session-accessor.sqlite-title-probes.js";

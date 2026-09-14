@@ -35,6 +35,7 @@ import {
   readActiveTranscriptEntryAnchor,
   readLatestSessionTranscriptMessageEvent,
   readLatestTranscriptAssistantText,
+  readSessionTranscriptDiscardedMessages,
   readSessionTranscriptMessageEventPage,
   resolveSessionEntrySelection,
   updateSessionEntry,
@@ -353,6 +354,54 @@ export async function readRecentUserAssistantTextForSession(
     return await readRecentUserAssistantTextFromSqliteTranscript(target.sqliteScope, params);
   }
   return [];
+}
+
+/**
+ * Reads conversation text a rewind discarded, paired with the text that survived.
+ *
+ * `retained` is undefined when the active path was too large to scan. Callers must
+ * then treat the session as having no known exclusions: dropping content without the
+ * retained set would discard turns that are still on the active branch.
+ */
+export async function readDiscardedBranchConversationTextForSession(params: {
+  agentId: string;
+  sessionKey: string;
+  storePath?: string;
+}): Promise<{
+  discarded: SessionRecentConversationText[];
+  retained?: SessionRecentConversationText[];
+}> {
+  const target = resolveSessionConversationTranscriptTarget(params);
+  if (!target.sqliteScope) {
+    return { discarded: [] };
+  }
+  const scope = target.sqliteScope;
+  try {
+    const { readRestoredSessionTranscript } = await import("./session-cold-storage-read.js");
+    const messages = await readRestoredSessionTranscript(
+      { agentId: scope.agentId, sessionId: scope.sessionId, storePath: scope.storePath },
+      () =>
+        readSessionTranscriptDiscardedMessages({
+          agentId: scope.agentId,
+          sessionId: scope.sessionId,
+          storePath: scope.storePath,
+        }),
+    );
+    const read = (events: TranscriptEvent[]) =>
+      events.flatMap((event) => {
+        const entry = extractRecentConversationText(event);
+        return entry ? [entry] : [];
+      });
+    return {
+      discarded: read(messages.events),
+      ...(messages.activeEvents ? { retained: read(messages.activeEvents) } : {}),
+    };
+  } catch (error) {
+    if (isSessionTranscriptProjectionUnavailableError(error)) {
+      return { discarded: [] };
+    }
+    throw error;
+  }
 }
 
 export async function readLatestAssistantTextFromSessionTranscript(

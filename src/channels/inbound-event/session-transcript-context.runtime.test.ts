@@ -4,15 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { buildInboundUserContextPrefix } from "../../auto-reply/reply/inbound-meta.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
-import { readRecentUserAssistantTextForSession } from "../../config/sessions/transcript.js";
+import {
+  readDiscardedBranchConversationTextForSession,
+  readRecentUserAssistantTextForSession,
+} from "../../config/sessions/transcript.js";
 import { runPreparedChannelTurn } from "../turn/execution.js";
 import { mergeSessionTranscriptContext } from "./session-transcript-context.runtime.js";
 
 vi.mock("../../config/sessions/transcript.js", () => ({
+  readDiscardedBranchConversationTextForSession: vi.fn(),
   readRecentUserAssistantTextForSession: vi.fn(),
 }));
 
 const readRecent = vi.mocked(readRecentUserAssistantTextForSession);
+const readDiscardedBranch = vi.mocked(readDiscardedBranchConversationTextForSession);
 
 function context(overrides: Partial<FinalizedMsgContext> = {}): FinalizedMsgContext {
   return {
@@ -36,6 +41,8 @@ describe("session transcript inbound context", () => {
 
   beforeEach(() => {
     readRecent.mockReset();
+    readDiscardedBranch.mockReset();
+    readDiscardedBranch.mockResolvedValue({ discarded: [], retained: [] });
   });
 
   it("restores Slack assistant context when the live window is empty after restart", async () => {
@@ -258,6 +265,130 @@ describe("session transcript inbound context", () => {
     expect(prompt).toContain("Graph reply");
     expect(prompt).toContain("canonical reply");
     expect(prompt).toContain("pending backlog");
+  });
+
+  it("drops a rewound branch that the channel chat window still caches", async () => {
+    // A/B/C -> rewind before B -> D in the same topic replying to retained A.
+    readRecent.mockResolvedValue([
+      { id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 },
+    ]);
+    readDiscardedBranch.mockResolvedValue({
+      discarded: [
+        { id: "u2", role: "user", text: "discarded question", timestamp: 2_000 },
+        { id: "a2", role: "assistant", text: "discarded answer", timestamp: 2_500 },
+      ],
+      retained: [{ id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 }],
+    });
+    const ctx = context({
+      Provider: "telegram",
+      ChannelStructuredContext: [
+        {
+          label: "Conversation context",
+          source: "telegram",
+          type: "chat_window",
+          payload: {
+            order: "chronological",
+            relation: "selected_for_current_message",
+            messages: [
+              {
+                message_id: "1",
+                sender: "User",
+                body: "retained topic starter",
+                timestamp_ms: 1_000,
+              },
+              { message_id: "2", sender: "User", body: "discarded question", timestamp_ms: 2_100 },
+              { message_id: "3", sender: "Bot", body: "discarded answer", timestamp_ms: 2_600 },
+            ],
+          },
+        },
+      ],
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    expect(asRecord(ctx.ChannelStructuredContext?.[0]?.payload).messages).toEqual([
+      expect.objectContaining({ body: "retained topic starter" }),
+    ]);
+  });
+
+  it("drops a rewound branch that the prepared inbound history still carries", async () => {
+    readRecent.mockResolvedValue([
+      { id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 },
+    ]);
+    readDiscardedBranch.mockResolvedValue({
+      discarded: [{ id: "u2", role: "user", text: "discarded question", timestamp: 2_000 }],
+      retained: [{ id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 }],
+    });
+    const ctx = context({
+      InboundHistory: [
+        { messageId: "1", sender: "User", body: "retained topic starter", timestamp: 1_000 },
+        { messageId: "2", sender: "User", body: "discarded question", timestamp: 2_100 },
+        { messageId: "4", sender: "User", body: "new turn after rewind", timestamp: 3_500 },
+      ],
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual([
+      "retained topic starter",
+      "new turn after rewind",
+    ]);
+  });
+
+  it("keeps cached text that also survives on the active branch", async () => {
+    readRecent.mockResolvedValue([{ id: "u3", role: "user", text: "ok", timestamp: 3_000 }]);
+    readDiscardedBranch.mockResolvedValue({
+      discarded: [{ id: "u2", role: "user", text: "ok", timestamp: 2_000 }],
+      retained: [{ id: "u3", role: "user", text: "ok", timestamp: 3_000 }],
+    });
+    const ctx = context({
+      InboundHistory: [{ messageId: "9", sender: "User", body: "ok", timestamp: 3_000 }],
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual(["ok"]);
+  });
+
+  it("keeps cached history when the active path was too large to scan", async () => {
+    readRecent.mockResolvedValue([
+      { id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 },
+    ]);
+    readDiscardedBranch.mockResolvedValue({
+      discarded: [{ id: "u2", role: "user", text: "discarded question", timestamp: 2_000 }],
+    });
+    const ctx = context({
+      InboundHistory: [
+        { messageId: "2", sender: "User", body: "discarded question", timestamp: 2_100 },
+      ],
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual([
+      "retained topic starter",
+      "discarded question",
+    ]);
   });
 
   it("fails closed for an unscoped session key without a routed agent owner", async () => {
