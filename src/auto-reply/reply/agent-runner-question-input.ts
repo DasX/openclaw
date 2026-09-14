@@ -2,10 +2,8 @@ import {
   QuestionAnswerUnconfirmedError,
   QuestionDispatchRefusedError,
 } from "../../agents/harness/gateway-question-dispatch.js";
-import {
-  claimPendingAgentQuestionAnswerFromCaller,
-  readQuestionAnswerRejection,
-} from "../../agents/harness/gateway-question.js";
+import { readQuestionAnswerRejection } from "../../agents/harness/gateway-question-rejection.js";
+import { claimPendingAgentQuestionAnswerFromCaller } from "../../agents/harness/gateway-question.js";
 import { logVerbose } from "../../globals.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
