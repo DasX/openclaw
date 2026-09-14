@@ -7,6 +7,7 @@ import type {
   AgentsListResult,
   SessionsResolveResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import { mentionsUnexpectedProperty } from "../../packages/gateway-protocol/src/validation-errors.js";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { formatTextCell } from "../commands/text-format.js";
@@ -115,7 +116,7 @@ function isPriorGatewayShortIdRejection(error: unknown): boolean {
     error instanceof GatewayClientRequestError &&
     error.gatewayCode === "INVALID_REQUEST" &&
     error.message.includes("invalid sessions.resolve params:") &&
-    error.message.includes("unexpected property 'shortId'")
+    mentionsUnexpectedProperty(error.message, "shortId")
   );
 }
 

@@ -9,6 +9,7 @@ import {
   GATEWAY_CLIENT_IDS,
   normalizeGatewayClientId,
 } from "../../../packages/gateway-protocol/src/client-info.js";
+import { mentionsUnexpectedProperty } from "../../../packages/gateway-protocol/src/validation-errors.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -283,7 +284,7 @@ async function requestResolvedSession(
       error instanceof GatewayClientRequestError &&
       error.gatewayCode === "INVALID_REQUEST" &&
       error.message.includes("invalid sessions.resolve params") &&
-      error.message.includes("unexpected property 'allowMissing'");
+      mentionsUnexpectedProperty(error.message, "allowMissing");
     if (!olderGatewayRejectedProbe) {
       throw error;
     }

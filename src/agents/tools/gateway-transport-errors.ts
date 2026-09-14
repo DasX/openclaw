@@ -1,5 +1,6 @@
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/schema/error-codes.js";
+import { mentionsUnexpectedProperty } from "../../../packages/gateway-protocol/src/validation-errors.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 
 export function isStaleGatewayAgentRuntimeIdentityRejection(error: unknown): boolean {
@@ -14,7 +15,7 @@ export function isStaleGatewayAgentRuntimeIdentityRejection(error: unknown): boo
   return (
     message.includes("invalid connect params") &&
     message.includes("/auth") &&
-    message.includes("unexpected property 'agentRuntimeIdentityToken'")
+    mentionsUnexpectedProperty(message, "agentRuntimeIdentityToken")
   );
 }
 
@@ -37,7 +38,7 @@ export function isStaleGatewayNodeInvokeTurnSourceRejection(error: unknown): boo
     return false;
   }
   return ["turnSourceChannel", "turnSourceTo", "turnSourceAccountId", "turnSourceThreadId"].some(
-    (field) => message.includes(`unexpected property '${field}'`),
+    (field) => mentionsUnexpectedProperty(message, field),
   );
 }
 

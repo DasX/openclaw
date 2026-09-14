@@ -726,7 +726,7 @@ describe("sessions.assignOwner", () => {
       });
       expect(smuggled.responses[0]?.[2]).toMatchObject({
         code: "INVALID_REQUEST",
-        message: expect.stringContaining("unexpected property 'agentToolCaller'"),
+        message: expect.stringContaining("unexpected property `agentToolCaller`"),
       });
 
       await upsertSessionEntryCore(

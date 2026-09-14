@@ -15,6 +15,40 @@ function firstStringParam(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Delimiter around property names in validation text.
+ *
+ * Validation text is fed back to LLM tool callers as tool-result content and they
+ * are expected to self-correct from it. Single quotes are not JSON string
+ * delimiters, and #81925 recorded a caller that copied `'name'` back as the
+ * literal key `name':`, then retried the same malformed payload until its loop
+ * guard fired. Backticks cannot appear in JSON syntax and need no escaping when
+ * the message is embedded in a JSON tool result.
+ */
+const PROPERTY_QUOTE = "`";
+/** The delimiter used before this repair; still accepted when reading messages. */
+const LEGACY_PROPERTY_QUOTE = "'";
+
+function quoteProperty(name: string): string {
+  return `${PROPERTY_QUOTE}${name}${PROPERTY_QUOTE}`;
+}
+
+/**
+ * Tests validation text for a rejected property, in current and legacy wording.
+ *
+ * Callers use this to recognize an older Gateway rejecting a field they just
+ * sent, so they must keep matching the legacy single-quoted form: the peer's
+ * wording is decided by the peer's build, not by this one.
+ */
+export function mentionsUnexpectedProperty(message: string, property: string): boolean {
+  return (
+    message.includes(`unexpected property ${quoteProperty(property)}`) ||
+    message.includes(
+      `unexpected property ${LEGACY_PROPERTY_QUOTE}${property}${LEGACY_PROPERTY_QUOTE}`,
+    )
+  );
+}
+
 /** Convert validator errors into compact operator-facing failure text. */
 export function formatValidationErrors(errors: ValidationError[] | null | undefined) {
   if (!errors?.length) {
@@ -33,7 +67,7 @@ export function formatValidationErrors(errors: ValidationError[] | null | undefi
         firstStringParam(err?.params?.additionalProperties);
       if (additionalProperty) {
         const where = instancePath ? `at ${instancePath}` : "at root";
-        parts.push(`${where}: unexpected property '${additionalProperty}'`);
+        parts.push(`${where}: unexpected property ${quoteProperty(additionalProperty)}`);
         continue;
       }
     }
@@ -43,7 +77,7 @@ export function formatValidationErrors(errors: ValidationError[] | null | undefi
         firstStringParam(err?.params?.requiredProperties);
       if (missingProperty) {
         const where = instancePath ? `at ${instancePath}: ` : "";
-        parts.push(`${where}must have required property '${missingProperty}'`);
+        parts.push(`${where}must have required property ${quoteProperty(missingProperty)}`);
         continue;
       }
     }

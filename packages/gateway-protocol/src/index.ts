@@ -12,7 +12,11 @@ export {
   validateApprovalHistoryResult,
   validateApprovalResolveResult,
 } from "./approval-result-validators.js";
-export { formatValidationErrors, type ValidationError } from "./validation-errors.js";
+export {
+  formatValidationErrors,
+  mentionsUnexpectedProperty,
+  type ValidationError,
+} from "./validation-errors.js";
 export type { ProtocolValidator } from "./protocol-validator.js";
 export * from "./schema/worker-inference.js";
 export * from "./schema/worker-computer.js";

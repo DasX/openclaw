@@ -104,7 +104,9 @@ export async function canFallbackToImplicitLocalGateway(params: {
       (legacyAgentId === true &&
         (error.message === `invalid ${legacyMethod} params: unexpected property agentId` ||
           error.message ===
-            `invalid ${legacyMethod} params: at root: unexpected property 'agentId'`)));
+            `invalid ${legacyMethod} params: at root: unexpected property 'agentId'` ||
+          error.message ===
+            `invalid ${legacyMethod} params: at root: unexpected property \`agentId\``)));
   return (
     (gateway.isGatewayCredentialsRequiredError(error) ||
       isGatewayRpcUnavailableError(error) ||

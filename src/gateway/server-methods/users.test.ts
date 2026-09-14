@@ -131,7 +131,7 @@ describe("users gateway methods", () => {
         undefined,
         {
           code: "INVALID_REQUEST",
-          message: `invalid ${method} params: at root: unexpected property 'unexpected'`,
+          message: `invalid ${method} params: at root: unexpected property \`unexpected\``,
         },
       ],
     ]);
