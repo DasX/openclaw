@@ -345,6 +345,98 @@ describe("session transcript inbound context", () => {
     ]);
   });
 
+  it("drops every cached chunk of a discarded reply the channel had to split", async () => {
+    const firstChunk = "Here is the first half of a long discarded answer about the deploy plan.";
+    const secondChunk = "And here is the second half, which the channel sent as its own message.";
+    readRecent.mockResolvedValue([
+      { id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 },
+    ]);
+    readDiscardedBranch.mockResolvedValue({
+      // The transcript holds one canonical assistant turn; the channel cached two.
+      discarded: [
+        { id: "a2", role: "assistant", text: `${firstChunk}\n\n${secondChunk}`, timestamp: 2_500 },
+      ],
+      retained: [{ id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 }],
+    });
+    const ctx = context({
+      InboundHistory: [
+        { messageId: "1", sender: "User", body: "retained topic starter", timestamp: 1_000 },
+        { messageId: "2", sender: "Bot", body: firstChunk, timestamp: 2_600 },
+        { messageId: "3", sender: "Bot", body: secondChunk, timestamp: 2_700 },
+      ],
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual(["retained topic starter"]);
+  });
+
+  it("keeps a short cached turn whose words occur inside a discarded paragraph", async () => {
+    readRecent.mockResolvedValue([
+      { id: "u3", role: "user", text: "sounds good", timestamp: 3_000 },
+    ]);
+    readDiscardedBranch.mockResolvedValue({
+      discarded: [
+        {
+          id: "a2",
+          role: "assistant",
+          text: "If that plan sounds good to you I will start the rollout tomorrow morning.",
+          timestamp: 2_000,
+        },
+      ],
+      retained: [{ id: "u3", role: "user", text: "sounds good", timestamp: 3_000 }],
+    });
+    const ctx = context({
+      InboundHistory: [{ messageId: "9", sender: "User", body: "sounds good", timestamp: 3_000 }],
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual(["sounds good"]);
+  });
+
+  it("drops a discarded reply whose cached copy lost its inline directive tags", async () => {
+    readRecent.mockResolvedValue([
+      { id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 },
+    ]);
+    readDiscardedBranch.mockResolvedValue({
+      discarded: [
+        {
+          id: "a2",
+          role: "assistant",
+          text: "[[reply_to_current]]discarded answer",
+          timestamp: 2_500,
+        },
+      ],
+      retained: [{ id: "u1", role: "user", text: "retained topic starter", timestamp: 1_000 }],
+    });
+    const ctx = context({
+      InboundHistory: [
+        { messageId: "1", sender: "User", body: "retained topic starter", timestamp: 1_000 },
+        { messageId: "3", sender: "Bot", body: "discarded answer", timestamp: 2_600 },
+      ],
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual(["retained topic starter"]);
+  });
+
   it("keeps cached text that also survives on the active branch", async () => {
     readRecent.mockResolvedValue([{ id: "u3", role: "user", text: "ok", timestamp: 3_000 }]);
     readDiscardedBranch.mockResolvedValue({

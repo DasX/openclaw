@@ -89,48 +89,82 @@ function mergeMessages(params: {
   };
 }
 
-function discardedBodyText(text: string): string {
-  return text.trim();
+/**
+ * Shortest cached body matched as a fragment of a longer discarded turn.
+ *
+ * Channels split a long reply into several messages, so a cached entry can hold
+ * one chunk while the canonical turn holds the whole text. Fragment matching
+ * recovers those chunks; the floor keeps a short new turn from being swallowed
+ * because its words happen to occur inside a discarded paragraph.
+ */
+const DISCARDED_FRAGMENT_MIN_LENGTH = 40;
+
+type DiscardedBranchBodies = {
+  discarded: string[];
+  retained: Set<string>;
+  retainedTexts: string[];
+};
+
+function bodyVariants(text: string): string[] {
+  const trimmed = text.trim();
+  const stripped = stripInlineDirectiveTagsForDelivery(text).text.trim();
+  return stripped && stripped !== trimmed ? [trimmed, stripped] : trimmed ? [trimmed] : [];
 }
 
 /**
  * Collects body text that a rewind left off the active branch.
  *
  * Channel caches outlive the cut, so a discarded turn can return through the chat
- * window the channel prepared for this message. Matching is on body text alone:
- * cached channel entries and canonical transcript turns carry independent
- * timestamps, so a timestamp-scoped key would miss the reintroduced turn. Text
- * that also survives on the active branch is never excluded, which keeps a repeated
- * phrase that exists on both sides of the cut.
+ * window the channel prepared for this message. Matching is on body text, not on a
+ * timestamp-scoped key: cached channel entries and canonical transcript turns carry
+ * independent timestamps. Text that also survives on the active branch is never
+ * excluded, which keeps a phrase repeated on both sides of the cut.
  */
 async function resolveDiscardedBranchBodies(params: {
   agentId: string;
   sessionKey: string;
   storePath: string;
-}): Promise<Set<string>> {
+}): Promise<DiscardedBranchBodies | undefined> {
   const { discarded, retained } = await readDiscardedBranchConversationTextForSession(params);
   if (discarded.length === 0 || !retained) {
-    return new Set<string>();
+    return undefined;
   }
-  const retainedBodies = new Set(retained.map((turn) => discardedBodyText(turn.text)));
-  return new Set(
-    discarded
-      .map((turn) => discardedBodyText(turn.text))
-      .filter((body) => body.length > 0 && !retainedBodies.has(body)),
+  const retainedTexts = retained.flatMap((turn) => bodyVariants(turn.text));
+  const retainedBodies = new Set(retainedTexts);
+  const discardedTexts = discarded
+    .flatMap((turn) => bodyVariants(turn.text))
+    .filter((body) => !retainedBodies.has(body));
+  return discardedTexts.length === 0
+    ? undefined
+    : { discarded: discardedTexts, retained: retainedBodies, retainedTexts };
+}
+
+function isDiscardedBody(body: string, bodies: DiscardedBranchBodies): boolean {
+  const text = body.trim();
+  if (!text || bodies.retained.has(text)) {
+    return false;
+  }
+  if (bodies.discarded.includes(text)) {
+    return true;
+  }
+  if (text.length < DISCARDED_FRAGMENT_MIN_LENGTH) {
+    return false;
+  }
+  // A fragment that also occurs in retained content is ambiguous; keep it.
+  return (
+    !bodies.retainedTexts.some((retained) => retained.includes(text)) &&
+    bodies.discarded.some((discarded) => discarded.includes(text))
   );
 }
 
 function withoutDiscardedBodies<T>(
   entries: T[],
-  discardedBodies: Set<string>,
+  bodies: DiscardedBranchBodies,
   readBody: (entry: T) => unknown,
 ): T[] {
-  if (discardedBodies.size === 0) {
-    return entries;
-  }
   return entries.filter((entry) => {
     const body = readBody(entry);
-    return typeof body !== "string" || !discardedBodies.has(discardedBodyText(body));
+    return typeof body !== "string" || !isDiscardedBody(body, bodies);
   });
 }
 
@@ -209,7 +243,7 @@ export async function mergeSessionTranscriptContext(params: {
     }
     return item;
   });
-  if (discardedBodies.size > 0) {
+  if (discardedBodies) {
     if (params.ctx.InboundHistory) {
       params.ctx.InboundHistory = withoutDiscardedBodies(
         params.ctx.InboundHistory,
