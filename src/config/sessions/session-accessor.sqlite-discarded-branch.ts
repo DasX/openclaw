@@ -13,9 +13,9 @@ import {
 } from "./session-accessor.sqlite-reset-window.js";
 
 /** Off-path events scanned before a rewound session stops reporting exclusions. */
-export const DISCARDED_BRANCH_EVENT_SCAN_LIMIT = 1_000;
+const DISCARDED_BRANCH_EVENT_SCAN_LIMIT = 1_000;
 /** Active-path messages scanned to protect retained content from exclusion. */
-export const DISCARDED_BRANCH_ACTIVE_SCAN_LIMIT = 2_000;
+const DISCARDED_BRANCH_ACTIVE_SCAN_LIMIT = 2_000;
 
 export type SessionTranscriptDiscardedMessages = {
   /** Message events the session retains off its active path. */
@@ -24,19 +24,21 @@ export type SessionTranscriptDiscardedMessages = {
   activeEvents?: TranscriptEvent[];
 };
 
-function parseTranscriptEvent(eventJson: string): TranscriptEvent | undefined {
+function parseTranscriptEvent(eventJson: string): TranscriptEvent {
   try {
-    const parsed: unknown = JSON.parse(eventJson);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as TranscriptEvent)
-      : undefined;
+    return JSON.parse(eventJson) as TranscriptEvent;
   } catch {
     return undefined;
   }
 }
 
 function isMessageEvent(event: TranscriptEvent): boolean {
-  return (event as { type?: unknown }).type === "message";
+  return (
+    Boolean(event) &&
+    typeof event === "object" &&
+    !Array.isArray(event) &&
+    (event as { type?: unknown }).type === "message"
+  );
 }
 
 /**
@@ -73,7 +75,7 @@ export function readSessionTranscriptDiscardedMessages(
     const events = rows.rows
       .flatMap((row) => {
         const event = parseTranscriptEvent(row.event_json);
-        return event && isMessageEvent(event) ? [event] : [];
+        return isMessageEvent(event) ? [event] : [];
       })
       .toReversed();
     if (events.length === 0) {

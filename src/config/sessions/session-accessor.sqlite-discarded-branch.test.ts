@@ -46,7 +46,7 @@ describe("discarded session transcript branches", () => {
     const { env, scope } = await createSession();
 
     await rewindSessionToMessage({ agentId, env, entryId: "user-2", sessionKey });
-    const entry = await loadSessionEntry({ agentId, env, sessionKey });
+    const entry = loadSessionEntry({ agentId, env, sessionKey });
     const rewoundSessionId = entry?.sessionId;
     expect(rewoundSessionId).toBeTruthy();
     expect(rewoundSessionId).not.toBe(scope.sessionId);
@@ -91,7 +91,7 @@ describe("discarded session transcript branches", () => {
     await rewindSessionToMessage({ agentId, env, entryId: "user-2", sessionKey });
 
     await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
-      const entry = await loadSessionEntry({ agentId, env, sessionKey });
+      const entry = loadSessionEntry({ agentId, env, sessionKey });
       await waitForSessionTranscriptProjection({ agentId, env, sessionId: entry!.sessionId! });
       const branch = await readDiscardedBranchConversationTextForSession({ agentId, sessionKey });
 
