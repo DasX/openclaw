@@ -194,6 +194,7 @@ function readConfigFactPathValue(root: unknown, path: string): unknown {
       if (!Object.hasOwn(cursor, key)) {
         return undefined;
       }
+      // SAFETY: the two guards above established a non-null, non-array object that owns `key`.
       cursor = (cursor as Record<string, unknown>)[key];
     }
     if (bracket < 0) {

@@ -189,7 +189,15 @@ describe("automatic startup config repair", () => {
   it("carries surviving reference facts through the repair rewrite", () => {
     const config = {
       session: { idleMinutes: 45 },
-      models: { providers: { minimax: { apiKey: "substituted-not-a-real-key" } } },
+      models: {
+        providers: {
+          minimax: {
+            baseUrl: "https://example.invalid/anthropic",
+            apiKey: "substituted-not-a-real-key",
+            models: [],
+          },
+        },
+      },
     } as OpenClawConfig;
     setConfigResolutionFacts(
       config,
