@@ -11,15 +11,15 @@ export function readQuestionRejection(
   if (!error || typeof error !== "object") {
     return undefined;
   }
+  // SAFETY: the guard above proves error is a non-null object, and every field named here stays optional unknown.
   const requestError = error as { details?: unknown; name?: unknown; gatewayCode?: unknown };
   if (requestError.name !== "GatewayClientRequestError") {
     return undefined;
   }
   const details = requestError.details;
-  const reason =
-    details && typeof details === "object" && !Array.isArray(details)
-      ? (details as { reason?: unknown }).reason
-      : undefined;
+  const detailsIsRecord = details && typeof details === "object" && !Array.isArray(details);
+  // SAFETY: detailsIsRecord proves details is a non-null, non-array object, and reason stays optional unknown.
+  const reason = detailsIsRecord ? (details as { reason?: unknown }).reason : undefined;
   return {
     code: requestError.gatewayCode,
     reason: typeof reason === "string" ? reason : undefined,
