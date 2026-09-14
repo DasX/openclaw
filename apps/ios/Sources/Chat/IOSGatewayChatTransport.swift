@@ -584,7 +584,13 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
               error.method == "chat.history",
               error.code == "INVALID_REQUEST"
         else { return false }
-        return error.message == "invalid chat.history params: at root: unexpected property 'inputRunIds'"
+        // The remote Gateway's build decides the quoting, so both wordings must match.
+        // Equality stays exact: a compound message names another failure too.
+        let rejection = "invalid chat.history params: at root: unexpected property"
+        return [
+            "\(rejection) `inputRunIds`",
+            "\(rejection) 'inputRunIds'",
+        ].contains(error.message)
     }
 
     var supportsSlashCommandCatalog: Bool {

@@ -234,17 +234,28 @@ struct IOSGatewayChatTransportTests {
 
     @Test func `history compatibility rejects only the old unsupported input run field`() {
         let unsupportedField = "invalid chat.history params: at root: unexpected property 'inputRunIds'"
+        // A remote Gateway's build decides the quoting; both wordings mean the same rejection.
+        let unsupportedFieldBackticks =
+            "invalid chat.history params: at root: unexpected property `inputRunIds`"
         let cases: [(String, String, String, Bool)] = [
             ("chat.history", "INVALID_REQUEST", unsupportedField, true),
+            ("chat.history", "INVALID_REQUEST", unsupportedFieldBackticks, true),
             ("chat.send", "INVALID_REQUEST", unsupportedField, false),
+            ("chat.send", "INVALID_REQUEST", unsupportedFieldBackticks, false),
             ("chat.history", "FORBIDDEN", unsupportedField, false),
             (
                 "chat.history",
                 "INVALID_REQUEST",
                 "invalid chat.history params: at root: unexpected property 'cursor'",
                 false),
+            (
+                "chat.history",
+                "INVALID_REQUEST",
+                "invalid chat.history params: at root: unexpected property `cursor`",
+                false),
             ("chat.history", "INVALID_REQUEST", "invalid chat.history params: missing sessionKey", false),
             ("chat.history", "INVALID_REQUEST", "\(unsupportedField); missing sessionKey", false),
+            ("chat.history", "INVALID_REQUEST", "\(unsupportedFieldBackticks); missing sessionKey", false),
         ]
         for (method, code, message, expected) in cases {
             let error = GatewayResponseError(method: method, code: code, message: message, details: nil)
