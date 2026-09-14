@@ -1238,6 +1238,51 @@ describe("printDaemonStatus", () => {
     );
   });
 
+  it("explains a registry-current ClawHub target without a repair command in deep mode", () => {
+    printDaemonStatus(
+      {
+        service: {
+          label: "LaunchAgent",
+          loadState: { status: "loaded" },
+          loadedText: "loaded",
+          notLoadedText: "not loaded",
+          runtime: { status: "running", pid: 8000 },
+        },
+        pluginVersionDrift: {
+          gatewayVersion: "2026.9.4",
+          drifts: [
+            {
+              pluginId: "whatsapp",
+              installedVersion: "2026.9.3",
+              gatewayVersion: "2026.9.4",
+              source: "clawhub",
+              targetResolution: {
+                status: "registry-current",
+                packageName: "@openclaw/whatsapp",
+                requestedTarget: "2026.9.4",
+                version: "2026.9.3",
+              },
+            },
+          ],
+        },
+        extraServices: [],
+      },
+      { json: false, deep: true },
+    );
+
+    expectMockLineContains(runtime.log, "- whatsapp: 2026.9.3 (clawhub) → expected 2026.9.4");
+    expectMockLineContains(
+      runtime.log,
+      "registry version 2026.9.3 is already installed; no release reaches 2026.9.4 yet",
+    );
+    const logged = runtime.log.mock.calls.flat().join("\n");
+    expect(logged).not.toContain("openclaw plugins update");
+    // Registry lag is not a resolution failure, so it must not reach the error surface.
+    expect(runtime.error.mock.calls.flat().join("\n")).not.toContain(
+      "Plugin repair target resolution failed",
+    );
+  });
+
   it("prints exact package update commands for pinned npm plugin drift in deep mode", () => {
     printDaemonStatus(
       {

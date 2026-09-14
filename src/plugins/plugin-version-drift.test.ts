@@ -10,6 +10,7 @@ import {
 import { fetchNpmPackageTargetStatus } from "../infra/update-check-package-target.js";
 import {
   detectPluginVersionDrift,
+  resolvePluginVersionDriftRegistryLag,
   resolvePluginVersionDriftUpdateCommand,
   resolvePluginVersionDriftTargets,
 } from "./plugin-version-drift.js";
@@ -444,14 +445,26 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
     });
   }
 
-  it("drops drift when the install already holds the newest ClawHub version", async () => {
+  it("explains registry lag when the install already holds the newest ClawHub version", async () => {
     vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
     const report = await resolvePluginVersionDriftTargets(clawhubDriftReport("2026.9.3"));
     expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({
       name: "@openclaw/whatsapp",
       baseUrl: "https://clawhub.ai",
     });
-    expect(report.drifts).toEqual([]);
+    const entry = expectDefined(report.drifts[0], "registry-current ClawHub install");
+    expect(entry.targetResolution).toEqual({
+      status: "registry-current",
+      packageName: "@openclaw/whatsapp",
+      requestedTarget: "2026.9.4",
+      version: "2026.9.3",
+    });
+    expect(resolvePluginVersionDriftRegistryLag(entry)).toEqual({
+      registryVersion: "2026.9.3",
+      expectedVersion: "2026.9.4",
+    });
+    // The observed registry version is already installed, so no update can move it.
+    expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
   });
 
   it("targets the newest ClawHub version rather than the host version", async () => {
@@ -489,7 +502,12 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
       name: "@openclaw/slack",
       baseUrl: "https://clawhub.ai",
     });
-    expect(report.drifts).toEqual([]);
+    const entry = expectDefined(report.drifts[0], "npm-only catalog ClawHub install");
+    expect(entry.targetResolution).toMatchObject({
+      status: "registry-current",
+      packageName: "@openclaw/slack",
+      version: "2026.9.3",
+    });
   });
 
   it.each([
@@ -539,15 +557,58 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
         name: "@openclaw/whatsapp",
         baseUrl: "https://clawhub.ai",
       });
-      expect(report.drifts).toEqual([]);
+      expect(report.drifts[0]?.targetResolution?.status).toBe("registry-current");
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
+  it("prescribes an executable repair for a stale recorded ClawHub pin", async () => {
+    vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+    const report = await resolvePluginVersionDriftTargets(
+      detectPluginVersionDrift({
+        gatewayVersion: "2026.9.4",
+        config: { update: { channel: "stable" } },
+        installRecords: {
+          whatsapp: clawhubRecord("2026.9.2", { spec: "clawhub:@openclaw/whatsapp@2026.9.2" }),
+        },
+      }),
+    );
+    // An update resumes the catalog's unpinned policy for a pin at or below the
+    // target Gateway, so the diagnostic resolves the same target it would install.
+    expect(fetchClawHubPackageDetail).toHaveBeenCalledWith({
+      name: "@openclaw/whatsapp",
+      baseUrl: "https://clawhub.ai",
+    });
+    const entry = expectDefined(report.drifts[0], "stale ClawHub pin");
+    expect(entry.targetResolution).toEqual({
+      status: "resolved",
+      packageName: "@openclaw/whatsapp",
+      requestedTarget: "2026.9.4",
+      version: "2026.9.3",
+    });
+    expect(resolvePluginVersionDriftUpdateCommand(entry)).toBe("openclaw plugins update whatsapp");
+  });
+
+  it("keeps a recorded pin above the target Gateway unresolved", async () => {
+    vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
+    const report = await resolvePluginVersionDriftTargets(
+      detectPluginVersionDrift({
+        gatewayVersion: "2026.9.4",
+        config: { update: { channel: "stable" } },
+        installRecords: {
+          whatsapp: clawhubRecord("2026.9.5", { spec: "clawhub:@openclaw/whatsapp@2026.9.5" }),
+        },
+      }),
+    );
+    const entry = expectDefined(report.drifts[0], "ahead-of-Gateway ClawHub pin");
+    expect(entry.targetResolution?.status).toBe("unresolved");
+    expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
+    expect(fetchClawHubPackageDetail).not.toHaveBeenCalled();
+  });
+
   it.each([
     { spec: "clawhub:@openclaw/whatsapp@beta", channel: "stable" as const },
-    { spec: "clawhub:@openclaw/whatsapp@2026.9.2", channel: "stable" as const },
     { spec: "clawhub:@openclaw/whatsapp", channel: "beta" as const },
     { spec: "clawhub:@openclaw/whatsapp@latest", channel: "extended-stable" as const },
   ])(

@@ -13,6 +13,7 @@ import { resolvePackageExtensionEntries, type PackageManifest } from "../plugins
 import { validatePackageExtensionEntriesForInstall } from "../plugins/package-entry-resolution.js";
 import {
   detectPluginVersionDrift,
+  resolvePluginVersionDriftRegistryLag,
   resolvePluginVersionDriftTargets,
   resolvePluginVersionDriftUpdateCommand,
 } from "../plugins/plugin-version-drift.js";
@@ -127,12 +128,18 @@ export async function runPostUpgradeProbes(params: {
     }),
   );
   for (const entry of drift.drifts) {
+    const registryLag = resolvePluginVersionDriftRegistryLag(entry);
     const updateCommand = resolvePluginVersionDriftUpdateCommand(entry);
+    const repair = registryLag
+      ? `The registry already serves ${registryLag.registryVersion}; no release reaches ${registryLag.expectedVersion} yet, so no update applies.`
+      : updateCommand
+        ? `Run \`${updateCommand}\`, then restart the Gateway.`
+        : "No confirmed repair target is available; check registry availability and rerun this command.";
     findings.push({
       level: "warn",
       code: "plugin.version_drift",
       plugin: entry.pluginId,
-      message: `Plugin ${entry.pluginId} is ${entry.installedVersion}, but OpenClaw is ${VERSION}. ${updateCommand ? `Run \`${updateCommand}\`, then restart the Gateway.` : "No confirmed repair target is available; check registry availability and rerun this command."}`,
+      message: `Plugin ${entry.pluginId} is ${entry.installedVersion}, but OpenClaw is ${VERSION}. ${repair}`,
     });
   }
 

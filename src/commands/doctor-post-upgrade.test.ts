@@ -650,13 +650,25 @@ describe("runPostUpgradeProbes — plugin.version_drift", () => {
   });
 
   it.each([
-    { channel: "stable", enabled: true, drift: false, lookup: true },
-    { channel: "beta", enabled: true, drift: true, lookup: false },
-    { channel: "extended-stable", enabled: true, drift: true, lookup: false },
-    { channel: "beta", enabled: false, drift: false, lookup: false },
+    // A stable host reaches the registry, finds nothing newer, and says so
+    // instead of dropping the plugin from the report.
+    {
+      channel: "stable",
+      enabled: true,
+      expected: "The registry already serves 2026.9.3",
+      lookup: true,
+    },
+    { channel: "beta", enabled: true, expected: "No confirmed repair target", lookup: false },
+    {
+      channel: "extended-stable",
+      enabled: true,
+      expected: "No confirmed repair target",
+      lookup: false,
+    },
+    { channel: "beta", enabled: false, expected: undefined, lookup: false },
   ] as const)(
     "preserves $channel intent and persisted enablement=$enabled on a stable host",
-    async ({ channel, enabled, drift, lookup }) => {
+    async ({ channel, enabled, expected, lookup }) => {
       await withFixtureRoot("clawhub-version-drift", async (root) => {
         await writePluginFixture(root, {
           id: "whatsapp",
@@ -672,13 +684,13 @@ describe("runPostUpgradeProbes — plugin.version_drift", () => {
         const report = await runPostUpgradeProbes({ stateDir: root, updateChannel: channel });
 
         expect(report.findings).toEqual(
-          drift
+          expected
             ? [
                 expect.objectContaining({
                   code: "plugin.version_drift",
                   level: "warn",
                   plugin: "whatsapp",
-                  message: expect.stringContaining("No confirmed repair target"),
+                  message: expect.stringContaining(expected),
                 }),
               ]
             : [],

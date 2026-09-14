@@ -17,18 +17,23 @@ import {
 } from "../infra/update-channels.js";
 import { fetchNpmPackageTargetStatus } from "../infra/update-check-package-target.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
-import { resolveClawHubInstallSpecsForUpdateChannel } from "./install-channel-specs.js";
 import { checkMinHostVersion } from "./min-host-version.js";
 import {
   resolveTrustedSourceLinkedOfficialClawHubInstall,
   resolveTrustedSourceLinkedOfficialNpmSpec,
 } from "./official-external-install-records.js";
 import { satisfiesPluginApiRange } from "./package-compat.js";
+import { resolveClawHubUpdateSpecs } from "./update-source.js";
 
 type PluginVersionDriftTargetResolution = {
   packageName: string;
   requestedTarget: string;
-} & ({ status: "resolved"; version: string } | { status: "unresolved"; error: string });
+} & (
+  | { status: "resolved"; version: string }
+  /** The registry already serves `version`; no newer release exists to install. */
+  | { status: "registry-current"; version: string }
+  | { status: "unresolved"; error: string }
+);
 
 type PluginVersionDriftEntry = {
   pluginId: string;
@@ -39,6 +44,8 @@ type PluginVersionDriftEntry = {
   spec?: string;
   /** ClawHub package name for installs whose upgrade target lives in ClawHub, not npm. */
   clawhubPackage?: string;
+  /** Catalog ClawHub spec, so a stale recorded pin resolves the way an update would. */
+  clawhubOfficialSpec?: string;
   clawhubUrl?: string;
   clawhubUpdateChannel?: UpdateChannel;
   targetResolution?: PluginVersionDriftTargetResolution;
@@ -76,7 +83,13 @@ function resolveExactNpmPinPackageName(entry: PluginVersionDriftEntry): string |
 export function resolvePluginVersionDriftUpdateCommand(
   entry: PluginVersionDriftEntry,
 ): string | undefined {
-  if (entry.source === "clawhub" && entry.targetResolution?.status === "unresolved") {
+  // An unresolved target has no command to offer; a registry-current target would
+  // only reinstall the version already present.
+  if (
+    entry.source === "clawhub" &&
+    (entry.targetResolution?.status === "unresolved" ||
+      entry.targetResolution?.status === "registry-current")
+  ) {
     return undefined;
   }
   const exactNpmPackageName = resolveExactNpmPinPackageName(entry);
@@ -99,12 +112,25 @@ export function resolvePluginVersionDriftUpdateCommand(
 }
 
 /**
+ * Reports the registry version an install already holds when ClawHub publishes nothing
+ * newer, together with the Gateway version the diagnostic asked for.
+ */
+export function resolvePluginVersionDriftRegistryLag(
+  entry: PluginVersionDriftEntry,
+): { registryVersion: string; expectedVersion: string } | undefined {
+  const targetResolution = entry.targetResolution;
+  return targetResolution?.status === "registry-current"
+    ? {
+        registryVersion: targetResolution.version,
+        expectedVersion: targetResolution.requestedTarget,
+      }
+    : undefined;
+}
+
+/**
  * ClawHub publishes plugins on its own release train, so its latest version can sit
  * below the running OpenClaw version. Resolve the upgrade target from ClawHub instead
  * of assuming the host version is available there.
- *
- * Returns `null` when the install already holds the newest version ClawHub offers: that
- * is not drift, and reporting it would demand a version no update can reach.
  */
 async function fetchClawHubLatestVersion(
   packageName: string,
@@ -144,22 +170,26 @@ async function fetchClawHubLatestVersion(
 
 async function resolveClawHubEntryTarget(
   entry: PluginVersionDriftEntry,
-): Promise<PluginVersionDriftEntry | null> {
+): Promise<PluginVersionDriftEntry> {
   const packageName = entry.clawhubPackage;
   if (!packageName) {
     return entry;
   }
   const requestedTarget = resolveOpenClawReleaseCohortVersion(entry.gatewayVersion);
-  // Only suppress a mismatch for a verified latest intent. The update owner may
+  // Ask the update owner which spec it would install, so a stale recorded pin
+  // resumes the catalog's release policy here exactly as it does during an update.
+  // Only suppress a mismatch for a verified latest intent: the update owner may
   // select a tag, an exact version, or the extended-stable core cohort instead.
   try {
-    const { installSpec } = resolveClawHubInstallSpecsForUpdateChannel({
-      spec: entry.spec ?? `clawhub:${packageName}`,
+    const { installSpec } = resolveClawHubUpdateSpecs({
+      record: { source: "clawhub", spec: entry.spec, clawhubPackage: packageName },
+      officialSpec: entry.clawhubOfficialSpec,
       updateChannel: entry.clawhubUpdateChannel,
       officialPackageName: packageName,
       coreVersion: entry.gatewayVersion,
     });
-    const parsed = parseClawHubPluginSpec(installSpec);
+    const selectedSpec = installSpec ?? entry.spec ?? `clawhub:${packageName}`;
+    const parsed = parseClawHubPluginSpec(selectedSpec);
     if (!parsed || (parsed.version && parsed.version.toLowerCase() !== "latest")) {
       return {
         ...entry,
@@ -167,7 +197,7 @@ async function resolveClawHubEntryTarget(
           status: "unresolved",
           packageName,
           requestedTarget,
-          error: `ClawHub latest metadata cannot confirm the selected target ${installSpec}`,
+          error: `ClawHub latest metadata cannot confirm the selected target ${selectedSpec}`,
         },
       };
     }
@@ -198,7 +228,19 @@ async function resolveClawHubEntryTarget(
     resolveOpenClawReleaseCohortVersion(latestVersion) ===
     resolveOpenClawReleaseCohortVersion(entry.installedVersion)
   ) {
-    return null;
+    // ClawHub has nothing newer to install. Dropping the entry would hide the
+    // registry-lag gap from every downstream diagnostic, so keep the observed
+    // registry version and the expected Gateway version and suppress only the
+    // no-op update command.
+    return {
+      ...entry,
+      targetResolution: {
+        status: "registry-current",
+        packageName,
+        requestedTarget,
+        version: latestVersion,
+      },
+    };
   }
   return {
     ...entry,
@@ -208,7 +250,7 @@ async function resolveClawHubEntryTarget(
 
 async function resolveEntryTarget(
   entry: PluginVersionDriftEntry,
-): Promise<PluginVersionDriftEntry | null> {
+): Promise<PluginVersionDriftEntry> {
   if (entry.source === "clawhub") {
     return await resolveClawHubEntryTarget(entry);
   }
@@ -240,10 +282,9 @@ async function resolveEntryTarget(
 export async function resolvePluginVersionDriftTargets(
   report: PluginVersionDriftReport,
 ): Promise<PluginVersionDriftReport> {
-  const resolved = await Promise.all(report.drifts.map(resolveEntryTarget));
   return {
     ...report,
-    drifts: resolved.filter((entry): entry is PluginVersionDriftEntry => entry !== null),
+    drifts: await Promise.all(report.drifts.map(resolveEntryTarget)),
   };
 }
 
@@ -341,6 +382,9 @@ export function detectPluginVersionDrift(params: {
       record.source === "clawhub"
         ? (record.clawhubPackage?.trim() ?? parseClawHubPluginSpec(record.spec ?? "")?.name)
         : undefined;
+    const clawhubOfficialSpec = clawhubPackage
+      ? resolveTrustedSourceLinkedOfficialClawHubInstall({ pluginId, record })?.clawhubSpec
+      : undefined;
     drifts.push({
       pluginId,
       installedVersion,
@@ -351,6 +395,7 @@ export function detectPluginVersionDrift(params: {
       ...(clawhubPackage
         ? {
             clawhubPackage,
+            ...(clawhubOfficialSpec ? { clawhubOfficialSpec } : {}),
             spec: record.spec ?? record.resolvedSpec ?? `clawhub:${clawhubPackage}`,
             clawhubUrl: record.clawhubUrl ?? "https://clawhub.ai",
             clawhubUpdateChannel:

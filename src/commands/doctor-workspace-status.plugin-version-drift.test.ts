@@ -258,28 +258,33 @@ describe("ClawHub plugin version drift doctor evidence", () => {
       const noteSpy = vi.spyOn(noteModule, "note").mockImplementation(() => {});
       try {
         noteWorkspaceStatus({}, { pluginVersionReadiness: readiness });
+        expect(findings).toHaveLength(1);
+        expect(noteSpy).toHaveBeenCalledOnce();
+        const output = String(noteSpy.mock.calls[0]?.[0]);
         if (result === "current") {
-          expect(findings).toEqual([]);
-          expect(noteSpy).not.toHaveBeenCalled();
+          // Registry lag stays visible, but as an explanation with no repair command.
+          expect(findings[0]?.severity).toBe("info");
+          expect(findings[0]?.message).toContain("registry version 2026.9.3");
+          expect(findings[0]?.message).toContain("No plugin update can reach 2026.9.4");
+          expect(findings[0]?.fixHint).toBeUndefined();
+          expect(output).toContain("already holds registry version 2026.9.3");
+          expect(output).toContain("whatsapp: 2026.9.3 (clawhub) -> expected 2026.9.4");
+          expect(output).not.toContain("openclaw plugins update");
+          expect(output).not.toContain("No install command generated");
+        } else if (result === "resolved") {
+          expect(findings[0]?.message).toContain("confirmed plugin target is 2026.9.3");
+          expect(output).toContain("whatsapp: 2026.9.2 (clawhub) -> expected 2026.9.3");
+          expect(output).not.toContain("expected 2026.9.4");
+          expect(findings[0]?.fixHint).toBe(
+            "openclaw plugins update whatsapp && openclaw gateway restart",
+          );
+          expect(output).toContain(findings[0]?.fixHint);
         } else {
-          expect(findings).toHaveLength(1);
-          expect(noteSpy).toHaveBeenCalledOnce();
-          const output = String(noteSpy.mock.calls[0]?.[0]);
-          if (result === "resolved") {
-            expect(findings[0]?.message).toContain("confirmed plugin target is 2026.9.3");
-            expect(output).toContain("whatsapp: 2026.9.2 (clawhub) -> expected 2026.9.3");
-            expect(output).not.toContain("expected 2026.9.4");
-            expect(findings[0]?.fixHint).toBe(
-              "openclaw plugins update whatsapp && openclaw gateway restart",
-            );
-            expect(output).toContain(findings[0]?.fixHint);
-          } else {
-            expect(findings[0]?.message).toContain("requires plugin API >=2026.10.1");
-            expect(output).toContain("requires plugin API >=2026.10.1");
-            expect(output).toContain("No install command generated");
-            expect(output).not.toContain("openclaw plugins update");
-            expect(findings[0]?.fixHint).not.toContain("openclaw plugins update");
-          }
+          expect(findings[0]?.message).toContain("requires plugin API >=2026.10.1");
+          expect(output).toContain("requires plugin API >=2026.10.1");
+          expect(output).toContain("No install command generated");
+          expect(output).not.toContain("openclaw plugins update");
+          expect(findings[0]?.fixHint).not.toContain("openclaw plugins update");
         }
       } finally {
         noteSpy.mockRestore();
