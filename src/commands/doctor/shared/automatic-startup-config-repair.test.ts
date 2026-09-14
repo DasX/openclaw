@@ -2,9 +2,18 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { createConfigIoContext } from "../../../config/io.context.js";
+import { readConfigFileSnapshotFromContext } from "../../../config/io.snapshot.js";
+import {
+  collectEnvSecretRefIds,
+  createConfigResolutionFacts,
+  getResolvedConfigEnvSecretRef,
+  setConfigResolutionFacts,
+} from "../../../config/resolution-facts.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../../config/types.js";
 import { validateConfigObjectWithPlugins } from "../../../config/validation.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
+import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { VERSION } from "../../../version.js";
 import {
   isStartupConfigRepairResult,
@@ -175,6 +184,99 @@ describe("automatic startup config repair", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("carries surviving reference facts through the repair rewrite", () => {
+    const config = {
+      session: { idleMinutes: 45 },
+      models: { providers: { minimax: { apiKey: "substituted-not-a-real-key" } } },
+    } as OpenClawConfig;
+    setConfigResolutionFacts(
+      config,
+      createConfigResolutionFacts(
+        [],
+        new Map(),
+        "default",
+        new Map([["models.providers.minimax.apiKey", "SHORTHAND_KEY"]]),
+      ),
+    );
+    const snapshot = invalidSnapshot({ config, issuePaths: ["session.idleMinutes"] });
+
+    const resolved = resolveStartupConfigSnapshot(snapshot);
+
+    expect(resolved?.sourceConfig.session).toEqual({ reset: { mode: "idle", idleMinutes: 45 } });
+    expect(collectEnvSecretRefIds(resolved?.sourceConfig)).toEqual(new Set(["SHORTHAND_KEY"]));
+    expect(
+      getResolvedConfigEnvSecretRef(resolved?.sourceConfig, "models.providers.minimax.apiKey")?.id,
+    ).toBe("SHORTHAND_KEY");
+  });
+
+  it("retires a reference fact whose path the repair moved", () => {
+    // The repair relocates session.idleMinutes, so a fact recorded at the authored path would
+    // otherwise keep answering lookups for a value that no longer lives there.
+    const config = { session: { idleMinutes: 45 } } as OpenClawConfig;
+    setConfigResolutionFacts(
+      config,
+      createConfigResolutionFacts(
+        [],
+        new Map(),
+        "default",
+        new Map([["session.idleMinutes", "MOVED_KEY"]]),
+      ),
+    );
+    const snapshot = invalidSnapshot({ config, issuePaths: ["session.idleMinutes"] });
+
+    const resolved = resolveStartupConfigSnapshot(snapshot);
+
+    expect(resolved?.sourceConfig.session).toEqual({ reset: { mode: "idle", idleMinutes: 45 } });
+    expect(getResolvedConfigEnvSecretRef(resolved?.sourceConfig, "session.idleMinutes")).toBeNull();
+    // The variable is still referenced by the operator's config, so pre-bootstrap cleanup reads
+    // the pre-repair snapshot as well and keeps it out of the delete set.
+    expect(collectEnvSecretRefIds(snapshot.sourceConfig)).toEqual(new Set(["MOVED_KEY"]));
+  });
+
+  it("keeps a real read's ${VAR} reference through a real legacy repair", async () => {
+    // The other repair tests stub the facts onto a hand-built snapshot. This one records them the
+    // only way production does: a real config file, read by the real reader, substituted for real.
+    await withOpenClawTestState({ prefix: "openclaw-repair-real-reader-" }, async (state) => {
+      await state.writeConfig({
+        session: { idleMinutes: 45 },
+        models: {
+          providers: {
+            minimax: {
+              baseUrl: "https://example.invalid/anthropic",
+              api: "anthropic-messages",
+              apiKey: "${LEGACY_REPAIR_KEY}",
+              models: [],
+            },
+          },
+        },
+      });
+
+      const snapshot = await readConfigFileSnapshotFromContext(
+        createConfigIoContext({
+          configPath: state.configPath,
+          env: { ...state.env, LEGACY_REPAIR_KEY: "read-substituted-not-a-real-key" },
+          homedir: () => state.home,
+          observe: false,
+        }),
+      );
+      // Preconditions: substitution really happened, and the legacy key really makes it repairable.
+      expect(snapshot.sourceConfig.models?.providers?.minimax?.apiKey).toBe(
+        "read-substituted-not-a-real-key",
+      );
+      expect(collectEnvSecretRefIds(snapshot.sourceConfig)).toEqual(new Set(["LEGACY_REPAIR_KEY"]));
+      expect(snapshot.valid).toBe(false);
+
+      const resolved = resolveStartupConfigSnapshot(snapshot);
+
+      expect(resolved?.sourceConfig.session).toEqual({ reset: { mode: "idle", idleMinutes: 45 } });
+      // Without the fact transfer the repaired clone reports the substituted literal as an
+      // ordinary value, so pre-bootstrap deletes the managed key the config still depends on.
+      expect(collectEnvSecretRefIds(resolved?.sourceConfig)).toEqual(
+        new Set(["LEGACY_REPAIR_KEY"]),
+      );
+    });
   });
 
   it.each([

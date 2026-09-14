@@ -11,6 +11,7 @@ import { prepareConfigWriteTopology } from "../../../config/io.write-topology.js
 import { inheritLegacyDefaultAgentId } from "../../../config/legacy.default-agent-owner.js";
 import { findLegacyConfigIssues } from "../../../config/legacy.js";
 import { inspectShippedPluginInstallConfigRecords } from "../../../config/plugin-install-config-migration.js";
+import { copyConfigResolutionFactsThroughRewrite } from "../../../config/resolution-facts.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../../config/types.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import {
@@ -115,6 +116,10 @@ function planConfigRepair(
   if (isDeepStrictEqual(config, snapshot.sourceConfig)) {
     return null;
   }
+  // Both projection and migration clone the config, which leaves the repaired object without the
+  // read's resolution facts. Callers cannot tell the two apart, so a repaired snapshot that lost
+  // them reports an authored `${VAR}` reference as an ordinary literal.
+  copyConfigResolutionFactsThroughRewrite(snapshot.sourceConfig, config);
   const valid = withMetadata(config, (metadata) => {
     const validated = pluginContracts
       ? validateConfigObjectWithPlugins(

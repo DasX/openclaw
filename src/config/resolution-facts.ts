@@ -181,6 +181,59 @@ export function collectEnvSecretRefIds(value: unknown): Set<string> {
   return ids;
 }
 
+/** Walks the path shape substitution emits: dot-separated keys with `[index]` for array items. */
+function readConfigFactPathValue(root: unknown, path: string): unknown {
+  let cursor: unknown = root;
+  for (const segment of path.split(".")) {
+    const bracket = segment.indexOf("[");
+    const key = bracket < 0 ? segment : segment.slice(0, bracket);
+    if (key) {
+      if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) {
+        return undefined;
+      }
+      if (!Object.hasOwn(cursor, key)) {
+        return undefined;
+      }
+      cursor = (cursor as Record<string, unknown>)[key];
+    }
+    if (bracket < 0) {
+      continue;
+    }
+    for (const [, index] of segment.slice(bracket).matchAll(/\[(\d+)\]/g)) {
+      if (!Array.isArray(cursor)) {
+        return undefined;
+      }
+      cursor = cursor[Number(index)];
+    }
+  }
+  return cursor;
+}
+
+/**
+ * Carries recorded facts onto a rewritten config, dropping the paths the rewrite invalidated.
+ *
+ * Repair and migration rebuild config through `structuredClone`, so the result reaches its callers
+ * without the facts keyed to the original object. A path whose value survived the rewrite unchanged
+ * still describes the same authored reference; one the rewrite moved, dropped, or overwrote does
+ * not, so it must not keep answering path lookups on the rewritten config.
+ */
+export function copyConfigResolutionFactsThroughRewrite(source: unknown, target: unknown): void {
+  const facts = getConfigResolutionFacts(source);
+  if (facts === null) {
+    setConfigResolutionFacts(target, null);
+    return;
+  }
+  const recorded = new Set([...facts, ...(envSecretRefsByFacts.get(facts)?.keys() ?? [])]);
+  copyConfigResolutionFactsExcept(
+    source,
+    target,
+    [...recorded].filter(
+      (path) =>
+        !Object.is(readConfigFactPathValue(source, path), readConfigFactPathValue(target, path)),
+    ),
+  );
+}
+
 /** Reads inline references from authored facts and structured references from their values. */
 export function resolveConfigSecretRef(params: {
   config: unknown;
