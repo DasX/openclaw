@@ -11,7 +11,13 @@ import {
 } from "./resolution-facts.js";
 
 describe("resolution facts through config rewrites", () => {
-  it.each([
+  it.each<{
+    name: string;
+    path: string;
+    source: object;
+    target: object;
+    survives: boolean;
+  }>([
     {
       name: "array item",
       path: "items[0].key",
