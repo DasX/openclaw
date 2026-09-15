@@ -1390,6 +1390,40 @@ describe("github-copilot plugin", () => {
     });
   }
 
+  it("threads provider authority into the guarded device request", async () => {
+    const method = requireAuthMethod(registerProviderWithPluginConfig({}).auth, 0);
+    const agentDir = await createAgentDir();
+    let current = true;
+    const dispatch = vi.fn();
+    mocks.fetchWithSsrFGuard.mockImplementation(async (params) => {
+      await Promise.resolve();
+      current = false;
+      params.beforeRequest?.();
+      dispatch();
+      throw new Error("Request dispatched after authority was revoked");
+    });
+
+    await expect(
+      method.run({
+        config: {},
+        credentialOnly: true,
+        env: {},
+        agentDir,
+        prompter: { confirm: vi.fn(), note: vi.fn() },
+        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+        isRemote: true,
+        openUrl: vi.fn(),
+        oauth: { createVpsAwareHandlers: vi.fn() },
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("Login revoked");
+          }
+        },
+      }),
+    ).rejects.toThrow("Login revoked");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it.each([
     { methodIndex: 0, domain: "github.com", existing: false },
     { methodIndex: 0, domain: "github.com", existing: true },

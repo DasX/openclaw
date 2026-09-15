@@ -530,6 +530,7 @@ export default definePluginEntry({
                 },
               }),
           ...(ctx.signal ? { signal: ctx.signal } : {}),
+          ...(ctx.assertCurrent ? { assertCurrent: ctx.assertCurrent } : {}),
         },
         normalizedDomain,
       );
