@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createConfigIO } from "../../../config/io.factory.js";
 import { createConfigIoContext } from "../../../config/io.context.js";
+import { createConfigIO } from "../../../config/io.factory.js";
 import { readConfigFileSnapshotFromContext } from "../../../config/io.snapshot.js";
 import {
   collectEnvSecretRefIds,
@@ -51,68 +51,70 @@ describe("automatic startup config repair", () => {
     { providerId: "partner.east", refPath: 'models.providers["partner.east"].apiKey' },
     { providerId: "partner[blue]", refPath: 'models.providers["partner[blue]"].apiKey' },
     { providerId: "42", refPath: 'models.providers["42"].apiKey' },
-  ])("preserves real-reader env provenance for quoted provider $providerId during repair", async ({
-    providerId,
-    refPath,
-  }) => {
-    await withDoctorConfigPreflightHome(async (home) => {
-      const configPath =
-        process.env.OPENCLAW_CONFIG_PATH ?? path.join(home, ".openclaw", "openclaw.json");
-      const raw = JSON.stringify({
-        gateway: { mode: "local" },
-        session: { idleMinutes: 45 },
-        models: {
-          providers: {
-            [providerId]: {
-              baseUrl: "https://provider.invalid/v1",
-              api: "openai-completions",
-              apiKey: "${QUOTED_REPAIR_KEY}",
-              models: [{ id: "fixture-model", name: "Fixture model" }],
+  ])(
+    "preserves real-reader env provenance for quoted provider $providerId during repair",
+    async ({ providerId, refPath }) => {
+      await withDoctorConfigPreflightHome(async (home) => {
+        const configPath =
+          process.env.OPENCLAW_CONFIG_PATH ?? path.join(home, ".openclaw", "openclaw.json");
+        const raw = JSON.stringify({
+          gateway: { mode: "local" },
+          session: { idleMinutes: 45 },
+          models: {
+            providers: {
+              [providerId]: {
+                baseUrl: "https://provider.invalid/v1",
+                api: "openai-completions",
+                apiKey: "${QUOTED_REPAIR_KEY}",
+                models: [{ id: "fixture-model", name: "Fixture model" }],
+              },
             },
           },
-        },
-      });
-      await fs.mkdir(path.dirname(configPath), { recursive: true });
-      await fs.writeFile(configPath, raw);
-      const snapshot = await createConfigIO({
-        configPath,
-        env: { ...process.env, QUOTED_REPAIR_KEY: "synthetic-environment-file-value" },
-        observe: false,
-      }).readConfigFileSnapshot();
-      expect(snapshot.valid).toBe(false);
-      expect(snapshot.sourceConfig.session).toHaveProperty("idleMinutes", 45);
-      expect(snapshot.sourceConfig.models?.providers?.[providerId]?.apiKey).toBe(
-        "synthetic-environment-file-value",
-      );
-      expect(getResolvedConfigEnvSecretRef(snapshot.sourceConfig, refPath)?.id).toBe(
-        "QUOTED_REPAIR_KEY",
-      );
+        });
+        await fs.mkdir(path.dirname(configPath), { recursive: true });
+        await fs.writeFile(configPath, raw);
+        const snapshot = await createConfigIO({
+          configPath,
+          env: { ...process.env, QUOTED_REPAIR_KEY: "synthetic-environment-file-value" },
+          observe: false,
+        }).readConfigFileSnapshot();
+        expect(snapshot.valid).toBe(false);
+        expect(snapshot.sourceConfig.session).toHaveProperty("idleMinutes", 45);
+        expect(snapshot.sourceConfig.models?.providers?.[providerId]?.apiKey).toBe(
+          "synthetic-environment-file-value",
+        );
+        expect(getResolvedConfigEnvSecretRef(snapshot.sourceConfig, refPath)?.id).toBe(
+          "QUOTED_REPAIR_KEY",
+        );
 
-      const repaired = resolveStartupConfigSnapshot(snapshot);
-      expect(repaired?.valid).toBe(true);
-      expect(repaired?.sourceConfig.session?.reset?.idleMinutes).toBe(45);
-      expect(collectEnvSecretRefIds(repaired?.sourceConfig)).toEqual(new Set(["QUOTED_REPAIR_KEY"]));
-      expect(getResolvedConfigEnvSecretRef(repaired?.sourceConfig, refPath)?.id).toBe(
-        "QUOTED_REPAIR_KEY",
-      );
-      for (const replacement of [undefined, "changed-value"]) {
-        const rewritten = structuredClone(snapshot.sourceConfig);
-        const provider = rewritten.models?.providers?.[providerId];
-        expect(provider).toBeDefined();
-        if (provider) {
-          if (replacement === undefined) {
-            delete provider.apiKey;
-          } else {
-            provider.apiKey = replacement;
+        const repaired = resolveStartupConfigSnapshot(snapshot);
+        expect(repaired?.valid).toBe(true);
+        expect(repaired?.sourceConfig.session?.reset?.idleMinutes).toBe(45);
+        expect(collectEnvSecretRefIds(repaired?.sourceConfig)).toEqual(
+          new Set(["QUOTED_REPAIR_KEY"]),
+        );
+        expect(getResolvedConfigEnvSecretRef(repaired?.sourceConfig, refPath)?.id).toBe(
+          "QUOTED_REPAIR_KEY",
+        );
+        for (const replacement of [undefined, "changed-value"]) {
+          const rewritten = structuredClone(snapshot.sourceConfig);
+          const provider = rewritten.models?.providers?.[providerId];
+          expect(provider).toBeDefined();
+          if (provider) {
+            if (replacement === undefined) {
+              delete provider.apiKey;
+            } else {
+              provider.apiKey = replacement;
+            }
           }
+          copyConfigResolutionFactsThroughRewrite(snapshot.sourceConfig, rewritten);
+          expect(getResolvedConfigEnvSecretRef(rewritten, refPath)).toBeNull();
+          expect(collectEnvSecretRefIds(rewritten)).toEqual(new Set());
         }
-        copyConfigResolutionFactsThroughRewrite(snapshot.sourceConfig, rewritten);
-        expect(getResolvedConfigEnvSecretRef(rewritten, refPath)).toBeNull();
-        expect(collectEnvSecretRefIds(rewritten)).toEqual(new Set());
-      }
-      expect(await fs.readFile(configPath, "utf8")).toBe(raw);
-    });
-  });
+        expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+      });
+    },
+  );
 
   it("repairs an independent core alias while retaining a deferred plugin's legacy input", async () => {
     await withDoctorConfigPreflightHome(async (home) => {
