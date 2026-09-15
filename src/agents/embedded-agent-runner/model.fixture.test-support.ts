@@ -15,6 +15,10 @@ export function guardModelFixtureAuth(root: string) {
         violations.push(dir);
         throw new Error("Auth profile request escaped the model fixture");
       }
+      if (options?.readOnly !== true) {
+        violations.push(dir);
+        throw new Error("Model fixture auth request must be read-only");
+      }
       return loadAuthProfileStoreForRuntime(dir, options, env);
     });
   return { spy, verify: () => expect(violations).toEqual([]) };
