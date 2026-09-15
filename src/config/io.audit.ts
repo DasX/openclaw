@@ -1,7 +1,10 @@
 // Audits config paths and values for diagnostics and safety checks.
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { createSqliteAuditRecordStore } from "../infra/sqlite-audit-record-store.js";
+import {
+  createSqliteAuditRecordStore,
+  registerSqliteAuditRecordAsync,
+} from "../infra/sqlite-audit-record-store.js";
 import { redactSecrets } from "../logging/redact.js";
 import { resolveConfigAuditStoreEnv } from "./config-journal-snapshot.js";
 import type { ConfigWriteAuditOrigin } from "./io.types.js";
@@ -37,10 +40,19 @@ const CONFIG_SET_VALUE_OPTIONS = new Set([
   "--section",
 ]);
 
-function findConfigSetPositionals(argv: readonly string[], setIndex: number): number[] {
+function findConfigPositionals(
+  argv: readonly string[],
+  startIndex: number,
+  maxPositionals: number,
+): number[] {
   const positionals: number[] = [];
+  // A parent "--" must not turn child options into config path/value positionals.
   let optionsEnded = false;
-  for (let index = setIndex + 1; index < argv.length && positionals.length < 2; index += 1) {
+  for (
+    let index = startIndex;
+    index < argv.length && positionals.length < maxPositionals;
+    index += 1
+  ) {
     const arg = argv[index];
     if (arg === undefined) {
       break;
@@ -62,30 +74,6 @@ function findConfigSetPositionals(argv: readonly string[], setIndex: number): nu
   return positionals;
 }
 
-function findConfigSetCommandIndex(argv: readonly string[], configIndex: number): number {
-  let optionsEnded = false;
-  for (let index = configIndex + 1; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === undefined) {
-      return -1;
-    }
-    if (!optionsEnded && arg === "--") {
-      optionsEnded = true;
-      continue;
-    }
-    if (!optionsEnded && arg.startsWith("-")) {
-      const equalsIndex = arg.indexOf("=");
-      const optionName = equalsIndex < 0 ? arg : arg.slice(0, equalsIndex);
-      if (equalsIndex < 0 && CONFIG_SET_VALUE_OPTIONS.has(optionName)) {
-        index += 1;
-      }
-      continue;
-    }
-    return arg === "set" ? index : -1;
-  }
-  return -1;
-}
-
 function redactConfigAuditArgv(argv: readonly string[]): string[] {
   const redacted = redactSensitiveArgv(argv);
   let setIndex = -1;
@@ -93,8 +81,9 @@ function redactConfigAuditArgv(argv: readonly string[]): string[] {
     if (redacted[index] !== "config") {
       continue;
     }
-    setIndex = findConfigSetCommandIndex(redacted, index);
-    if (setIndex >= 0) {
+    const [commandIndex] = findConfigPositionals(redacted, index + 1, 1);
+    if (commandIndex !== undefined && redacted[commandIndex] === "set") {
+      setIndex = commandIndex;
       break;
     }
   }
@@ -115,7 +104,7 @@ function redactConfigAuditArgv(argv: readonly string[]): string[] {
       redacted[index] = "--batch-json=***";
     }
   }
-  const positionals = findConfigSetPositionals(redacted, setIndex);
+  const positionals = findConfigPositionals(redacted, setIndex + 1, 2);
   if (positionals.length < 2) {
     return redacted;
   }
@@ -686,15 +675,24 @@ export function sanitizeConfigAuditRecord(record: ConfigAuditRecord): ConfigAudi
   return redactSecrets(sanitized);
 }
 
-export async function appendConfigAuditRecord(params: ConfigAuditAppendParams): Promise<void> {
+export async function appendConfigAuditRecord(
+  params: ConfigAuditAppendParams,
+  assertCurrent?: () => void,
+): Promise<void> {
+  assertCurrent?.();
   try {
     const record = sanitizeConfigAuditRecord(resolveConfigAuditAppendRecord(params));
-    openConfigAuditStore(resolveConfigAuditStoreEnv(params)).register(
-      configAuditEntryKey(record),
-      record,
-      Date.parse(record.ts),
+    await registerSqliteAuditRecordAsync(
+      {
+        scope: CONFIG_AUDIT_SCOPE,
+        maxEntries: CONFIG_AUDIT_MAX_ENTRIES,
+        env: resolveConfigAuditStoreEnv(params),
+        assertCurrent,
+      },
+      { key: configAuditEntryKey(record), value: record, createdAt: Date.parse(record.ts) },
     );
   } catch {
+    assertCurrent?.();
     // best-effort
   }
 }

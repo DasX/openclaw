@@ -5,6 +5,11 @@ export const doctorConfigRuntimeEntrypoints = {
     sourceWorkerName: "doctor-config-preflight",
     distWorkerPath: "commands/doctor-config-preflight.js",
   },
+  checkpoint: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../infra/startup-migration-checkpoint",
+    distWorkerPath: "infra/startup-migration-checkpoint.js",
+  },
   configGuard: {
     currentModuleUrl: import.meta.url,
     sourceWorkerName: "../cli/program/config-guard",
@@ -25,9 +30,9 @@ export const doctorConfigRuntimeEntrypoints = {
     sourceWorkerName: "../flows/doctor-health-contribution-runners.config",
     distWorkerPath: "flows/doctor-health-contribution-runners.config.js",
   },
-  installRecords: {
+  installIndexSeed: {
     currentModuleUrl: import.meta.url,
-    sourceWorkerName: "../plugins/installed-plugin-index-records",
-    distWorkerPath: "plugins/installed-plugin-index-records.js",
+    sourceWorkerName: "../plugins/test-helpers/installed-plugin-index",
+    distWorkerPath: "test-support/installed-plugin-index.js",
   },
 } as const;

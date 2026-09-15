@@ -243,6 +243,7 @@ export type RunCliAgentParams = {
   messageProvider?: string;
   /** Capabilities declared by the gateway client that originated this run. */
   clientCaps?: string[];
+  gatewayUiCommandTarget?: import("../../gateway/ui-command-target.types.js").GatewayUiCommandTarget;
   /** Trusted run-local capability to author pinned widgets without inline presentation. */
   pinnedWidgetAuthoring?: boolean;
   currentChannelId?: string;
@@ -346,7 +347,7 @@ type CliPreparedBackend = {
     adoptProcessToken: (processToken: string) => void;
     /** Revoke the bearer when the child process that holds it exits. */
     revokeProcessToken: () => void;
-    activate: (captureKey: string) => void;
+    activate: (captureKey: string, assertCurrent: () => void) => void;
     deactivate: (captureKey: string) => void;
     captureNativeTools?: (tools: unknown) => void;
   };

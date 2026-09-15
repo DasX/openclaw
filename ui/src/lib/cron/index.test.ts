@@ -563,7 +563,7 @@ describe("cron controller", () => {
     });
   });
 
-  it("sends explicit null model/thinking clears when blanking stored overrides on edit", async () => {
+  it("sends explicit null clears when blanking stored overrides on edit", async () => {
     const { call } = await createCronSubmitHarness("job-clear-overrides", {
       method: "cron.update",
       jobs: [
@@ -574,6 +574,7 @@ describe("cron controller", () => {
             message: "do work",
             model: "openai/gpt-5.5",
             thinking: "high",
+            timeoutSeconds: 90,
           },
         } as unknown as CronState["cronJobs"][number],
       ],
@@ -583,6 +584,7 @@ describe("cron controller", () => {
         payloadText: "do work",
         payloadModel: "",
         payloadThinking: "",
+        timeoutSeconds: "",
       },
     }).submit();
 
@@ -591,6 +593,7 @@ describe("cron controller", () => {
       message: "do work",
       model: null,
       thinking: null,
+      timeoutSeconds: null,
     });
   });
 
@@ -2888,7 +2891,7 @@ describe("cron controller", () => {
     const state = createStateWithRequest(request);
 
     await loadCronJobsPage(state);
-    await expect(loadCronRuns(state, null)).resolves.toBe("error");
+    await expect(loadCronRuns(state)).resolves.toBe("error");
 
     expect(state.cronJobsSnapshotRevision).toBe("loaded-empty");
     expect(state.cronJobsError).toBeNull();
@@ -2918,7 +2921,7 @@ describe("cron controller", () => {
     });
     const state = createStateWithRequest(request);
 
-    await expect(loadCronRuns(state, "job-1")).resolves.toBe("ok");
+    await expect(loadCronRuns(state)).resolves.toBe("ok");
     expect(state.cronRuns).toHaveLength(1);
     expect(state.cronRunsHasMore).toBe(true);
 
@@ -2938,9 +2941,9 @@ describe("cron controller", () => {
     };
     const { older: olderOverview, state } = createCronRunsRace([currentEntry]);
 
-    const olderLoad = loadCronRuns(state, null);
+    const olderLoad = loadCronRuns(state);
     updateCronRunsFilter(state, { cronRunsQuery: "fresh" });
-    await expect(loadCronRuns(state, null)).resolves.toBe("ok");
+    await expect(loadCronRuns(state)).resolves.toBe("ok");
     expect(state.cronRuns).toEqual([currentEntry]);
 
     olderOverview.resolve(
@@ -2971,10 +2974,10 @@ describe("cron controller", () => {
     };
     const { older: olderOverview, state } = createCronRunsRace([selectedEntry]);
 
-    const olderLoad = loadCronRuns(state, null);
+    const olderLoad = loadCronRuns(state);
     updateCronRunsFilter(state, { cronRunsScope: "job" });
     state.cronRunsJobId = "selected-job";
-    await expect(loadCronRuns(state, "selected-job")).resolves.toBe("ok");
+    await expect(loadCronRuns(state)).resolves.toBe("ok");
 
     olderOverview.resolve(
       createCronRunsResult([
@@ -3006,10 +3009,10 @@ describe("cron controller", () => {
       cronRunsJobId: "selected-job",
     });
 
-    const olderLoad = loadCronRuns(state, "selected-job");
+    const olderLoad = loadCronRuns(state);
     updateCronRunsFilter(state, { cronRunsScope: "all" });
     state.cronRunsJobId = null;
-    await expect(loadCronRuns(state, null)).resolves.toBe("ok");
+    await expect(loadCronRuns(state)).resolves.toBe("ok");
 
     olderJobHistory.resolve(
       createCronRunsResult([
@@ -3050,10 +3053,10 @@ describe("cron controller", () => {
       cronRunsNextOffset: 1,
     });
 
-    const olderLoad = loadCronRuns(state, null, { append: true });
+    const olderLoad = loadCronRuns(state, { append: true });
     expect(state.cronRunsLoadingMore).toBe(true);
     updateCronRunsFilter(state, { cronRunsStatuses: ["error"] });
-    await expect(loadCronRuns(state, null)).resolves.toBe("ok");
+    await expect(loadCronRuns(state)).resolves.toBe("ok");
     expect(state.cronRunsLoadingMore).toBe(false);
 
     olderPage.resolve(
@@ -3088,8 +3091,8 @@ describe("cron controller", () => {
     };
     const { older: olderFailure, state } = createCronRunsRace([currentEntry]);
 
-    const olderLoad = loadCronRuns(state, null);
-    await expect(loadCronRuns(state, null)).resolves.toBe("ok");
+    const olderLoad = loadCronRuns(state);
+    await expect(loadCronRuns(state)).resolves.toBe("ok");
     olderFailure.reject(new Error("stale cron history unavailable"));
 
     await expect(olderLoad).resolves.toBe("skipped");
@@ -3105,8 +3108,8 @@ describe("cron controller", () => {
       .mockRejectedValueOnce(new Error("current cron history unavailable"));
     const state = createStateWithRequest(request);
 
-    const olderLoad = loadCronRuns(state, null);
-    await expect(loadCronRuns(state, null)).resolves.toBe("error");
+    const olderLoad = loadCronRuns(state);
+    await expect(loadCronRuns(state)).resolves.toBe("error");
     expect(state.cronError).toBe("current cron history unavailable");
 
     olderOverview.resolve({
@@ -3132,7 +3135,7 @@ describe("cron controller", () => {
     });
 
     await loadCronJobsPage(state);
-    await loadCronRuns(state, null);
+    await loadCronRuns(state);
 
     expect(request).toHaveBeenCalledWith(
       "cron.list",
@@ -3150,7 +3153,7 @@ describe("cron controller", () => {
     });
     const state = createStateWithRequest(request);
 
-    await expect(loadCronRuns(state, null)).resolves.toBe("error");
+    await expect(loadCronRuns(state)).resolves.toBe("error");
 
     expect(state.cronError).toBe("cron.runs unavailable");
   });

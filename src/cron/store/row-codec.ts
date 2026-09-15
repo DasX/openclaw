@@ -18,8 +18,8 @@ import {
 import type { CronJobState, CronStoredJob, CronStoreFile } from "../types.js";
 import { deliveryFromJson, deliveryToJson } from "./delivery-codec.js";
 import { normalizeNumber, tryParseJsonObject } from "./scalar-codec.js";
-import type { CronJobInsert, CronJobRow } from "./schema.js";
-import { getCronStoreKysely } from "./schema.js";
+import type { CronJobInsert, CronJobReadRow, CronJobRow } from "./schema.js";
+import { CRON_JOB_READ_COLUMNS, getCronStoreKysely } from "./schema.js";
 import type { LoadedCronStore } from "./types.js";
 
 function stripJobRuntimeFields(job: CronStoreFile["jobs"][number]): Record<string, unknown> {
@@ -124,7 +124,7 @@ function decodeCronJobConfig(jobJson: Record<string, unknown>): Record<string, u
   return delivery ? { ...jobJson, delivery } : jobJson;
 }
 
-function rowToCronJob(row: CronJobRow, jobJson: Record<string, unknown>): CronStoredJob | null {
+function rowToCronJob(row: CronJobReadRow, jobJson: Record<string, unknown>): CronStoredJob | null {
   const state = tryParseJsonObject(row.state_json);
   if (!state || getInvalidPersistedCronJobReason(jobJson)) {
     return null;
@@ -191,10 +191,11 @@ export function loadCronRows(
   db: DatabaseSync,
   storeKey: string,
   jobIds?: ReadonlySet<string>,
-): CronJobRow[] {
+): CronJobReadRow[] {
+  // Preserve authorization of every stored column even when no row matches.
   let query = getCronStoreKysely(db)
-    .selectFrom("cron_jobs")
-    .selectAll()
+    .selectFrom(getCronStoreKysely(db).selectFrom("cron_jobs").selectAll().as("cron_rows"))
+    .select(CRON_JOB_READ_COLUMNS)
     .where("store_key", "=", storeKey)
     .orderBy("sort_order", "asc")
     .orderBy("updated_at", "asc")
@@ -341,7 +342,8 @@ export function replaceCronRows(
     db,
     getCronStoreKysely(db)
       .selectFrom("cron_jobs")
-      .select(["job_id", "job_json"])
+      .select("job_id")
+      .$if(opts?.preserveRuntimeState === true, (query) => query.select("job_json"))
       .where("store_key", "=", storeKey),
   ).rows;
   const normalizedJobs: CronStoredJob[] = [];
@@ -353,7 +355,7 @@ export function replaceCronRows(
   const legacyAuthorityJobIds = new Set<string>();
   for (const row of existingRows) {
     existingJobIds.add(row.job_id);
-    const storedJob = tryParseJsonObject(row.job_json);
+    const storedJob = row.job_json === undefined ? undefined : tryParseJsonObject(row.job_json);
     if (
       storedJob &&
       (Object.hasOwn(storedJob, "runtimeAuthority") ||
@@ -453,7 +455,7 @@ export function updateCronRuntimeRows(
 }
 
 /** Reconstructs loaded cron store data and config-runtime sidecars from SQLite rows. */
-export function loadedCronStoreFromRows(rows: CronJobRow[]): LoadedCronStore {
+export function loadedCronStoreFromRows(rows: CronJobReadRow[]): LoadedCronStore {
   const jobs: CronStoredJob[] = [];
   const configJobs: LoadedCronStore["configJobs"] = [];
   const configJobIndexes: number[] = [];

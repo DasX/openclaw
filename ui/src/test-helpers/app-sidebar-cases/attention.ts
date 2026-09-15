@@ -7,8 +7,10 @@ import {
   createGatewayHarness,
   createSessionsHarness,
   mountSidebar,
+  TWO_AGENTS,
 } from "../app-sidebar.ts";
 import { waitForFast } from "../wait-for.ts";
+import { mountRoster } from "./roster.test-support.ts";
 import "../../components/app-sidebar.ts";
 
 const sessionKey = "agent:main:attention";
@@ -59,6 +61,55 @@ function agentAttentionRow(
 }
 
 describe("AppSidebar session attention", () => {
+  it("keeps an active waiting session hand-only and restores its ring after resolution", async () => {
+    const client = {
+      request: vi.fn().mockResolvedValue({ questions: [] }),
+    } as unknown as GatewayBrowserClient;
+    const gatewayHarness = createGatewayHarness(client);
+    const sessionsHarness = createSessionsHarness("main", [sessionKey]);
+    setRows(sessionsHarness, [
+      {
+        key: sessionKey,
+        kind: "direct",
+        label: "Waiting session",
+        updatedAt: 2,
+        status: "running",
+        hasActiveRun: true,
+      },
+    ]);
+    const { sidebar } = await mountSidebar(gatewayHarness.gateway, sessionsHarness.sessions);
+    const row = sidebar.querySelector(`[data-session-key="${sessionKey}"]`)!;
+    expect(row.querySelector(".session-glyph__ring")).not.toBeNull();
+    gatewayHarness.publishEvent("question.requested", {
+      id: "question-active",
+      agentId: "main",
+      sessionKey,
+      questions: [
+        {
+          questionId: "confirm",
+          header: "Confirm",
+          question: "Continue?",
+          options: [{ label: "Continue" }],
+        },
+      ],
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+      status: "pending",
+    });
+    await sidebar.updateComplete;
+    expect(
+      row.querySelector('[data-session-attention="question"]')?.getAttribute("aria-label"),
+    ).toBe("Waiting for your answer");
+    expect.soft(row.querySelector(".session-glyph__ring")).toBeNull();
+    expect.soft(row.classList.contains("sidebar-recent-session--attention-amber")).toBe(false);
+    gatewayHarness.publishEvent("question.resolved", {
+      id: "question-active",
+      status: "cancelled",
+    });
+    await sidebar.updateComplete;
+    expect(row.querySelector('[data-session-attention="question"]')).toBeNull();
+    expect(row.querySelector(".session-glyph__ring")).not.toBeNull();
+  });
   it("redacts local paths from failed-run previews", async () => {
     const sessionsHarness = createSessionsHarness("main", [sessionKey]);
     setRows(sessionsHarness, [
@@ -373,6 +424,57 @@ describe("AppSidebar session attention", () => {
 
     expect(sidebar.querySelector('[data-session-attention="error"]')).toBeNull();
     expect(sidebar.textContent).not.toContain("Run failed:");
+  });
+
+  it("attributes a nested failure to its child session while its ancestors continue", async () => {
+    const parentKey = "agent:main:release";
+    const childKey = "agent:main:subagent:validation";
+    const failedKey = "agent:main:subagent:review";
+    const rows = (
+      [
+        {
+          key: parentKey,
+          kind: "direct",
+          label: "Release preparation",
+          updatedAt: 4,
+          status: "done",
+          childSessions: [childKey],
+        },
+        {
+          key: childKey,
+          kind: "direct",
+          label: "Validate candidate",
+          updatedAt: 3,
+          status: "running",
+          hasActiveRun: true,
+          spawnedBy: parentKey,
+          childSessions: [failedKey],
+        },
+        failedRow(failedKey, { label: "Source review", spawnedBy: childKey }),
+      ] satisfies GatewaySessionRow[]
+    ).map((row) => Object.assign({}, row, { agentId: "main" }));
+    const { sidebar, sessions: sessionsHarness, result } = await mountRoster(TWO_AGENTS, rows);
+    const parentRow = () => sidebar.querySelector(`[data-session-key="${parentKey}"]`)!;
+    const childFailure = "Child session Source review failed: Provider credits exhausted";
+    expect(parentRow().textContent).toContain(childFailure);
+    expect(parentRow().textContent).not.toContain("Run failed:");
+
+    sidebar.sidebarAgentsMode = "roster";
+    await waitForFast(() => {
+      expect(
+        parentRow()
+          ?.querySelector('[data-session-attention="error"]')
+          ?.closest('[role="img"]')
+          ?.getAttribute("aria-label"),
+      ).toBe(childFailure);
+    });
+
+    result.sessions = rows.map((row) =>
+      row.key === failedKey ? Object.assign({}, row, { lastReadAt: 2 }) : row,
+    );
+    setRows(sessionsHarness, result.sessions);
+    await sidebar.updateComplete;
+    expect(parentRow().querySelector('[data-session-attention="error"]')).toBeNull();
   });
 
   it("shows attention again when a later failure follows a read", async () => {

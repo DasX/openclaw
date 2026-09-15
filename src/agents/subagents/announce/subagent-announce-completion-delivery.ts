@@ -1,9 +1,11 @@
 /**
- * Direct completion fallback and source-delivery evidence for subagent announcements.
+ * Requester completion calls, direct fallback, and source-delivery evidence.
  */
 import { sanitizePendingFinalDeliveryText } from "../../../auto-reply/reply/pending-final-delivery-state.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { waitForGatewayDispatch } from "../../../gateway/server-in-process-dispatch.js";
 import { sourceDeliveryTargetsMatch } from "../../../infra/outbound/source-delivery-plan.js";
+import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../../sessions/input-provenance.js";
 import { deriveSessionChatTypeFromKey } from "../../../sessions/session-chat-type-shared.js";
 import { isNonTerminalAgentRunStatus } from "../../../shared/agent-run-status.js";
 import { sanitizeAgentRunTerminalReplyText } from "../../agent-run-terminal-reply.js";
@@ -21,11 +23,71 @@ import {
   summarizeDeliveryError,
 } from "./subagent-announce-delivery-retry.js";
 import {
+  dispatchSubagentAnnounceAgent,
   sendSubagentAnnounceMessage,
   tryResolveSubagentRequesterAgentId,
 } from "./subagent-announce-delivery.runtime.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
+import type { SubagentCompletionToolHandoffRegistration } from "./subagent-announce-handoff.js";
 import { inferDeliveryTargetChatType } from "./subagent-announce-origin.js";
+
+export async function runAnnounceAgentCall(params: {
+  agentParams: Record<string, unknown>;
+  privateCompletion?: true;
+  delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
+  expectFinal?: boolean;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  isExecutionAllowed: () => boolean;
+  resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
+}): Promise<unknown> {
+  const deadline = new AbortController();
+  const signal = params.signal
+    ? AbortSignal.any([params.signal, deadline.signal])
+    : deadline.signal;
+  // A private input stays owned by Gateway admission when an observer times out.
+  // Only the caller's lifecycle cancellation may stop that underlying turn.
+  const executionSignal = params.privateCompletion ? params.signal : signal;
+  const timer =
+    params.timeoutMs === undefined
+      ? undefined
+      : setTimeout(
+          () => deadline.abort(new Error("gateway request timeout for agent")),
+          params.timeoutMs,
+        );
+  timer?.unref?.();
+  try {
+    signal.throwIfAborted();
+    const dispatch = dispatchSubagentAnnounceAgent(params.agentParams, {
+      cancelOnDeadline: true,
+      privateCompletion: params.privateCompletion,
+      expectFinal: params.expectFinal,
+      forceSyntheticClient: shouldPreserveUserFacingSessionStateForInputProvenance(
+        params.agentParams.inputProvenance,
+      ),
+      operatorRoleActor: { kind: "system" },
+      delegatedToolPolicyHandoff: params.delegatedToolPolicyHandoff,
+      signal: executionSignal,
+      // Accepted queue waits belong to session admission; execution belongs to
+      // the requester runtime budget, not the announcement handoff deadline.
+      onAccepted: () => clearTimeout(timer),
+      onExecutionStarted: () => {
+        executionSignal?.throwIfAborted();
+        if (!params.isExecutionAllowed()) {
+          throw new SourceOwnerChangedError();
+        }
+        // Execution can be observed before acceptance on an already-running replay.
+        clearTimeout(timer);
+      },
+      resolveGatewayContext: params.resolveGatewayContext,
+    });
+    return params.privateCompletion
+      ? await waitForGatewayDispatch("agent", dispatch, undefined, signal)
+      : await dispatch;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const FAILED_COMPLETION_NOTICE =
   "A delegated task failed before it could report a result. Please retry the task.";

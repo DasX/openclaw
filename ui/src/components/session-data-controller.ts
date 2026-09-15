@@ -28,11 +28,12 @@ import type {
 import { createPanelRefreshStatus, type PanelRefreshStatus } from "./panel-refresh-status.ts";
 import {
   applySessionCatalogContinuation,
+  archiveSessionCatalog as archiveSessionCatalogData,
   applySessionCatalogHostEvent as applySessionCatalogHostEventToData,
   applySessionCatalogPresence as applySessionCatalogPresenceToData,
+  invalidateSessionCatalogs as invalidateSessionCatalogData,
   loadMoreSessionCatalog as loadMoreSessionCatalogData,
   refreshSessionCatalogs as refreshSessionCatalogData,
-  requestSessionCatalogRefresh,
   resolveSessionCatalogAgentId,
   scheduleSessionCatalogRefresh,
   type SessionCatalogDataOwner,
@@ -44,6 +45,7 @@ import {
   publishSidebarSessionError,
   publishSidebarSessionList,
   refreshSidebarSessionList,
+  scheduleFilteredSidebarSessions,
   sidebarSessionListQuery,
   subscribeSidebarAgentSessionCaches,
   subscribeFilteredSidebarSessions,
@@ -65,6 +67,7 @@ type ChildSessionQuery = {
 /** Gateway-backed session-list and external-catalog data ownership. */
 export class SessionDataController implements ReactiveController, SessionCatalogDataOwner {
   sessionCatalogs: SessionCatalog[] = [];
+  readonly pendingCatalogArchives = new Set<string>();
   sessionCatalogRefreshStatus: PanelRefreshStatus = createPanelRefreshStatus();
   loadingMoreSessionCatalogIds: ReadonlySet<string> = new Set();
   visibleSessionLimits = new Map<string, number>();
@@ -95,7 +98,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
   private sessionsSource: SessionCapability | null = null;
   private filteredSessionScope: string | null = null;
   private unsubscribeFilteredSessions: (() => void) | null = null;
-  private childSessionGeneration = 0;
+  childSessionScope = {};
   private childSessionCanonicalListRevision: number | null = null;
   private readonly childSessionQueries = new Map<string, ChildSessionQuery>();
   private reconnectListRevision: number | null = null;
@@ -116,7 +119,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
   private readonly lineage = new SessionLineageController(
     this,
     () => ({ routeId: this.host.activeRouteId, key: this.host.getRouteSessionKey() }),
-    () => this.childSessionGeneration,
+    () => this.childSessionScope,
   );
   private approvalBadgeQueue: ApplicationContext<RouteId>["overlays"]["snapshot"]["approvalQueue"] =
     [];
@@ -245,6 +248,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
 
   retireSessionCatalogData(): void {
     this.sessionScopeGeneration += 1;
+    this.pendingCatalogArchives.clear();
     this.sessionsLoading = false;
     this.loadingMoreSessionCatalogIds = new Set();
     this.sessionCatalogLive.clear();
@@ -279,12 +283,11 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     const agentChanged = previousAgentId !== null && previousAgentId !== nextAgentId;
     const catalogAgentChanged =
       previousCatalogAgentId !== null && previousCatalogAgentId !== nextCatalogAgentId;
-    const currentCanonicalAgentId = this.sessionsAgentId;
     const ownsCurrentCanonicalList =
       !hasSidebarListFilter(this.host) &&
       nextAgentId !== null &&
-      currentCanonicalAgentId !== null &&
-      normalizeAgentId(currentCanonicalAgentId) === nextAgentId &&
+      this.sessionsAgentId !== null &&
+      normalizeAgentId(this.sessionsAgentId) === nextAgentId &&
       this.sessionsResult === context?.sessions.state.result;
 
     this.sessionScopeAgentId = nextAgentId;
@@ -311,7 +314,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       context?.gateway.snapshot.phase === "connected" &&
       hasSidebarListFilter(this.host)
     ) {
-      void this.refreshSidebarSessions();
+      void this.scheduleSidebarSessions();
     }
   }
 
@@ -333,13 +336,9 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     scheduleSessionCatalogRefresh(this, event.type === "visibilitychange");
   };
 
-  invalidateSessionCatalogs(): void {
-    this.sessionCatalogRevision += 1;
-    for (const { id } of this.sessionCatalogs) {
-      this.sessionCatalogRevisions.set(id, (this.sessionCatalogRevisions.get(id) ?? 0) + 1);
-    }
-    requestSessionCatalogRefresh(this, true);
-  }
+  invalidateSessionCatalogs = () => invalidateSessionCatalogData(this);
+
+  archiveSessionCatalog = archiveSessionCatalogData.bind(null, this);
 
   refreshSessionCatalogs = (): Promise<void> => refreshSessionCatalogData(this);
 
@@ -359,7 +358,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       query.observation?.dispose();
     }
     this.childSessionQueries.clear();
-    this.childSessionGeneration += 1;
+    this.childSessionScope = {};
     this.loadedChildSessionKeys = new Set();
     this.loadingChildSessionKeys = new Set();
     this.childSessionErrorsByParent = new Map();
@@ -426,10 +425,11 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     }
     this.updateSessions(sessions);
     if (this.context?.gateway.snapshot.phase === "connected") {
-      // Group catalog hydration is idempotent per connection.
-      void sessions.groupsLoad();
+      void this.context.connectionBootstrap.run(sessions.groupsLoad, () => sessions.groupsLoad(), {
+        background: true,
+      });
       if (sourceChanged && hasSidebarListFilter(this.host)) {
-        void this.refreshSidebarSessions();
+        void this.scheduleSidebarSessions();
       }
     }
   }
@@ -481,7 +481,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       this.retireSessionCatalogData();
     }
     if (connected && this.sessionsSource && hasSidebarListFilter(this.host)) {
-      void this.refreshSidebarSessions();
+      void this.scheduleSidebarSessions();
     }
   }
 
@@ -532,6 +532,11 @@ export class SessionDataController implements ReactiveController, SessionCatalog
   refreshSidebarSessions(agentId = this.host.expandedAgentId()): Promise<void> {
     this.bindFilteredSessions(agentId);
     return refreshSidebarSessionList(this, agentId);
+  }
+
+  scheduleSidebarSessions(): Promise<void> {
+    this.bindFilteredSessions(this.host.expandedAgentId());
+    return scheduleFilteredSidebarSessions(this, () => this.unsubscribeFilteredSessions);
   }
 
   loadMoreSidebarSessions(): Promise<void> {
@@ -658,6 +663,9 @@ export class SessionDataController implements ReactiveController, SessionCatalog
 
   private finishChildSessionLoad(parentKey: string): void {
     if (this.childSessionErrorsByParent.has(parentKey)) {
+      const loaded = new Set(this.loadedChildSessionKeys);
+      loaded.delete(parentKey);
+      this.loadedChildSessionKeys = loaded;
       this.childSessionQueries.get(parentKey)?.observation?.dispose();
       this.childSessionQueries.delete(parentKey);
     }
@@ -713,12 +721,10 @@ export class SessionDataController implements ReactiveController, SessionCatalog
   retryChildSessions(sessionKey: string): void {
     const retry = this.childSessionErrorsByParent.has(sessionKey);
     if (retry) {
+      this.finishChildSessionLoad(sessionKey);
       const errors = new Map(this.childSessionErrorsByParent);
       errors.delete(sessionKey);
       this.childSessionErrorsByParent = errors;
-      this.childSessionQueries.get(sessionKey)?.observation?.dispose();
-      this.childSessionQueries.delete(sessionKey);
-      this.requestSessionDataUpdate();
     }
     void this.loadChildSessions(sessionKey, retry);
   }

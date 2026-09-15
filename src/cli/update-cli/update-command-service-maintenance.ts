@@ -64,10 +64,31 @@ function serviceInspectionBlockMessage(state: GatewayServiceState): string {
   if (state.inspectionReason) {
     return formatServiceInspectionReason(state.inspectionReason);
   }
-  const timeoutMs = state.runtime?.inspectionFailure?.timeoutMs;
-  return timeoutMs === undefined
-    ? GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE
-    : `Scheduled Task probe timed out after ${timeoutMs} ms (ETIMEDOUT). ${GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE}`;
+  if (process.platform === "freebsd") {
+    return (
+      "Gateway service inspection is not supported by this CLI on FreeBSD. " +
+      "Refusing maintenance because service-owned state directories cannot be verified. " +
+      "Have the installation owner manage Gateway shutdown and state maintenance. " +
+      "For updates, use the original package manager or installer; " +
+      "keep pkg-owned files under pkg management."
+    );
+  }
+  const runtime = state.runtime;
+  const tasksCurrent = runtime?.systemd?.tasksCurrent;
+  if (
+    process.platform === "linux" &&
+    runtime?.status === "unknown" &&
+    (runtime.state === "inactive" || runtime.state === "failed") &&
+    !runtime.pid &&
+    tasksCurrent !== undefined &&
+    tasksCurrent > 0
+  ) {
+    return `The Gateway main process has stopped, but processes remain in its systemd service cgroup (${tasksCurrent} tasks). Inspect the unit with systemctl --user status and its journal, then have the process owner stop the remaining children before retrying Doctor or the update.`;
+  }
+  const detail = runtime?.inspectionFailure?.detail;
+  return detail
+    ? `${detail} ${GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE}`
+    : GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE;
 }
 
 export function resolvePreparedGatewayUpdatePolicy(
@@ -338,6 +359,7 @@ type ManagedServiceStopParams = {
   >;
   allowInstallRootChange?: boolean;
   onStopped?: (state: PreManagedServiceStop) => void;
+  assertCurrent?: () => void;
   timeoutMs?: number;
 };
 
@@ -372,6 +394,7 @@ async function stopManagedServiceBeforeMutableUpdate(
     executorFence?.assertCurrent();
   };
   const assertCurrent = () => {
+    params.assertCurrent?.();
     assertNative?.();
     assertExecutor();
   };
@@ -407,9 +430,13 @@ async function stopManagedServiceBeforeMutableUpdate(
     },
     blockMessage: message,
   });
-  const serviceMutationSkipMessage = resolveGatewayServiceManagementBlockMessageForUpdate(
-    process.env,
-  );
+  // Preparation must keep using the manager route admitted during inspection.
+  // Re-reading through process.env can select a different raw systemd route
+  // (for example after the service snapshot fills in an explicit unit/profile),
+  // which invalidates the retained native binding before activation.
+  const serviceEnv = params.expectedService?.serviceEnv ?? process.env;
+  const serviceMutationSkipMessage =
+    resolveGatewayServiceManagementBlockMessageForUpdate(serviceEnv);
   if (serviceMutationSkipMessage) {
     return { ...uninspected, serviceMutationAllowed: false, serviceMutationSkipMessage };
   }
@@ -418,7 +445,7 @@ async function stopManagedServiceBeforeMutableUpdate(
   try {
     service = resolveGatewayService();
     serviceState = await readGatewayServiceState(service, {
-      env: process.env,
+      env: serviceEnv,
       requireEffective: true,
       requireLoadedCommand: true,
       validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
@@ -430,7 +457,7 @@ async function stopManagedServiceBeforeMutableUpdate(
     ) {
       // Re-read the definition too: a timed-out snapshot cannot grant service ownership.
       serviceState = await readGatewayServiceState(service, {
-        env: process.env,
+        env: serviceEnv,
         requireEffective: true,
         validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
         timeoutMs: params.timeoutMs,
@@ -526,16 +553,17 @@ async function stopManagedServiceBeforeMutableUpdate(
         before: inspected,
         timeoutMs: params.timeoutMs,
       }),
-      assertCurrent: updateRun
-        ? () => {
-            // Recovery outlives this preparation callback. Its later task
-            // operations acquire their own native lock, but retain this executor.
-            assertExecutor();
-            if (getUpdateRun(updateRun.runId, { env: updateRun.env })?.status !== "running") {
-              throw new Error("Update run no longer owns Windows task activation.");
-            }
-          }
-        : undefined,
+      assertCurrent: () => {
+        // Recovery reacquires its native lock, but retains the caller's authority.
+        params.assertCurrent?.();
+        assertExecutor();
+        if (
+          updateRun &&
+          getUpdateRun(updateRun.runId, { env: updateRun.env })?.status !== "running"
+        ) {
+          throw new Error("Update run no longer owns Windows task activation.");
+        }
+      },
     });
   };
   // A loaded LaunchAgent can be between KeepAlive respawns. Other supervisors

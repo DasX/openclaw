@@ -5,9 +5,11 @@ import {
   resolveUserPath,
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
+  readMemoryFile,
   MEMORY_INDEX_FTS_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
   MEMORY_SEARCH_DEADLINE_CONTROL,
+  type MemoryReadResult,
   type MemorySearchManager,
   type MemorySearchResult,
   type MemorySource,
@@ -79,6 +81,20 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
         : undefined,
     });
     return selectResults(results);
+  }
+
+  async readFile(params: {
+    relPath: string;
+    from?: number;
+    lines?: number;
+  }): Promise<MemoryReadResult> {
+    return await readMemoryFile({
+      workspaceDir: this.workspaceDir,
+      extraPaths: this.settings.extraPaths,
+      relPath: params.relPath,
+      from: params.from,
+      lines: params.lines,
+    });
   }
 
   private async searchCandidates(
@@ -198,12 +214,12 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
           (searchSyncEnabled &&
             indexIdentity.status === "mismatched" &&
             indexIdentity.owner === "openclaw" &&
-            indexIdentity.code === "chunking_version"));
+            indexIdentity.versionOrder === "older"));
       if (shouldRepairIdentity) {
-        // Missing metadata has no safe generation; chunking upgrades need a full
-        // rebuild. Repair before a read-generation lease can block its writer.
+        this.recordAutomaticRebuild();
+        // The writer rechecks identity under its lease; another manager may have repaired it.
         await this.syncAdmitted(
-          { reason: "search", force: true },
+          { reason: "search" },
           { allowEmbeddingBootstrapFallback: true },
         ).catch((err: unknown) => {
           if (err instanceof WorkerTaskError && err.code === "overloaded") {

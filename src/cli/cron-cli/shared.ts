@@ -248,7 +248,7 @@ function formatCronStatusForDisplay(job: CronJob) {
           ? theme.success
           : theme.muted;
   let label = decorateStatusWithFailures(status, state.consecutiveErrors);
-  if (streamDisabled) {
+  if (streamDisabled && status !== "running") {
     label = "disabled";
   } else if (status === "disabled" && state.autoDisabled) {
     label =
@@ -372,16 +372,8 @@ export function parseCronStaggerMs(params: {
 }
 
 export function parseCronToolsAllow(input: unknown): string[] | undefined {
-  const raw = Array.isArray(input)
-    ? input.map((value) => String(value)).join(" ")
-    : typeof input === "string"
-      ? input
-      : "";
-  const tools = raw
-    .split(/[,\s]+/u)
-    .map((tool) => normalizeOptionalString(tool))
-    .filter((tool): tool is string => Boolean(tool));
-  return tools.length > 0 ? tools : undefined;
+  const tools = parseCronFallbacks(input);
+  return tools?.length ? tools : undefined;
 }
 
 export function parseCronFallbacks(input: unknown): string[] | undefined {

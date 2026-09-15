@@ -13,6 +13,7 @@ import {
   runWithGatewayIndependentRootWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
 import { prependAgentSteeringPrompt } from "../../agent-steering-queue.js";
+import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
 import { terminateAcceptedCollectorRun } from "../spawn/subagent-spawn-cleanup.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
@@ -101,6 +102,18 @@ function persistSubagentRunsOrThrow(...runIds: string[]) {
   );
 }
 
+/** Prepare registry hydration before the session owner's synchronous reset commit. */
+export function prepareSubagentSessionCleanupRevocation(sessionKey: string): () => void {
+  subagentRestorer.restoreOnce(undefined, true);
+  return () => {
+    // The reset owner already resolved the target. Child keys are agent-scoped;
+    // an unscoped global key must not be reinterpreted as another child session.
+    subagentLifecycleController.revokeTerminalSessionEffects(
+      getSubagentRunsForChildSession(sessionKey),
+    );
+  };
+}
+
 function findSubagentTaskForRun(entry: SubagentRunRecord) {
   return resolveSubagentTaskForRun(getSubagentRunsForChildSession(entry.childSessionKey), entry);
 }
@@ -141,6 +154,7 @@ const subagentLifecycleController = new SubagentLifecycleController({
   // Lifecycle wiring precedes publicApi construction; inject this read query
   // as a late-bound callback instead of threading a partially built API object.
   countPendingDescendantRuns: (rootSessionKey) => countPendingDescendantRuns(rootSessionKey),
+  getLatestRunForChildSession: getLatestLiveSubagentRunByChildSessionKey,
   suppressAnnounceForSteerRestart: contextCleanup.suppressAnnounceForSteerRestart,
   resolveSubagentTask: findSubagentTaskForRun,
   shouldEmitEndedHookForRun: contextCleanup.shouldEmitEndedHookForRun,
@@ -266,21 +280,28 @@ export function resumeSubagentRun(runId: string, source: "live" | "restore" = "l
       });
     return;
   }
-  if (entry.execution.outcome && entry.suppressAnnounceReason !== "steer-restart") {
+  try {
+    if (
+      entry.killReconciliation &&
+      reconcileRetiredSubagentCancellation(entry, Date.now()) === false
+    ) {
+      scheduleSubagentRegistrySweep();
+      return;
+    }
     // The child result can reach disk before its task projection. Replay that
     // idempotent projection before terminal cleanup exits during restoration.
     // A steer restart deliberately leaves the shared task writable for its
     // successor run, so the retired row must not terminalize it.
-    try {
+    if (entry.execution.outcome && entry.suppressAnnounceReason !== "steer-restart") {
       finalizeSubagentTaskRun(subagentLifecycleController.options, {
         entry,
         outcome: entry.execution.outcome,
       });
-    } catch (error) {
-      log.warn("subagent task settlement deferred before cleanup", { runId, error });
-      scheduleSubagentDeliveryResumeRetry(runId, entry, GATEWAY_ADMISSION_RETRY_DELAY_MS);
-      return;
     }
+  } catch (error) {
+    log.warn("subagent task settlement deferred before cleanup", { runId, error });
+    scheduleSubagentDeliveryResumeRetry(runId, entry, GATEWAY_ADMISSION_RETRY_DELAY_MS);
+    return;
   }
   const yieldedWakeWaitingForDelivery =
     entry.requesterSettleWake?.requesterYieldBatch === true &&
@@ -331,8 +352,7 @@ export function resumeSubagentRun(runId: string, source: "live" | "restore" = "l
 
   if (typeof entry.execution.endedAt === "number" && entry.execution.endedAt > 0) {
     if (entry.killReconciliation) {
-      // Restored kills remain reconciliation tombstones; only the sweeper may
-      // accept late provider completion or stabilize their task cancellation.
+      // Without a pending requester wake, the sweeper owns provisional cancellation cleanup.
       resumedRuns.add(runId);
       return;
     }

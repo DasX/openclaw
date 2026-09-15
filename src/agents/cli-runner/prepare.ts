@@ -117,7 +117,6 @@ import {
 } from "../embedded-agent-runner/run/runtime-context-prompt.js";
 import {
   mapSandboxSkillEntriesForPrompt,
-  mapSandboxSkillUsagePaths,
   remapSkillReferencePaths,
   resolveSandboxSkillRuntimeInputs,
 } from "../embedded-agent-runner/sandbox-skills.js";
@@ -293,6 +292,7 @@ function prependCliSessionDriftUserContext(
 }
 
 async function resolveCliSkillsPrompt(params: {
+  assertCurrent: () => void;
   agentId: string;
   config: RunCliAgentParams["config"];
   sessionKey: string;
@@ -300,15 +300,20 @@ async function resolveCliSkillsPrompt(params: {
   workspaceDir: string;
   executionWorkspaceDir: string;
 }): Promise<{ prompt: string; usagePaths?: SkillUsagePath[] }> {
+  params.assertCurrent();
   const skillsSnapshot =
     params.skillsSnapshot ??
-    resolveReusableWorkspaceSkillSnapshot({
-      workspaceDir: params.workspaceDir,
-      executionWorkspaceDir: params.executionWorkspaceDir,
-      config: params.config ?? {},
-      agentId: params.agentId,
-      watch: false,
-    }).snapshot;
+    (
+      await resolveReusableWorkspaceSkillSnapshot({
+        assertCurrent: params.assertCurrent,
+        workspaceDir: params.workspaceDir,
+        executionWorkspaceDir: params.executionWorkspaceDir,
+        config: params.config ?? {},
+        agentId: params.agentId,
+        watch: false,
+      })
+    ).snapshot;
+  params.assertCurrent();
   const sandboxWorkspace = await ensureSandboxWorkspaceForSession({
     skillsSnapshot,
     config: params.config,
@@ -316,9 +321,11 @@ async function resolveCliSkillsPrompt(params: {
     sessionKey: params.sessionKey,
     workspaceDir: params.workspaceDir,
   });
+  params.assertCurrent();
   if (!sandboxWorkspace) {
     const { shouldLoadSkillEntries, skillEntries, loadSkillEntries, preserveEntryOrder } =
-      resolveEmbeddedRunSkillEntries({
+      await resolveEmbeddedRunSkillEntries({
+        assertCurrent: params.assertCurrent,
         workspaceDir: params.workspaceDir,
         executionWorkspaceDir: params.executionWorkspaceDir,
         config: params.config,
@@ -326,7 +333,8 @@ async function resolveCliSkillsPrompt(params: {
         skillsSnapshot,
       });
     return {
-      prompt: resolveSkillsPrompt({
+      prompt: await resolveSkillsPrompt({
+        assertCurrent: params.assertCurrent,
         skillsSnapshot,
         entries: shouldLoadSkillEntries ? skillEntries : undefined,
         loadEntries: loadSkillEntries,
@@ -340,6 +348,7 @@ async function resolveCliSkillsPrompt(params: {
 
   const {
     skillsEligibility,
+    skillUsagePaths,
     skillsPromptWorkspaceDir,
     skillsSnapshot: skillsSnapshotForRun,
     skillsWorkspaceDir,
@@ -367,7 +376,8 @@ async function resolveCliSkillsPrompt(params: {
     skillsSnapshot,
   });
   const { shouldLoadSkillEntries, skillEntries, preserveEntryOrder } =
-    resolveEmbeddedRunSkillEntries({
+    await resolveEmbeddedRunSkillEntries({
+      assertCurrent: params.assertCurrent,
       workspaceDir: skillsWorkspaceDir,
       config: params.config,
       agentId: params.agentId,
@@ -381,12 +391,9 @@ async function resolveCliSkillsPrompt(params: {
     skillsPromptWorkspaceDir,
   });
   return {
-    usagePaths: mapSandboxSkillUsagePaths({
-      paths: sandboxWorkspace.skillUsagePaths,
-      skillsWorkspaceDir,
-      skillsPromptWorkspaceDir,
-    }),
-    prompt: resolveSkillsPrompt({
+    usagePaths: skillUsagePaths,
+    prompt: await resolveSkillsPrompt({
+      assertCurrent: params.assertCurrent,
       skillsSnapshot: skillsSnapshotForRun,
       entries: promptSkillEntries,
       workspaceDir: skillsPromptWorkspaceDir,
@@ -1462,6 +1469,8 @@ async function prepareCliRunContextWithinReadFence(
             context: mcpGrantContext,
             runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
             admittedRunContext: params.admittedRunContext,
+            abortSignal: params.abortSignal,
+            assertCurrent: params.assertCurrent,
             // MCP owns a canonical main target even when the native callback is sessionless.
             bindQuestionAnswerAuthority: (assertActive) =>
               bindQuestionAnswerAuthorityForSession(mcpGrantContext.sessionKey, assertActive),
@@ -1512,11 +1521,12 @@ async function prepareCliRunContextWithinReadFence(
               revokeProcessToken: () => {
                 prepareDeps.revokeMcpLoopbackClientGrant(activeToken);
               },
-              activate: (captureKey: string) => {
+              activate: (captureKey: string, assertCurrent: () => void) => {
                 const activated = prepareDeps.activateMcpLoopbackClientGrantCapture({
                   token: activeToken,
                   runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
                   captureKey,
+                  assertCurrent,
                 });
                 if (!activated) {
                   throw new Error(
@@ -1978,11 +1988,23 @@ async function prepareCliRunContextWithinReadFence(
           cwd,
           moduleUrl: import.meta.url,
         });
+    const skillPreparationParams = params;
+    const assertSkillsCurrent = skillPreparationParams.admittedRunContext
+      ? createCliRunCurrentAssertion({
+          ...skillPreparationParams,
+          admittedRunContext: skillPreparationParams.admittedRunContext,
+        })
+      : () => {
+          skillPreparationParams.assertCurrent?.();
+          skillPreparationParams.abortSignal?.throwIfAborted();
+          skillPreparationParams.preparedRunAdmission?.assertSourceCurrent();
+        };
     const preparedSkills = rootedExecution
       ? { prompt: params.skillsSnapshot?.prompt ?? "" }
       : skipsTurnPreparation || nodeClaudePlacement || claudeSkillsPlugin.args.length > 0
         ? { prompt: "" }
         : await resolveCliSkillsPrompt({
+            assertCurrent: assertSkillsCurrent,
             skillsSnapshot: params.skillsSnapshot,
             workspaceDir,
             executionWorkspaceDir: params.sessionEntry?.worktree?.canonicalWorkspaceDir ?? cwd,
@@ -1990,6 +2012,7 @@ async function prepareCliRunContextWithinReadFence(
             agentId: sessionAgentId,
             sessionKey: params.sessionKey?.trim() || params.sessionId,
           });
+    assertSkillsCurrent();
     const systemPromptSkillsPrompt = preparedSkills.prompt;
     const runtimeChannel = skipsTurnPreparation
       ? undefined

@@ -34,6 +34,9 @@ import {
   deriveSessionChatTypeFromKey,
   type SessionKeyChatType,
 } from "../sessions/session-chat-type-shared.js";
+import { isArtifactPreservingStateRead } from "../state/openclaw-state-db-readonly.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { isBackgroundExecTask } from "./background-exec-task-contract.js";
 import {
   isContextEngineMaintenanceTaskOwnerActive,
@@ -63,6 +66,7 @@ import {
 import { readTaskBackingInstance } from "./task-backing-authority.js";
 import { runTaskFlowRegistryMaintenance } from "./task-flow-registry.maintenance.js";
 import { getTaskRegistryMaintenanceSnapshot } from "./task-registry-maintenance-snapshot.js";
+import { withTaskRegistryMutation } from "./task-registry-state.js";
 import {
   configureTaskAuditTaskProvider,
   listTaskAuditFindings,
@@ -73,7 +77,12 @@ import {
   listTaskRegistryRecordsByRuntimeSourceIdFromSqlite,
   loadTaskRegistryStateFromSqliteReadOnlyResult,
 } from "./task-registry.store.sqlite.js";
-import { summarizeTaskRecords } from "./task-registry.summary.js";
+import {
+  addTaskStatusSummaryRecord,
+  createEmptyTaskStatusSummary,
+  summarizeTaskRecords,
+  type TaskStatusSummary,
+} from "./task-registry.summary.js";
 import type { TaskRecord, TaskRegistrySummary, TaskStatus } from "./task-registry.types.js";
 import type { ActiveTaskRestartBlocker } from "./task-restart-blocker.js";
 import { resolveEffectiveTaskCleanupAfter, resolveTaskCleanupAfter } from "./task-retention.js";
@@ -221,6 +230,7 @@ type CronTerminalRecovery = {
 
 type CronRecoveryContext = {
   taskRowsByJobId: Map<string, TaskRecord[]>;
+  taskRowsByTaskId?: ReadonlyMap<string, TaskRecord>;
 };
 
 type SessionEntryLookup = {
@@ -378,11 +388,13 @@ function resolveDurableCronTaskRecovery(
   ) {
     return undefined;
   }
-  const row = getCronTaskRows(context, jobId).find(
-    (candidate) =>
-      candidate.taskId === task.taskId ||
-      (Boolean(task.runId?.trim()) && candidate.runId === task.runId),
-  );
+  const row = context.taskRowsByTaskId
+    ? context.taskRowsByTaskId.get(task.taskId)
+    : getCronTaskRows(context, jobId).find(
+        (candidate) =>
+          candidate.taskId === task.taskId ||
+          (Boolean(task.runId?.trim()) && candidate.runId === task.runId),
+      );
   if (!row || !isCronTerminalTaskStatus(row.status)) {
     return undefined;
   }
@@ -844,12 +856,12 @@ function reconcileTaskRecordForOperatorInspectionWithContexts(
   task: TaskRecord,
   context: CronRecoveryContext,
   backingSessionContext: BackingSessionLookupContext,
+  now = Date.now(),
 ): TaskRecord {
   const cronRecovery = resolveDurableCronTaskRecovery(task, context);
   if (cronRecovery) {
     return projectTaskRecovered(task, cronRecovery);
   }
-  const now = Date.now();
   if (!shouldMarkLost(task, now, backingSessionContext)) {
     return task;
   }
@@ -900,6 +912,60 @@ export function inspectTasksReadOnly(): {
     state: loaded.state,
     tasks: reconcileTaskRecordsForOperatorInspection([...loaded.snapshot.tasks.values()]),
   };
+}
+
+type TaskStatusInspection = TaskStatusSummary & { state: "ready" | "migration-required" };
+const pendingStatusInspections = new Map<string, Promise<TaskStatusInspection>>();
+
+/** Coalesce only overlapping inspections; every settled read is replaced by fresh state. */
+export async function getInspectableTaskStatusSummaryReadOnly(): Promise<TaskStatusInspection> {
+  const context = captureOpenClawStateWorkerContext();
+  const preserveSourceArtifacts = isArtifactPreservingStateRead();
+  const key = `${context.admission.identity.key}:${preserveSourceArtifacts}`;
+  let pending = pendingStatusInspections.get(key);
+  if (!pending) {
+    const now = Date.now();
+    pending = (async () => {
+      const snapshot = await runOpenClawStateWorkerOperation(
+        context,
+        (scope) =>
+          scope.execute({ type: "tasks.statusSummary", input: { now, preserveSourceArtifacts } }),
+        { existingOnly: true },
+      );
+      context.admission.assertCurrent();
+      if (!snapshot) {
+        return { state: "ready" as const, ...createEmptyTaskStatusSummary() };
+      }
+      const cron = { ...createCronRecoveryContext(), taskRowsByTaskId: snapshot.cronRecoveryRows };
+      const backing = createBackingSessionLookupContext();
+      for (const [index, task] of snapshot.candidates.entries()) {
+        if (index > 0 && index % SWEEP_YIELD_BATCH_SIZE === 0) {
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          context.admission.assertCurrent();
+        }
+        const projected = reconcileTaskRecordForOperatorInspectionWithContexts(
+          task,
+          cron,
+          backing,
+          now,
+        );
+        addTaskStatusSummaryRecord(snapshot.summary, projected, now);
+      }
+      return { state: snapshot.state, ...snapshot.summary };
+    })();
+    pendingStatusInspections.set(key, pending);
+    const clear = () => {
+      if (pendingStatusInspections.get(key) === pending) {
+        pendingStatusInspections.delete(key);
+      }
+    };
+    void pending.then(clear, clear);
+  }
+  const summary = await pending;
+  context.admission.assertCurrent();
+  return structuredClone(summary);
 }
 
 configureTaskAuditTaskProvider(reconcileInspectableTasks);
@@ -1145,39 +1211,32 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
         task: current,
         now,
       });
-      const freshAfterHook = taskRegistryMaintenanceRuntime.getTaskById(current.taskId);
-      if (!freshAfterHook) {
-        processed += 1;
-        if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
-          await yieldToEventLoop();
-        }
-        continue;
-      }
-      // Recovery yields to runtime owners. Recheck every liveness source from a
-      // fresh snapshot when recovery could have changed persisted backing.
-      const lostContext =
-        recoveryHookRegistered || hasTaskLostDecisionInputChanged(current, freshAfterHook)
-          ? createBackingSessionLookupContext()
-          : backingSessionContext;
-      if (!shouldMarkLost(freshAfterHook, now, lostContext)) {
-        processed += 1;
-        if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
-          await yieldToEventLoop();
-        }
-        continue;
-      }
-      if (recovery.recovered) {
-        recovered += 1;
-        processed += 1;
-        if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
-          await yieldToEventLoop();
-        }
-        continue;
-      }
-      const next = markTaskLost(freshAfterHook, now, lostContext);
-      if (next.status === "lost") {
-        reconciled += 1;
-      }
+      withTaskRegistryMutation(
+        () => {
+          const freshAfterHook = taskRegistryMaintenanceRuntime.getTaskById(current.taskId);
+          if (!freshAfterHook) {
+            return;
+          }
+          // Recovery yields to runtime owners. Recheck persisted backing while
+          // retaining writer custody through the decision and lost-task update.
+          const lostContext =
+            recoveryHookRegistered || hasTaskLostDecisionInputChanged(current, freshAfterHook)
+              ? createBackingSessionLookupContext()
+              : backingSessionContext;
+          if (!shouldMarkLost(freshAfterHook, now, lostContext)) {
+            return;
+          }
+          if (recovery.recovered) {
+            recovered += 1;
+            return;
+          }
+          const next = markTaskLost(freshAfterHook, now, lostContext);
+          if (next.status === "lost") {
+            reconciled += 1;
+          }
+        },
+        () => undefined,
+      );
       processed += 1;
       if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
         await yieldToEventLoop();

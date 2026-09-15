@@ -220,6 +220,8 @@ export type ProviderImagesOptions = ImagesOptions & Record<string, unknown>;
 
 /** Unified text options used by simple completion helpers. */
 export interface SimpleStreamOptions extends StreamOptions {
+  /** Optional processing tier; only providers supporting these tiers apply it. */
+  serviceTier?: "default" | "priority";
   reasoning?: ModelThinkingLevel;
   /** Custom token budgets for thinking levels (token-based providers only) */
   thinkingBudgets?: ThinkingBudgets;
@@ -403,9 +405,11 @@ export interface AssistantMessage {
   responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
   providerReplay?: ProviderReplayState; // Opaque provider state carried into a compatible later request.
   turnId?: string; // Runtime-assigned stable turn identity when the provider does not expose one
-  diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
+  diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime completion, failure, and recovery diagnostics.
   usage: Usage;
   stopReason: StopReason;
+  /** A completed provider response can explicitly request another inference with false. */
+  endTurn?: boolean;
   errorMessage?: string;
   errorCode?: string;
   errorType?: string;
@@ -575,6 +579,15 @@ export interface OpenAIResponsesCompat {
   supportsLongCacheRetention?: boolean;
   /** Whether the provider honors top-level `instructions`. Defaults to true only for verified native routes (OpenAI, xAI); every other route defaults to false and embeds the system prompt in `input` unless set true here after verifying against that endpoint. */
   supportsInstructions?: boolean;
+  /**
+   * Explicit opt-in for HTTP continuation (client-side delta + `previous_response_id`)
+   * on a custom/proxy OpenAI-Responses-compatible endpoint. A native `api.openai.com`
+   * connection is eligible by default; a custom endpoint carries no trust signal of
+   * its own, so this is the only path to eligibility there — set it once you've
+   * verified the backend correctly resolves `previous_response_id` and persists
+   * `store: true` turns. Default: false.
+   */
+  supportsResponsesContinuation?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */

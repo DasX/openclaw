@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { assertClawHubArtifactMetadata } from "../clawhub-artifact-assertions.mjs";
 import { readPositiveIntEnvWithEmptyFallback } from "../env-limits.mjs";
 import { assertRealPathInside, resolveHomePath } from "../openclaw-state-paths.mjs";
 import { readPluginInstallRecords } from "../plugin-index-sqlite.mjs";
@@ -340,6 +341,7 @@ function assertExpectedDiagnostics(surfaceMode, errorMessages) {
     "session extension registration requires namespace and description",
     "session scheduler job registration requires unique id, sessionKey, and kind",
     "tool metadata registration missing toolName",
+    "worker provider registration missing method: resolveAllocation",
   ]);
   const optionalErrorMessages = new Set([
     "agent event subscription registration requires id and handle",
@@ -400,27 +402,6 @@ function assertClawHubExternalInstallContract(installPath) {
   const dependencyPackagePath = path.join(installPath, "node_modules", "is-number", "package.json");
   if (fs.existsSync(dependencyPackagePath)) {
     assertRealPathInside(installPath, dependencyPackagePath, "kitchen-sink isolated dependency");
-  }
-}
-
-function assertClawHubArtifactMetadata(record) {
-  if (record.artifactKind === "legacy-zip") {
-    if (record.artifactFormat !== "zip") {
-      throw new Error(
-        `missing kitchen-sink legacy ZIP artifact metadata: ${JSON.stringify(record)}`,
-      );
-    }
-    return;
-  }
-
-  if (record.artifactKind !== "npm-pack" || record.artifactFormat !== "tgz") {
-    throw new Error(`missing kitchen-sink ClawHub artifact metadata: ${JSON.stringify(record)}`);
-  }
-  if (!record.clawpackSha256 || typeof record.clawpackSize !== "number") {
-    throw new Error(`missing kitchen-sink ClawPack metadata: ${JSON.stringify(record)}`);
-  }
-  if (!record.npmIntegrity || !record.npmShasum || !record.npmTarballName) {
-    throw new Error(`missing kitchen-sink npm artifact metadata: ${JSON.stringify(record)}`);
   }
 }
 
@@ -617,7 +598,12 @@ function assertInstalled() {
     if (!record.version || !record.integrity || !record.resolvedAt) {
       throw new Error(`missing ClawHub resolution metadata: ${JSON.stringify(record)}`);
     }
-    assertClawHubArtifactMetadata(record);
+    assertClawHubArtifactMetadata(record, {
+      legacyZip: "missing kitchen-sink legacy ZIP artifact metadata",
+      artifact: "missing kitchen-sink ClawHub artifact metadata",
+      clawpack: "missing kitchen-sink ClawPack metadata",
+      npm: "missing kitchen-sink npm artifact metadata",
+    });
   }
   if (typeof record.installPath !== "string" || record.installPath.length === 0) {
     throw new Error("missing kitchen-sink install path");

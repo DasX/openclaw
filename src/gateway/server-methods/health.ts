@@ -11,6 +11,7 @@ import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js"
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
 import { formatError } from "../server-utils.js";
 import { shouldScheduleBackgroundHealthRefresh } from "../server/health-refresh-admission.js";
+import { readGatewayProcessVitals } from "../server/process-vitals.js";
 import { respondUnavailableOnThrow } from "./response.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
@@ -84,11 +85,11 @@ function cachedHealthDiffersFromRuntime(
 }
 
 /** Merges cheap live runtime facts into a cached health summary before responding. */
-function mergeCachedHealthRuntimeState(params: {
+async function mergeCachedHealthRuntimeState(params: {
   cached: HealthSummary;
   eventLoop?: HealthSummary["eventLoop"];
   configReloadHotReloadStatus?: GatewayHotReloadStatus;
-}): HealthSummary {
+}): Promise<HealthSummary> {
   const {
     contextEngines: _cachedContextEngines,
     deliveryQueues: _cachedDeliveryQueues,
@@ -96,7 +97,7 @@ function mergeCachedHealthRuntimeState(params: {
   } = params.cached;
   // Dead-letter counts are cheap live reads. Preserve the grouped pressure
   // aggregate for the cache interval so routine health RPCs do not amplify it.
-  const deliveryQueues = buildDeliveryQueueHealthSummary(
+  const deliveryQueues = await buildDeliveryQueueHealthSummary(
     _cachedDeliveryQueues?.ingressPressure ?? [],
   );
   const contextEngines = buildContextEngineHealthSummary();
@@ -140,7 +141,7 @@ export const healthHandlers: GatewayRequestHandlers = {
     ) {
       respond(
         true,
-        mergeCachedHealthRuntimeState({
+        await mergeCachedHealthRuntimeState({
           cached,
           eventLoop: context.getEventLoopHealth?.(),
           configReloadHotReloadStatus: context.getConfigReloaderHotReloadStatus?.(),
@@ -168,15 +169,10 @@ export const healthHandlers: GatewayRequestHandlers = {
       includeChannelSummary: params.includeChannelSummary !== false,
       ...(hostDesktopStatus ? { hostDesktopStatus } : {}),
     });
-    if (context.getEventLoopHealth) {
-      status.eventLoop = context.getEventLoopHealth();
-    }
-    const memory = process.memoryUsage();
-    status.processMemory = {
-      rssBytes: memory.rss,
-      heapUsedBytes: memory.heapUsed,
-      heapTotalBytes: memory.heapTotal,
-    };
-    respond(true, status, undefined);
+    respond(
+      true,
+      { ...status, ...readGatewayProcessVitals(context.getEventLoopHealth) },
+      undefined,
+    );
   },
 };

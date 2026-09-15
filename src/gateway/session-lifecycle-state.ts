@@ -75,7 +75,9 @@ type PersistedLifecycleSessionShape = Pick<
   | "lifecycleRunId"
 >;
 
-type GatewaySessionLifecycleSnapshot = Partial<Pick<SessionEntry, keyof LifecycleSessionShape>>;
+type GatewaySessionLifecycleSnapshot = Partial<
+  Omit<Pick<SessionEntry, keyof LifecycleSessionShape>, "status"> & { status: SessionRunStatus }
+>;
 
 function isFiniteTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -163,7 +165,7 @@ function resolveRuntimeMs(params: {
 }
 
 export function deriveGatewaySessionLifecycleSnapshot(params: {
-  session?: GatewaySessionLifecycleSnapshot | null;
+  session?: Partial<Pick<SessionEntry, keyof LifecycleSessionShape>> | null;
   event: LifecycleEventLike;
 }): GatewaySessionLifecycleSnapshot {
   const phase = resolveLifecyclePhase(params.event);
@@ -218,7 +220,12 @@ function derivePersistedSessionLifecyclePatch(params: {
   event: LifecycleEventLike;
 }): Partial<PersistedLifecycleSessionShape> {
   const snapshot = deriveGatewaySessionLifecycleSnapshot({
-    session: params.entry ?? undefined,
+    session: params.entry
+      ? {
+          ...params.entry,
+          status: params.entry.status === "interrupted" ? "failed" : params.entry.status,
+        }
+      : undefined,
     event: params.event,
   });
   const snapshotPatch: Partial<PersistedLifecycleSessionShape> = {
@@ -262,7 +269,11 @@ export function deriveGatewaySessionLifecycleProjectionPatch(params: {
     lifecycleRunId: _lifecycleRunId,
     ...patch
   } = derivePersistedSessionLifecyclePatch(params);
-  return patch;
+  const { status, ...fields } = patch;
+  // Suppressed events are no-ops; present undefined fields still intentionally clear state.
+  return Object.hasOwn(patch, "status")
+    ? { ...fields, status: status === "interrupted" ? "failed" : status }
+    : fields;
 }
 
 export function isRestartRecoveryLifecycleEvent(params: {
@@ -332,6 +343,11 @@ export async function persistGatewaySessionLifecycleEvent(params: {
   agentId?: string;
   event: LifecycleEventLike;
   assertCommitAllowed?: () => void;
+  expectedWriter?: {
+    runId: string;
+    sessionId: string;
+    lifecycleRevision?: string;
+  };
 }): Promise<void> {
   const phase = resolveLifecyclePhase(params.event);
   if (!phase) {
@@ -362,6 +378,17 @@ export async function persistGatewaySessionLifecycleEvent(params: {
       terminalRecovery = undefined;
       failedRun = undefined;
       const entry = storedEntry as SessionEntry;
+      const expected = params.expectedWriter;
+      if (
+        expected &&
+        (entry.sessionId !== expected.sessionId ||
+          entry.lifecycleRevision !== expected.lifecycleRevision ||
+          (entry.activeWriterRunId !== expected.runId && entry.lifecycleRunId !== expected.runId) ||
+          (entry.activeWriterRunId !== undefined && entry.activeWriterRunId !== expected.runId) ||
+          (entry.lifecycleRunId !== undefined && entry.lifecycleRunId !== expected.runId))
+      ) {
+        return null;
+      }
       if (
         exactCronRun &&
         !acceptsCronRunContinuationLifecycleEvent({ entry, event: params.event })

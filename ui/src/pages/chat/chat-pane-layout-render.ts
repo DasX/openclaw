@@ -88,9 +88,12 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       closePanelSlot,
     } = params;
     if (this.inputRegion === "page") {
+      const preview = state.sessionWorkspaceState?.previews.find(
+        (entry) => entry.id === state.sessionWorkspaceState?.activePreviewId,
+      )?.content;
       const file =
-        state.sidebarContent?.kind === "file" && isSidebarSlotVisible(sidebarLayout, "detail")
-          ? state.sidebarContent
+        preview?.kind === "file" && isSidebarSlotVisible(sidebarLayout, "workspace")
+          ? preview
           : undefined;
       const workspace = resolveSessionWorkspace({
         session: selectedSession,
@@ -210,6 +213,8 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       lastReadAt: selectedSession?.lastReadAt,
       pullRequests: this.sessionPullRequests,
       companion: companionThread,
+      companionFocusRequest: this.sessionCompanionFocusRequest,
+      canFocusCompanion: () => this.active && this.presented,
       companionPresented:
         this.presented &&
         this.visuallyPresented &&

@@ -1,3 +1,4 @@
+import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
   readActiveTranscriptEntryAnchor,
   readTranscriptEventAtSeqSync,
@@ -9,10 +10,8 @@ import { resolveSessionTranscriptReadFence } from "../../config/sessions/session
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import { isSessionTranscriptSideAppendEntry } from "../../config/sessions/transcript-tree.js";
 import type { ImageContent, Message, TextContent } from "../../llm/types.js";
-import {
-  buildSessionContext as buildCoreSessionContext,
-  type SessionTreeEntry as CoreSessionTreeEntry,
-} from "../runtime/index.js";
+import { copyPreparedModelVisibleToolText } from "../../logging/redact-internal.js";
+import type { SessionTreeEntry as CoreSessionTreeEntry } from "../runtime/index.js";
 import {
   copyCodeModeSourceAppend,
   getCodeModeSourceAppend,
@@ -64,6 +63,20 @@ export class SessionManagerEntries extends SessionManagerPersistence {
       throw new Error(`Invalid session transcript entry: ${entry.type}`);
     }
     if (entry.type === "message" && canonicalEntry.type === "message") {
+      if (
+        entry.message.role === "toolResult" &&
+        canonicalEntry.message.role === "toolResult" &&
+        Array.isArray(entry.message.content) &&
+        Array.isArray(canonicalEntry.message.content)
+      ) {
+        const canonicalContent = canonicalEntry.message.content;
+        entry.message.content.forEach((block, index) => {
+          const canonicalBlock = canonicalContent[index];
+          if (block?.type === "text" && canonicalBlock?.type === "text") {
+            copyPreparedModelVisibleToolText(block, canonicalBlock);
+          }
+        });
+      }
       copyCodeModeSourceAppend(
         entry.message,
         canonicalEntry.message,

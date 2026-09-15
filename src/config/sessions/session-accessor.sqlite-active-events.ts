@@ -5,6 +5,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   iterateSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
+import type { TranscriptReadWindow } from "../../sessions/transcript-read-window.js";
 import {
   getActiveTranscriptKysely,
   parseActiveTranscriptMessageRow,
@@ -19,6 +20,7 @@ import type {
 } from "./session-accessor.sqlite-contract.js";
 import {
   iterateVisibleMessageRange,
+  iterateVisibleMessageMetadata,
   readVisibleMessageMetadata,
   readVisibleMessageRange,
   readVisibleTranscriptStats,
@@ -53,6 +55,7 @@ export type SessionTranscriptMessageEventPage = {
   activeLeafEntryId?: string | null;
   deltaCursor?: string;
   displaySource?: string;
+  readWindow?: TranscriptReadWindow;
   events: SessionTranscriptMessageEvent[];
   totalMessages: number;
 };
@@ -388,14 +391,12 @@ export function readSessionTranscriptVisibleMessageDeltaCore(
               .where("active.message_position", "<=", lastMessagePosition)
               .orderBy("active.message_position", "asc"),
           ).rows.map((row) => {
-            if (row.message_position === null) {
-              throw new Error("Active transcript message row is missing its message position");
-            }
+            const { event, eventSeq, seq } = parseActiveTranscriptMessageRow(row);
             return {
-              event: JSON.parse(row.event_json) as TranscriptEvent,
-              eventSeq: row.event_seq,
+              event,
+              eventSeq,
               parentId: row.parent_id,
-              seq: row.message_position + 1,
+              seq,
             };
           });
     const requiredBytes =
@@ -437,14 +438,15 @@ export function readRecentSessionTranscriptMessageEvents(
       1024,
       Math.floor(Number.isFinite(options.maxBytes) ? options.maxBytes : 8 * 1024 * 1024),
     );
-    const candidates = readVisibleMessageMetadata(
+    const candidates = iterateVisibleMessageMetadata(
       projection,
       Math.max(0, visible.total - Math.min(maxLines, maxMessages)),
       visible.total,
+      "desc",
     );
     let selectedStart = visible.total;
     let bytes = 0;
-    for (const row of candidates.toReversed()) {
+    for (const row of candidates) {
       // Keep the newest event even when oversized, then a contiguous suffix. Size stored JSONL
       // before loading payloads so a small usage budget cannot materialize the entire line window.
       if (selectedStart < visible.total && bytes + row.serialized_bytes > maxBytes) {

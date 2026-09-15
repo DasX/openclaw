@@ -57,6 +57,7 @@ import type {
 import type {
   GatewayModelCatalogSnapshot,
   PreparedGatewayModelCatalog,
+  PreparedGatewayModelCatalogReadResult,
 } from "../server-model-catalog.types.js";
 import type { DedupeEntry } from "../server-shared.js";
 import type { GatewayEventLoopHealth } from "../server/event-loop-health.js";
@@ -192,6 +193,7 @@ type GatewayKernelContext = {
   gatewayTlsFingerprint?: string;
   sessionCompanion?: import("../session-companion.js").SessionCompanionService;
   sessionObserver?: SessionObserverService;
+  sessionActivitySummaries?: import("../session-activity-summaries.js").SessionActivitySummaryService;
   /** Temporary profile-owned mentions for this exact Gateway lifetime. */
   mentionInbox?: MentionInbox;
   resolveTerminalLaunchPolicy: (agentId?: string) => TerminalLaunchResolution;
@@ -240,6 +242,9 @@ type GatewayKernelContext = {
     agentDir?: string;
     workspaceDir?: string;
   }) => Promise<PreparedGatewayModelCatalog | undefined>;
+  readPreparedGatewayModelCatalogBatch?: (
+    agentIds: readonly string[],
+  ) => Promise<PreparedGatewayModelCatalogReadResult[]>;
   readChatMetadata: (params: ChatMetadataReadParams) => Promise<ChatMetadataResult>;
   readChatStartupProjection?: (
     params: ChatStartupProjectionReadParams,
@@ -312,7 +317,7 @@ type GatewayTransportContext = {
     opts?: { role?: string; reason?: string },
   ) => void;
   hasConnectedClientsForDevice?: (deviceId: string) => boolean;
-  refreshConnectedUserProfile?: (profile: {
+  refreshConnectedUserProfile?: (profile?: {
     id: string;
     displayName: string | null;
     avatarRevision: string;
@@ -354,6 +359,8 @@ type GatewayResidentBridgeContext = {
   workerEnvironmentService?: WorkerEnvironmentServiceContract;
   /** Gateway-host desktop acquisition and observation; present only after enabled startup. */
   hostDesktopService?: import("../desktop/host-source.js").HostDesktopService;
+  /** Local computer provider shared with the node host, owned by this Gateway lifetime. */
+  gatewayComputerService?: import("../desktop/computer-service.js").GatewayComputerService;
   /** Durable per-session worker placement; absent only from lightweight in-process contexts. */
   workerSessionPlacementService?: WorkerSessionPlacementReader &
     Partial<WorkerSessionPlacementRetirementService>;
@@ -426,6 +433,8 @@ export type GatewayRequestOptions = {
   respond: RespondFn;
   context: GatewayRequestContext;
   methodRegistry?: GatewayMethodRegistryView;
+  /** Shared entry/publication precondition; never retained as accepted-run authority. */
+  expectedProfileBinding?: import("../expected-profile.js").ExpectedProfileBinding;
   /** In-process Gateway lifetime guard composed into durable session mutations. */
   sessionMutationCommitGuard?: () => void;
   /** In-process caller lifetime; never serialized into a Gateway request frame. */
@@ -438,6 +447,8 @@ export type GatewayRequestOptions = {
 export type SessionMutationAuthorization = {
   talkSessionTarget?: import("../talk-session-target.types.js").PreparedTalkSessionTarget;
   assertCurrent: () => void;
+  /** Original host/session authority for committed input custody, without the selection precondition. */
+  assertAdmittedInputCurrent?: () => void;
   assertTargetCurrent: (target: {
     sessionKey: string;
     agentId?: string;

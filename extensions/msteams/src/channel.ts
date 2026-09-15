@@ -194,13 +194,15 @@ function resolveGraphActionTarget(
   const currentChannelTarget = currentChannelId?.trim();
   const currentGraphTarget = currentGraphChannelId?.trim();
   if (explicitTarget) {
-    // Core materializes omitted action targets as currentChannelId before
-    // plugin dispatch. Restore the prepared Graph route for channel actions.
+    // Current-conversation aliases need the prepared Graph route, including
+    // targets materialized by core before plugin dispatch.
     if (
       currentChatType === "channel" &&
       currentGraphTarget &&
       currentChannelTarget &&
-      explicitTarget === currentChannelTarget
+      msteamsContextTargetsMatch(normalizeMSTeamsMessagingTarget(explicitTarget) ?? "", {
+        currentChannelId: currentChannelTarget,
+      })
     ) {
       return currentGraphTarget;
     }
@@ -592,6 +594,15 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
       },
       actions: {
         providerOwnedReadGates: true,
+        readAuthorityActions: [
+          "read",
+          "search",
+          "reactions",
+          "list-pins",
+          "member-info",
+          "channel-info",
+          "channel-list",
+        ],
         describeMessageTool: describeMSTeamsMessageTool,
         extractToolSendResult: ({ result, send }) => extractMSTeamsToolSendResult(result, send),
         requiresTrustedRequesterSender: ({ action, toolContext }) =>
@@ -721,7 +732,16 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
           }
 
           const graphActionTarget = {
-            toolParams: ctx.params,
+            // Normal message-tool search/member-info use channelId as their conversation filter.
+            toolParams:
+              ctx.action === "search" || ctx.action === "member-info"
+                ? {
+                    ...ctx.params,
+                    to:
+                      resolveActionTarget(ctx.params) ||
+                      normalizeOptionalString(ctx.params.channelId),
+                  }
+                : ctx.params,
             currentChannelId: ctx.toolContext?.currentChannelId,
             currentGraphChannelId: resolveCurrentGraphActionTarget(ctx.toolContext),
             currentChatType: ctx.toolContext?.currentChatType,

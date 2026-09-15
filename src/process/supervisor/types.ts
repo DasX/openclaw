@@ -10,6 +10,8 @@ export type TerminationReason =
 
 /** Producer-owned activity; a settled result does not establish descendant extinction. */
 export type ProcessRunActivity = {
+  /** Absolute deadline accepted when the supervisor armed the overall timeout. */
+  readonly deadlineAtMs?: number;
   readonly resultSettled: boolean;
   readonly lastOutputAtMs: number;
 };
@@ -57,6 +59,8 @@ export type SpawnSecretInput = {
 
 export type ProcessAdapterConstruction = {
   assertCurrent?: () => void;
+  /** Synchronous launch admission; never recheck after the target command starts. */
+  beforeSpawn?: () => void;
   abortSignal?: AbortSignal;
   /** Publish resource cleanup before readiness or private-input delivery can fail. */
   onSpawnCleanup?: (cleanup: Promise<void>) => void;
@@ -80,11 +84,19 @@ export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
   dispose: () => void;
 };
 
+/** Observe output before joining startup and private-input delivery. */
+export type ProcessAdapterStartup<Adapter extends SpawnProcessAdapter> = {
+  adapter: Adapter;
+  ready: Promise<void>;
+};
+
 type SpawnBaseInput = {
   /** The local subprocess transports execution owned outside its local process tree. */
   cleanupOwnership?: "external";
   /** Revalidate the caller at deferred spawn and private-input delivery boundaries. */
   assertCurrent?: () => void;
+  /** Revalidate launch policy at admission and immediately before each native launch attempt. */
+  beforeSpawn?: () => void;
   runId?: string;
   scopeKey?: string;
   replaceExistingScope?: boolean;
@@ -103,6 +115,8 @@ type SpawnBaseInput = {
   maxCapturedOutputChars?: number;
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
+  /** Revoke caller-owned capabilities when cancellation starts, before native termination. */
+  onCancel?: (reason: TerminationReason) => void;
 };
 
 type SpawnChildInput = SpawnBaseInput & {

@@ -1,6 +1,7 @@
 import type { GatewaySessionRow } from "../api/types.ts";
 import {
   areUiSessionKeysEquivalent,
+  isSubagentSessionKey,
   resolveUiSessionNavigationParentKey,
 } from "../lib/sessions/session-key.ts";
 import {
@@ -10,7 +11,17 @@ import {
   sidebarSessionAttentionPriority,
   type SidebarKnownSessionAttention,
   type SidebarRecentSession,
+  type SidebarSessionAttention,
 } from "./app-sidebar-session-types.ts";
+
+function attributeChildAttention(
+  attention: SidebarSessionAttention,
+  childLabel: string,
+): SidebarSessionAttention {
+  return attention.kind === "error" && attention.childLabel === undefined
+    ? { ...attention, childLabel }
+    : attention;
+}
 
 /**
  * Pure projection of flat session rows into the sidebar's parent/child tree.
@@ -27,8 +38,10 @@ export function projectSessionTree(params: {
 }): SidebarRecentSession[] {
   const { roots, rowsByKey, loadingChildKeys, knownSessionAttention, toSidebarSession } = params;
   const childKeysByParent = new Map<string, string[]>();
-  const hasExplicitCategory = (row: GatewaySessionRow | undefined) =>
-    typeof row?.category === "string" && row.category.trim().length > 0;
+  const hasRootCategory = (row: GatewaySessionRow | undefined) =>
+    typeof row?.category === "string" &&
+    row.category.trim().length > 0 &&
+    !isSubagentSessionKey(row.key);
   const appendChild = (parentKey: string, childKey: string) => {
     const keys = childKeysByParent.get(parentKey) ?? [];
     if (!keys.includes(childKey)) {
@@ -39,10 +52,9 @@ export function projectSessionTree(params: {
   for (const row of rowsByKey.values()) {
     for (const childKey of row.childSessions ?? []) {
       const child = rowsByKey.get(childKey);
-      // Manual category placement is a first-class sidebar destination. Once
-      // a child is explicitly categorized, render it as a section root rather
-      // than hiding it behind its lineage parent.
-      if (hasExplicitCategory(child)) {
+      // Categories can place independent conversations at a section root;
+      // subagents always remain under their navigation parent.
+      if (hasRootCategory(child)) {
         continue;
       }
       const navigationParentKey = resolveUiSessionNavigationParentKey(child);
@@ -55,7 +67,7 @@ export function projectSessionTree(params: {
   }
   for (const row of rowsByKey.values()) {
     const parentKey = resolveUiSessionNavigationParentKey(row);
-    if (parentKey && !hasExplicitCategory(row)) {
+    if (parentKey && !hasRootCategory(row)) {
       appendChild(parentKey, row.key);
     }
   }
@@ -92,7 +104,7 @@ export function projectSessionTree(params: {
       ...new Map(
         [
           ...children.flatMap((child) => [
-            child.ownAttention ?? child.attention,
+            attributeChildAttention(child.ownAttention ?? child.attention, child.label),
             ...(child.childAttention ?? []),
           ]),
           ...knownSessionAttention
@@ -137,7 +149,7 @@ export function projectSessionTree(params: {
         sidebarSessionAttentionPriority(child.attention) >
           sidebarSessionAttentionPriority(attention)
       ) {
-        attention = child.attention;
+        attention = attributeChildAttention(child.attention, child.label);
       }
       containsActiveDescendant ||=
         child.active || child.visuallyActive || child.containsActiveDescendant;
@@ -171,7 +183,10 @@ export function projectSessionTree(params: {
   const rootKeys = new Set(roots.map((row) => row.key));
   return roots
     .filter((row) => {
-      if (hasExplicitCategory(row)) {
+      if (isSubagentSessionKey(row.key)) {
+        return false;
+      }
+      if (hasRootCategory(row)) {
         return true;
       }
       const parentKey = resolveUiSessionNavigationParentKey(row);

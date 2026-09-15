@@ -33,6 +33,8 @@ async function initializeRepository(root: string, gitTemplate: string): Promise<
   await git(repo, "init", "-b", "main", `--template=${gitTemplate}`);
   await git(repo, "config", "user.name", "OpenClaw Test");
   await git(repo, "config", "user.email", "openclaw-test@example.invalid");
+  // The template is copied recursively; background maintenance can unlink files mid-copy.
+  await git(repo, "config", "maintenance.auto", "false");
   await fs.writeFile(path.join(repo, "README.md"), "base\n");
   await git(repo, "add", "README.md");
   await git(repo, "commit", "-m", "initial");
@@ -581,7 +583,13 @@ describe("ManagedWorktreeService provisioned state", () => {
     const commandSpy = vi.spyOn(commandRunner, "runCommandBuffersWithTimeout");
     commandSpy.mockImplementation(async (...args) => {
       const argv = args[0];
-      if (argv[0] === "git" && argv.includes("update-index") && argv.includes("--stdin")) {
+      if (
+        argv[0] === "git" &&
+        argv.includes("update-index") &&
+        argv.includes("--add") &&
+        argv.includes("--remove") &&
+        argv.includes("--stdin")
+      ) {
         expect(reappeared).toBe(false);
         await expect(fs.stat(localPath)).rejects.toMatchObject({ code: "ENOENT" });
         await fs.writeFile(localPath, "reappeared contents\n");
@@ -638,7 +646,13 @@ describe("ManagedWorktreeService provisioned state", () => {
         disappeared = true;
         return result;
       }
-      if (argv[0] === "git" && argv.includes("update-index") && argv.includes("--stdin")) {
+      if (
+        argv[0] === "git" &&
+        argv.includes("update-index") &&
+        argv.includes("--add") &&
+        argv.includes("--remove") &&
+        argv.includes("--stdin")
+      ) {
         expect(disappeared).toBe(true);
         expect(reappeared).toBe(false);
         await expect(fs.stat(childPath)).rejects.toMatchObject({ code: "ENOENT" });

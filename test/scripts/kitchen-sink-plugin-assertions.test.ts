@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +28,7 @@ const REQUIRED_FULL_DIAGNOSTIC_CANARIES = [
   "session scheduler job registration requires unique id, sessionKey, and kind",
 ];
 const WIDGET_PROBE_DIAGNOSTIC = "invalid widget presenter registration";
+const WORKER_PROBE_DIAGNOSTIC = "worker provider registration missing method: resolveAllocation";
 // A concrete synchronized probe report, not an inventory parsed from the checker.
 const SYNCHRONIZED_FULL_DIAGNOSTICS = [
   ...REQUIRED_FULL_DIAGNOSTIC_CANARIES,
@@ -46,6 +48,7 @@ const SYNCHRONIZED_FULL_DIAGNOSTICS = [
   "model catalog provider registration missing provider",
   "session extension registration requires namespace and description",
   "tool metadata registration missing toolName",
+  WORKER_PROBE_DIAGNOSTIC,
 ];
 const FROZEN_MEMORY_EMBEDDING_DIAGNOSTIC =
   "plugin must own memory slot or declare contracts.memoryEmbeddingProviders for adapter: kitchen-sink-memory-embedding-provider";
@@ -163,9 +166,11 @@ function runAssertInstalled({
 function runAssertClawhubInstalled({
   contextEngineIds = [],
   installPathRelative,
+  recordOverrides = {},
 }: {
   contextEngineIds?: string[];
   installPathRelative?: string;
+  recordOverrides?: Record<string, unknown>;
 } = {}) {
   const label = `clawhub-context-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const pluginId = "openclaw-kitchen-sink-fixture";
@@ -179,9 +184,32 @@ function runAssertClawhubInstalled({
   const inspectAllJsonPath = path.join(scratchRoot, `kitchen-sink-${label}-inspect-all.json`);
   const installPathMarker = path.join(scratchRoot, `kitchen-sink-${label}-install-path.txt`);
   const installsPath = path.join(home, ".openclaw", "plugins", "installs.json");
+  const record = {
+    artifactFormat: "zip",
+    artifactKind: "legacy-zip",
+    clawhubFamily: "code-plugin",
+    clawhubPackage: "@openclaw/kitchen-sink",
+    integrity: "sha256-test",
+    installPath,
+    resolvedSpec: "clawhub:@openclaw/kitchen-sink@latest",
+    resolvedVersion: "1.0.0",
+    resolvedAt: 1,
+    source: "clawhub",
+    spec: "clawhub:@openclaw/kitchen-sink@latest",
+    version: "1.0.0",
+    ...recordOverrides,
+  };
   try {
     mkdirSync(path.join(home, ".openclaw", "extensions"), { recursive: true });
     mkdirSync(installPath, { recursive: true });
+    if (record.artifactKind === "npm-pack") {
+      mkdirSync(path.join(installPath, "node_modules"), { recursive: true });
+      symlinkSync(
+        process.cwd(),
+        path.join(installPath, "node_modules", "openclaw"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    }
     const inspectPayload = fullSurfaceInspectPayload(pluginId);
     inspectPayload.plugin.contextEngineIds = contextEngineIds;
     writeJson(pluginsJsonPath, {
@@ -191,38 +219,27 @@ function runAssertClawhubInstalled({
     writeJson(inspectJsonPath, inspectPayload);
     writeJson(inspectAllJsonPath, [inspectPayload]);
     writeJson(installsPath, {
-      installRecords: {
-        [pluginId]: {
-          artifactFormat: "zip",
-          artifactKind: "legacy-zip",
-          clawhubFamily: "code-plugin",
-          clawhubPackage: "@openclaw/kitchen-sink",
-          integrity: "sha256-test",
-          installPath,
-          resolvedSpec: "clawhub:@openclaw/kitchen-sink@latest",
-          resolvedVersion: "1.0.0",
-          resolvedAt: 1,
-          source: "clawhub",
-          spec: "clawhub:@openclaw/kitchen-sink@latest",
-          version: "1.0.0",
-        },
-      },
+      installRecords: { [pluginId]: record },
     });
 
-    return spawnSync(process.execPath, [ASSERTIONS_SCRIPT, "assert-installed"], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        HOME: home,
-        OPENCLAW_STATE_DIR: path.join(home, ".openclaw"),
-        KITCHEN_SINK_ID: pluginId,
-        KITCHEN_SINK_LABEL: label,
-        KITCHEN_SINK_SOURCE: "clawhub",
-        KITCHEN_SINK_SPEC: "clawhub:@openclaw/kitchen-sink@latest",
-        KITCHEN_SINK_SURFACE_MODE: "basic",
-        KITCHEN_SINK_TMP_DIR: scratchRoot,
-      },
-    });
+    return {
+      ...spawnSync(process.execPath, [ASSERTIONS_SCRIPT, "assert-installed"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: home,
+          OPENCLAW_STATE_DIR: path.join(home, ".openclaw"),
+          OPENCLAW_CONFIG_PATH: path.join(home, ".openclaw", "openclaw.json"),
+          KITCHEN_SINK_ID: pluginId,
+          KITCHEN_SINK_LABEL: label,
+          KITCHEN_SINK_SOURCE: "clawhub",
+          KITCHEN_SINK_SPEC: "clawhub:@openclaw/kitchen-sink@latest",
+          KITCHEN_SINK_SURFACE_MODE: "basic",
+          KITCHEN_SINK_TMP_DIR: scratchRoot,
+        },
+      }),
+      record,
+    };
   } finally {
     rmSync(home, { force: true, recursive: true });
     rmSync(pluginsJsonPath, { force: true });
@@ -341,64 +358,61 @@ describe("kitchen-sink plugin assertions", () => {
     expect(result.status).toBe(0);
   });
 
-  it.each(["full", "adversarial"])(
-    "accepts the declared widget rejection in %s mode",
-    (surfaceMode) => {
+  describe.each([
+    ["widget", WIDGET_PROBE_DIAGNOSTIC],
+    ["worker", WORKER_PROBE_DIAGNOSTIC],
+  ])("%s probe diagnostics", (_probe, diagnostic) => {
+    it.each(["full", "adversarial"])("accepts the declared rejection in %s mode", (surfaceMode) => {
       const result = runAssertInstalled({
-        diagnostics: diagnosticErrors([
-          ...REQUIRED_FULL_DIAGNOSTIC_CANARIES,
-          WIDGET_PROBE_DIAGNOSTIC,
-        ]),
+        diagnostics: diagnosticErrors([...REQUIRED_FULL_DIAGNOSTIC_CANARIES, diagnostic]),
         surfaceMode,
       });
       expect(result.status, result.stderr).toBe(0);
-    },
-  );
-
-  it.each(["basic", "conformance"])("rejects the widget diagnostic in %s mode", (surfaceMode) => {
-    const result = runAssertInstalled({
-      diagnostics: diagnosticErrors([WIDGET_PROBE_DIAGNOSTIC]),
-      surfaceMode,
     });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(
-      `unexpected kitchen-sink diagnostic errors: ${WIDGET_PROBE_DIAGNOSTIC}`,
-    );
-  });
 
-  it.each(["full", "adversarial"])(
-    "does not turn widget rejection into a broad error waiver in %s mode",
-    (surfaceMode) => {
-      const unexpected = `${WIDGET_PROBE_DIAGNOSTIC}: unexpected mutation`;
+    it.each(["basic", "conformance"])("rejects the diagnostic in %s mode", (surfaceMode) => {
       const result = runAssertInstalled({
-        diagnostics: diagnosticErrors([
-          ...REQUIRED_FULL_DIAGNOSTIC_CANARIES,
-          WIDGET_PROBE_DIAGNOSTIC,
-          unexpected,
-        ]),
+        diagnostics: diagnosticErrors([diagnostic]),
         surfaceMode,
       });
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain(`unexpected kitchen-sink diagnostic error: ${unexpected}`);
-    },
-  );
+      expect(result.stderr).toContain(`unexpected kitchen-sink diagnostic errors: ${diagnostic}`);
+    });
 
-  it("requires the widget rejection in a synchronized exhaustive report", () => {
-    const complete = runAssertInstalled({
-      diagnostics: diagnosticErrors(SYNCHRONIZED_FULL_DIAGNOSTICS),
-      env: { KITCHEN_SINK_REQUIRE_ALL_DIAGNOSTICS: "1" },
-    });
-    expect(complete.status, complete.stderr).toBe(0);
-    const missing = runAssertInstalled({
-      diagnostics: diagnosticErrors(
-        SYNCHRONIZED_FULL_DIAGNOSTICS.filter((message) => message !== WIDGET_PROBE_DIAGNOSTIC),
-      ),
-      env: { KITCHEN_SINK_REQUIRE_ALL_DIAGNOSTICS: "1" },
-    });
-    expect(missing.status).not.toBe(0);
-    expect(missing.stderr).toContain(
-      `missing expected kitchen-sink diagnostic error: ${WIDGET_PROBE_DIAGNOSTIC}`,
+    it.each(["full", "adversarial"])(
+      "does not turn the rejection into a broad error waiver in %s mode",
+      (surfaceMode) => {
+        const unexpected = `${diagnostic}: unexpected mutation`;
+        const result = runAssertInstalled({
+          diagnostics: diagnosticErrors([
+            ...REQUIRED_FULL_DIAGNOSTIC_CANARIES,
+            diagnostic,
+            unexpected,
+          ]),
+          surfaceMode,
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(`unexpected kitchen-sink diagnostic error: ${unexpected}`);
+      },
     );
+
+    it("requires the rejection in a synchronized exhaustive report", () => {
+      const complete = runAssertInstalled({
+        diagnostics: diagnosticErrors(SYNCHRONIZED_FULL_DIAGNOSTICS),
+        env: { KITCHEN_SINK_REQUIRE_ALL_DIAGNOSTICS: "1" },
+      });
+      expect(complete.status, complete.stderr).toBe(0);
+      const missing = runAssertInstalled({
+        diagnostics: diagnosticErrors(
+          SYNCHRONIZED_FULL_DIAGNOSTICS.filter((message) => message !== diagnostic),
+        ),
+        env: { KITCHEN_SINK_REQUIRE_ALL_DIAGNOSTICS: "1" },
+      });
+      expect(missing.status).not.toBe(0);
+      expect(missing.stderr).toContain(
+        `missing expected kitchen-sink diagnostic error: ${diagnostic}`,
+      );
+    });
   });
 
   it("rejects diagnostics in conformance mode", () => {
@@ -511,7 +525,81 @@ describe("kitchen-sink plugin assertions", () => {
       contextEngineIds: ["openclaw-kitchen-sink-fixture"],
     });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it.each([
+    {
+      name: "rejects a legacy artifact with the wrong format before later metadata",
+      recordOverrides: { artifactFormat: "tgz" },
+      errorPrefix: "missing kitchen-sink legacy ZIP artifact metadata",
+    },
+    {
+      name: "rejects a non-legacy artifact kind before ClawPack metadata",
+      recordOverrides: { artifactKind: "other" },
+      errorPrefix: "missing kitchen-sink ClawHub artifact metadata",
+    },
+    {
+      name: "rejects missing ClawPack metadata before npm metadata",
+      recordOverrides: { artifactKind: "npm-pack", artifactFormat: "tgz" },
+      errorPrefix: "missing kitchen-sink ClawPack metadata",
+    },
+    {
+      name: "rejects a string ClawPack size",
+      recordOverrides: {
+        artifactKind: "npm-pack",
+        artifactFormat: "tgz",
+        clawpackSha256: "digest",
+        clawpackSize: "0",
+      },
+      errorPrefix: "missing kitchen-sink ClawPack metadata",
+    },
+    {
+      name: "accepts zero size before rejecting missing npm metadata",
+      recordOverrides: {
+        artifactKind: "npm-pack",
+        artifactFormat: "tgz",
+        clawpackSha256: "digest",
+        clawpackSize: 0,
+      },
+      errorPrefix: "missing kitchen-sink npm artifact metadata",
+    },
+    {
+      name: "accepts zero size and truthy non-string metadata with a real npm peer",
+      recordOverrides: {
+        artifactKind: "npm-pack",
+        artifactFormat: "tgz",
+        clawpackSha256: { digest: 1 },
+        clawpackSize: 0,
+        npmIntegrity: 1,
+        npmShasum: true,
+        npmTarballName: ["package.tgz"],
+      },
+      errorPrefix: null,
+    },
+    {
+      name: "rejects metadata before an empty install path",
+      recordOverrides: { artifactFormat: "tgz", installPath: "" },
+      errorPrefix: "missing kitchen-sink legacy ZIP artifact metadata",
+    },
+    {
+      name: "rejects metadata before a non-string install path",
+      recordOverrides: { artifactFormat: "tgz", installPath: 42 },
+      errorPrefix: "missing kitchen-sink legacy ZIP artifact metadata",
+    },
+  ])("ClawHub kitchen-sink metadata: $name", ({ recordOverrides, errorPrefix }) => {
+    const result = runAssertClawhubInstalled({
+      contextEngineIds: ["openclaw-kitchen-sink-fixture"],
+      recordOverrides,
+    });
+    if (errorPrefix === null) {
+      expect(result.status, result.stderr).toBe(0);
+    } else {
+      expect(result.status).toBe(1);
+      expect(result.stderr.match(/^(?:Error|error): (.*)$/m)?.[1]).toBe(
+        `${errorPrefix}: ${JSON.stringify(result.record)}`,
+      );
+    }
   });
 
   it("rejects ClawHub kitchen-sink install paths that resolve outside managed extensions", () => {

@@ -11,6 +11,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { runSqliteImmediateTransaction } from "openclaw/plugin-sdk/sqlite-runtime";
 import { MemoryIndexRevisionConflictError } from "./manager-db.js";
+import type { MemoryIndexEntry } from "./manager-index-preparation.js";
 import { MemoryManagerSessionSyncOps } from "./manager-session-sync-ops.js";
 import {
   isMemorySessionIndexable,
@@ -23,7 +24,6 @@ import {
   type MemorySourceFileStateRow,
 } from "./manager-source-state.js";
 import type {
-  MemoryIndexEntry,
   MemoryIndexWorkItem,
   MemorySourceSyncPlan,
   MemorySyncProgressState,
@@ -64,11 +64,25 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
   protected async deleteIndexedFile(
     pathname: string,
     source: MemorySource,
-    expectedHash = resolveMemorySourceExistingHash({ db: this.db, path: pathname, source }),
+    expectedHash?: string,
   ): Promise<void> {
-    await runSqliteImmediateTransaction(this.db, async () => () => {
-      this.database.sourceIndex.deleteIfCurrent({ path: pathname, source, expectedHash });
-    });
+    const capturedHash =
+      expectedHash ??
+      (await this.withDatabaseRead(() =>
+        resolveMemorySourceExistingHash({ db: this.db, path: pathname, source }),
+      ));
+    await runSqliteImmediateTransaction(
+      this.db,
+      async () => () => {
+        this.database.sourceIndex.deleteIfCurrent({
+          path: pathname,
+          source,
+          expectedHash: capturedHash,
+        });
+      },
+      undefined,
+      (write) => this.withDatabaseWrite(write),
+    );
   }
 
   private async deleteStaleSourceFiles(
@@ -299,6 +313,8 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
                 entry.path,
                 entry.hash,
               ).changes === 1,
+            undefined,
+            (write) => this.withDatabaseWrite(write),
           ))
         ) {
           throw new MemoryIndexRevisionConflictError(
@@ -308,7 +324,8 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
         this.advanceSyncProgress(params.progress);
         return null;
       }
-      return { ...entry, sessionId: corpusEntryForPath(absPath).sessionId };
+      // Keep the prepared entry's non-enumerable reset boundary.
+      return Object.assign(entry, { sessionId: corpusEntryForPath(absPath).sessionId });
     };
 
     if (params.deferIndex) {

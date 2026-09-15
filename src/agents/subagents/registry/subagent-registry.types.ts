@@ -54,6 +54,8 @@ export type PendingFinalDeliveryPayload = {
   endedAt?: number;
   outcome?: SubagentRunOutcome;
   expectsCompletionMessage?: boolean;
+  completionTarget?: "parent";
+  completionRequesterSessionId?: string;
   spawnMode?: SpawnSubagentMode;
   wakeOnDescendantSettle?: boolean;
   terminalReply?: AgentRunTerminalReplySnapshot;
@@ -174,6 +176,7 @@ export type SubagentCompletionDeliveryState = {
     | "parent_run_ended"
     | "sink_unavailable"
     | "steer_dropped"
+    | "message_tool_delivery_missing"
     | "dedupe"
     | "waiting_for_requester_turn";
 };
@@ -270,6 +273,8 @@ export type SubagentRunRecord = {
   /** Durable requester-delivery closure until silent completion cleanup finishes. */
   suppressCompletionDelivery?: boolean;
   expectsCompletionMessage?: boolean;
+  completionTarget?: "parent";
+  completionRequesterSessionId?: string;
   endedReason?: SubagentLifecycleEndedReason;
   pauseReason?: "sessions_yield";
   wakeOnDescendantSettle?: boolean;
@@ -317,10 +322,11 @@ export type SubagentRunRecord = {
   collectorCompletion?: SwarmCollectorCompletion;
 };
 
-/** Minimal registry shape needed by session-list topology and display reads. */
+/** Minimal registry shape needed by session-list topology, display and run lookup reads. */
 export type SubagentRunReadRecord = Pick<
   SubagentRunRecord,
   | "runId"
+  | "swarmRunId"
   | "collect"
   | "groupId"
   | "swarmRequesterSessionKey"
@@ -335,11 +341,28 @@ export type SubagentRunReadRecord = Pick<
   | "accumulatedRuntimeMs"
   | "runTimeoutSeconds"
   | "endedReason"
+  | "pauseReason"
   | "cleanupCompletedAt"
   | "delivery"
 > & {
   execution: Pick<SubagentExecutionState, "status" | "startedAt" | "endedAt" | "outcome">;
   collectorCompletion?: Pick<SwarmCollectorCompletion, "status">;
+};
+
+/** Lifecycle facts needed to protect child transcripts during session maintenance. */
+export type SubagentRunMaintenanceRecord = Pick<
+  SubagentRunRecord,
+  | "runId"
+  | "childSessionKey"
+  | "requesterSessionKey"
+  | "createdAt"
+  | "cleanupCompletedAt"
+  | "expectsCompletionMessage"
+  | "killIntent"
+  | "killReconciliation"
+> & {
+  execution: Pick<SubagentExecutionState, "status" | "endedAt">;
+  delivery?: Pick<SubagentCompletionDeliveryState, "status" | "suspendedAt">;
 };
 
 export type RegisterSubagentRunParams = {
@@ -362,6 +385,8 @@ export type RegisterSubagentRunParams = {
   workspaceDir?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
+  completionTarget?: "parent";
+  completionRequesterSessionId?: string;
   spawnMode?: "run" | "session";
   attachmentsDir?: string;
   attachmentsRootDir?: string;

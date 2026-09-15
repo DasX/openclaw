@@ -113,6 +113,7 @@ export async function prepareGatewayLifecycle(params: {
     nodeRegistry,
     nodeWorkerSupervisorTransport,
     nodePresenceTimers,
+    nodeHasSessionSubscribers,
     nodeSendToSession,
     nodeSendToAllSubscribed,
     nodeSubscribe,
@@ -534,7 +535,7 @@ export async function prepareGatewayLifecycle(params: {
                 beginClose: params.pluginMetadata.beginClose,
                 close: async (...args) => {
                   try {
-                    await params.pluginMetadata.close(...args);
+                    return await params.pluginMetadata.close(...args);
                   } finally {
                     contextLifetime.abort(new Error("Gateway closed; plugin runtime unavailable."));
                   }
@@ -651,6 +652,7 @@ export async function prepareGatewayLifecycle(params: {
     nodeRegistry,
     nodeDesktopService,
     nodePresenceTimers,
+    nodeHasSessionSubscribers,
     nodeSendToSession,
     nodeSendToAllSubscribed,
     nodeSubscribe,

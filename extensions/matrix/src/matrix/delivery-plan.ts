@@ -9,7 +9,7 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { getMatrixRuntime } from "../runtime.js";
 import { resolveMatrixReplyToEventId, resolveMatrixThreadRootId } from "./relations.js";
 import type { MatrixClient } from "./sdk.js";
-import type { MatrixMessageWireDispatch } from "./sdk/client-base.js";
+import type { MatrixMessageWireDispatch } from "./sdk/message-wire-dispatch.js";
 import { withResolvedMatrixSendClient } from "./send/client.js";
 import { createMatrixSendReceipt, type MatrixReceiptEvent } from "./send/receipt.js";
 import { resolveMatrixRoomId } from "./send/targets.js";
@@ -309,9 +309,9 @@ export async function persistMatrixDeliveryPlan(params: {
 
 async function loadQueuePlans(queueId: string): Promise<MatrixDeliveryPlan[]> {
   const store = createDeliveryPlanStore();
-  const keys = (await store.entries())
-    .filter((entry) => entry.key.startsWith(queuePrefix(queueId)))
-    .map((entry) => entry.key);
+  const entries = await store.entries();
+  const prefix = entries.length > 0 ? queuePrefix(queueId) : "";
+  const keys = entries.filter((entry) => entry.key.startsWith(prefix)).map((entry) => entry.key);
   return await Promise.all(
     keys.map(async (key) => {
       const entry = await store.lookup(key);
@@ -466,8 +466,8 @@ export async function reconcileMatrixUnknownSend(
 export async function cleanupMatrixDeliveryPlans(ctx: { queueId: string }): Promise<void> {
   const store = createDeliveryPlanStore();
   await store.deleteExpired();
-  const keys = (await store.entries())
-    .filter((entry) => entry.key.startsWith(queuePrefix(ctx.queueId)))
-    .map((entry) => entry.key);
+  const entries = await store.entries();
+  const prefix = entries.length > 0 ? queuePrefix(ctx.queueId) : "";
+  const keys = entries.filter((entry) => entry.key.startsWith(prefix)).map((entry) => entry.key);
   await Promise.all(keys.map(async (key) => await store.delete(key)));
 }

@@ -78,6 +78,7 @@ describe("method scope resolution", () => {
   });
 
   it.each([
+    ["canvas.document.preview", ["operator.read"]],
     ["canvas.document.view", ["operator.read"]],
     ["sessions.resolve", ["operator.read"]],
     ["tasks.list", ["operator.read"]],
@@ -138,6 +139,7 @@ describe("method scope resolution", () => {
     ["environments.status", ["operator.read"]],
     ["diagnostics.stability", ["operator.read"]],
     ["diagnostics.lanes", ["operator.read"]],
+    ["diagnostics.cpuProfile", ["operator.admin"]],
     ["gateway.restart.preflight", ["operator.read"]],
     ["skills.curator.status", ["operator.read"]],
     ["hooks.status", ["operator.read"]],

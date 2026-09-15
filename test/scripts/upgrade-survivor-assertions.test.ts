@@ -17,10 +17,15 @@ import { delimiter, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { PluginInstallRecord } from "../../src/config/types.plugins.js";
+import type { PluginUpdateOutcome } from "../../src/plugins/update.js";
+import { withEnv } from "../../src/test-utils/env.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import {
   writePluginInspectFixture,
   type PluginInspectFixture,
 } from "./plugin-inspect.test-support.js";
+
+const testNodeExecPath = resolveTestNodeExecPath();
 
 const ASSERTIONS_PATH = "scripts/e2e/lib/upgrade-survivor/assertions.mjs";
 
@@ -184,7 +189,7 @@ function runJsonTextAssertion(command: string, contents: string, ...args: string
   const file = join(root, "result.json");
   writeFileSync(file, contents);
   const result = spawnSync(
-    process.execPath,
+    testNodeExecPath,
     [
       ASSERTIONS_PATH,
       command,
@@ -212,6 +217,56 @@ function withPluginResult(patch: Record<string, unknown>) {
   return {
     ...RECOVERABLE_UPDATE,
     postUpdate: { plugins: { ...RECOVERABLE_UPDATE.postUpdate.plugins, ...patch } },
+  };
+}
+
+function missingCodexUpdateResult() {
+  const message =
+    'Failed to install missing configured plugin "codex" from @openclaw/codex: Package not found on npm: @openclaw/codex@2026.9.4. See https://docs.openclaw.ai/tools/plugin for installable plugins.';
+  const outcomes: PluginUpdateOutcome[] = [
+    {
+      pluginId: "discord",
+      status: "updated",
+      nextVersion: "2026.9.4",
+      message: "Repaired Discord.",
+    },
+    {
+      pluginId: "whatsapp",
+      status: "updated",
+      nextVersion: "2026.9.4",
+      message: "Repaired WhatsApp.",
+    },
+    { pluginId: "codex", status: "error", message },
+  ];
+  const errors: string[] = [];
+  const integrityDrifts: Array<{ pluginId: string }> = [];
+  return {
+    status: "ok",
+    before: { version: "2026.9.2" },
+    after: { version: "2026.9.4" },
+    steps: [
+      { name: "global update", exitCode: 0 },
+      { name: "global install swap", exitCode: 0 },
+      { name: "openclaw doctor", exitCode: 0 },
+    ],
+    run: { status: "succeeded" },
+    postUpdate: {
+      plugins: {
+        status: "warning",
+        warnings: [
+          {
+            pluginId: "codex",
+            reason: message,
+            message:
+              'Plugin "codex" could not be updated. Run `openclaw plugins update codex` to retry.',
+            guidance: ["openclaw plugins update codex"],
+          },
+        ],
+        sync: { errors },
+        npm: { outcomes },
+        integrityDrifts,
+      },
+    },
   };
 }
 
@@ -259,7 +314,7 @@ describe("upgrade recovery result assertions", () => {
     const captured = (command: string, value: unknown) => {
       writeJson(join(observationRoot, "diagnostics", "post-core.json"), value);
       return spawnSync(
-        process.execPath,
+        testNodeExecPath,
         [ASSERTIONS_PATH, command, resultFile, "2026.8.1", observationRoot, "2026.7.1-2"],
         { encoding: "utf8" },
       );
@@ -359,6 +414,170 @@ describe("upgrade recovery result assertions", () => {
     expect(
       runPrefixedJsonAssertion("assert-successful-update-json", result, "2026.8.1").status,
     ).toBe(0);
+  });
+
+  describe("missing Codex migration update result", () => {
+    const scenarioEnv = {
+      OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "missing-configured-plugin-migration",
+    };
+    const check = (report: ReturnType<typeof missingCodexUpdateResult>) =>
+      withEnv(scenarioEnv, () =>
+        runJsonAssertion("assert-successful-update-json", report, "2026.9.4"),
+      );
+
+    it("accepts the successful published update with its named unavailable-Codex warning", () => {
+      const result = check(missingCodexUpdateResult());
+      expect(result.status, result.stderr).toBe(0);
+    });
+
+    it("keeps the same failed-attempt history invalid for the base scenario", () => {
+      const result = withEnv({ OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "base" }, () =>
+        runJsonAssertion("assert-successful-update-json", missingCodexUpdateResult(), "2026.9.4"),
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("successful update failed plugin convergence");
+    });
+
+    const invalidReports: Array<{
+      name: string;
+      mutate: (report: ReturnType<typeof missingCodexUpdateResult>) => void;
+    }> = [
+      {
+        name: "failed update",
+        mutate: (report) => {
+          report.status = "error";
+        },
+      },
+      {
+        name: "unfinished update run",
+        mutate: (report) => {
+          report.run.status = "running";
+        },
+      },
+      {
+        name: "wrong candidate",
+        mutate: (report) => {
+          report.after.version = "2026.9.2";
+        },
+      },
+      {
+        name: "failed core step",
+        mutate: (report) => {
+          report.steps.push({ name: "openclaw doctor", exitCode: 1 });
+        },
+      },
+      {
+        name: "missing final warning status",
+        mutate: (report) => {
+          report.postUpdate.plugins.status = "ok";
+        },
+      },
+      {
+        name: "failed plugin result",
+        mutate: (report) => {
+          report.postUpdate.plugins.status = "error";
+        },
+      },
+      {
+        name: "missing named failure",
+        mutate: (report) => {
+          report.postUpdate.plugins.npm.outcomes = report.postUpdate.plugins.npm.outcomes.filter(
+            (outcome) => outcome.pluginId !== "codex",
+          );
+        },
+      },
+      {
+        name: "unrelated failed plugin",
+        mutate: (report) => {
+          report.postUpdate.plugins.npm.outcomes.push({
+            pluginId: "slack",
+            status: "error",
+            message: "Slack failed.",
+          });
+        },
+      },
+      {
+        name: "Codex consent failure",
+        mutate: (report) => {
+          report.postUpdate.plugins.npm.outcomes = report.postUpdate.plugins.npm.outcomes.map(
+            (outcome) =>
+              outcome.pluginId === "codex" && outcome.status === "error"
+                ? { ...outcome, code: "PLUGIN_CAPABILITY_CONSENT_REQUIRED" }
+                : outcome,
+          );
+        },
+      },
+      {
+        name: "different Codex failure",
+        mutate: (report) => {
+          report.postUpdate.plugins.npm.outcomes = report.postUpdate.plugins.npm.outcomes.map(
+            (outcome) =>
+              outcome.pluginId === "codex"
+                ? { ...outcome, message: "Codex package integrity mismatch." }
+                : outcome,
+          );
+          report.postUpdate.plugins.warnings = report.postUpdate.plugins.warnings.map(
+            (warning) => ({ ...warning, reason: "Codex package integrity mismatch." }),
+          );
+        },
+      },
+      {
+        name: "missing warning",
+        mutate: (report) => {
+          report.postUpdate.plugins.warnings = [];
+        },
+      },
+      {
+        name: "warning for another plugin",
+        mutate: (report) => {
+          report.postUpdate.plugins.warnings = report.postUpdate.plugins.warnings.map(
+            (warning) => ({ ...warning, pluginId: "slack" }),
+          );
+        },
+      },
+      {
+        name: "mismatched warning reason",
+        mutate: (report) => {
+          report.postUpdate.plugins.warnings = report.postUpdate.plugins.warnings.map(
+            (warning) => ({ ...warning, reason: "A different failure." }),
+          );
+        },
+      },
+      {
+        name: "missing recovery guidance",
+        mutate: (report) => {
+          report.postUpdate.plugins.warnings = report.postUpdate.plugins.warnings.map(
+            (warning) => ({ ...warning, guidance: [] }),
+          );
+        },
+      },
+      {
+        name: "missing actionable message",
+        mutate: (report) => {
+          report.postUpdate.plugins.warnings = report.postUpdate.plugins.warnings.map(
+            (warning) => ({ ...warning, message: "Codex is unavailable." }),
+          );
+        },
+      },
+      {
+        name: "sync error",
+        mutate: (report) => {
+          report.postUpdate.plugins.sync.errors.push("Registry unavailable.");
+        },
+      },
+      {
+        name: "integrity drift",
+        mutate: (report) => {
+          report.postUpdate.plugins.integrityDrifts.push({ pluginId: "discord" });
+        },
+      },
+    ];
+    it.each(invalidReports)("rejects $name", ({ mutate }) => {
+      const report = missingCodexUpdateResult();
+      mutate(report);
+      const result = check(report);
+      expect(result.status).not.toBe(0);
+    });
   });
 
   it("accepts only a completed core swap stranded on capability consent", () => {
@@ -649,7 +868,7 @@ function runSessionStateAssertion(
     writeSharedRuntimeCaches(stateDir, options.scenario === "versioned-runtime-deps");
     const fixtureEnv = setup(stateDir);
     for (const command of options.commands ?? ["assert-state"]) {
-      execFileSync(process.execPath, [ASSERTIONS_PATH, command], {
+      execFileSync(testNodeExecPath, [ASSERTIONS_PATH, command], {
         env: {
           ...process.env,
           ...fixtureEnv,
@@ -704,7 +923,7 @@ function assertConfiguredPluginState(params: { installPath?: string } = {}): voi
       skippedIntents: [],
     });
 
-    execFileSync(process.execPath, [ASSERTIONS_PATH, "assert-state"], {
+    execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "assert-state"], {
       env: {
         ...process.env,
         OPENCLAW_STATE_DIR: stateDir,
@@ -736,7 +955,7 @@ function assertConfig(params: {
       skippedIntents: [],
     });
 
-    execFileSync(process.execPath, [ASSERTIONS_PATH, "assert-config"], {
+    execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "assert-config"], {
       env: {
         ...process.env,
         OPENCLAW_CONFIG_PATH: configPath,
@@ -900,7 +1119,7 @@ function assertCompanionPluginRecords(
       assertionsPath = join(isolatedLib, "upgrade-survivor", "assertions.mjs");
     }
     execFileSync(
-      process.execPath,
+      testNodeExecPath,
       [
         assertionsPath,
         ...(recoveryPluginIds
@@ -1007,7 +1226,7 @@ function assertUpdateRunSelfUpgrade(summary: ReturnType<typeof createUpdateRunSe
     const summaryPath = join(root, "summary.json");
     writeJson(summaryPath, summary);
     execFileSync(
-      process.execPath,
+      testNodeExecPath,
       [ASSERTIONS_PATH, "assert-update-run-self-upgrade", summaryPath],
       { stdio: "pipe" },
     );
@@ -1192,7 +1411,7 @@ describe("upgrade survivor assertions", () => {
         const baselinePath = join(stateDir, "survivor-baseline.json");
         writeJson(baselinePath, { marker: "existing fixture" });
         const result = spawnSync(
-          process.execPath,
+          testNodeExecPath,
           [
             "scripts/e2e/lib/upgrade-survivor/sqlite-volume-shared-state.mjs",
             "seed-baseline-plugin-state",
@@ -1362,7 +1581,7 @@ process.stdout.write(sessionDir + "\\n");
 
   it("lists the dependency-free scenario contract", () => {
     const scenarios = JSON.parse(
-      execFileSync(process.execPath, [ASSERTIONS_PATH, "list-scenarios"], {
+      execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "list-scenarios"], {
         encoding: "utf8",
       }),
     ) as string[];
@@ -1454,7 +1673,7 @@ process.stdout.write(sessionDir + "\\n");
     });
     const verify = () =>
       execFileSync(
-        process.execPath,
+        testNodeExecPath,
         [ASSERTIONS_PATH, "assert-mobile-pairing-evidence", ...files],
         {
           stdio: "pipe",
@@ -1497,7 +1716,7 @@ process.stdout.write(sessionDir + "\\n");
         mkdirSync(workspace, { recursive: true });
 
         const beforeSeed = Date.now();
-        execFileSync(process.execPath, [ASSERTIONS_PATH, "seed"], {
+        execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "seed"], {
           env: {
             ...process.env,
             OPENCLAW_STATE_DIR: stateDir,
@@ -1588,7 +1807,7 @@ process.stdout.write(sessionDir + "\\n");
           OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: scenario,
         };
 
-        execFileSync(process.execPath, [ASSERTIONS_PATH, "seed"], { env, stdio: "pipe" });
+        execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "seed"], { env, stdio: "pipe" });
 
         expect(existsSync(join(workspace, "IDENTITY.md"))).toBe(true);
         expect(existsSync(join(workspace, ".openclaw", "workspace-state.json"))).toBe(true);
@@ -1605,11 +1824,11 @@ process.stdout.write(sessionDir + "\\n");
             ...env,
             OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE: stage,
           };
-          execFileSync(process.execPath, [ASSERTIONS_PATH, "assert-state"], {
+          execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "assert-state"], {
             env: stageEnv,
             stdio: "pipe",
           });
-          execFileSync(process.execPath, [ASSERTIONS_PATH, "assert-exec-approvals"], {
+          execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "assert-exec-approvals"], {
             env: stageEnv,
             stdio: "pipe",
           });
@@ -1633,7 +1852,7 @@ process.stdout.write(sessionDir + "\\n");
         OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE: "baseline",
       };
       const run = (command: string) =>
-        spawnSync(process.execPath, [ASSERTIONS_PATH, command], { env, encoding: "utf8" });
+        spawnSync(testNodeExecPath, [ASSERTIONS_PATH, command], { env, encoding: "utf8" });
       const seeded = run("seed");
       expect(seeded.status, seeded.stderr).toBe(0);
       const cronStore = join(stateDir, "cron", "jobs.json");
@@ -1658,7 +1877,7 @@ process.stdout.write(sessionDir + "\\n");
       mkdirSync(stateDir, { recursive: true });
       mkdirSync(workspace, { recursive: true });
 
-      execFileSync(process.execPath, [ASSERTIONS_PATH, "seed"], {
+      execFileSync(testNodeExecPath, [ASSERTIONS_PATH, "seed"], {
         env: {
           ...process.env,
           OPENCLAW_STATE_DIR: stateDir,
@@ -2111,7 +2330,7 @@ process.stdout.write(sessionDir + "\\n");
       mkdirSync(bin);
       writeFileSync(
         join(bin, "openclaw"),
-        `#!${process.execPath}
+        `#!${testNodeExecPath}
 const fs = require("node:fs");
 const method = process.argv[4];
 const params = JSON.parse(process.argv[process.argv.indexOf("--params") + 1]);
@@ -2145,7 +2364,7 @@ process.stdout.write(JSON.stringify(result));
         expect(selection.result.status, selection.result.stderr).toBe(0);
         oracle = selection.oracle!;
       }
-      const result = spawnSync(process.execPath, [oracle, "assert-restart-serving-turn", receipt], {
+      const result = spawnSync(testNodeExecPath, [oracle, "assert-restart-serving-turn", receipt], {
         encoding: "utf8",
         env: {
           ...process.env,

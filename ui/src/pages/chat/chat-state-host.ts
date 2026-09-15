@@ -24,7 +24,7 @@ import type { ChatState } from "./chat-state-contract.ts";
 import type { ChatProps } from "./chat-view.ts";
 import type { BackgroundTasksHost } from "./components/chat-background-tasks.ts";
 import type { SessionWorkspaceHost } from "./components/chat-session-workspace.ts";
-import type { SidebarContent, SidebarSelection } from "./components/chat-sidebar.ts";
+import type { SidebarSelection } from "./components/chat-sidebar.ts";
 import type { ChatExportResult } from "./export.ts";
 import type { ChatInputHistoryKeyInput, ChatInputHistoryKeyResult } from "./input-history.ts";
 import type { RenderLifecycle } from "./render-lifecycle.ts";
@@ -47,6 +47,7 @@ export type ChatPageHost = ChatHost &
   PullRequestRefreshHost &
   SessionWorkspaceHost &
   BackgroundTasksHost & {
+    chatMetadataIsPresented?: () => boolean;
     chatSubmissions: ApplicationContext["chatSubmissions"];
     password: string;
     onboarding: boolean;
@@ -116,12 +117,12 @@ export type ChatPageHost = ChatHost &
     chatHasAutoScrolled: boolean;
     chatUserNearBottom: boolean;
     chatFollowLocked: boolean;
+    chatReadingHistory: boolean;
     chatIsProgrammaticScroll?: () => boolean;
     chatScrollElement?: () => HTMLElement | null;
     chatScrollToEnd?: (options: ChatScrollToEndOptions) => boolean;
     sidebarLayout: SidebarLayout;
     sidebarContent: SidebarSelection | null;
-    attachmentSidebarContent: Extract<SidebarContent, { kind: "attachment" }> | null;
     sidebarFocusPanelId: string;
     sidebarFocusVersion: number;
     updateSidebarActivePanel: (panelId: string) => void;
@@ -153,7 +154,10 @@ export type ChatPageHost = ChatHost &
     submitQueuedChatMessageEdit: () => void;
     cancelQueuedChatMessageEdit: () => void;
     handleCloseSidebar: (slot: "detail" | "workspace") => void;
-    updateSidebarLayout: (layout: SidebarLayout) => void;
+    updateSidebarLayout: (
+      layout: SidebarLayout,
+      options?: { persist?: boolean; dashboardPresentation?: "personal"; geometryOnly?: boolean },
+    ) => void;
     beginImageOpen: () => number;
     handleOpenImage: (item: ImageLightboxItem, requestVersion?: number) => void;
     handleCloseImage: () => void;

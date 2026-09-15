@@ -10,15 +10,17 @@ import {
   type MissingPluginInstallPayload,
 } from "./payload-verification.js";
 import { createPluginCache, withPluginCache } from "./plugin-cache.js";
+import { withPluginLifecycleLease } from "./plugin-lifecycle-lease.js";
 import {
   capturePluginPackageUpdateSnapshot,
   reconcilePluginPackageUpdateConfig,
 } from "./plugin-package-update.js";
 import type { PluginChannelSyncResult } from "./update-channel.js";
-import type {
-  PluginUpdateIntegrityDriftParams,
-  PluginUpdateLogger,
-  PluginUpdateOutcome,
+import {
+  isPluginInstallRecordUpdateSource,
+  type PluginUpdateIntegrityDriftParams,
+  type PluginUpdateLogger,
+  type PluginUpdateOutcome,
 } from "./update-source.js";
 import { syncPluginsForUpdateChannel, updateNpmInstalledPlugins } from "./update.js";
 
@@ -47,7 +49,17 @@ export async function convergePluginReleaseCohort(params: {
   logger?: PluginUpdateLogger;
   onIntegrityDrift?: (params: PluginUpdateIntegrityDriftParams) => boolean | Promise<boolean>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
+  beforePersistentEffect?: () => void;
 }): Promise<PluginCohortConvergenceResult> {
+  return await withPluginLifecycleLease(
+    { env: params.env, assertCurrent: params.beforePersistentEffect },
+    () => convergePluginReleaseCohortWithLease(params),
+  );
+}
+
+async function convergePluginReleaseCohortWithLease(
+  params: Parameters<typeof convergePluginReleaseCohort>[0],
+): Promise<PluginCohortConvergenceResult> {
   const sync = await syncPluginsForUpdateChannel({
     config: params.config,
     channel: params.channel,
@@ -57,18 +69,23 @@ export async function convergePluginReleaseCohort(params: {
     externalizedBundledPluginBridges: params.externalizedBundledPluginBridges,
     logger: params.logger,
     onCapabilityConsent: params.onCapabilityConsent,
+    beforePersistentEffect: params.beforePersistentEffect,
   });
+  params.beforePersistentEffect?.();
   let config = sync.config;
   let changed = sync.changed;
   let npmChanged = false;
-  const sourceBundledIds = resolveSourceCheckoutBundledPluginIds({
-    config,
-    installRecords: config.plugins?.installs ?? {},
-    env: params.env,
-  });
-  const installOwners = Object.keys(config.plugins?.installs ?? {}).filter(
-    (id) => !sourceBundledIds.has(id),
-  );
+  let installOwners = Object.entries(config.plugins?.installs ?? {})
+    .filter(([, record]) => isPluginInstallRecordUpdateSource(record))
+    .map(([id]) => id);
+  if (installOwners.length > 0) {
+    const sourceBundledIds = resolveSourceCheckoutBundledPluginIds({
+      config,
+      installRecords: config.plugins?.installs ?? {},
+      env: params.env,
+    });
+    installOwners = installOwners.filter((id) => !sourceBundledIds.has(id));
+  }
   // Without prior package owners there is no retired child policy to reconcile.
   const beforeIndex = installOwners.length
     ? withPluginCache(createPluginCache(), () =>
@@ -115,7 +132,9 @@ export async function convergePluginReleaseCohort(params: {
       logger: params.logger,
       onIntegrityDrift: params.onIntegrityDrift,
       onCapabilityConsent: params.onCapabilityConsent,
+      beforePersistentEffect: params.beforePersistentEffect,
     });
+    params.beforePersistentEffect?.();
     config = repair.config;
     changed ||= repair.changed;
     npmChanged ||= repair.changed;
@@ -141,7 +160,9 @@ export async function convergePluginReleaseCohort(params: {
     logger: params.logger,
     onIntegrityDrift: params.onIntegrityDrift,
     onCapabilityConsent: params.onCapabilityConsent,
+    beforePersistentEffect: params.beforePersistentEffect,
   });
+  params.beforePersistentEffect?.();
   config = update.config;
   changed ||= update.changed;
   npmChanged ||= update.changed;

@@ -7,7 +7,33 @@ import type {
 import { GatewayRequestError, type GatewayBrowserClient } from "../api/gateway.ts";
 import { t } from "../i18n/index.ts";
 import { formatUiError } from "../lib/format-error.ts";
+import { buildCatalogSessionKey } from "../lib/sessions/catalog-key.ts";
 import { sessionCatalogHostKey } from "./app-sidebar-session-types.ts";
+
+export function excludeSessionCatalogRows(
+  catalogs: SessionCatalog[],
+  excluded: ReadonlySet<string>,
+): SessionCatalog[] {
+  if (excluded.size === 0) {
+    return catalogs;
+  }
+  return catalogs.map((catalog) => ({
+    ...catalog,
+    hosts: catalog.hosts.map((host) => ({
+      ...host,
+      sessions: host.sessions.filter(
+        (session) =>
+          !excluded.has(
+            buildCatalogSessionKey({
+              catalogId: catalog.id,
+              hostId: host.hostId,
+              threadId: session.threadId,
+            }),
+          ),
+      ),
+    })),
+  }));
+}
 
 function repeatedCatalogCursorError(): NonNullable<SessionCatalog["error"]> {
   return { code: "PAGINATION_FAILED", message: t("chat.sidebar.catalogPaginationFailed") };
@@ -52,16 +78,19 @@ export function mergeSessionCatalogPage(params: {
   current: SessionCatalog;
   page: SessionCatalog | undefined;
   cursors: Readonly<Record<string, string>>;
-}): { catalog: SessionCatalog; advancedHostIds: string[] } {
+  previousCursors?: ReadonlyMap<string, ReadonlySet<string>>;
+}): { catalog: SessionCatalog; advancedHostIds: string[]; repeatedHostIds: string[] } {
   const { page } = params;
   if (!page) {
     return {
       catalog: { ...params.current, error: missingCatalogPageError() },
       advancedHostIds: [],
+      repeatedHostIds: [],
     };
   }
   const pageHosts = new Map(page.hosts.map((host) => [host.hostId, host]));
   const advancedHostIds: string[] = [];
+  const repeatedHostIds: string[] = [];
   const hosts = params.current.hosts.map((host) => {
     const requestedCursor = params.cursors[host.hostId];
     const pageHost = pageHosts.get(host.hostId);
@@ -75,8 +104,12 @@ export function mergeSessionCatalogPage(params: {
       return preserveExpandedCatalogHost(pageHost, host);
     }
     const { nextCursor, sessions, error: _pageError, ...pageHostDetails } = pageHost;
-    const repeatedCursor = nextCursor === requestedCursor;
-    if (!repeatedCursor) {
+    const repeatedCursor =
+      nextCursor === requestedCursor ||
+      (nextCursor !== undefined && params.previousCursors?.get(host.hostId)?.has(nextCursor));
+    if (repeatedCursor) {
+      repeatedHostIds.push(host.hostId);
+    } else {
       advancedHostIds.push(host.hostId);
     }
     const { nextCursor: _currentCursor, error: _currentError, ...currentHost } = host;
@@ -98,6 +131,7 @@ export function mergeSessionCatalogPage(params: {
       ...(pageError ? { error: pageError } : {}),
     },
     advancedHostIds,
+    repeatedHostIds,
   };
 }
 

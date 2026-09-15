@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { sameFileIdentity } from "@openclaw/fs-safe/advanced";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { valid as validSemver } from "semver";
 import { BUNDLED_RUNTIME_SIDECAR_PATHS } from "../plugins/runtime-sidecar-paths.js";
@@ -20,9 +21,15 @@ import {
   PACKAGE_DIST_INVENTORY_RELATIVE_PATH,
   readPackageDistInventoryIfPresent,
 } from "./package-dist-inventory.js";
-import { readPackageVersion } from "./package-json.js";
+import { readPackageName, readPackageVersion } from "./package-json.js";
 import { applyPathPrepend } from "./path-prepend.js";
 import { parseSemver } from "./runtime-guard.js";
+import {
+  createFreeBsdPkgOwnershipInspection,
+  FreeBsdPkgOwnershipError,
+  PKG_INSPECTION_TIMEOUT_MS,
+  type FreeBsdPkgOwnershipInspection,
+} from "./update-freebsd-pkg-ownership.js";
 import { collectGitRuntimeErrors, type GitRuntimeIdentity } from "./update-git-runtime.js";
 import type { UpdateRecovery } from "./update-recovery.js";
 
@@ -1049,6 +1056,36 @@ async function isPnpmGlobalPackageRoot(pkgRoot?: string | null): Promise<boolean
   );
 }
 
+/** Resolves an installed pnpm project's identity and its active OpenClaw package link. */
+export async function resolvePnpmGlobalInstallOwner(
+  pkgRoot: string,
+): Promise<{ ownerRoot: string; packageRoot: string } | null> {
+  const globalRoot = inferPnpmGlobalRootFromPackageRoot(pkgRoot);
+  if (!globalRoot || (await readPackageName(pkgRoot)) !== PRIMARY_PACKAGE_NAME) {
+    return null;
+  }
+  let ownerRoot: string | null;
+  let packageRoot: string;
+  if (inferPnpmIsolatedGlobalRootFromPackageRoot(pkgRoot)) {
+    const active = await resolvePnpmIsolatedGlobalPackage({ globalRoot, pkgRoot });
+    if (!active) {
+      return null;
+    }
+    ownerRoot = await resolvePnpmIsolatedInstallOwner(active.packageRoot);
+    packageRoot = active.packageRoot;
+  } else {
+    if (!(await isPnpmGlobalPackageRoot(pkgRoot))) {
+      return null;
+    }
+    ownerRoot = await fs.realpath(path.dirname(globalRoot)).catch(() => null);
+    packageRoot = resolvePackageRootFromGlobalRoot({ globalRoot });
+  }
+  if (!ownerRoot || (await readPackageName(packageRoot)) !== PRIMARY_PACKAGE_NAME) {
+    return null;
+  }
+  return { ownerRoot, packageRoot };
+}
+
 function resolvePreferredGlobalManagerCommand(
   manager: GlobalInstallManager,
   pkgRoot?: string | null,
@@ -1140,7 +1177,10 @@ export async function resolveGlobalInstallTarget(params: {
   pkgRoot?: string | null;
   honorPackageRoot?: boolean;
   packageName?: string;
+  pkgOwnership?: FreeBsdPkgOwnershipInspection;
 }): Promise<ResolvedGlobalInstallTarget> {
+  const pkgOwnership = params.pkgOwnership ?? createFreeBsdPkgOwnershipInspection(params.timeoutMs);
+  await pkgOwnership.assertUnowned(params.pkgRoot);
   const requestedCommand = normalizeGlobalInstallCommand(params.manager, params.pkgRoot);
   const requestedPnpmGlobalRoot =
     requestedCommand.manager === "pnpm"
@@ -1223,6 +1263,12 @@ export async function resolveGlobalInstallTarget(params: {
       ? (pnpmIsolatedPackage?.packageRoot ??
         (verifiedPnpmIsolatedGlobalRoot && params.pkgRoot ? params.pkgRoot : fallbackPackageRoot))
       : fallbackPackageRoot;
+  if (process.platform === "freebsd" && !packageRoot) {
+    throw new FreeBsdPkgOwnershipError("pkg-ownership-unavailable", "paths");
+  }
+  // Manager discovery can outlive the planning snapshot. The selected
+  // destination starts a fresh inspection before its runtime is selected.
+  await createFreeBsdPkgOwnershipInspection(params.timeoutMs).assertUnowned(packageRoot);
   const npmOwner =
     command.manager === "npm"
       ? await resolveNpmOwner({
@@ -1504,6 +1550,7 @@ export async function cleanupGlobalRenameDirs(params: {
     return { removed };
   }
   const prefix = `${GLOBAL_RENAME_PREFIX}${name}-`;
+  const inspectionDeadline = Date.now() + PKG_INSPECTION_TIMEOUT_MS;
   let entries: string[];
   try {
     entries = await fs.readdir(root);
@@ -1520,9 +1567,27 @@ export async function cleanupGlobalRenameDirs(params: {
       if (!stat.isDirectory()) {
         continue;
       }
+      if (process.platform === "freebsd") {
+        // A matching rename pattern does not establish ownership of its files.
+        const remainingMs = inspectionDeadline - Date.now();
+        if (remainingMs <= 0) {
+          break;
+        }
+        await createFreeBsdPkgOwnershipInspection(remainingMs).assertUnowned(target);
+        const current = await fs.lstat(target);
+        if (!current.isDirectory() || !sameFileIdentity(stat, current)) {
+          continue;
+        }
+      }
       await fs.rm(target, { recursive: true, force: true });
       removed.push(entry);
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof FreeBsdPkgOwnershipError &&
+        error.reason === "pkg-ownership-unavailable"
+      ) {
+        break;
+      }
       // ignore cleanup failures
     }
   }

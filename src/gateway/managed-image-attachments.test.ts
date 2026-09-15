@@ -41,7 +41,11 @@ import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   attachManagedImageRecordToMessage,
@@ -151,6 +155,7 @@ const {
   createManagedOutgoingMediaBlocks: createManagedOutgoingImageBlocksActual,
   handleManagedOutgoingMediaHttpRequest: handleManagedOutgoingImageHttpRequest,
   prepareOutgoingMediaFromReplyPayload,
+  readManagedOutgoingImageThumbnail,
   resolveManagedOutgoingMediaArtifactDownload: resolveManagedOutgoingImageArtifactDownload,
   resolveManagedImageAttachmentLimits,
 } = await import("./managed-image-attachments.js");
@@ -455,6 +460,7 @@ describe("handleManagedOutgoingImageHttpRequest", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
@@ -1181,7 +1187,7 @@ describe("handleManagedOutgoingImageHttpRequest", () => {
     expect(download?.title).toBe("meeting-note.mp3");
   });
 
-  it("serves a bounded thumbnail through the full-image artifact ticket", async () => {
+  it("serves the same bounded thumbnail through local reads and the full-image artifact ticket", async () => {
     const source = createSolidPngBuffer(640, 320, { r: 24, g: 64, b: 128 });
     const { attachmentId, sessionKey } = await createFixture(stateDir, { body: source });
     const canonicalPath = `/api/chat/media/outgoing/${encodeURIComponent(sessionKey)}/${attachmentId}/full`;
@@ -1203,6 +1209,24 @@ describe("handleManagedOutgoingImageHttpRequest", () => {
       stateDir,
     });
     const thumbnailUrl = download?.url.replace(/\/full(?=\?)/u, "/thumbnail") ?? "";
+    const localRequest = {
+      sessionKey,
+      artifactId: `${MANAGED_OUTGOING_IMAGE_ARTIFACT_ID_PREFIX}${attachmentId}`,
+      stateDir,
+      maxBytes: 12 * 1024 * 1024,
+      signal: new AbortController().signal,
+    };
+    const localThumbnail = await readManagedOutgoingImageThumbnail(localRequest);
+    expect(localThumbnail && readImageProbeFromHeader(localThumbnail)).toMatchObject({
+      width: 300,
+      height: 150,
+    });
+    await expect(
+      readManagedOutgoingImageThumbnail({ ...localRequest, maxBytes: 1 }),
+    ).rejects.toThrow("byte limit");
+    await expect(
+      readManagedOutgoingImageThumbnail({ ...localRequest, sessionKey: "agent:other:main" }),
+    ).resolves.toBeNull();
 
     vi.clearAllMocks();
     const { result } = await requestManagedImage({
@@ -1216,6 +1240,7 @@ describe("handleManagedOutgoingImageHttpRequest", () => {
     expect(result.headers["content-type"]).toBe("image/png");
     expect(result.headers["content-disposition"]).toContain("cat-thumbnail.png");
     expect(readImageProbeFromHeader(result.body)).toMatchObject({ width: 300, height: 150 });
+    expect(result.body).toEqual(localThumbnail);
     expect(authorizeGatewayHttpRequestOrReplyMock).not.toHaveBeenCalled();
   });
 
@@ -1438,6 +1463,7 @@ describe("createManagedOutgoingImageBlocks", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
@@ -1970,6 +1996,7 @@ describe("createManagedOutgoingImageBlocks", () => {
         },
       );
     } finally {
+      await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
       await fs.rm(openClawHome, { recursive: true, force: true });
       await fs.rm(externalConfigDir, { recursive: true, force: true });
@@ -2538,6 +2565,7 @@ describe("attachManagedOutgoingImagesToMessage", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
@@ -2574,6 +2602,7 @@ describe("cleanupManagedOutgoingImageRecords", () => {
 
   afterEach(async () => {
     closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
@@ -2637,6 +2666,9 @@ describe("cleanupManagedOutgoingImageRecords", () => {
     if (!record) {
       throw new Error("expected pending managed media record");
     }
+    const queueContext = captureOpenClawStateWorkerContext({
+      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+    });
     const queueId = await enqueueSessionDelivery(
       {
         kind: "agentTurn",
@@ -2648,7 +2680,7 @@ describe("cleanupManagedOutgoingImageRecords", () => {
           "/tmp/generated.png": blocks as Array<Record<string, unknown>>,
         },
       },
-      stateDir,
+      queueContext,
     );
     const afterTtl = Date.parse(record.createdAt) + 16 * 60 * 1000;
 
@@ -2656,7 +2688,7 @@ describe("cleanupManagedOutgoingImageRecords", () => {
       cleanupManagedOutgoingImageRecords({ stateDir, nowMs: afterTtl }),
     ).resolves.toEqual({ deletedRecordCount: 0, deletedFileCount: 0, retainedCount: 1 });
 
-    await completeSessionDelivery(queueId, stateDir);
+    await completeSessionDelivery(queueId, queueContext);
     await expect(
       cleanupManagedOutgoingImageRecords({ stateDir, nowMs: afterTtl }),
     ).resolves.toEqual({ deletedRecordCount: 1, deletedFileCount: 1, retainedCount: 0 });

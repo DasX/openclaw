@@ -532,7 +532,8 @@ vi.mock("../config/config.js", async (importOriginal) => ({
       { snapshot: createDoctorConfigSnapshot(), previousHash: null, attempt: 0 },
       {},
     );
-    return mocks.replaceConfigFile({ ...options, nextConfig });
+    await mocks.replaceConfigFile({ ...options, nextConfig });
+    return { nextConfig };
   },
   readConfigFileSnapshot: mocks.readConfigFileSnapshot,
 }));
@@ -2578,7 +2579,7 @@ describe("doctor health contributions", () => {
     );
   });
 
-  it.each(["warning", "refused"] as const)(
+  it.each(["warning", "deferred", "refused"] as const)(
     "prints legacy state migration notices and records only advisories (%s)",
     async (outcome) => {
       const contribution = requireDoctorContribution("doctor:legacy-state");
@@ -2617,7 +2618,7 @@ describe("doctor health contributions", () => {
         "Doctor notices",
       );
       expect(ctx.updateWarnings ?? []).toEqual(
-        outcome === "warning" ? ["Legacy cleanup deferred; run openclaw doctor --fix"] : [],
+        outcome !== "refused" ? ["Legacy cleanup deferred; run openclaw doctor --fix"] : [],
       );
     },
   );

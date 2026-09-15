@@ -2,14 +2,15 @@
 // Starts delayed maintenance, cron, heartbeat, recovery, and pricing refresh work.
 import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { computeBackoffMs } from "../infra/delivery-recovery.shared.js";
 import {
-  resolveHeartbeatAgents,
-  startHeartbeatRunner,
-  type HeartbeatRunner,
-  runHeartbeatOnce,
-} from "../infra/heartbeat-runner.js";
-import { resolveHeartbeatIntervalMs } from "../infra/heartbeat-summary.js";
+  resolveDeliveryQueueStateEnv,
+  type DeliveryQueueStateContext,
+} from "../infra/delivery-queue-sqlite.js";
+import { computeBackoffMs } from "../infra/delivery-recovery.shared.js";
+import { resolveHeartbeatAgents, resolveHeartbeatIntervalMs } from "../infra/heartbeat-config.js";
+import type { runHeartbeatOnce } from "../infra/heartbeat-runner-run.js";
+import { startHeartbeatRunner, type HeartbeatRunner } from "../infra/heartbeat-runner-scheduler.js";
+import { getHeartbeatWakeAbortSignal } from "../infra/heartbeat-wake.js";
 import type { DeliverOutboundPayloadsParams } from "../infra/outbound/deliver.js";
 import {
   schedulePendingSessionDeliveries,
@@ -20,7 +21,9 @@ import {
   runWithGatewayIndependentRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { startSessionUpstreamMonitor } from "../sessions/session-upstream-monitor.js";
+import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
 import {
   fenceScheduledGatewayContextResolver,
@@ -39,6 +42,10 @@ export {
   startGatewayChannelHealthMonitor,
   type GatewayChannelManager,
 } from "./server-runtime-startup-services.js";
+
+const loadHeartbeatExecution = createLazyRuntimeModule(
+  () => import("../infra/heartbeat-runner-run.js"),
+);
 
 type GatewayPostReadyLogger = {
   warn: (message: string) => void;
@@ -183,6 +190,7 @@ function startPendingOutboundDeliveryRecovery(params: {
       }
       const deliverWithCurrentConversationAuthority = async (
         deliveryParams: DeliverOutboundPayloadsParams,
+        stateContext?: DeliveryQueueStateContext,
       ) => {
         const completion = deliveryParams.deliveryCompletion;
         const attemptAuthority =
@@ -190,24 +198,35 @@ function startPendingOutboundDeliveryRecovery(params: {
             ? completion
             : deliveryParams.conversationDeliveryAttemptAuthority;
         if (!attemptAuthority) {
-          return await deliverOutboundPayloadsInternal(deliveryParams);
+          return await deliverOutboundPayloadsInternal(deliveryParams, stateContext);
         }
-        return await deliverOutboundPayloadsInternal({
-          ...deliveryParams,
-          onDeliveryAttempt: async () => {
-            await deliveryParams.onDeliveryAttempt?.();
-            if (!attemptAuthority.routeFingerprint) {
-              return;
-            }
-            assertQueuedConversationDeliveryAttemptAuthorized({
-              config: getRuntimeConfig(),
-              agentId: attemptAuthority.agentId,
-              operationId: attemptAuthority.operationId,
-              ...(attemptAuthority.storePath ? { storePath: attemptAuthority.storePath } : {}),
-              routeFingerprint: attemptAuthority.routeFingerprint,
-            });
+        return await deliverOutboundPayloadsInternal(
+          {
+            ...deliveryParams,
+            onDeliveryAttempt: async () => {
+              await deliveryParams.onDeliveryAttempt?.();
+              if (!attemptAuthority.routeFingerprint) {
+                return;
+              }
+              await assertQueuedConversationDeliveryAttemptAuthorized(
+                {
+                  readCurrentConfig: getRuntimeConfig,
+                  operationId: attemptAuthority.operationId,
+                  routeFingerprint: attemptAuthority.routeFingerprint,
+                },
+                {
+                  agentId: attemptAuthority.agentId,
+                  ...(attemptAuthority.storePath ? { storePath: attemptAuthority.storePath } : {}),
+                  env: resolveDeliveryQueueStateEnv(
+                    deliveryParams.deliveryQueueStateDir,
+                    stateContext,
+                  ),
+                },
+              );
+            },
           },
-        });
+          stateContext,
+        );
       };
       logRecovery ??= params.log.child("delivery-recovery");
       if (migrationPending) {
@@ -222,25 +241,31 @@ function startPendingOutboundDeliveryRecovery(params: {
         // A new scheduled-service lifecycle starts unchecked. Latch only after
         // one pass neither skipped ownership nor left retired rows behind.
         migrationPending = migration.skipped > 0 || migration.remaining > 0;
-        await recoverPendingDeliveries({
-          deliver: deliverWithCurrentConversationAuthority,
-          log: logRecovery,
-          cfg,
-          shouldContinue: () => !stopped,
-        });
+        await recoverPendingDeliveries(
+          {
+            deliver: deliverWithCurrentConversationAuthority,
+            log: logRecovery,
+            cfg,
+            shouldContinue: () => !stopped,
+          },
+          deliverWithCurrentConversationAuthority,
+        );
         return;
       }
       // Normal retries use fresh config so revoked accounts cannot inherit the
       // authority captured at gateway startup.
-      await drainPendingDeliveriesCore({
-        drainKey: "gateway:outbound",
-        logLabel: "Outbound delivery retry",
-        cfg: getRuntimeConfig(),
-        log: logRecovery,
-        deliver: deliverWithCurrentConversationAuthority,
-        selectEntry: () => ({ match: true, bypassBackoff: false }),
-        shouldContinue: () => !stopped,
-      });
+      await drainPendingDeliveriesCore(
+        {
+          drainKey: "gateway:outbound",
+          logLabel: "Outbound delivery retry",
+          cfg: getRuntimeConfig(),
+          log: logRecovery,
+          deliver: deliverWithCurrentConversationAuthority,
+          selectEntry: () => ({ match: true, bypassBackoff: false }),
+          shouldContinue: () => !stopped,
+        },
+        deliverWithCurrentConversationAuthority,
+      );
     }, "runtime:delivery-recovery").catch((err: unknown) =>
       params.log.error(`Delivery recovery failed: ${String(err)}`),
     );
@@ -289,6 +314,7 @@ function startPendingSessionDeliveryRuntime(params: {
   maxEnqueuedAt: number;
   resolveGatewayContext?: GatewayContextResolver;
 }): () => Promise<void> {
+  const queueContext = captureOpenClawStateWorkerContext();
   const controller = new AbortController();
   const { signal } = controller;
   let recovery: Promise<void> | undefined;
@@ -309,11 +335,12 @@ function startPendingSessionDeliveryRuntime(params: {
         }
         const logRecovery = params.log.child("session-delivery-recovery");
         stopRuntime = startSessionDeliveryRuntime({
-          deliver: (entry, context = {}) =>
+          queueContext,
+          deliver: (entry, { queueContext: deliveryContext }) =>
             deliverQueuedSessionDelivery({
               deps: params.deps,
               entry,
-              ...(context.stateDir !== undefined ? { stateDir: context.stateDir } : {}),
+              queueContext: deliveryContext,
               ...(params.resolveGatewayContext
                 ? { resolveGatewayContext: params.resolveGatewayContext }
                 : {}),
@@ -324,6 +351,7 @@ function startPendingSessionDeliveryRuntime(params: {
         try {
           await recoverPendingRestartContinuationDeliveries({
             deps: params.deps,
+            queueContext,
             log: logRecovery,
             maxEnqueuedAt: params.maxEnqueuedAt,
             ...(params.resolveGatewayContext
@@ -407,16 +435,25 @@ export function activateGatewayScheduledServices(params: {
   const heartbeatGatewayContextResolver = fenceScheduledGatewayContextResolver(
     params.resolveGatewayContext,
   );
+  let heartbeatStopped = false;
   const heartbeatRunner = startHeartbeatRunner({
     cfg: params.cfgAtStart,
     readCurrentConfig: getRuntimeConfig,
     ...(heartbeatGatewayContextResolver
       ? {
-          runOnce: async (opts: Parameters<typeof runHeartbeatOnce>[0]) =>
-            await runWithScheduledGatewayContext({
+          runOnce: async (opts: Parameters<typeof runHeartbeatOnce>[0]) => {
+            const wakeSignal = getHeartbeatWakeAbortSignal();
+            const { runHeartbeatOnce } = await loadHeartbeatExecution();
+            // A stopped service or replaced wake must not enter execution after
+            // the import settles; the wake owner handles canceled work.
+            if (heartbeatStopped || wakeSignal?.aborted) {
+              return { status: "skipped", reason: "disabled" };
+            }
+            return await runWithScheduledGatewayContext({
               resolveGatewayContext: heartbeatGatewayContextResolver,
               run: async () => await runHeartbeatOnce(opts),
-            }),
+            });
+          },
         }
       : {}),
   });
@@ -454,6 +491,7 @@ export function activateGatewayScheduledServices(params: {
   const heartbeatRunnerWithUpstreamMonitor: HeartbeatRunner = {
     updateConfig: heartbeatRunner.updateConfig,
     stop: () => {
+      heartbeatStopped = true;
       void stopDeliveryRecovery();
       sessionUpstreamMonitor.stop();
       heartbeatRunner.stop();

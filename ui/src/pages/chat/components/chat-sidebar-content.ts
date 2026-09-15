@@ -55,6 +55,7 @@ function renderSidebarAttachment(
   content: Extract<SidebarContent, { kind: "attachment" }>,
   onRequestUpdate: () => void,
   runtime: AttachmentSidebarRuntime,
+  embedSandboxMode: EmbedSandboxMode,
 ) {
   const resolution = content.resolveSource?.(onRequestUpdate, runtime);
   const source = resolution ? (resolution.status === "ready" ? resolution : null) : content;
@@ -87,8 +88,10 @@ function renderSidebarAttachment(
     !isCrossOriginHttpSource(src ?? "")
   ) {
     return html`<openclaw-chat-text-attachment
+      .compact=${true}
+      .embedSandboxMode=${embedSandboxMode}
       .src=${src ?? ""}
-      .sourceIdentity=${content.sourceIdentity ?? src ?? ""}
+      .sourceIdentity=${[runtime.connectionEpoch ?? "", runtime.agentId ?? "", runtime.sessionKey ?? "", content.sourceIdentity ?? src ?? ""].join("\u0000")}
       .label=${content.title}
       .mimeType=${content.mimeType ?? ""}
       .sizeBytes=${source?.sizeBytes ?? content.sizeBytes}
@@ -229,6 +232,7 @@ function resolveSidebarCanvasSandbox(
 
 type MarkdownSidebarProps = {
   content: ChatDetailPanelContent | null;
+  showingRawText: boolean;
   error: Error | null;
   onRetry: () => void;
   fileView?: FileViewControls;
@@ -280,7 +284,11 @@ function renderMarkdownSidebar(props: MarkdownSidebarProps) {
             : content?.kind === "session-diff"
               ? t("chat.sessionDiff.title")
               : content?.kind === "markdown"
-                ? t("chat.detailPanel.markdownPreview")
+                ? t(
+                    props.showingRawText
+                      ? "chat.detailPanel.viewSource"
+                      : "chat.detailPanel.markdownPreview",
+                  )
                 : t("chat.detailPanel.toolDetails");
   return html`
     <div class="sidebar-panel">
@@ -416,6 +424,7 @@ function renderMarkdownSidebar(props: MarkdownSidebarProps) {
                               content,
                               props.onAttachmentUpdate,
                               props.attachmentRuntime,
+                              props.embedSandboxMode ?? "scripts",
                             )}
                           </div>`
                         : html`
@@ -424,19 +433,33 @@ function renderMarkdownSidebar(props: MarkdownSidebarProps) {
                                 <div class="sidebar-markdown-shell__intro">
                                   <div class="sidebar-markdown-shell__eyebrow">
                                     ${icons.scrollText}
-                                    <span>${t("chat.detailPanel.renderedMarkdown")}</span>
+                                    <span
+                                      >${t(props.showingRawText ? "chat.detailPanel.viewSource" : "chat.detailPanel.renderedMarkdown")}</span
+                                    >
                                   </div>
-                                  <div class="sidebar-markdown-shell__hint">
-                                    ${t("chat.detailPanel.renderedMarkdownHint")}
-                                  </div>
+                                  ${
+                                    props.showingRawText
+                                      ? nothing
+                                      : html`
+                                          <div class="sidebar-markdown-shell__hint">
+                                            ${t("chat.detailPanel.renderedMarkdownHint")}
+                                          </div>
+                                        `
+                                  }
                                 </div>
-                                <button
-                                  @click=${props.onViewRawText}
-                                  class="btn btn--sm"
-                                  type="button"
-                                >
-                                  ${t("chat.detailPanel.viewRawText")}
-                                </button>
+                                ${
+                                  props.showingRawText
+                                    ? nothing
+                                    : html`
+                                        <button
+                                          @click=${props.onViewRawText}
+                                          class="btn btn--sm"
+                                          type="button"
+                                        >
+                                          ${t("chat.detailPanel.viewRawText")}
+                                        </button>
+                                      `
+                                }
                               </div>
                               ${
                                 markdownHtml

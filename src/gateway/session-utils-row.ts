@@ -2,8 +2,7 @@ import { createHash } from "node:crypto";
 import { asNonNegativeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { SESSION_PARTICIPANT_LIMIT } from "../../packages/gateway-protocol/src/schema/session-participant.js";
-import { resolveAuthoredModelContextTokens } from "../agents/context-resolution.js";
-import { resolveContextTokensForModel } from "../agents/context.js";
+import { resolveModelContextTokenProjection } from "../agents/context.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveFastModeState } from "../agents/fast-mode.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
@@ -27,6 +26,11 @@ import {
 } from "../config/sessions/session-entry-provenance.js";
 import { isPinnableSessionEntry } from "../config/sessions/session-pin-policy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  buildProjectedAgentRunIndex,
+  resolveProjectedAgentRunModel,
+  type ProjectedAgentRunIndex,
+} from "../infra/agent-run-registry.js";
 import { projectPluginSessionExtensionsSync } from "../plugins/host-hook-state.js";
 import { resolveActiveSessionAgentStatus } from "../sessions/session-agent-status.js";
 import { deriveSessionUnread } from "../shared/session-unread.js";
@@ -37,6 +41,7 @@ import { projectSessionDeliveryFields } from "../utils/delivery-context.shared.j
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
 import { buildControlUiChannelAvatarUrl } from "./control-ui-contract.js";
 import { normalizeControlUiBasePath } from "./control-ui-shared.js";
+import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
 import { sessionHasAutomation } from "./session-automation-index.js";
 import { sessionClassificationForRow } from "./session-classification.js";
 import {
@@ -53,12 +58,10 @@ import type {
   SessionListRowContext,
 } from "./session-utils-contracts.js";
 import {
-  buildCompactionCheckpointPreview,
   deriveSessionTitle,
   resolveEstimatedSessionCostUsd,
-  resolveLatestCompactionCheckpoint,
+  resolveSessionCompactionSummary,
   resolvePositiveNumber,
-  resolveProjectableCompactionCheckpoints,
   buildStoreChildSessionIndex,
 } from "./session-utils-core.js";
 import {
@@ -67,12 +70,13 @@ import {
   projectGatewaySessionRunState,
   resolveGatewaySessionGoal,
 } from "./session-utils-display.js";
+import { resolveSessionSelectedModelRef } from "./session-utils-model-selection.js";
 import {
   resolveGatewaySessionThinkingProjectionInternal,
   resolveSessionDisplayModelIdentityRefCached,
 } from "./session-utils-model.js";
 import {
-  resolveSessionSelectedModelRef,
+  buildSessionListRowMetadataContext,
   resolveTranscriptUsageFallback,
 } from "./session-utils-projection.js";
 import { parseGroupKey } from "./session-utils-store.js";
@@ -107,18 +111,17 @@ export function buildGatewaySessionRow(params: {
   const { cfg, storePath, store, key, entry } = params;
   const lightweight = params.lightweightListRow === true;
   const now = params.now ?? Date.now();
+  const rowContext =
+    params.rowContext ??
+    buildSessionListRowMetadataContext({ now, sessionKeys: [key, ...Object.keys(store)] });
   const agentStatus = resolveActiveSessionAgentStatus(entry?.agentStatus, now);
   const owner = projectSessionOwner(
     entry,
-    params.rowContext?.userProfileIdentityById,
+    rowContext.userProfileIdentityById,
     cfg,
     params.configuredAgentIds,
   );
-  const participants = projectSessionParticipants(
-    entry,
-    params.rowContext?.userProfileIdentityById,
-    cfg,
-  );
+  const participants = projectSessionParticipants(entry, rowContext.userProfileIdentityById, cfg);
   if (owner?.actor.identity) {
     participants.delete(JSON.stringify(owner.actor.identity));
   }
@@ -148,8 +151,10 @@ export function buildGatewaySessionRow(params: {
     : undefined;
   const displayName = resolveGatewaySessionDisplayName(key, entry);
   const sessionAgentId = params.agentId;
+  const preparedCatalog =
+    params.modelCatalog instanceof Map ? params.modelCatalog.get(sessionAgentId) : undefined;
+  const metadataSnapshot = readPreparedGatewayModelCatalogMetadata(preparedCatalog);
   const skipTranscriptUsage = params.skipTranscriptUsageFallback === true;
-  const rowContext = params.rowContext;
   const {
     subagentRun,
     subagentOwner,
@@ -162,6 +167,7 @@ export function buildGatewaySessionRow(params: {
     agentId: sessionAgentId,
     rowContext,
     allowPluginNormalization: !lightweight,
+    manifestPlugins: metadataSnapshot,
   });
   const freshSessionTotalTokens = asNonNegativeFiniteNumber(resolveFreshSessionTotalTokens(entry));
   const transcriptUsage = !skipTranscriptUsage
@@ -174,7 +180,7 @@ export function buildGatewaySessionRow(params: {
         fallbackModelRef: subagentRun?.model,
         allowPluginNormalization: !lightweight,
         maxTranscriptBytes: params.transcriptUsageMaxBytes,
-        rowContext: params.rowContext,
+        rowContext,
         agentId: sessionAgentId,
       })
     : null;
@@ -196,46 +202,33 @@ export function buildGatewaySessionRow(params: {
       store,
       keys: [key],
       now,
-      subagentRuns: rowContext?.subagentRuns,
+      subagentRuns: rowContext.subagentRuns,
     })
   ).get(key);
   const pinnedAt =
     entry?.pinnedAt !== undefined && isPinnableSessionEntry(key, entry)
       ? entry.pinnedAt
       : undefined;
-  const compactionCheckpoints = resolveProjectableCompactionCheckpoints(entry);
-  const compactionCheckpointCount = Array.isArray(entry?.compactionCheckpoints)
-    ? compactionCheckpoints.length
-    : undefined;
-  const latestCompactionCheckpoint = buildCompactionCheckpointPreview(
-    resolveLatestCompactionCheckpoint(compactionCheckpoints),
-  );
+  const { compactionCheckpointCount, latestCompactionCheckpoint } =
+    resolveSessionCompactionSummary(entry);
   const rowModelProvider = selectedModel.provider;
   const rowModel = selectedModel.model;
   const rowModelIdentity = resolveSessionDisplayModelIdentityRefCached({
     cfg,
     provider: rowModelProvider,
     model: rowModel,
-    rowContext: params.rowContext,
+    rowContext,
   });
   // Display aliases do not change the selected route's catalog or runtime policy.
-  const completedModel = readSessionFallbackModel({
-    selectedProvider: rowModelProvider,
-    selectedModel: rowModel,
-    sessionEntry: entry,
-    config: cfg,
-    sessionScope: { agentId: sessionAgentId, sessionKey: key, storePath },
-  });
-  const runtimeModels = resolveSelectedAndActiveModel({
-    selectedProvider: rowModelProvider,
-    selectedModel: rowModel,
-    sessionEntry: completedModel ?? entry,
-  });
-  const activeFallback = resolveActiveFallbackState({
-    selectedModelRef: runtimeModels.selected.label,
-    activeModelRef: runtimeModels.active.label,
-    config: cfg,
-    state: entry,
+  const activeModel = resolveGatewaySessionActiveModel({
+    cfg,
+    selectedModel,
+    projectedAgentRuns: (rowContext.projectedAgentRuns ??= buildProjectedAgentRunIndex()),
+    entry,
+    agentId: sessionAgentId,
+    sessionId: entry?.sessionId,
+    sessionKey: key,
+    storePath,
   });
   const acpSessionKey = resolveStoredSessionKeyForAgentStore({
     cfg,
@@ -249,7 +242,7 @@ export function buildGatewaySessionRow(params: {
         provider: rowModelProvider,
         model: rowModel,
         entry,
-        rowContext: params.rowContext,
+        rowContext,
       }) ?? asNonNegativeFiniteNumber(transcriptUsage?.estimatedCostUsd));
   let derivedTitle: string | undefined;
   let lastMessagePreview: string | undefined;
@@ -273,8 +266,6 @@ export function buildGatewaySessionRow(params: {
   const thinkingModel = rowModel ?? DEFAULT_MODEL;
   // Entries and provider policy must stay bound to the same prepared agent owner;
   // the Gateway startup registry can contain a different set of plugins.
-  const preparedCatalog =
-    params.modelCatalog instanceof Map ? params.modelCatalog.get(sessionAgentId) : undefined;
   const rowModelCatalog =
     params.modelCatalog instanceof Map ? preparedCatalog?.entries : params.modelCatalog;
   // Event/list rows must not rediscover plugin-backed configured catalog metadata.
@@ -289,6 +280,8 @@ export function buildGatewaySessionRow(params: {
     sessionKey: acpSessionKey,
     entry,
     modelCatalog: thinkingModelCatalog,
+    modelCatalogRouteVariants: preparedCatalog?.routeVariants,
+    metadataSnapshot,
     rowContext,
     providerPolicySource: preparedCatalog?.pluginRegistry ?? (lightweight ? "active" : undefined),
   });
@@ -298,29 +291,22 @@ export function buildGatewaySessionRow(params: {
     catalogEntry,
     selected: entry?.contextWindow,
   });
-  const resolvedModelContextTokens = resolvePositiveNumber(
-    resolveContextTokensForModel({
-      cfg,
-      provider: rowModelProvider,
-      model: rowModel,
-      modelContextTokens: catalogEntry?.contextTokens,
-      modelContextWindow: contextWindowProfile.contextTokens,
-      allowAsyncLoad: false,
-    }),
-  );
+  const modelContext = resolveModelContextTokenProjection({
+    cfg,
+    provider: rowModelProvider,
+    model: rowModel,
+    modelContextTokens: catalogEntry?.contextTokens,
+    modelContextWindow: contextWindowProfile.contextTokens,
+    allowAsyncLoad: false,
+  });
+  const resolvedModelContextTokens = resolvePositiveNumber(modelContext.contextTokens);
   const resolvedCurrentContextTokens = contextWindowProfile.contextTokens
     ? Math.min(
         resolvedModelContextTokens ?? contextWindowProfile.contextTokens,
         contextWindowProfile.contextTokens,
       )
     : resolvedModelContextTokens;
-  const authoredContextTokens = resolvePositiveNumber(
-    resolveAuthoredModelContextTokens({
-      cfg,
-      provider: rowModelProvider,
-      model: rowModel,
-    }),
-  );
+  const authoredContextTokens = resolvePositiveNumber(modelContext.authoredContextTokens);
   const contextTokens = resolveProjectedSessionContextTokens({
     entry,
     provider: rowModelProvider,
@@ -356,15 +342,15 @@ export function buildGatewaySessionRow(params: {
       : undefined;
 
   const swarm = buildSessionSwarmSummary(
-    rowContext?.subagentRuns.swarmRunsByRequesterSessionKey.get(key) ?? [],
+    params.rowContext?.subagentRuns.swarmRunsByRequesterSessionKey.get(key) ?? [],
     key,
     sessionAgentId,
     { includeChildren: params.includeSwarmChildren },
   );
   return {
     key,
-    // Presence records a completed registry projection; event merges may clear only that fact.
-    ...(rowContext ? { swarm } : {}),
+    // Only explicitly requested summaries may clear swarm state in event merges.
+    ...(params.rowContext ? { swarm } : {}),
     visibility: entry ? (entry.visibility ?? "shared") : undefined,
     incognito: entry?.incognito,
     spawnedBy: subagentOwner || entry?.spawnedBy,
@@ -373,6 +359,8 @@ export function buildGatewaySessionRow(params: {
     swarmGroupId: entry?.swarmGroupId,
     spawnedWorkspaceDir: entry?.spawnedWorkspaceDir,
     spawnedCwd: entry?.spawnedCwd,
+    workspaceDir: entry?.spawnedCwd ?? entry?.spawnedWorkspaceDir,
+    projectId: entry?.projectId,
     permissionMode: entry?.permissionMode,
     permissionModePending: isSessionPermissionChangePending(entry?.sessionId),
     ...(entry?.permissionMode !== undefined && entry.sessionRoot !== undefined
@@ -390,7 +378,7 @@ export function buildGatewaySessionRow(params: {
     createdVia: entry?.createdVia,
     createdActor: projectSessionActor(
       entry?.createdActor,
-      rowContext?.userProfileIdentityById,
+      rowContext.userProfileIdentityById,
       cfg,
       Boolean(sessionCreatorProfileId(entry?.createdActor)),
     ),
@@ -414,6 +402,7 @@ export function buildGatewaySessionRow(params: {
     channelAvatarUrl,
     category: entry?.category,
     boardFace: entry?.boardFace,
+    boardPresentation: entry?.boardPresentation,
     ...sessionClassificationForRow(cfg, key, sessionAgentId, entry),
     displayName,
     derivedTitle,
@@ -427,7 +416,7 @@ export function buildGatewaySessionRow(params: {
     updatedAt,
     archived: entry?.archivedAt !== undefined,
     archivedAt: entry?.archivedAt,
-    archivedBy: projectSessionActor(entry?.archivedBy, rowContext?.userProfileIdentityById, cfg),
+    archivedBy: projectSessionActor(entry?.archivedBy, rowContext.userProfileIdentityById, cfg),
     archiveReason: entry?.archiveReason,
     pinned: pinnedAt !== undefined,
     pinnedAt,
@@ -498,13 +487,14 @@ export function buildGatewaySessionRow(params: {
     }).mode,
     modelProvider: rowModelIdentity.provider,
     model: rowModelIdentity.model,
-    activeModelProvider: activeFallback.active ? runtimeModels.active.provider : undefined,
-    activeModel: activeFallback.active ? runtimeModels.active.model : undefined,
+    activeModelProvider: activeModel?.provider,
+    activeModel: activeModel?.model,
     modelOverrideSource:
       selectedModel.storedOverrideSource === "parent"
         ? "inherited"
         : resolveSessionModelOverrideSource(entry),
     modelSelectionLocked: entry?.modelSelectionLocked,
+    runtimeSelectionLocked: thinkingProjection.runtimeSelectionLocked,
     agentRuntime: projectWorkerPlacementAgentRuntime(thinkingProjection.agentRuntime),
     contextTokens,
     contextBudgetStatus: resolveProjectedSessionContextBudgetStatus({
@@ -522,4 +512,69 @@ export function buildGatewaySessionRow(params: {
     latestCompactionCheckpoint,
     pluginExtensions: pluginExtensions.length > 0 ? pluginExtensions : undefined,
   };
+}
+
+export function resolveGatewaySessionActiveModel(params: {
+  cfg: OpenClawConfig;
+  active?: boolean;
+  agentId?: string;
+  sessionId?: string;
+  sessionKey: string;
+  projectedAgentRuns: ProjectedAgentRunIndex;
+  selectedModel?: { provider: string; model: string };
+  modelSource?: GatewaySessionModelSource;
+  entry?: InternalSessionEntry;
+  storePath?: string;
+}): { provider: string; model: string } | undefined {
+  if (!params.agentId) {
+    return undefined;
+  }
+  const liveModel = resolveProjectedAgentRunModel({
+    agentId: params.agentId,
+    sessionId: params.sessionId,
+    index: params.projectedAgentRuns,
+  });
+  if (params.active ?? (liveModel !== undefined || params.entry?.status === "running")) {
+    return liveModel ?? undefined;
+  }
+  if (!params.entry?.fallbackNotice || params.storePath === undefined) {
+    return undefined;
+  }
+  const selectedModel =
+    params.selectedModel ??
+    (params.modelSource
+      ? resolveSessionSelectedModelRef({
+          cfg: params.cfg,
+          source: params.modelSource,
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+        })
+      : undefined);
+  if (!selectedModel) {
+    return undefined;
+  }
+  const completedModel = readSessionFallbackModel({
+    selectedProvider: selectedModel.provider,
+    selectedModel: selectedModel.model,
+    sessionEntry: params.entry,
+    config: params.cfg,
+    sessionScope: {
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      storePath: params.storePath,
+    },
+  });
+  const runtimeModels = resolveSelectedAndActiveModel({
+    selectedProvider: selectedModel.provider,
+    selectedModel: selectedModel.model,
+    sessionEntry: completedModel ?? params.entry,
+  });
+  return resolveActiveFallbackState({
+    selectedModelRef: runtimeModels.selected.label,
+    activeModelRef: runtimeModels.active.label,
+    config: params.cfg,
+    state: params.entry,
+  }).active
+    ? { provider: runtimeModels.active.provider, model: runtimeModels.active.model }
+    : undefined;
 }

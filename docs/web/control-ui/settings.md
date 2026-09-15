@@ -14,6 +14,8 @@ Use **Search settings** to find pages and configuration fields. Add `tag:storage
 
 Model menus with more than eight choices include search. Filter by model name or provider/model reference, then choose a result to apply it. Typing or dismissing the menu leaves the current selection unchanged. Short menus stay compact, and custom model entry remains available where the setting supports it.
 
+Global model defaults apply to every agent. Switching the Settings agent while saving does not change the save target. If a save fails, **Retry** resubmits that change; after recovery, the controls follow the saved configuration, including later updates from another client.
+
 In **Models**, **Connect** offers the credential-only sign-in methods declared by installed provider plugins. Connecting saves the credential without selecting its starter model. If model restrictions hide the provider, choose **Show all provider models** or **Keep current restrictions**; saving a credential alone does not widen access. **Model setup** opens the separate [setup and activation flow](/start/onboarding). If saving has already started, cancellation keeps the dialog open until the saved result arrives. Leaving the page closes pending sign-in input and lets an active save finish, so a later sign-in can start without losing saved credentials.
 
 Model pickers show the authentication methods available to the selected agent. A single subscription or an explicitly selected account includes its email when available; multiple accounts and mixed API/subscription credentials are shown without guessing which account will run. **Utility Model → Auto** also shows the recommended small model derived from the global primary model, including an explicit account selection inherited from that model. Providers without a recommended small model say so. Agent-specific overrides still take precedence when the agent runs.
@@ -66,6 +68,8 @@ Credentials reserved for Control UI link previews are excluded from both agent a
 
 Set an agent's display name, emoji, and avatar under **Agent settings → Overview → Identity**. The identity is stored with that agent and is shared by Control UI clients. Where the transcript shows avatars, saved and streaming assistant replies use the configured agent image or text avatar. Agents without a configured avatar omit the repeated fallback icon.
 
+Elsewhere, agents without a custom image or emoji use a generated face that fills the circular avatar. Its color, eyes, mouth, and solid or pastel background come from the agent ID, so the same agent keeps the same face across reloads and clients. Renaming the agent's display name does not change its face. Generated faces are decorative and do not indicate activity or model choice.
+
 ## Gateway host status
 
 The connection settings use one **Gateway secret** field for the configured
@@ -89,7 +93,26 @@ Gateway in this browser without reconnecting. Session edits and connection edits
 have independent Save/Apply and Discard actions. Switching Gateways restores
 that Gateway's saved session selection.
 
-Open **Settings → Gateway** to see the **Gateway Host** card with the Gateway machine, LAN address, operating system, runtime, uptime, CPU load, memory, and space for each mounted local disk. The card refreshes every 10 seconds while visible through the `system.info` Gateway RPC, which requires the `operator.read` scope. If mounted-disk discovery is unavailable, the card retains the state-directory disk reading when available. Connections without the required scope omit the card. A loading indicator appears while stats are being fetched; refreshes keep the previous readings visible. Disk paths appear in their labels without duplicate tooltips.
+Open **Settings → Gateway** to see the **Gateway Host** card with the Gateway machine, LAN address, operating system, runtime, uptime, CPU load, memory, and space for each mounted local disk. Linux EFI boot partitions mounted at `/boot/efi` or `/efi` are omitted. The card shares a five-second `system.info` refresh with the activity graphs while visible; mounted-disk discovery reuses its ten-second snapshot. The RPC requires the `operator.read` scope. If mounted-disk discovery is unavailable, the card retains the state-directory disk reading when available. Connections without the required scope omit the card. Shimmer placeholders appear while the first stats are being fetched and remain still with reduced motion enabled; refreshes keep the previous readings and uptime visible. Disk paths appear in their labels without duplicate tooltips.
+
+The **Connection** card also shows average ping and p50, p95, and p99 round-trip
+times in milliseconds. It samples every five seconds while the page is visible
+and summarizes the last 100 successful samples from the current connection.
+The sample count makes small sets visible; p95 and p99 become more useful as
+samples accumulate. Reconnecting, switching Gateways, or leaving the page resets
+the readings. Failed requests are excluded and shown as a retry notice.
+
+The ping graph shows individual round trips. **Gateway activity** uses the same
+CPU, process memory, and event-loop delay graphs as the debug overlay, with up to
+100 snapshots sampled every five seconds while visible. CPU includes event-loop
+utilization, memory shows process RSS and used heap, and delay shows the Gateway's
+event-loop p99 and maximum delay. These are Gateway process measurements, separate
+from connection ping and the machine-wide **Gateway Host** readings below.
+Activity polling reads process counters through `system.info`, without running
+the full task and session inspection used by the operator `status` report.
+
+Ping measures a lightweight `last-heartbeat` request over the existing WebSocket,
+including Gateway request handling. It is not ICMP ping or model response time.
 
 ## Language support
 
@@ -116,7 +139,7 @@ The **Typography** block lets you choose an **Interface** face and a separate **
 
 Appearance also has a Text size setting. It applies to chat text, composer text, tool cards, and chat sidebars, and keeps text inputs at least 16px so mobile Safari does not auto-zoom on focus.
 
-Appearance also carries the **Lobster visits** and **Lobster sounds** toggles and the Lobsterdex. Both toggles are browser-local. See [The Lobster](/web/lobster) for what the sidebar visitor does and how to turn it off for good.
+Appearance also carries the **Lobster visits** and **Lobster sounds** toggles and the Lobsterdex. Both toggles are browser-local. See [The Lobster](/web/lobster) for what the composer visitors do and how to turn them off for good.
 
 When your connection is bound to an authenticated Gateway profile, theme, theme mode, and accent color are saved to that profile instead of the gateway config. They follow you across devices without changing anyone else's appearance, override gateway-wide `ui.prefs` values, and update your connected clients live. Connections without an authenticated profile continue syncing these preferences through the gateway config exactly as before. Language and chat display preferences remain gateway-config preferences for every connection. Each browser keeps a local mirror for instant boot, and text size remains browser-local. An explicitly read-only connection applies preference changes only in that browser. Changes made while offline remain queued until a later connection can write their applicable preferences; on a read-only reconnect, they continue to behave as browser-local preferences. See [Configuration reference](/gateway/configuration-reference#ui).
 
@@ -241,6 +264,11 @@ and [Linux](/platforms/linux) desktop apps, the
 ## Settings
 
 Inside **Settings**, the dedicated sidebar includes **Ask OpenClaw** and starts with a **Search settings** field for quickly finding settings sections.
+
+Form edits save automatically. If the connection changes while edits are pending,
+autosave pauses until you choose **Save** to keep them or **Reload Config** to
+discard them and load the current configuration. A successful reload resumes
+autosave for new edits; an offline reload keeps the pending draft.
 
 **Native embed mode.** Native hosts can inject `window.__OPENCLAW_NATIVE_EMBED__ = { platform: "ios", formFactor: "phone" }` at document start to show settings without Dashboard navigation chrome. Supported platforms are `ios`, `macos`, and `android`; form factors are `phone`, `pad`, and `desktop`. In this mode, `/settings` lists the same visible groups and destinations as the settings sidebar. Every embedded route outside the settings root provides a Back button and title, including pages reached through links or tabs such as Memory import, Plugins, and Skill Workshop. Back follows app navigation history; direct links fall back to the nearest settings parent (Memory for Memory import) or `/settings`. Layouts respect device safe areas and use touch controls at phone widths. The flag changes presentation only: Gateway scopes and the existing native device-settings capability still determine which settings are available. Ordinary browser loads keep their existing navigation.
 
@@ -400,14 +428,18 @@ The page redacts credential-bearing URL-like values before rendering and quotes 
 
 Open **Activity** from the sidebar's page picker, or visit `/activity` under the Control UI's base path. It has two tabs plus a deep-link inspector:
 
-- **Sessions** shows recent session activity grouped by day, with search, time, and people filters. Active rows offer **Inspect run** when the Gateway has recorded a run reference.
+- **Sessions** shows recent session activity grouped by day, with search, time, and people filters. Sessions sort newest first by their latest input or completed run, using the same time as the row's age and day group. Pins do not affect this order. Each row shows the human attribution and configured agent avatar/name. Subagent sessions are excluded from the feed, search results, and people counts. Active rows offer **Inspect run** when the Gateway has recorded a run reference.
+- Each session can show a rolling recap in one to three sentences: what was done and where the work stands. Recaps use the agent's [utility model](/gateway/config-agents/models#agents-defaults-model) and are shared across clients and Gateway restarts. Initial loading uses shimmer placeholders; an existing recap shimmers while refreshing. A failed refresh keeps the last recap and identifies the refresh failure. **Retry recap** requests another attempt after the Gateway's cooldown. Read-only viewers can read cached recaps but cannot request generation. On a page with mixed permissions, view-only sessions do not block recap generation for writable sessions.
 - Sessions with a GitHub checkout show associated branch PRs and their added/removed line counts. Hover or keyboard-focus a PR to preview its details, or select it to open GitHub. Before an open PR exists, the branch shows its diff against the default branch, including uncommitted work. These are checkout/PR statistics, not cumulative session edit counts; unavailable counts stay hidden, and retained stale data carries a warning.
+- Sessions can show up to four transcript images in a small grid. Select an image to expand it in the image viewer. Previews load as rows approach the viewport, reading bounded recent transcript pages; **Search older images** continues when more history remains. Existing thumbnails remain visible during refreshes and failed retries. Changing the session or connection clears the previous gallery.
 - **Live activity** shows running and queued sessions above the ephemeral browser-local tool stream. The session snapshot comes from the Gateway; the tool stream uses the same `session.tool` and tool events that power Chat tool cards.
 - **Run inspector** is deep-link only and reads the Gateway's durable, immutable `audit.run.inspect` safe-only projection. The RPC contains required `decisionDisplays` and never a raw `decisions` field. Use **Inspect run** on an active session or the run ID link in Live activity, or open `/activity?view=run&run=<percent-encoded-run-id>` directly. Reloading or revisiting the link queries the Gateway again; it never reconstructs identity from Live activity.
 
 The Sessions view owns its query independently of the sidebar. Its people filter uses the Gateway's full visible-session associations before pagination, not the four-avatar participant preview. `sessions.list` accepts `involvingProfileId` and `includePeople`; the response reports the canonical selected profile ID, bounded people counts, and `peopleIncomplete`. Only Gateway profiles appear as people. Remote, agent, and unresolved identities cannot acquire profile names or links through an equal raw ID. Counts and dates describe associated sessions, not a person's last input; recorded participation, verified creation, and assigned responsibility remain distinct from permission to see a session. Old profile links follow profile merges. A limit notice identifies incomplete participant history or truncated results.
 
-The Sessions view batches bursts of session-change events into a refresh. Event-driven refreshes pause while the browser tab is hidden and catch up once when you return. Changing filters or retrying a failed request still loads immediately.
+The Sessions view batches bursts of session-change events into a refresh. Event-driven refreshes pause while the browser tab is hidden and catch up once when you return. Changing filters or retrying a failed request still loads immediately. Activity links retain their search and people filters during initial loading and navigation.
+
+The Gateway updates recaps when new work happens, throttling ongoing updates and catching up after a run ends. A shared queue runs at most two recap calls at once and retries temporary overload or rate-limit failures up to three times with increasing delays, honoring provider retry timing. Authentication, configuration, and exhausted subscription failures require correction before retrying. Idle sessions make no repeated model calls. Archiving retains the recap and requests catch-up; an agent still running in an archived session can update it when work finishes. Reopening or new work resumes freshness checks. Older sessions backfill in bounded chronological chunks when requested from Activity. Recaps read user and assistant conversation text, preferring final answers and skipping tool calls/results. Existing cached recaps gradually adopt the shorter format through the same queue while retaining their previous coverage. Incognito sessions and subagent sessions do not generate recaps. Recaps are generated text and do not determine whether a task is complete or grant access to a session.
 
 To find an older archived conversation, choose **Sessions**, **All time**, and **Everyone** in the people filter, then enter its name or label in **Search session titles…**. This metadata search includes archived sessions and applies across the complete caller-visible store before the 100-result window. Narrow the query if results are truncated. Open an archived match to read its retained history, then select **Unarchive** to continue the same conversation.
 

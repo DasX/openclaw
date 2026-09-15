@@ -23,6 +23,7 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { withEnvAsync } from "openclaw/plugin-sdk/test-env";
 import { createRequireRecord, sanitizeTerminalText } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -479,7 +480,8 @@ describe("createTelegramBot", () => {
       process.env.TZ = ORIGINAL_TZ;
     }
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     pluginStateTestRuntime.resetPluginStateStoreForTests();
     clearPluginInteractiveHandlers();
     if (previousStateDir === undefined) {
@@ -1246,6 +1248,8 @@ describe("createTelegramBot", () => {
           expect(replySpy).not.toHaveBeenCalled();
           await vi.advanceTimersByTimeAsync(1);
         }
+        // Timer expiry starts the flush; its source participants own completion.
+        await Promise.all(sourceWork);
         expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual(
           debounceMs === 0
             ? ["first short message", "second short message"]
@@ -1254,7 +1258,6 @@ describe("createTelegramBot", () => {
         expect(replySpy.mock.calls.map(([ctx]) => ctx.MessageSid)).toEqual(
           debounceMs === 0 ? ["501", "502"] : ["502"],
         );
-        await Promise.all(sourceWork);
       } finally {
         await vi.advanceTimersByTimeAsync(10_000);
         await Promise.all(sourceWork);
@@ -1296,9 +1299,9 @@ describe("createTelegramBot", () => {
       await vi.advanceTimersByTimeAsync(899);
       expect(replySpy).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
+      await expect(firstParticipant.task).resolves.toEqual({ kind: "completed" });
       expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual(["before delay change"]);
       expect(replySpy.mock.calls.map(([ctx]) => ctx.MessageSid)).toEqual(["511"]);
-      await expect(firstParticipant.task).resolves.toEqual({ kind: "completed" });
 
       const second = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 512,
@@ -1324,16 +1327,16 @@ describe("createTelegramBot", () => {
       await vi.advanceTimersByTimeAsync(1499);
       expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual(["before delay change"]);
       await vi.advanceTimersByTimeAsync(1);
-      expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual([
-        "before delay change",
-        "new batch\nextends batch",
-      ]);
-      expect(replySpy.mock.calls.map(([ctx]) => ctx.MessageSid)).toEqual(["511", "513"]);
       await expect(Promise.all(sourceWork)).resolves.toEqual([
         { kind: "completed" },
         { kind: "completed" },
         { kind: "completed" },
       ]);
+      expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual([
+        "before delay change",
+        "new batch\nextends batch",
+      ]);
+      expect(replySpy.mock.calls.map(([ctx]) => ctx.MessageSid)).toEqual(["511", "513"]);
     } finally {
       await vi.advanceTimersByTimeAsync(3000);
       await Promise.all(sourceWork);

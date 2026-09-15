@@ -24,6 +24,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { CronJob } from "../cron/types.js";
+import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import type { ExecApprovalsFile } from "../infra/exec-approvals-core.js";
 import * as execApprovalsStore from "../infra/exec-approvals-store.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
@@ -86,7 +87,10 @@ test("resolves fixed-store and auth compatibility owners", () => {
     {
       agents: {
         ownership: "explicit",
-        defaults: { sessionStore: { agentId: "   " } },
+        defaults: {
+          systemAgent: { agentId: "ops" },
+          sessionStore: { agentId: "   " },
+        },
         entries: { ops: {}, research: {} },
       },
       session: { mainKey: "work", store: "/tmp/openclaw-fixed-sessions.json" },
@@ -95,6 +99,12 @@ test("resolves fixed-store and auth compatibility owners", () => {
   );
   expect(resolveSessionStoreKey({ cfg, sessionKey: "incident-42" })).toBe("agent:ops:incident-42");
   const explicit = { agents: { ownership: "explicit" as const, entries: { a: {}, b: {} } } };
+  expect(() =>
+    resolveSessionStoreKey({
+      cfg: retainLegacyDefaultAgentId({ ...explicit }, "a"),
+      sessionKey: "incident-42",
+    }),
+  ).toThrowError(expect.objectContaining({ code: "AGENT_SELECTION_REQUIRED" }));
   expect(
     resolveLegacyInheritedAuthAgentId({
       ...explicit,
@@ -479,6 +489,38 @@ describe("gateway session utils", () => {
     expect(row.activeModel).toBeUndefined();
   });
 
+  test("projects a running candidate across aliased keys without changing the configured model", () => {
+    const runId = "live-model-projection";
+    const context = {
+      agentId: "main",
+      sessionKey: "agent:main:canonical",
+      sessionId: "live-model-session",
+      activeModel: { provider: "ollama", model: "qwen3.5:9b" },
+    };
+    registerAgentRunContext(runId, context);
+    onTestFinished(() => clearAgentRunContext(runId));
+    const row = buildGatewaySessionRow({
+      cfg: createModelDefaultsConfig({ primary: "anthropic/claude-sonnet-4-6" }),
+      storePath: "",
+      store: {},
+      key: "main",
+      entry: {
+        sessionId: context.sessionId,
+        updatedAt: 1,
+        status: "running",
+        lastRunId: runId,
+        modelProvider: "anthropic",
+        model: "claude-sonnet-4-6",
+      },
+    });
+    expect(row).toMatchObject({
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-6",
+      activeModelProvider: "ollama",
+      activeModel: "qwen3.5:9b",
+    });
+  });
+
   test.each([
     { name: "never read", entry: {}, expected: false },
     {
@@ -729,55 +771,167 @@ describe("gateway session utils", () => {
     expect(listed.hasMore).toBe(true);
   });
 
-  test("session lists separate archived rows and sort pinned sessions first", async () => {
+  test("Activity lists select newest interactions and completions before the 100-row page", async () => {
     const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
-    const store: Record<string, SessionEntry> = {
-      recent: { sessionId: "recent", updatedAt: 30 },
-      pinned: { sessionId: "pinned", updatedAt: 10, pinnedAt: 40 },
-      archived: {
-        sessionId: "archived",
-        updatedAt: 20,
-        archivedAt: 50,
-        archiveReason: "active-session-cap",
-      },
-    } satisfies Record<string, SessionEntry>;
-
-    const active = await listSessionFixture({ cfg, storePath: "", store, opts: {} });
-    expect(active.sessions.map((session) => session.key)).toEqual(["pinned", "recent"]);
-    expect(active.sessions[0]).toMatchObject({
-      pinned: true,
-      pinnedAt: 40,
-      archived: false,
-    });
-
-    const archived = await listSessionFixture({
+    const now = Date.now();
+    const store: Record<string, SessionEntry> = Object.fromEntries(
+      Array.from({ length: 101 }, (_, index) => [
+        `session-${index}`,
+        {
+          sessionId: `session-${index}`,
+          updatedAt: now - index,
+          lastActivityAt: now - 10_000 - index,
+          ...(index === 0 ? { pinnedAt: now } : {}),
+        } satisfies SessionEntry,
+      ]),
+    );
+    store["new-completion"] = {
+      sessionId: "new-completion",
+      updatedAt: now - 100_000,
+      lastActivityAt: now - 1,
+      lastInteractionAt: now - 200_000,
+    };
+    store["new-input"] = {
+      sessionId: "new-input",
+      updatedAt: now - 200_000,
+      lastActivityAt: now - 200_000,
+      lastInteractionAt: now,
+    };
+    const original = structuredClone(store);
+    const firstPage = await listSessionFixture({
       cfg,
       storePath: "",
       store,
-      opts: { archived: true },
+      opts: { sortBy: "activity" },
     });
-    expect(archived.sessions).toMatchObject([
-      {
-        key: "archived",
-        archived: true,
-        archivedAt: 50,
-        archiveReason: "active-session-cap",
-        pinned: false,
-      },
+    expect(firstPage.sessions.map((row) => row.key)).toEqual([
+      "new-input",
+      "new-completion",
+      ...Array.from({ length: 98 }, (_, index) => `session-${index}`),
     ]);
-
-    const all = await listSessionFixture({
+    expect(firstPage).toMatchObject({ totalCount: 103, nextOffset: 100, hasMore: true });
+    const lastPage = await listSessionFixture({
       cfg,
       storePath: "",
       store,
-      opts: { archived: "all" },
+      opts: { sortBy: "activity", offset: firstPage.nextOffset ?? 0 },
     });
-    expect(all.sessions.map((session) => session.key)).toEqual(["pinned", "recent", "archived"]);
+    expect(lastPage.sessions.map((row) => row.key)).toEqual([
+      "session-98",
+      "session-99",
+      "session-100",
+    ]);
+    expect(lastPage).toMatchObject({ totalCount: 103, nextOffset: null, hasMore: false });
+    expect(store).toEqual(original);
+    expect(Object.keys(store)).toEqual(Object.keys(original));
+  });
+
+  test("Activity time filters use activity age without changing ordinary metadata filters", async () => {
+    const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
+    const now = 1_800_000_000_000;
+    const cutoff = now - 60 * 60_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    onTestFinished(() => clock.mockRestore());
+    const store: Record<string, SessionEntry> = {
+      "new-input": {
+        sessionId: "new-input",
+        updatedAt: cutoff - 1,
+        lastActivityAt: cutoff - 1,
+        lastInteractionAt: now,
+      },
+      "boundary-completion": {
+        sessionId: "boundary-completion",
+        updatedAt: cutoff - 1,
+        lastActivityAt: cutoff,
+      },
+      "metadata-only-update": {
+        sessionId: "metadata-only-update",
+        updatedAt: now,
+        lastActivityAt: cutoff - 1,
+        lastInteractionAt: cutoff - 2,
+      },
+      "legacy-boundary": { sessionId: "legacy-boundary", updatedAt: cutoff },
+      "old-session": { sessionId: "old-session", updatedAt: cutoff - 1 },
+    };
+    const activity = await listSessionFixture({
+      cfg,
+      storePath: "",
+      store,
+      opts: { sortBy: "activity", activeMinutes: 60 },
+    });
+    expect(activity.sessions.map((row) => row.key)).toEqual([
+      "new-input",
+      "boundary-completion",
+      "legacy-boundary",
+    ]);
+    expect(activity.totalCount).toBe(3);
+    const ordinary = await listSessionFixture({
+      cfg,
+      storePath: "",
+      store,
+      opts: { activeMinutes: 60 },
+    });
+    expect(ordinary.sessions.map((row) => row.key)).toEqual([
+      "metadata-only-update",
+      "legacy-boundary",
+    ]);
   });
 
   test.each([
+    ["pinned", {}],
+    ["agent:main:dashboard:pinned", { parentSessionKey: "agent:main:main" }],
+  ])(
+    "session lists separate archived rows and sort pinned %s first",
+    async (pinnedKey, lineage) => {
+      const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
+      const store: Record<string, SessionEntry> = {
+        recent: { sessionId: "recent", updatedAt: 30 },
+        [pinnedKey]: { sessionId: "pinned", updatedAt: 10, pinnedAt: 40, ...lineage },
+        archived: {
+          sessionId: "archived",
+          updatedAt: 20,
+          archivedAt: 50,
+          archiveReason: "active-session-cap",
+        },
+      } satisfies Record<string, SessionEntry>;
+
+      const active = await listSessionFixture({ cfg, storePath: "", store, opts: {} });
+      expect(active.sessions.map((session) => session.key)).toEqual([pinnedKey, "recent"]);
+      expect(active.sessions[0]).toMatchObject({
+        pinned: true,
+        pinnedAt: 40,
+        archived: false,
+      });
+
+      const archived = await listSessionFixture({
+        cfg,
+        storePath: "",
+        store,
+        opts: { archived: true },
+      });
+      expect(archived.sessions).toMatchObject([
+        {
+          key: "archived",
+          archived: true,
+          archivedAt: 50,
+          archiveReason: "active-session-cap",
+          pinned: false,
+        },
+      ]);
+
+      const all = await listSessionFixture({
+        cfg,
+        storePath: "",
+        store,
+        opts: { archived: "all" },
+      });
+      expect(all.sessions.map((session) => session.key)).toEqual([pinnedKey, "recent", "archived"]);
+    },
+  );
+
+  test.each([
     ["agent:main:dashboard:child", { spawnedBy: "agent:main:main" }],
-    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:main" }],
+    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:dashboard:parent" }],
     ["agent:main:subagent:child", {}],
   ] as const)(
     "ignores stale child pins in session list projection and ordering: %s %j",
@@ -1240,6 +1394,8 @@ describe("gateway session utils", () => {
         patch: { key: "agent:main:main", contextWindow: String(after) },
         defaultProvider: "ollama",
         defaultModel: "qwen3:8b",
+        runtimeId: () => "openclaw",
+        routeVariants: () => catalog,
         *loadModelCatalog() {
           yield;
           return catalog;
@@ -1342,58 +1498,67 @@ describe("gateway session utils", () => {
     expect(buildGatewaySessionEventFields({ sessionRow: running }).lastRunId).toBeNull();
   });
 
-  test("session rows ignore malformed compaction checkpoints", () => {
-    const row = buildGatewaySessionRow({
-      cfg: createModelDefaultsConfig({ primary: "openai/gpt-5.4" }),
-      storePath: "",
-      store: {},
-      key: "agent:main:main",
-      lightweightListRow: true,
-      skipTranscriptUsageFallback: true,
-      entry: {
-        sessionId: "session-1",
-        updatedAt: 1,
-        compactionCheckpoints: [
-          {
-            checkpointId: "checkpoint-older",
-            sessionKey: "agent:main:main",
-            sessionId: "session-1",
-            createdAt: 10,
-            reason: "manual",
-            preCompaction: { sessionId: "session-1" },
-            postCompaction: { sessionId: "session-1" },
-          },
-          null,
-          {
-            checkpointId: "",
-            createdAt: 30,
-            reason: "manual",
-          },
-          {
-            checkpointId: "checkpoint-bad-reason",
-            createdAt: 40,
-            reason: "bogus",
-          },
-          {
-            checkpointId: "checkpoint-newer",
-            sessionKey: "agent:main:main",
-            sessionId: "session-1",
-            createdAt: 50,
-            reason: "overflow-retry",
-            preCompaction: { sessionId: "session-1" },
-            postCompaction: { sessionId: "session-1" },
-          },
-        ],
-      } as unknown as SessionEntry,
-    });
+  test.each([
+    ["absent", undefined, undefined, undefined],
+    ["null", null, undefined, undefined],
+    ["non-array", {}, undefined, undefined],
+    ["empty", [], 0, undefined],
+    ["all invalid", [null], 0, undefined],
+    [
+      "mixed validity and tied latest timestamps",
+      [
+        {
+          checkpointId: "checkpoint-older",
+          sessionKey: "agent:main:main",
+          sessionId: "session-1",
+          createdAt: 10,
+          reason: "manual",
+          preCompaction: { sessionId: "session-1" },
+          postCompaction: { sessionId: "session-1" },
+        },
+        null,
+        { checkpointId: "", createdAt: 30, reason: "manual" },
+        { checkpointId: "checkpoint-bad-reason", createdAt: 40, reason: "bogus" },
+        { checkpointId: "checkpoint-infinite", createdAt: Infinity, reason: "manual" },
+        { checkpointId: "checkpoint-nan", createdAt: Number.NaN, reason: "manual" },
+        { checkpointId: "checkpoint-auto", createdAt: 20, reason: "auto-threshold" },
+        {
+          checkpointId: "  checkpoint-newer  ",
+          sessionKey: "agent:main:main",
+          sessionId: "session-1",
+          createdAt: 50,
+          reason: "overflow-retry",
+          preCompaction: { sessionId: "session-1" },
+          postCompaction: { sessionId: "session-1" },
+        },
+        { checkpointId: "checkpoint-tied-later", createdAt: 50, reason: "timeout-retry" },
+      ],
+      4,
+      { checkpointId: "checkpoint-newer", createdAt: 50, reason: "overflow-retry" },
+    ],
+  ])(
+    "session rows ignore malformed compaction checkpoints (%s)",
+    (_name, compactionCheckpoints, expectedCount, expectedLatest) => {
+      const original = structuredClone(compactionCheckpoints);
+      const row = buildGatewaySessionRow({
+        cfg: createModelDefaultsConfig({ primary: "openai/gpt-5.4" }),
+        storePath: "",
+        store: {},
+        key: "agent:main:main",
+        lightweightListRow: true,
+        skipTranscriptUsageFallback: true,
+        entry: {
+          sessionId: "session-1",
+          updatedAt: 1,
+          compactionCheckpoints,
+        } as unknown as SessionEntry,
+      });
 
-    expect(row.compactionCheckpointCount).toBe(2);
-    expect(row.latestCompactionCheckpoint).toEqual({
-      checkpointId: "checkpoint-newer",
-      createdAt: 50,
-      reason: "overflow-retry",
-    });
-  });
+      expect(row.compactionCheckpointCount).toBe(expectedCount);
+      expect(row.latestCompactionCheckpoint).toEqual(expectedLatest);
+      expect(compactionCheckpoints).toEqual(original);
+    },
+  );
 
   test("async session list reuses thinking metadata for lightweight rows", async () => {
     const resolveThinkingProfile = vi.fn(() => ({
@@ -3479,18 +3644,24 @@ describe("gateway session utils", () => {
     ).toBeNull();
   });
 
-  test("resolveSessionStoreKey canonicalizes bare keys to default agent", () => {
-    const cfg = {
-      session: { mainKey: "main" },
-      agents: { list: [{ id: "ops", default: true }] },
-    } as OpenClawConfig;
-    expect(resolveSessionStoreKey({ cfg, sessionKey: "discord:group:123" })).toBe(
-      "agent:ops:discord:group:123",
-    );
-    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:alpha:main" })).toBe(
-      "agent:alpha:main",
-    );
-  });
+  test.each([false, true])(
+    "resolveSessionStoreKey canonicalizes bare keys (explicit sole: %s)",
+    (explicitOwnership) => {
+      const cfg: OpenClawConfig = {
+        session: { mainKey: "main" },
+        agents: explicitOwnership
+          ? { ownership: "explicit", entries: { ops: {} } }
+          : { list: [{ id: "ops", default: true }] },
+      };
+      expect(resolveSessionStoreKey({ cfg, sessionKey: "discord:group:123" })).toBe(
+        "agent:ops:discord:group:123",
+      );
+      expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:alpha:main" })).toBe(
+        "agent:alpha:main",
+      );
+      expect(resolveSessionStoreAgentId(cfg, "global")).toBe("ops");
+    },
+  );
 
   test("resolveSessionStoreKey rejects ownerless bare keys without a compatibility owner", () => {
     const cfg = {

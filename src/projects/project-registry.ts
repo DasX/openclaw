@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
+import { withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
 import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { insideGitCheckout, runGit } from "../agents/worktrees/git.js";
 import { slugifyWorktreeTitle } from "../agents/worktrees/name.js";
@@ -17,11 +18,12 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
-import { createOpenClawStateSchemaEnsurer } from "../state/openclaw-state-feature-schema.js";
 import {
   type OpenClawStateLeaseContext,
   withOpenClawStateLease,
 } from "../state/openclaw-state-lease.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { ensureProjectRegistrySchema } from "./project-registry.kernel.js";
 
 export type ProjectRegistryRecord = {
   id: string;
@@ -38,10 +40,6 @@ type ProjectRow = Selectable<OpenClawStateKyselyDatabase["projects"]>;
 const PROJECT_ID_MAX_LENGTH = 64;
 const PROJECT_CHECKOUT_LEASE_MS = 30_000;
 const PROJECT_CHECKOUT_WAIT_MS = 30_000;
-const ensureProjectRegistrySchema = createOpenClawStateSchemaEnsurer({
-  table: "projects",
-  operationLabel: "projects.registry.schema.ensure",
-});
 
 export class ProjectCheckoutError extends Error {
   constructor(message: string) {
@@ -285,7 +283,9 @@ export function listProjectRegistry(
   const stored = executeSqliteQuerySync(sqlite, kysely.selectFrom("projects").selectAll()).rows.map(
     rowToProject,
   );
-  const workspaces = listAgentIds(cfg).map((agentId) => workspaceProject(cfg, agentId));
+  const workspaces = withAgentRosterFactsBatch(cfg, () =>
+    listAgentIds(cfg).map((agentId) => workspaceProject(cfg, agentId)),
+  );
   return [...workspaces, ...stored].toSorted(compareProjects);
 }
 
@@ -377,18 +377,18 @@ export function resolveProjectCloneRefreshOwner(
 
 export async function resolveRecordedProjectRoot(
   projectPath: string,
-  options: OpenClawStateDatabaseOptions = {},
+  options: Pick<OpenClawStateDatabaseOptions, "path" | "env"> = {},
 ): Promise<string | undefined> {
+  const context = captureOpenClawStateWorkerContext(options);
   const repoRoot = await fs.realpath(projectPath).catch(() => undefined);
   if (!repoRoot) {
     return undefined;
   }
-  const { sqlite, kysely } = openProjectsDatabase(options);
-  const row = executeSqliteQueryTakeFirstSync(
-    sqlite,
-    kysely.selectFrom("projects").select("repo_root").where("repo_root", "=", repoRoot),
-  );
-  return row?.repo_root;
+  const { executeOpenClawStateWorker } = await import("../state/openclaw-state-worker-store.js");
+  return await executeOpenClawStateWorker(context, {
+    type: "projects.findRoot",
+    input: { repoRoot },
+  });
 }
 
 export async function removeProjectRegistry(

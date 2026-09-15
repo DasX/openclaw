@@ -3,6 +3,7 @@ import path from "node:path";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { emitDiagnosticEventWithTrustedTraceContext } from "../infra/diagnostic-events.js";
+import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
   type EventSessionRoutingPolicy,
@@ -640,6 +641,7 @@ export async function runExecProcess({
   startupSignal: initialStartupSignal,
   onUpdate: initialOnUpdate,
   beforeSpawn: initialBeforeSpawn,
+  assertCurrent: initialAssertCurrent,
   onSettledBeforeNotify: initialOnSettledBeforeNotify,
   ...opts
 }: {
@@ -677,6 +679,8 @@ export async function runExecProcess({
   onSettledBeforeNotify?: (outcome: ExecProcessOutcome) => void;
   /** Revalidates authorization after async preparation, immediately before each spawn attempt. */
   beforeSpawn?: () => Promise<AgentToolResult<ExecToolDetails> | undefined>;
+  /** Rechecks host policy at the supervisor's final synchronous spawn boundary. */
+  assertCurrent?: () => void;
 }): Promise<ExecProcessHandle> {
   let assertSourceActive: (() => void) | undefined =
     captureAgentToolSourceExecutionGuard(initialStartupSignal);
@@ -728,6 +732,7 @@ export async function runExecProcess({
   // Clearing the callback also releases the completed turn's captured authority.
   let onUpdate = initialOnUpdate && AsyncLocalStorage.bind(initialOnUpdate);
   let beforeSpawn = initialBeforeSpawn;
+  let assertPolicyCurrent = initialAssertCurrent;
   let onSettledBeforeNotify = initialOnSettledBeforeNotify;
 
   const emitUpdate = () => {
@@ -807,6 +812,7 @@ export async function runExecProcess({
         timedOut: outcome.timedOut,
       });
     } catch (error) {
+      session.finalizationFailed = true;
       recordAgentCleanupFailure();
       if (outcome.status === "completed") {
         finalOutcome = buildExecRuntimeErrorOutcome({
@@ -840,6 +846,7 @@ export async function runExecProcess({
           maybeNotifyOnExit(session, finalOutcome.status);
         }
       } catch (error) {
+        session.finalizationFailed = true;
         // Recover before yielding: scope joins queued by markExited must not
         // outrun the task's failed outcome or restore its environment state.
         finalOutcome = buildExecRuntimeErrorOutcome({
@@ -895,6 +902,8 @@ export async function runExecProcess({
       opts.pathPrepend,
     );
     const commandWithShellSnapshot = await maybeWrapCommandWithShellSnapshot({
+      // A bound execution plan must not load aliases/functions or replace its PATH.
+      enabled: opts.execCommand === undefined,
       command: commandWithPathPrepend,
       shell,
       shellArgs,
@@ -928,13 +937,17 @@ export async function runExecProcess({
   const spawn = (input: SpawnInput) => {
     const assertSourceCurrent = assertSourceActive;
     const assertRuntimeCurrent = assertSandboxCurrent;
+    const assertHostPolicyCurrent = assertPolicyCurrent;
     const assertCurrent = () => {
       assertSourceCurrent?.();
       assertRuntimeCurrent?.();
     };
-    // Keep both owners through deferred supervisor admission and native construction.
+    // Source authority covers construction; approval policy ends at native launch.
     assertCurrent();
-    return withoutGatewayToolCallerIdentity(() => supervisor.spawn({ ...input, assertCurrent }));
+    assertHostPolicyCurrent?.();
+    return withoutGatewayToolCallerIdentity(() =>
+      supervisor.spawn({ ...input, assertCurrent, beforeSpawn: assertHostPolicyCurrent }),
+    );
   };
 
   try {
@@ -1000,10 +1013,12 @@ export async function runExecProcess({
     throw error;
   } finally {
     beforeSpawn = undefined;
+    assertPolicyCurrent = undefined;
     assertSourceActive = undefined;
     assertSandboxCurrent = undefined;
   }
   session.processActivity = managedRun.activity;
+  recordDiagnosticToolExecutionDeadline(managedRun.activity.deadlineAtMs);
   session.stdin = managedRun.stdin;
   session.pid = managedRun.pid;
 

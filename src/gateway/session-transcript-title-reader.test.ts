@@ -2,7 +2,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { findSourceImportBackedges } from "../../test/helpers/source-import-closure.js";
+import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import {
   persistSessionTranscriptTurn,
@@ -16,10 +17,14 @@ import {
 } from "../config/sessions/session-cold-storage.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import {
   readSessionMessagesAsync,
@@ -42,7 +47,7 @@ vi.mock("../config/sessions/session-accessor.js", async (importOriginal) => {
   };
 });
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = createTempDirTracker();
 
 let tempDir: string;
 let storePath: string;
@@ -56,9 +61,12 @@ beforeEach(() => {
   setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
+  tempDirs.cleanup();
   envSnapshot.restore();
 });
 
@@ -165,6 +173,15 @@ function boundedTitleEventReadCount(): number {
       )
   );
 }
+
+test.each([
+  "src/gateway/session-transcript-title-reader.ts",
+  "src/gateway/session-transcript-anchor-reader.ts",
+])("keeps %s independent of the full transcript reader", (entry) => {
+  expect(findSourceImportBackedges(entry, ["src/gateway/session-transcript-readers.ts"])).toEqual(
+    [],
+  );
+});
 
 describe("session transcript title hydration", () => {
   test("keeps cold transcripts archived while reading mixed title rows and heals after restoration", async () => {

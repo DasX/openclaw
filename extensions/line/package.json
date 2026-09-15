@@ -51,6 +51,12 @@
       "systemImage": "message",
       "order": 75,
       "quickstartAllowFrom": true,
+      "doctorCapabilities": {
+        "dmAllowFromMode": "topOnly",
+        "groupModel": "sender",
+        "groupAllowFromFallbackToAllowFrom": false,
+        "warnOnEmptyGroupSenderAllowlist": true
+      },
       "setup": {
         "fields": [
           {
@@ -114,6 +120,7 @@
       }
     },
     "install": {
+      "clawhubSpec": "clawhub:@openclaw/line",
       "npmSpec": "@openclaw/line",
       "defaultChoice": "npm",
       "minHostVersion": ">=2026.4.10"

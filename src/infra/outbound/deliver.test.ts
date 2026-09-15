@@ -2,6 +2,7 @@
 // checks, adapter sends, transcript mirroring, and payload outcomes.
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { TrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
@@ -15,6 +16,7 @@ import type {
 } from "../../channels/message/types.js";
 import type { ChannelOutboundAdapter, ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { resolveStateDir } from "../../config/state-dir.js";
 import { renderMessagePresentationFallbackText } from "../../interactive/payload.js";
 import * as mediaCapabilityModule from "../../media/read-capability.js";
 import { createHookRunner } from "../../plugins/hooks.js";
@@ -561,6 +563,8 @@ async function runBestEffortPartialFailureDelivery(params?: { onError?: boolean 
 }
 
 describe("deliverOutboundPayloads", () => {
+  let expectedQueueStateDir: string;
+
   beforeAll(async () => {
     ({
       deliverOutboundPayloads,
@@ -570,6 +574,7 @@ describe("deliverOutboundPayloads", () => {
   });
 
   beforeEach(() => {
+    expectedQueueStateDir = resolveStateDir();
     resetDiagnosticEventsForTest();
     setActivePluginRegistry(defaultRegistry);
     vi.clearAllMocks();
@@ -598,9 +603,9 @@ describe("deliverOutboundPayloads", () => {
       async (params: {
         id: string;
         run: (owner: {
-          current: () => Record<string, unknown>;
-          beforeFirstModifier: () => void;
-          markPrepared: () => void;
+          current: () => Promise<Record<string, unknown>>;
+          beforeFirstModifier: () => Promise<void>;
+          markPrepared: () => Promise<void>;
           markPublished: () => void;
         }) => Promise<unknown>;
       }) => {
@@ -617,11 +622,11 @@ describe("deliverOutboundPayloads", () => {
         return {
           status: "claimed",
           value: await params.run({
-            current: () => entry,
-            beforeFirstModifier: () => {
+            current: async () => entry,
+            beforeFirstModifier: async () => {
               entry.preparationState = "modifiers_started";
             },
-            markPrepared: () => {
+            markPrepared: async () => {
               entry.preparationState = "prepared";
             },
             markPublished: () => {},
@@ -918,7 +923,7 @@ describe("deliverOutboundPayloads", () => {
     expect(beforeParams?.deliveryQueueId).toBe("queue-1");
     expect(queueMocks.markDeliveryPlatformSendDispatched).toHaveBeenCalledWith(
       "queue-1",
-      undefined,
+      expectedQueueStateDir,
       expect.objectContaining({ replyToId: undefined, threadId: undefined }),
     );
     expect(queueMocks.markDeliveryPlatformSendDispatched).toHaveBeenCalledOnce();
@@ -1205,6 +1210,59 @@ describe("deliverOutboundPayloads", () => {
     expect(sendMatrix).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])(
+    "waits for the modifier checkpoint before policy (cancel=%s)",
+    async (cancel) => {
+      const checkpoint = createDeferredCore();
+      const entered = createDeferredCore();
+      const controller = new AbortController();
+      hookMocks.runner.hasHooks.mockImplementation(
+        (name?: string) => name === "reply_payload_sending" || name === "message_sending",
+      );
+      const pending = prepareOutboundPayloadBatch(
+        {
+          cfg: {},
+          channel: "matrix",
+          to: "!room:example",
+          payloads: [{ text: "prepared" }],
+          deps: { matrix: vi.fn() },
+          abortSignal: controller.signal,
+          replyPayloadSendingHook: { kind: "final", context: { channelId: "matrix" } },
+        },
+        {
+          onBeforeFirstModifier: () => {
+            entered.resolve();
+            return checkpoint.promise;
+          },
+        },
+      );
+      const outcome = pending.then(
+        (batch) => ({ batch, error: undefined }),
+        (error: unknown) => ({ batch: undefined, error }),
+      );
+      await entered.promise;
+      await waitForImmediate();
+      const callsBeforeCheckpoint = hookMocks.runner.runReplyPayloadSending.mock.calls.length;
+      if (cancel) {
+        controller.abort();
+      }
+      checkpoint.resolve();
+      const result = await outcome;
+      expect(callsBeforeCheckpoint).toBe(0);
+      if (cancel) {
+        expect(result.error).toBeInstanceOf(Error);
+        expect(hookMocks.runner.runReplyPayloadSending).not.toHaveBeenCalled();
+        expect(hookMocks.runner.runMessageSending).not.toHaveBeenCalled();
+      } else {
+        expect(result.batch?.entries).toEqual([
+          expect.objectContaining({ status: "accepted", payload: { text: "prepared" } }),
+        ]);
+        expect(hookMocks.runner.runReplyPayloadSending).toHaveBeenCalledOnce();
+        expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
   it("does not enter the modifier crash boundary when no modifying hook is registered", async () => {
     const onBeforeFirstModifier = vi.fn();
 
@@ -1325,7 +1383,7 @@ describe("deliverOutboundPayloads", () => {
     expect(completionMocks.completeDurableDelivery).toHaveBeenCalledWith(
       expect.objectContaining({ operationId: "operation-chunked" }),
       expect.objectContaining({ messageId: "chunk-2" }),
-      undefined,
+      expectedQueueStateDir,
     );
   });
 
@@ -2072,7 +2130,11 @@ describe("deliverOutboundPayloads", () => {
     );
     expect(commitParams?.kind).toBe("text");
     expect(commitParams?.result?.messageId).toBe("message-adapter-1");
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expectedQueueStateDir,
+      undefined,
+    );
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
@@ -2215,7 +2277,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.markDeliveryPlatformSendAttemptStarted).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       { replyToId: null },
     );
     expect(queueMocks.markDeliveryPlatformOutcomeUnknown).not.toHaveBeenCalled();
@@ -2251,7 +2313,7 @@ describe("deliverOutboundPayloads", () => {
 
       expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
         "mock-queue-id",
-        undefined,
+        expectedQueueStateDir,
         expect.any(String),
       );
       expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2282,7 +2344,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2440,7 +2502,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2504,7 +2566,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2533,7 +2595,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2639,6 +2701,8 @@ describe("deliverOutboundPayloads", () => {
     expect(completionMocks.rejectDurableDelivery).toHaveBeenCalledWith(
       expect.objectContaining({ operationId: "operation-rejected" }),
       "atomic message limit",
+      expectedQueueStateDir,
+      expect.objectContaining({ stateDir: expectedQueueStateDir }),
       undefined,
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2679,6 +2743,8 @@ describe("deliverOutboundPayloads", () => {
     expect(completionMocks.rejectDurableDelivery).toHaveBeenCalledWith(
       expect.objectContaining({ operationId: "operation-empty-rejection" }),
       "Platform rejected the message before dispatch",
+      expectedQueueStateDir,
+      expect.objectContaining({ stateDir: expectedQueueStateDir }),
       undefined,
     );
   });
@@ -2723,7 +2789,11 @@ describe("deliverOutboundPayloads", () => {
     });
 
     expect(sendMatrix).toHaveBeenCalled();
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expectedQueueStateDir,
+      undefined,
+    );
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
@@ -3523,7 +3593,7 @@ describe("deliverOutboundPayloads", () => {
     );
     expect(queueMocks.markDeliveryPlatformSendAttemptStarted).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       { replyToId: "hooked-reply" },
     );
   });
@@ -5099,7 +5169,11 @@ describe("deliverOutboundPayloads", () => {
       unsubscribe();
     }
 
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expectedQueueStateDir,
+      undefined,
+    );
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
     expect(hookMocks.runner.runMessageSent).toHaveBeenCalledOnce();
     expect(hookMocks.runner.runMessageSent).toHaveBeenCalledWith(

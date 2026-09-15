@@ -6,6 +6,8 @@ import path from "node:path";
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { makeAgentAssistantMessage } from "../agents/test-helpers/agent-message-fixtures.js";
+import { createZeroUsageFixture } from "../agents/test-helpers/usage-fixtures.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
@@ -165,29 +167,13 @@ function makeTranscriptAssistantMessage(params: {
   provider?: string;
   model?: string;
 }): AssistantMessage {
-  return {
-    role: "assistant" as const,
+  return makeAgentAssistantMessage({
     content: params.content ?? [{ type: "text", text: params.text }],
-    api: "openai-responses",
     provider: params.provider ?? "openai",
     model: params.model ?? "gpt-5.5",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-      },
-    },
-    stopReason: "stop" as const,
+    usage: createZeroUsageFixture(),
     timestamp: Date.now(),
-  };
+  });
 }
 
 function makeDeliveryMirrorAssistantMessage(
@@ -1425,21 +1411,27 @@ describe("session history HTTP endpoints", () => {
     },
   );
 
-  test.each(["garbage", "seq:garbage", "seq:0", "seq:99999999999999999999", "0", "-1", "1.5"])(
-    "rejects invalid cursor %j with 400",
-    async (cursor) => {
-      await seedSession({ text: "first message" });
-      await withGatewayHarness(async (harness) => {
-        const res = await fetchSessionHistory(harness.port, "agent:main:main", {
-          query: `?cursor=${encodeURIComponent(cursor)}`,
-        });
-        expect(res.status).toBe(400);
-        const body = await res.json();
-        expect(body.error?.type).toBe("invalid_request_error");
-        expect(body.error?.message).toBe("cursor must be a positive integer");
+  test.each([
+    "garbage",
+    "seq:garbage",
+    "seq:2next",
+    "seq:0",
+    "seq:99999999999999999999",
+    "0",
+    "-1",
+    "1.5",
+  ])("rejects invalid cursor %j with 400", async (cursor) => {
+    await seedSession({ text: "first message" });
+    await withGatewayHarness(async (harness) => {
+      const res = await fetchSessionHistory(harness.port, "agent:main:main", {
+        query: `?cursor=${encodeURIComponent(cursor)}`,
       });
-    },
-  );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error?.type).toBe("invalid_request_error");
+      expect(body.error?.message).toBe("cursor must be a positive integer");
+    });
+  });
 
   test.each(["1", "+1"])(
     "returns the requested bounded history for valid limit %s",
@@ -1645,9 +1637,9 @@ describe("session history HTTP endpoints", () => {
     const { storePath } = await seedSession({ text: "first message" });
 
     await withGatewayHarness(async (harness) => {
-      const readSnapshot = sessionHistoryState.readSessionHistoryRawSnapshotAsync;
+      const readSnapshot = sessionHistoryState.readSessionHistorySnapshotAsync;
       const snapshotSpy = vi
-        .spyOn(sessionHistoryState, "readSessionHistoryRawSnapshotAsync")
+        .spyOn(sessionHistoryState, "readSessionHistorySnapshotAsync")
         .mockImplementationOnce(async (params) => {
           const snapshot = await readSnapshot(params);
           await appendVisibleAssistantMessage({

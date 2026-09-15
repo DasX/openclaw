@@ -12,11 +12,8 @@ import {
   supportsOpenAITemperature,
   type OpenAIApiReasoningEffort,
 } from "../providers/openai-reasoning-effort.js";
-import { convertProjectedResponsesTools } from "../providers/openai-responses-tools.js";
-import {
-  projectOpenAITools,
-  reconcileOpenAIResponsesToolChoice,
-} from "../providers/openai-tool-projection.js";
+import { prepareResponsesTools } from "../providers/openai-responses-tools.js";
+import { reconcileOpenAIResponsesToolChoice } from "../providers/openai-tool-projection.js";
 import { stripSystemPromptCacheBoundary } from "../utils/system-prompt-cache-boundary.js";
 import { resolveOpenAIStrictToolSetting } from "./host-policy.js";
 import { usesNativeOpenAICodexResponsesBackend } from "./openai-completions-compat.js";
@@ -231,7 +228,7 @@ function convertOpenAIResponsesMessagesForRequest(
 ): ResponseInput {
   const isNativeCodexResponses = usesNativeOpenAICodexResponsesBackend(model);
   const payloadPolicy = resolveOpenAIResponsesPayloadPolicy(model, {
-    storeMode: "disable",
+    storeMode: "transport-default",
   });
   const policyAllowsReplayIds =
     payloadPolicy.explicitStore !== false && !payloadPolicy.shouldStripStore;
@@ -255,7 +252,7 @@ export function buildOpenAIResponsesParams(
   replayMode: OpenAIResponsesReplayMode = "checkpoint",
 ) {
   const payloadPolicy = resolveOpenAIResponsesPayloadPolicy(model, {
-    storeMode: "disable",
+    storeMode: "transport-default",
   });
   const messages = convertOpenAIResponsesMessagesForRequest(model, context, options, replayMode);
   ensureOpenAIResponsesNonEmptyInput(messages, context);
@@ -304,8 +301,7 @@ export function buildOpenAIResponsesParams(
     const strict = resolveOpenAIStrictToolSetting(model as OpenAIModeModel, {
       transport: "stream",
     });
-    const projection = projectOpenAITools(tools);
-    const converted = convertProjectedResponsesTools(projection, strict, model);
+    const { projection, tools: converted } = prepareResponsesTools(tools, strict, model);
     if (
       converted.length > 0 ||
       (projection.inputToolCount === 0 && projection.diagnostics.length === 0)

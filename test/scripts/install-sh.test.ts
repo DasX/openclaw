@@ -39,6 +39,7 @@ import {
   defineInstallerNpmRetryContract,
   defineInstallerNpmFreshnessContract,
   defineInstallerPnpmContract,
+  defineInstallerShellIsolationContract,
 } from "./install-test-contract.js";
 
 const SCRIPT_PATH = "scripts/install.sh";
@@ -47,7 +48,7 @@ const nodeExecutable = requireNodeTool("node");
 function runInstallShell(script: string, env: NodeJS.ProcessEnv = {}) {
   const home = mkdtempSync(join(tmpdir(), "openclaw-install-home-"));
   try {
-    return spawnSync("/bin/bash", ["-c", script], {
+    return spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", script], {
       encoding: "utf8",
       env: {
         ...process.env,
@@ -109,22 +110,7 @@ describe("install.sh", () => {
     }
   });
 
-  it("runs installer snippets without inherited shell startup files", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-shell-env-"));
-    const bashEnvPath = join(tmp, "bash_env");
-    writeFileSync(bashEnvPath, "export OPENCLAW_BASH_ENV_LEAKED=1\n");
-
-    try {
-      const result = runInstallShell('printf "leaked=%s\\n" "${OPENCLAW_BASH_ENV_LEAKED:-0}"', {
-        BASH_ENV: bashEnvPath,
-      });
-
-      expect(result.status).toBe(0);
-      expect(result.stdout).toBe("leaked=0\n");
-    } finally {
-      rmSync(tmp, { force: true, recursive: true });
-    }
-  });
+  defineInstallerShellIsolationContract(installerContract);
 
   it("removes a downloaded script temp file when remote execution fails", () => {
     const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-remote-cleanup-"));
@@ -235,6 +221,7 @@ describe("install.sh", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("curl=-fsSL --max-redirs 0");
       expect(result.stdout).toContain("wget=-q --max-redirect=0");
+      expect(result.stdout).toContain("--timeout=300");
       expect(result.stdout).toContain("managed-mode=deny");
     } finally {
       rmSync(tmp, { force: true, recursive: true });
@@ -256,8 +243,9 @@ describe("install.sh", () => {
     `);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("--speed-limit 1 --speed-time 30");
+    expect(result.stdout).toContain("--speed-limit 1 --speed-time 300");
     expect(result.stdout).not.toContain("--connect-timeout");
+    expect(result.stdout).not.toContain("--max-time");
     expect(result.stdout).not.toContain("--max-redirs");
     expect(result.stdout).toContain("--retry 3 --retry-delay 1 --retry-connrefused");
     expect(result.stdout).toContain("status=28");

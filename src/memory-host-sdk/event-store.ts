@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { resolveWorkspaceStateIdentity } from "../agents/workspace-state-identity.js";
-import {
+import type {
   pluginStateEntriesInKeyRange,
   registerPluginStateSequencedJournalEntry,
 } from "../plugin-state/plugin-state-store.js";
@@ -42,13 +42,15 @@ const memoryHostRecallResultSchema = z.looseObject({
   endLine: memoryHostFiniteNumberSchema,
   score: memoryHostFiniteNumberSchema,
 });
+const memoryHostRecallResultsSchema = z.array(memoryHostRecallResultSchema);
 const memoryHostSkippedRecallResultSchema = memoryHostRecallResultSchema.extend({
   reason: z.literal("non-short-term-memory-path"),
 });
+const memoryHostSkippedRecallResultsSchema = z.array(memoryHostSkippedRecallResultSchema);
 const boundedRecallResultsSchema = z.array(z.unknown()).transform((values, context) => {
-  const parsed = z
-    .array(memoryHostRecallResultSchema)
-    .safeParse(values.slice(0, MAX_MEMORY_HOST_EVENT_ITEMS));
+  const parsed = memoryHostRecallResultsSchema.safeParse(
+    values.slice(0, MAX_MEMORY_HOST_EVENT_ITEMS),
+  );
   if (!parsed.success) {
     context.addIssue({ code: "custom", message: "invalid recall result" });
     return z.NEVER;
@@ -56,9 +58,9 @@ const boundedRecallResultsSchema = z.array(z.unknown()).transform((values, conte
   return { items: parsed.data, truncated: values.length > MAX_MEMORY_HOST_EVENT_ITEMS };
 });
 const boundedSkippedRecallResultsSchema = z.array(z.unknown()).transform((values, context) => {
-  const parsed = z
-    .array(memoryHostSkippedRecallResultSchema)
-    .safeParse(values.slice(0, MAX_MEMORY_HOST_EVENT_ITEMS));
+  const parsed = memoryHostSkippedRecallResultsSchema.safeParse(
+    values.slice(0, MAX_MEMORY_HOST_EVENT_ITEMS),
+  );
   if (!parsed.success) {
     context.addIssue({ code: "custom", message: "invalid skipped recall result" });
     return z.NEVER;
@@ -73,10 +75,11 @@ const memoryHostPromotionCandidateSchema = z.looseObject({
   score: memoryHostFiniteNumberSchema,
   recallCount: memoryHostFiniteNumberSchema,
 });
+const memoryHostPromotionCandidatesSchema = z.array(memoryHostPromotionCandidateSchema);
 const boundedPromotionCandidatesSchema = z.array(z.unknown()).transform((values, context) => {
-  const parsed = z
-    .array(memoryHostPromotionCandidateSchema)
-    .safeParse(values.slice(0, MAX_MEMORY_HOST_EVENT_ITEMS));
+  const parsed = memoryHostPromotionCandidatesSchema.safeParse(
+    values.slice(0, MAX_MEMORY_HOST_EVENT_ITEMS),
+  );
   if (!parsed.success) {
     context.addIssue({ code: "custom", message: "invalid promotion candidate" });
     return z.NEVER;
@@ -300,7 +303,7 @@ export async function registerMemoryHostEvent(params: {
   }
   const keyStartInclusive = eventKeyPrefix(params.workspaceDir);
   const recordedAt = Date.now();
-  await registerPluginStateSequencedJournalEntry({
+  const journal: Parameters<typeof registerPluginStateSequencedJournalEntry>[0] = {
     pluginId: MEMORY_HOST_EVENTS_PLUGIN_ID,
     cursorOptions: {
       namespace: MEMORY_HOST_EVENT_CURSORS_NAMESPACE,
@@ -319,8 +322,11 @@ export async function registerMemoryHostEvent(params: {
       keyEndExclusive: eventKeyRangeEnd(params.workspaceDir),
       valueKind: "event",
     },
-    journalValue: (sequence) => ({ kind: "event", event, recordedAt, sequence }),
-  });
+    journalValue: { kind: "event", event, recordedAt },
+  };
+  // Capture workspace keys and event time together before the lazy store load yields.
+  const pluginState = await import("../plugin-state/plugin-state-store.js");
+  await pluginState.registerPluginStateSequencedJournalEntry(journal);
 }
 
 export async function listStoredMemoryHostEvents(params: {
@@ -337,7 +343,7 @@ export async function listStoredMemoryHostEvents(params: {
         ),
       )
     : (maxMemoryHostEventsForTests ?? MAX_MEMORY_HOST_EVENTS);
-  const entries = pluginStateEntriesInKeyRange({
+  const query: Parameters<typeof pluginStateEntriesInKeyRange>[0] = {
     pluginId: MEMORY_HOST_EVENTS_PLUGIN_ID,
     namespace: MEMORY_HOST_EVENTS_NAMESPACE,
     keyStartInclusive: eventKeyPrefix(params.workspaceDir),
@@ -345,10 +351,14 @@ export async function listStoredMemoryHostEvents(params: {
     limit,
     order: "desc",
     ...(params.env ? { env: params.env } : {}),
-  }).flatMap((entry): PersistedMemoryHostEvent[] => {
-    const value = entry.value as StoredMemoryHostEvent;
-    return value.kind === "event" ? [{ ...entry, value }] : [];
-  });
+  };
+  const pluginState = await import("../plugin-state/plugin-state-store.js");
+  const entries = (await pluginState.pluginStateEntriesInKeyRange(query)).flatMap(
+    (entry): PersistedMemoryHostEvent[] => {
+      const value = entry.value as StoredMemoryHostEvent;
+      return value.kind === "event" ? [{ ...entry, value }] : [];
+    },
+  );
   return entries.toReversed();
 }
 

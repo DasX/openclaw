@@ -41,6 +41,25 @@ start a fresh Gateway for a restart.
 An explicit server-close failure retains exit status `1`, including when final
 provider cleanup crosses the native shutdown deadline.
 
+Admission-close logs name the shutdown trigger, for example `stop (SIGTERM)` or
+`restart (SIGUSR1: config reload: gateway.bind)`. A signal alone does not identify
+its sender: Node does not expose the sender PID or command. Three occurrences of
+the same signal within five minutes in one process, or three recorded plain
+SIGTERM/SIGINT stops across process lifetimes, produce a hint to check
+`openclaw gateway status --deep` for another supervisor. Deep local status shows
+the last recorded shutdown reason and time for the selected state directory;
+on Linux, it also reports competing user and system service units when inspecting
+the native service. Failure outcomes keep their specific failure reason.
+
+After a downgrade, the Gateway refuses databases whose schema is newer than the
+running build supports. The startup error and `openclaw gateway status --deep`
+report the found and supported schema versions, the writer build when recorded,
+and the refusing build. Run a build at least as new as the writer that supports
+those schemas, or stop the service and restore your pre-upgrade backup. Startup
+retains exit status `78` and parks a managed LaunchAgent when possible. A refused
+shared-state database cannot record a new lifecycle row; the error log explains
+the refusal, and deep status reports it instead of an unavailable shutdown record.
+
 Foreground/manual Gateways and other supervisors retain exit status `1` when
 cleanup cannot finish before the shutdown deadline.
 
@@ -60,6 +79,19 @@ by newer update callers take precedence. Ordinary standalone restarts keep their
 existing deadlines. See [Restart recovery](/gateway/restart-recovery).
 
 On Windows, a plain restart launched from a Gateway service process, including an agent's shell command, automatically uses the safe restart path. The running Gateway owns the deferred Scheduled Task handoff, so stopping its process tree cannot kill the caller before relaunch. This requires a reachable Gateway; the command acknowledges the restart request, not successor health. Use `openclaw gateway status` afterward to verify recovery.
+
+The Windows handoff waits for the outgoing Gateway to exit, then requests a task
+launch. It records `restart finished` in `logs/gateway-restart.log` only after a
+different process with the expected executable and Gateway entrypoint listens on
+the configured port. This listener check allows up to three minutes; it does not
+prove channel readiness. A task marked **Running** or a successful launch request
+alone does not count as recovery.
+
+If no replacement listener appears, the log records `restart failed` and a
+profile-aware `openclaw gateway restart --force` command to run from an external
+terminal. The handoff does not end its own Scheduled Task: on installations with
+Job Object containment, doing so could terminate the observer before it records
+the result. A stale running task can still require this external recovery.
 
 On macOS, when `openclaw gateway restart`, `stop`, `install`, or `uninstall` runs inside the managed LaunchAgent's process tree, including an agent's shell command, OpenClaw detects that from launchd's service environment or, when a hand-written plist omits those variables, from process ancestry against the PID launchd reports for the job. Restart hands off to a detached helper so `kickstart -k` cannot kill the caller. Stop, install, and uninstall refuse and ask you to run the command from an external shell.
 

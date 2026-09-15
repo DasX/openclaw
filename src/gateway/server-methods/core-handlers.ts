@@ -37,6 +37,7 @@ const CORE_GATEWAY_HANDLER_MODULES = {
       "chat.abort": module.handleChatAbortRequest,
     })),
   commands: () => import("./commands.js").then((module) => module.commandsHandlers),
+  computer: () => import("./computer.js").then((module) => module.computerHandlers),
   config: () => import("./config.js").then((module) => module.configHandlers),
   conversations: () => import("./conversations.js").then((module) => module.conversationHandlers),
   connect: () => import("./connect.js").then((module) => module.connectHandlers),
@@ -134,6 +135,8 @@ const CORE_GATEWAY_HANDLER_MODULES = {
     import("./session-catalog.js").then((module) => module.sessionCatalogHandlers),
   "session-discussion": () =>
     import("./session-discussion.js").then((module) => module.sessionDiscussionHandlers),
+  "session-activity-summary": () =>
+    import("./session-activity-summary.js").then((module) => module.sessionActivitySummaryHandlers),
   "session-observer-rpc": () =>
     import("../session-observer-rpc.js").then((module) => module.sessionObserverHandlers),
   "session-companion-rpc": () =>

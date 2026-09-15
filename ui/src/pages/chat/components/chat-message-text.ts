@@ -1,17 +1,16 @@
-import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
-import { html } from "lit";
-import { Directive, directive } from "lit/directive.js";
+import { html, nothing, render, type RootPart } from "lit";
+import { AsyncDirective, directive } from "lit/async-directive.js";
 import { keyed } from "lit/directives/keyed.js";
 import { ref } from "lit/directives/ref.js";
-import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { icons } from "../../../components/icons.ts";
 import type { MarkdownRenderOptions } from "../../../components/markdown-render-options.ts";
 import { toSanitizedMarkdownHtml, toStreamingMarkdownParts } from "../../../components/markdown.ts";
 import { t } from "../../../i18n/index.ts";
-import type { NormalizedMessage } from "../../../lib/chat/chat-types.ts";
-import { normalizeRoleForGrouping } from "../../../lib/chat/message-normalizer.ts";
-import { stripThinkingTags } from "../../../lib/strip-thinking-tags.ts";
+import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
+import { renderMarkdownMedia, type MarkdownMedia } from "./chat-message-media-markdown.ts";
+
+registerChatMessageMetadataEnglish();
 
 // The new-session preview shares text presentation without loading transcript actions or tools.
 type DuplicateSuffix = {
@@ -74,23 +73,6 @@ export function renderMessageJson(
   </details>`;
 }
 
-/** Keep internal oversized-history markers out of every user-visible text surface. */
-export function resolveMessageDisplayMarkdown(
-  message: unknown,
-  normalizedMessage: NormalizedMessage,
-): string {
-  const metadata = asNullableRecord(asNullableRecord(message)?.["__openclaw"]);
-  if (metadata?.truncated === true && metadata.reason === "oversized") {
-    return t("chat.messages.tooLargeToDisplay");
-  }
-  const markdown = normalizedMessage.content
-    .flatMap((item) => (item.type === "text" && typeof item.text === "string" ? [item.text] : []))
-    .join("\n");
-  return normalizeRoleForGrouping(normalizedMessage.role) === "assistant"
-    ? stripThinkingTags(markdown)
-    : markdown;
-}
-
 // Character length owns normal disclosure; this high line cap only bounds newline-heavy prompts.
 const USER_MESSAGE_COLLAPSED_CHAR_LIMIT = 1_200;
 const USER_MESSAGE_COLLAPSED_LINE_LIMIT = 40;
@@ -119,12 +101,11 @@ function userMessageOverflowRef(expanded: boolean) {
       if (!disclosure || !toggle) {
         return;
       }
-      const overflowing = expanded || element.scrollHeight > element.clientHeight + 1;
-      disclosure.classList.toggle("has-overflow", overflowing);
-      toggle.hidden = !overflowing;
+      toggle.hidden = !expanded && element.scrollHeight <= element.clientHeight + 1;
     };
     // Lit resolves refs while siblings are still committing. Measure after the
-    // toggle exists so wrapped text can reveal its own disclosure control.
+    // toggle exists; it renders visible so collapsing never shifts row height,
+    // and only content that fits the clamp hides it.
     queueMicrotask(update);
     if (typeof ResizeObserver === "function") {
       resizeObserver = new ResizeObserver(update);
@@ -145,6 +126,7 @@ export function renderMessageMarkdown(
   },
   markdownRenderOptions: MarkdownRenderOptions,
   duplicateSuffix?: DuplicateSuffix,
+  media?: MarkdownMedia,
 ) {
   const disclosure = opts.assistantMessageDisclosure;
   const isAssistant = opts.role === "assistant";
@@ -158,6 +140,7 @@ export function renderMessageMarkdown(
     recovered ? { ...markdownRenderOptions, mode: "document" } : markdownRenderOptions,
     duplicateSuffix,
     isAssistant && opts.isStreaming ? messageKey : undefined,
+    media,
   );
   // Exhausted recovery keeps the preview visible and offers manual re-entry.
   if (recoverFullMessage && disclosure?.onRetryFullMessage) {
@@ -186,19 +169,18 @@ export function renderMessageMarkdown(
   const disclosureId = `user-message:${messageKey}`;
   const expanded = opts.isUserMessageExpanded?.(disclosureId) ?? false;
   return html`
-    <div class="chat-message-disclosure ${expanded ? "is-expanded has-overflow" : ""}">
+    <div class="chat-message-disclosure ${expanded ? "is-expanded" : ""}">
       <div class="chat-message-disclosure__content" ${ref(userMessageOverflowRef(expanded))}>
         ${text}
       </div>
       <button
         class="chat-message-disclosure__toggle"
         type="button"
-        ?hidden=${!expanded}
-        aria-label=${t(expanded ? "chat.messages.showLess" : "chat.messages.showMore")}
         aria-expanded=${String(expanded)}
         @click=${() => opts.onToggleUserMessageExpanded?.(disclosureId)}
       >
-        ${expanded ? icons.chevronDown : icons.chevronRight}
+        ${t(expanded ? "chat.messages.showLess" : "chat.messages.showMore")}
+        ${expanded ? icons.chevronUp : icons.chevronDown}
       </button>
     </div>
   `;
@@ -207,18 +189,44 @@ export function renderMessageMarkdown(
 export type AssistantMessageDisclosure = {
   expanded: boolean;
   markdown?: string;
+  message?: unknown;
   /** Set when automatic full-message retries exhausted; invoking re-enters the loader. */
   onRetryFullMessage?: () => void;
 };
 
-class MarkdownPartsDirective extends Directive {
+class MarkdownPartsDirective extends AsyncDirective {
   private messageKey: string | undefined;
   private source = "";
   private stableHtml = "";
   private fragments: string[] = [];
   private generation = {};
+  private mediaSlots = new Map<number, { element: HTMLElement; part?: RootPart }>();
+  private mediaRender = {};
 
-  render(messageKey: string, source: string, [stableHtml, tailHtml]: readonly [string, string]) {
+  protected override disconnected() {
+    for (const slot of this.mediaSlots.values()) {
+      slot.part?.setConnected(false);
+    }
+  }
+
+  protected override reconnected() {
+    for (const slot of this.mediaSlots.values()) {
+      slot.part?.setConnected(true);
+    }
+  }
+
+  render(
+    messageKey: string,
+    source: string,
+    [stableHtml, tailHtml]: readonly [string, string],
+    media?: MarkdownMedia,
+  ) {
+    if (this.messageKey !== messageKey) {
+      for (const slot of this.mediaSlots.values()) {
+        render(nothing, slot.element);
+      }
+      this.mediaSlots.clear();
+    }
     if (
       this.messageKey !== messageKey ||
       !source.startsWith(this.source) ||
@@ -234,11 +242,42 @@ class MarkdownPartsDirective extends Directive {
     this.messageKey = messageKey;
     this.source = source;
     this.stableHtml = stableHtml;
+    const usedSlots = new Set<number>();
+    const mediaRender = (this.mediaRender = {});
+    const positionedMedia = media
+      ? {
+          ...media,
+          render: (item: MarkdownMedia["items"][number], index: number) => {
+            let slot = this.mediaSlots.get(index);
+            if (!slot) {
+              slot = { element: document.createElement("div") };
+              this.mediaSlots.set(index, slot);
+            }
+            usedSlots.add(index);
+            // Markdown can move a media slot from its streaming tail into the
+            // stable prefix. Keep the media renderer and decoded image mounted.
+            slot.part = render(media.render(item, index), slot.element);
+            slot.part.setConnected(this.isConnected);
+            return slot.element;
+          },
+        }
+      : undefined;
+    queueMicrotask(() => {
+      if (this.mediaRender !== mediaRender) {
+        return;
+      }
+      for (const [index, slot] of this.mediaSlots) {
+        if (!usedSlots.has(index)) {
+          render(nothing, slot.element);
+          this.mediaSlots.delete(index);
+        }
+      }
+    });
     // Canonical HTML proves continuity; live DOM also contains the reader's
     // control choices and Markdown enhancements, which must stay on its nodes.
     return keyed(
       this.generation,
-      html`${this.fragments.map((fragment) => unsafeHTML(fragment))}${unsafeHTML(tailHtml)}`,
+      html`${this.fragments.map((fragment) => renderMarkdownMedia(fragment, positionedMedia))}${renderMarkdownMedia(tailHtml, positionedMedia)}`,
     );
   }
 }
@@ -252,6 +291,7 @@ function renderMarkdownText(
   markdownRenderOptions?: MarkdownRenderOptions,
   duplicateSuffix?: DuplicateSuffix,
   streamKey?: string,
+  media?: MarkdownMedia,
 ) {
   const parts: [string, string] = isStreaming
     ? toStreamingMarkdownParts(markdown, markdownRenderOptions, streamKey)
@@ -260,8 +300,10 @@ function renderMarkdownText(
     const terminalPart = parts[1].trim() ? 1 : 0;
     parts[terminalPart] = appendDuplicateSuffix(parts[terminalPart], duplicateSuffix);
   }
-  const content = markdownParts(messageKey, markdown, parts);
-  return html` <div class="chat-text" dir="${detectTextDirection(markdown)}">${content}</div> `;
+  const content = markdownParts(messageKey, markdown, parts, media);
+  return html`
+    <div class="chat-text" dir="${detectTextDirection(media?.text ?? markdown)}">${content}</div>
+  `;
 }
 
 function appendDuplicateSuffix(rendered: string, suffix: DuplicateSuffix): string {

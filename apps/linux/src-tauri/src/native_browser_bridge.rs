@@ -4,7 +4,6 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::ipc::CapabilityBuilder;
-use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{AppHandle, Manager, State, Url, Webview};
 use tauri_plugin_opener::OpenerExt;
 
@@ -80,14 +79,17 @@ impl NativeBrowserBridgeState {
         // Tauri currently only adds runtime ACL entries. The live selected-document
         // check below revokes old Gateway authority, even though their ACL remains.
         if !state.granted_origins.contains(&origin) {
-            app.add_capability(
+            let capability =
                 CapabilityBuilder::new(format!("native-browser-{}", uuid::Uuid::new_v4()))
                     .local(false)
                     .remote(format!("{origin}/*"))
                     .webview("main")
-                    .permission("allow-native-browser-request"),
-            )
-            .map_err(|error| format!("Could not enable the native browser: {error}"))?;
+                    .permission("allow-native-browser-request")
+                    .permission("allow-window-chrome-request");
+            #[cfg(not(target_os = "macos"))]
+            let capability = capability.permission("allow-window-chrome-drag");
+            app.add_capability(capability)
+                .map_err(|error| format!("Could not enable the native browser: {error}"))?;
             state.granted_origins.insert(origin);
         }
         state.generation = state.generation.wrapping_add(1);
@@ -97,7 +99,11 @@ impl NativeBrowserBridgeState {
             generation: state.generation,
             ready: false,
         };
-        let script = initialization_script(&document);
+        let script = format!(
+            "{}\n{}",
+            initialization_script(&document),
+            crate::window_chrome::initialization_script(Some(dashboard), true)
+        );
         state.document = Some(document);
         state.reset_pending = true;
         Ok(Some(script))
@@ -186,20 +192,23 @@ fn initialization_script(document: &DashboardDocument) -> String {
 pub fn dashboard_is_current(app: &AppHandle, webview: &Webview) -> bool {
     // Native URL reads may dispatch to the UI thread, whose callbacks also use
     // this state. Never hold the bridge mutex across a native dispatch.
-    let Ok(url) = webview.url() else {
-        return false;
-    };
+    webview.label() == "main"
+        && webview
+            .url()
+            .is_ok_and(|url| dashboard_source_matches(app, &url))
+}
+
+fn dashboard_source_matches(app: &AppHandle, source: &Url) -> bool {
     let Some(state) = app.try_state::<NativeBrowserBridgeState>() else {
         return false;
     };
     let Ok(inner) = state.inner.lock() else {
         return false;
     };
-    webview.label() == "main"
-        && inner
-            .document
-            .as_ref()
-            .is_some_and(|document| document.ready && matches_dashboard(&url, &document.url))
+    inner
+        .document
+        .as_ref()
+        .is_some_and(|document| document.ready && matches_dashboard(source, &document.url))
 }
 
 // Native callbacks can already hold the runtime's webview registry borrow. Their
@@ -254,7 +263,7 @@ pub fn publication_script(app: &AppHandle, serialized_state: &str) -> Option<Str
     ))
 }
 
-pub fn page_load(webview: Webview, payload: PageLoadPayload<'_>, document_token: Option<&str>) {
+pub fn page_load(webview: Webview, started: bool, document_token: Option<&str>) {
     let app = webview.app_handle().clone();
     let Some(bridge) = app.try_state::<NativeBrowserBridgeState>() else {
         return;
@@ -274,7 +283,7 @@ pub fn page_load(webview: Webview, payload: PageLoadPayload<'_>, document_token:
         {
             return;
         }
-        if matches!(payload.event(), PageLoadEvent::Started) {
+        if started {
             state.generation = state.generation.wrapping_add(1);
             let generation = state.generation;
             if let Some(document) = state.document.as_mut() {
@@ -284,7 +293,9 @@ pub fn page_load(webview: Webview, payload: PageLoadPayload<'_>, document_token:
         }
         (state.generation, state.reset_pending)
     };
-    let started = matches!(payload.event(), PageLoadEvent::Started);
+    if started {
+        crate::window_chrome::loading(&webview);
+    }
     tauri::async_runtime::spawn(async move {
         let bridge = app.state::<NativeBrowserBridgeState>();
         let _lifecycle = bridge.lifecycle.lock().await;

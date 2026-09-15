@@ -1,6 +1,33 @@
 // Plugin integration tests retain Gateway runtime setup outside core source.
 export const gatewayPluginTestFiles = ["test/plugins/codex-model-catalog.gateway.test.ts"];
 
+// Native database consumers retain the Gateway runner and setup in forked processes.
+export const gatewayDatabaseWorkerTestFiles = [
+  "src/gateway/config-reload.test.ts",
+  "src/gateway/gateway-code-mode-clock.test.ts",
+  "src/gateway/gateway.chat-redaction.test.ts",
+  "src/gateway/health/collector.queue-health.test.ts",
+  "src/gateway/local-request-context.test.ts",
+  "src/gateway/managed-image-attachments.test.ts",
+  "src/gateway/server-methods/chat-send-synthetic-repair.integration.test.ts",
+  "src/gateway/server-methods/cron.list-scoped.test.ts",
+  "src/gateway/server-methods/cron.runs.test.ts",
+  "src/gateway/server-methods/cron.self-removal.test.ts",
+  "src/gateway/server-methods/cron.validation.test.ts",
+  "src/gateway/server-methods/models-auth-removal.integration.test.ts",
+  "src/gateway/server-methods/models-dispatch.catalog.integration.test.ts",
+  "src/gateway/server-methods/models-dispatch.lifecycle.integration.test.ts",
+  "src/gateway/server-methods/models-list.freshness.integration.test.ts",
+  "src/gateway/server-methods/models-list.membership.integration.test.ts",
+  "src/gateway/server-methods/models-list.native-lifecycle.integration.test.ts",
+  "src/gateway/server-methods/requester-cron-authority.integration.test.ts",
+  "src/gateway/server-methods/server-methods.test.ts",
+  "src/gateway/server-methods/worktrees.authorization.test.ts",
+  "src/gateway/server-methods/worktrees.test.ts",
+  "src/gateway/session-delivery-clock-jump.integration.test.ts",
+  "src/gateway/setup-inference.first-signin.integration.test.ts",
+];
+
 // Canonical file ownership for the non-isolated Gateway server Vitest project.
 export const gatewayServerBackedHttpTestFiles = [
   "src/gateway/embeddings-http.test.ts",
@@ -17,6 +44,9 @@ export const gatewayMethodsIsolatedTestFiles = [
   "src/gateway/server-methods/agent.test.ts",
   "src/gateway/server-methods/board.runtime-boundaries.test.ts",
   "src/gateway/server-methods/chat.reset-visible-yield.test.ts",
+  // Status uses the host-owned shared SQLite broker.
+  "src/gateway/server-methods/health.owner-routing.test.ts",
+  "src/gateway/server-methods/system-agent-nested-inference.integration.test.ts",
   "src/gateway/server-methods/system-agent-setup-control-ui.test.ts",
   "src/gateway/server-methods/users-preferences.test.ts",
   "src/gateway/server-methods/usage.test.ts",
@@ -29,6 +59,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server-plugin-subagent-runtime.overrides.test.ts",
   // Loads the real plugin runtime that neighboring server tests replace with mocks.
   "src/gateway/server.chat-cli-auth.test.ts",
+  "src/gateway/server.placement-abandonment.test.ts",
   "src/gateway/server.sessions.compaction-read-errors.test.ts",
 ];
 
@@ -49,6 +80,7 @@ export function isGatewayServerTestFile(file) {
   const normalized = file.replaceAll("\\", "/");
   if (
     gatewayServerExcludedTestFileSet.has(normalized) ||
+    gatewayDatabaseWorkerTestFiles.includes(normalized) ||
     gatewayServerIsolatedTestFileSet.has(normalized) ||
     normalized.startsWith("src/gateway/server-methods/") ||
     normalized.endsWith(".e2e.test.ts")

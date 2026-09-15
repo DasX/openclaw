@@ -18,6 +18,7 @@ import { createVitestWorkerRun } from "../../scripts/lib/vitest-worker-run.mts";
 import { resolveVitestSpawnParams, spawnWatchedVitestProcess } from "../../scripts/run-vitest.mts";
 import { createVitestProcessCompletion } from "../../scripts/vitest-process-group.mts";
 import { resolveRuntimeWorkerArgv } from "../../src/infra/runtime-worker-url.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { waitForFixtureFile } from "../helpers/process-wait.js";
 import { fixturePreloadArgs } from "./fixtures/ci-fixture-runtime.cjs";
 import { copyFsSafePackageFixture } from "./fs-safe-package.test-support.js";
@@ -40,13 +41,6 @@ function interceptCompilerBuild(directory: string, source: string): string {
     "tsdown-wrapper.mjs",
     `import * as compiler from ${JSON.stringify(compilerModuleUrl)};\nconst compile = compiler.build;\n${source}`,
   );
-  if (process.versions.bun) {
-    // Capture the real compiler before replacing live exports in the fixture process.
-    return `const actual = await import(${JSON.stringify(compilerModuleUrl)});
-const wrapper = await import(${JSON.stringify(pathToFileURL(wrapper).href)});
-const {mock} = await import('bun:test');
-mock.module('tsdown', () => ({...actual, ...wrapper}));`;
-  }
   return `import {registerHooks} from 'node:module';
 registerHooks({resolve(specifier,context,nextResolve) {
   return specifier==='tsdown'
@@ -172,7 +166,7 @@ describe.concurrent("fresh compiled subprocess invocation", () => {
         import path from 'node:path';
         export async function build(options) {
           const result = await compile(options);
-          fs.appendFileSync(path.join(options.outDir,'infra/runtime-process-entrypoints.js'),'altered after compile');
+          fs.appendFileSync(path.join(options.outDir,options.unbundle?'src/infra/runtime-process-entrypoints.js':'infra/runtime-process-entrypoints.js'),'altered after compile');
           fs.writeFileSync(${JSON.stringify(altered)},'compiler returned');
           return result;
         }
@@ -739,7 +733,7 @@ describe.concurrent("fresh compiled subprocess invocation", () => {
             );
             const result = await node(
               [
-                ...resolveRuntimeWorkerArgv(pathToFileURL(probe)),
+                ...resolveRuntimeWorkerArgv(pathToFileURL(probe), resolveTestNodeExecPath()),
                 url.href,
                 pathToFileURL(
                   owner

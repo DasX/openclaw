@@ -44,7 +44,7 @@ success from validation. Triage remains the handoff when recovery cannot finish.
 
 Interactive update recovery uses this same handoff after the updater releases its maintenance state. It starts from the captured update failure. It defers fresh Doctor checks and archive collection to the repair agent, so checks against the broken installation do not delay the handoff. The agent starts in the operator's captured working directory, or their OS home if that directory was removed or became inaccessible. Absolute installation selectors still identify the state, config, and default workspace to repair, even when the state directory cannot be accessed or created.
 
-Before an automatic interactive launch, OpenClaw shows what it will run. It shows the selected binary, or the embedded OpenClaw agent using your configured model. It also shows the saved prompt path when available, and a notice that it uses your own account or tokens. OpenClaw then asks for confirmation. Enter or `y` proceeds. `n` prints one manual next step for the selected agent, and preserves diagnostics and the failed update's exit status. After 30 seconds without an answer, OpenClaw announces that it is continuing and proceeds as Yes.
+Before an automatic interactive launch, OpenClaw shows what it will run. It shows the selected binary, or the embedded OpenClaw agent using your configured model. It also shows the saved prompt path when available, and a notice that it uses your own account or tokens. OpenClaw then asks for confirmation. Only an affirmative Yes starts the agent. Enter, `n`, cancellation, or 30 seconds without an answer skips the launch, prints one manual next step for the selected agent, and preserves diagnostics and the failed update's exit status. To choose another external agent, run `openclaw triage --agent codex` or another supported `--agent` value. This replaces the earlier timeout-as-Yes default; explicit standalone triage and unattended owned recovery keep their existing behavior.
 
 The prompt preserves the original error, before and after versions, and recorded recovery state ahead of current Doctor findings. It includes up to three failed or interrupted steps, excluding advisory Doctor results, with bounded excerpts from both stderr and stdout. It also retains bounded plugin failures and the terminal Doctor warning. The failure record is limited to 4 KiB and the whole prompt to 8 KiB. A healthy Doctor check does not erase the failed attempt, and an absent restart-safety verdict remains unknown.
 
@@ -60,7 +60,15 @@ Triage captures the diagnosed installation's resolved state directory, exact con
 
 `openclaw triage --run` requests up to one bounded embedded repair turn in an interactive terminal. Inference uses the system-agent owner's default model, then its configured `model.fallbacks`, then other configured agents' authenticated routes. Models that explicitly lack tool support and routes without usable authentication are skipped. If no route works, triage reports that embedded repair is unavailable. Use a saved handoff command, or repair model setup with `openclaw onboard`.
 
-The loop runs Doctor lint before and after the turn, using the number of error findings to measure improvement. If the initial check reports no errors, it returns successfully without starting inference or a repair turn. Validation determines whether the installation is repaired. An agent's successful exit or claim that it fixed the problem is not enough. Triage allows one turn, ten minutes total, five minutes for the turn, and 40 tool calls. More error findings after a turn report the installation as unrepaired.
+For standalone installation triage, the loop runs Doctor lint before and after the turn, using the number of error findings to measure improvement. An initially healthy installation prints **already resolved** without starting inference. Triage allows one turn, ten minutes total, five minutes for the turn, and 40 tool calls. More error findings after a turn report the installation as unrepaired.
+
+For a captured package activation, Git runtime, schema, or service failure, clean Doctor lint is insufficient. Triage reads the requested target from the recorded update run, requires a completed updater outcome for that target, and verifies the installed package or Git runtime, Doctor findings, and the managed Gateway's installation and readiness. Plugin failures also require plugin health. A verified rollback must match the original version and have an updater-recorded package restoration. Triage preserves historical failed runs; a later successful update supplies the completion evidence. It never treats the surviving `after.version` in a failed result as the requested target.
+
+Package updates record their resolved registry version. Git updates record the selected commit and available manifest version during target inspection, before candidate validation or activation. Triage can verify a Git target with either recorded identity; it checks all identities that are present. A legacy Git record containing only channel/tag selectors such as `dev`/`latest` does not establish a resolved target.
+
+A correlated run whose concrete failures are attributed to Doctor/config checks can use one repair turn without a later successful update. The run must have a recorded target version or Git commit that matches the installed identity, and fresh Doctor validation must clear the blocker. `post-update-failed` is a general wrapper and qualifies only when the ledger records a Doctor failure; mixed package, schema, or authority failures retain their verification owners. The result describes the Doctor/config blocker, and the historical update row remains unchanged.
+
+An explicit `--update-result` artifact without a run identity or recorded target remains **unrepaired**, including Doctor/config failures. Package and service failures also require their recorded completion evidence. Unknown failures and unverified recovery retain the next step to inspect `openclaw update status --json` and retry `openclaw update`. Plain `triage --run` uses an implicit update notification for update resolution only when its run and target can be correlated in the ledger. Otherwise it prints the saved notification's time and a status command, then continues ordinary Doctor triage without consuming the notification. An intentionally stopped or unmanaged Gateway cannot supply managed-service verification. When the initial checks prove resolution, the human output says **already resolved**; after a repair turn, it says **repaired** only when the same checks pass. The worker protocol retains its existing `repaired` and `unrepaired` statuses. An agent's successful exit or claim that it fixed the problem is not evidence of resolution.
 
 Post-turn Doctor checks run only after the executor confirms cleanup. If cleanup fails or times out, repair reports failure, retains execution state, and refuses another repair in that CLI process. Inspect the diagnostics and stop any remaining work before retrying from a new process.
 
@@ -74,7 +82,7 @@ Each turn is asked to end with a machine-readable line:
 REPAIR_RESULT: {"status":"fixed","summary":"Repaired the installation and checked Doctor lint."}
 ```
 
-The status may be `fixed`, `partial`, or `not-fixed`. A missing or malformed line falls back to a bounded summary of the final text. Doctor validation remains authoritative. The failure context and repair instructions share the 8 KiB prompt limit.
+The status may be `fixed`, `partial`, or `not-fixed`. A missing or malformed line falls back to a bounded summary of the final text. Owner validation remains authoritative. The failure context and repair instructions share the 8 KiB prompt limit.
 
 On Windows, recognized npm `.cmd` and `.bat` shims launch their Node.js or native executable entrypoint directly, preserving the interactive terminal. Node.js entrypoints require the running Node.js runtime or `node.exe` on `PATH`. Custom wrappers that require a shell remain manual handoffs. An explicit `--agent` that is missing or manual-only exits non-zero without selecting a different agent.
 
@@ -147,7 +155,7 @@ If a support artifact cannot be saved, triage reports the storage error. It stil
 
 A launched external agent inherits the current environment with the captured installation's state, config, and default workspace selectors pinned. The printed commands pin the same selectors and preserve shell quoting. External agents still control their own shell environment and execution policy. Keep the handoff on this machine. Triage exits with the launched agent's exit code. If the agent cannot start, triage prints its manual command and exits non-zero. It does not try another provider. A failed embedded inference check, unsupported execution route, or `--run` without an interactive terminal also exits non-zero. Saved prompts and manual handoff commands remain available.
 
-Embedded repair exits with 0 when Doctor validation passes, 2 when a time budget stops the run, and 1 for other incomplete or unavailable repairs. An improvement that leaves errors is still incomplete.
+Embedded repair exits with 0 when its validation proves resolution, 2 when a time budget stops the run, and 1 for other incomplete or unavailable repairs. An improvement that leaves errors or an unverified update is still incomplete.
 
 ## Options
 
@@ -156,7 +164,7 @@ Embedded repair exits with 0 when Doctor validation passes, 2 when a time budget
 | `--json`                 | Emit prompt and archive paths, finding counts, detected agents, and commands.              |
 | `--no-export`            | Skip the diagnostics archive; still prepare the prompt and use the selected handoff route. |
 | `--agent <name>`         | Select `claude`, `codex`, `opencode`, or `pi` instead of automatic detection.              |
-| `--run`                  | Run one bounded embedded repair turn with Doctor validation in an interactive terminal.    |
+| `--run`                  | Run one bounded embedded repair turn with installation or update-resolution validation.    |
 | `--non-interactive`      | Prepare diagnostics without prompting or starting an agent, including on a terminal.       |
 | `--update-result <path>` | Include the bounded update-failure JSON diagnostics artifact written by the updater.       |
 

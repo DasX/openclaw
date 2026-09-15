@@ -5,16 +5,17 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
-import { readFileDescriptorBoundedSync } from "../../infra/boundary-file-read.js";
+import { readFileDescriptorBounded } from "../../infra/boundary-file-read.js";
 import { parseDirectoryEntries, type DirectoryEntry } from "../../infra/directory-entries.js";
+import { GUEST_FILESYSTEM_CREATE_EXISTS_EXIT_CODE } from "../../infra/guest-filesystem.js";
 import type {
   SandboxBackendCommandResult,
   SandboxFsBridgeContext,
 } from "./backend-handle.types.js";
 import { runDockerSandboxShellCommand } from "./docker-backend.js";
 import { buildPinnedMutationPlan } from "./fs-bridge-mutation-helper.js";
-import { SANDBOX_CREATE_EXISTS_EXIT_CODE } from "./fs-bridge-mutation-python.js";
 import { SandboxFsPathGuard, type PinnedSandboxEntry } from "./fs-bridge-path-safety.js";
 import { buildStatPlan, type SandboxFsCommandPlan } from "./fs-bridge-shell-command-plans.js";
 import { parseSandboxStatMtimeMs, parseSandboxStatSize } from "./fs-bridge-stat-parse.js";
@@ -34,6 +35,8 @@ type RunCommandOptions = {
 };
 
 export type { SandboxFsBridge, SandboxFsStat, SandboxResolvedPath } from "./fs-bridge.types.js";
+
+const readFileAsync = promisify(fs.readFile);
 
 const PINNED_MUTATION_ACTION_LABELS = {
   write: "write files",
@@ -200,7 +203,7 @@ class SandboxFsBridgeImpl implements SandboxFsBridge {
       stdin: buffer,
       signal: params.signal,
     });
-    if (result.code === SANDBOX_CREATE_EXISTS_EXIT_CODE) {
+    if (result.code === GUEST_FILESYSTEM_CREATE_EXISTS_EXIT_CODE) {
       return "exists";
     }
     if (result.code !== 0) {
@@ -357,7 +360,7 @@ class SandboxFsBridgeImpl implements SandboxFsBridge {
     const opened = await this.pathGuard.openReadableFile(target);
     try {
       if (maxBytes === undefined) {
-        return fs.readFileSync(opened.fd);
+        return await readFileAsync(opened.fd);
       }
       if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
         throw new RangeError("maxBytes must be a non-negative safe integer");
@@ -371,7 +374,7 @@ class SandboxFsBridgeImpl implements SandboxFsBridge {
       }
       // Read and recheck the same guarded descriptor so path swaps and file
       // growth cannot bypass the byte limit or allocate an unbounded buffer.
-      const data = readFileDescriptorBoundedSync(opened.fd, maxBytes);
+      const data = await readFileDescriptorBounded(opened.fd, maxBytes);
       const finalStat = fs.fstatSync(opened.fd);
       if (!finalStat.isFile() || finalStat.size > maxBytes) {
         throw new RangeError(`File exceeds ${maxBytes} bytes`);

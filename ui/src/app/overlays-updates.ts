@@ -25,6 +25,7 @@ import {
   projectUpdateRunFailure,
   resolveUnknownUpdateOutcomeBanner,
   resolveUpdateStatusBanner,
+  resolveUpdateStatusCheckBanner,
   type UpdateRestartStatusResponse,
   type UpdateRunResponse,
   type UpdateFailureTriage,
@@ -64,6 +65,7 @@ export function createApplicationUpdateOverlays(
     updateCampaignStatusHydrated: true,
     updateReconciliationPending: false,
     updateStatusBanner: null,
+    updateStatusCheckBanner: null,
     recordedUpdateAttempt: null,
     reportableUpdateFailureId: null,
     updateFailureReportBusy: false,
@@ -295,7 +297,12 @@ export function createApplicationUpdateOverlays(
     updateHistory = { kind: "known", runId: run?.runId ?? null };
     // Availability may refresh independently. Only the selected outcome owner
     // can replace a run report or its current read error.
-    snapshot = { ...snapshot, ...status, updateCampaignStatusHydrated: true };
+    snapshot = {
+      ...snapshot,
+      ...status,
+      updateCampaignStatusHydrated: true,
+      updateStatusCheckBanner: null,
+    };
     if (
       run &&
       !previousOutcome &&
@@ -323,12 +330,17 @@ export function createApplicationUpdateOverlays(
       publish();
     },
     onStatus: applyUpdateStatusResponse,
-    onError: (error) => publishError(error, "read"),
+    onError: (error) => {
+      snapshot = { ...snapshot, updateStatusCheckBanner: resolveUpdateStatusCheckBanner(error) };
+      publish();
+    },
   });
   const updateCampaignPoller = createUpdateCampaignStatusPoller({
     canPoll: () =>
       Boolean(activeClient && isCurrentClient(activeClient) && snapshot.updateSchedule?.campaign),
-    refresh: () => refreshUpdateStatus("background"),
+    refresh: async () => {
+      await refreshUpdateStatus("background");
+    },
   });
   const runConnectionBootstrap = (key: string, task: () => Promise<unknown>) =>
     hooks.connectionBootstrap?.run(key, task) ?? task();
@@ -361,6 +373,7 @@ export function createApplicationUpdateOverlays(
         updateRunAcknowledged: false,
         updateStatusRefreshing: false,
         updateStatusBanner: null,
+        updateStatusCheckBanner: null,
         recordedUpdateAttempt: null,
         heldUpdateCampaignId: null,
       };
@@ -527,6 +540,7 @@ export function createApplicationUpdateOverlays(
         updateRun: null,
         updateRunAcknowledged: false,
         updateStatusBanner: null,
+        updateStatusCheckBanner: null,
         recordedUpdateAttempt: null,
       };
       publish();
@@ -601,10 +615,7 @@ export function createApplicationUpdateOverlays(
       }
       const generation = updateRunGeneration;
       const revision = updateStatusRevision;
-      const isCurrent = () =>
-        generation === updateRunGeneration &&
-        isCurrentClient(client) &&
-        readGatewayOperatorAccess(gateway.snapshot).canAdmin;
+      const isCurrent = () => generation === updateRunGeneration && isCurrentClient(client);
       updateHoldInFlight = true;
       try {
         const response = await client.request<UpdateHoldResult>("update.hold", {});
@@ -631,8 +642,7 @@ export function createApplicationUpdateOverlays(
         return response.ok;
       } catch (error) {
         if (isCurrent() && revision === updateStatusRevision) {
-          const message = formatUiError(error);
-          publishError(message);
+          publishError(error);
         }
         return false;
       } finally {

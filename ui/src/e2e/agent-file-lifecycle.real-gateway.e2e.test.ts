@@ -245,9 +245,13 @@ catalogSuite.define(() => {
           await expect
             .poll(() => picker.locator('[role="option"][data-value="fixture/retiring"]').count())
             .toBe(1);
-          await editor
-            .locator(".agent-identity-editor__fields input[maxlength='64']")
-            .fill("Keep this identity draft");
+          const identityName = editor.locator(
+            ".agent-identity-editor__fields input[maxlength='64']",
+          );
+          // Identity hydration can replace the selection between fill's browser and keyboard steps.
+          await expect.poll(() => identityName.inputValue()).toBe("Assistant");
+          await identityName.fill("Keep this identity draft");
+          expect(await identityName.inputValue()).toBe("Keep this identity draft");
           await picker.locator(".picker-select__trigger").click();
           await picker.locator('[role="option"][data-value="fixture/selected"]').click();
           const fallbackInput = editor.locator("openclaw-multi-select.agent-fallbacks input");
@@ -297,32 +301,51 @@ catalogSuite.define(() => {
             await picker.locator('[role="option"][data-value="ollama/inventory-before"]').count(),
           ).toBe(0);
 
+          const settleCatalogFrames = () =>
+            page.evaluate(async () => {
+              // SAFETY: Gateway readiness above establishes this app's connected runtime.
+              const app = document.querySelector("openclaw-app") as HTMLElement & {
+                runtime: { context: { gateway: { snapshot: { client: GatewayBrowserClient } } } };
+              };
+              await app.runtime.context.gateway.snapshot.client.request("health", {});
+              await new Promise<void>((resolve) => {
+                requestAnimationFrame(() => resolve());
+              });
+            });
+
           holdCatalog = true;
           inventoryModel = "inventory-held";
           commands.push(await refreshInventory());
-          await expect.poll(() => heldCatalogs.length).toBeGreaterThan(0);
-          holdCatalog = false;
+          await expect.poll(() => heldCatalogs.length).toBe(1);
+          const readsWhileHeld = catalogRequests.size;
           inventoryModel = "inventory-latest";
           commands.push(await refreshInventory());
+          await settleCatalogFrames();
+          expect(catalogRequests.size).toBe(readsWhileHeld);
+          expect(heldCatalogs).toHaveLength(1);
+
+          // Release the retired read, but keep its queued replacement behind the wire gate.
+          for (const release of heldCatalogs.splice(0)) {
+            release();
+          }
+          await expect.poll(() => heldCatalogs.length).toBe(1);
+          expect(catalogRequests.size).toBe(readsWhileHeld + 1);
+          await settleCatalogFrames();
+          expect(
+            await picker.locator('[role="option"][data-value="ollama/inventory-held"]').count(),
+          ).toBe(0);
+          expect(
+            await picker.locator('[role="option"][data-value="ollama/inventory-after"]').count(),
+          ).toBe(1);
+          holdCatalog = false;
+          for (const release of heldCatalogs.splice(0)) {
+            release();
+          }
           await expect
             .poll(() =>
               picker.locator('[role="option"][data-value="ollama/inventory-latest"]').count(),
             )
             .toBe(1);
-          for (const release of heldCatalogs) {
-            release();
-          }
-          // Fence the released replies on this connection before checking that stale data was ignored.
-          await page.evaluate(async () => {
-            // SAFETY: Gateway readiness above establishes this app's connected runtime.
-            const app = document.querySelector("openclaw-app") as HTMLElement & {
-              runtime: { context: { gateway: { snapshot: { client: GatewayBrowserClient } } } };
-            };
-            await app.runtime.context.gateway.snapshot.client.request("health", {});
-            await new Promise<void>((resolve) => {
-              requestAnimationFrame(() => resolve());
-            });
-          });
           if (captureEnabled) {
             await page.screenshot({
               path: path.join(catalogSuite.artifactDir, "latest-publication.png"),
@@ -357,11 +380,7 @@ catalogSuite.define(() => {
             .toBe(1);
           await error.waitFor({ state: "hidden" });
           expect(await selected()).toBe("fixture/selected");
-          expect(
-            await editor
-              .locator(".agent-identity-editor__fields input[maxlength='64']")
-              .inputValue(),
-          ).toBe("Keep this identity draft");
+          expect(await identityName.inputValue()).toBe("Keep this identity draft");
           expect(
             await editor
               .locator(".multi-select__chip")

@@ -82,11 +82,14 @@ import {
   prepareSystemAgentRunAdmission,
 } from "../admitted-run-context.js";
 import {
-  createTestAdmittedRunContext,
   createTestPreparedRunAdmission,
   withTestRunAdmission,
   wrapRunWithTestPreparedAdmission,
 } from "../admitted-run-context.test-support.js";
+import {
+  createApiKeyCredential,
+  createAuthProfileStoreFixture,
+} from "../auth-profiles/credential-fixtures.test-support.js";
 import { resolveApiKeyForProfile as resolveApiKeyForProfileImpl } from "../auth-profiles/oauth.js";
 import {
   loadAuthProfileStoreWithoutExternalProfiles,
@@ -1025,20 +1028,17 @@ describe("prepareCliRunContext", () => {
     });
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "oauth",
-            provider: "google-gemini-cli",
-            access: "raw-access-token",
-            refresh: "raw-refresh-token",
-            expires: 1,
-            projectId: "project-1",
-            email: "user@example.test",
-          },
+      createAuthProfileStoreFixture({
+        [authProfileId]: {
+          type: "oauth",
+          provider: "google-gemini-cli",
+          access: "raw-access-token",
+          refresh: "raw-refresh-token",
+          expires: 1,
+          projectId: "project-1",
+          email: "user@example.test",
         },
-      },
+      }),
       agentDir,
     );
     setRawCliBackendForPrepareTest({
@@ -1100,16 +1100,9 @@ describe("prepareCliRunContext", () => {
     }));
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "api_key",
-            provider: "google",
-            key: "stored-api-key",
-          },
-        },
-      },
+      createAuthProfileStoreFixture({
+        [authProfileId]: createApiKeyCredential("google", "stored-api-key"),
+      }),
       agentDir,
     );
     setRawCliBackendForPrepareTest({
@@ -1221,20 +1214,17 @@ describe("prepareCliRunContext", () => {
     });
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "oauth",
-            provider: "google-gemini-cli",
-            access: "raw-access-token",
-            refresh: "raw-refresh-token",
-            expires: 1_800_000_000_000,
-            projectId: "project-1",
-            email: "user@example.test",
-          },
+      createAuthProfileStoreFixture({
+        [authProfileId]: {
+          type: "oauth",
+          provider: "google-gemini-cli",
+          access: "raw-access-token",
+          refresh: "raw-refresh-token",
+          expires: 1_800_000_000_000,
+          projectId: "project-1",
+          email: "user@example.test",
         },
-      },
+      }),
       agentDir,
     );
     setRawCliBackendForPrepareTest({
@@ -1294,16 +1284,9 @@ describe("prepareCliRunContext", () => {
     const prepareExecution = vi.fn(async (_ctx: unknown) => undefined);
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "api_key",
-            provider: "test-cli",
-            key: "secret-key",
-          },
-        },
-      },
+      createAuthProfileStoreFixture({
+        [authProfileId]: createApiKeyCredential("test-cli", "secret-key"),
+      }),
       agentDir,
     );
     setRawCliBackendForPrepareTest({
@@ -1399,18 +1382,15 @@ describe("prepareCliRunContext", () => {
     };
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "oauth",
-            provider: "anthropic",
-            access: "expired-access-token",
-            refresh: "stored-refresh-token",
-            expires: Date.now() - 60_000,
-          },
+      createAuthProfileStoreFixture({
+        [authProfileId]: {
+          type: "oauth",
+          provider: "anthropic",
+          access: "expired-access-token",
+          refresh: "stored-refresh-token",
+          expires: Date.now() - 60_000,
         },
-      },
+      }),
       agentDir,
     );
     setCliBackendForPrepareTest({ prepareExecution, authEpochMode: "profile-only" });
@@ -1548,18 +1528,15 @@ describe("prepareCliRunContext", () => {
     const prepareExecution = vi.fn(async () => undefined);
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "oauth",
-            provider: "anthropic",
-            access: "expired-access-token",
-            refresh: "expired-refresh-token",
-            expires: Date.now() - 60_000,
-          },
+      createAuthProfileStoreFixture({
+        [authProfileId]: {
+          type: "oauth",
+          provider: "anthropic",
+          access: "expired-access-token",
+          refresh: "expired-refresh-token",
+          expires: Date.now() - 60_000,
         },
-      },
+      }),
       agentDir,
     );
     setCliBackendForPrepareTest({ prepareExecution, authEpochMode: "profile-only" });
@@ -1597,25 +1574,22 @@ describe("prepareCliRunContext", () => {
     const prepareExecution = vi.fn(async () => undefined);
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "oauth",
-            provider: "anthropic",
-            access: "expired-account-a-access",
-            refresh: "account-a-refresh",
-            expires: Date.now() - 60_000,
-          },
-          [fallbackProfileId]: {
-            type: "oauth",
-            provider: "anthropic",
-            access: "account-b-access",
-            refresh: "account-b-refresh",
-            expires: Date.now() + 60 * 60_000,
-          },
+      createAuthProfileStoreFixture({
+        [authProfileId]: {
+          type: "oauth",
+          provider: "anthropic",
+          access: "expired-account-a-access",
+          refresh: "account-a-refresh",
+          expires: Date.now() - 60_000,
         },
-      },
+        [fallbackProfileId]: {
+          type: "oauth",
+          provider: "anthropic",
+          access: "account-b-access",
+          refresh: "account-b-refresh",
+          expires: Date.now() + 60 * 60_000,
+        },
+      }),
       agentDir,
     );
     setCliBackendForPrepareTest({ prepareExecution, authEpochMode: "profile-only" });
@@ -1655,18 +1629,15 @@ describe("prepareCliRunContext", () => {
     const prepareExecution = vi.fn(async () => undefined);
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "oauth",
-            provider: "anthropic",
-            access: "expired-access-token",
-            refresh: "expired-refresh-token",
-            expires: Date.now() - 60_000,
-          },
+      createAuthProfileStoreFixture({
+        [authProfileId]: {
+          type: "oauth",
+          provider: "anthropic",
+          access: "expired-access-token",
+          refresh: "expired-refresh-token",
+          expires: Date.now() - 60_000,
         },
-      },
+      }),
       agentDir,
     );
     setCliBackendForPrepareTest({ prepareExecution, authEpochMode: "profile-only" });
@@ -1707,16 +1678,13 @@ describe("prepareCliRunContext", () => {
     const prepareExecution = vi.fn(async () => ({ env: { TEST_PREPARED_ENV: "1" } }));
     fs.mkdirSync(agentDir, { recursive: true });
     saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          [authProfileId]: {
-            type: "api_key",
-            provider: "claude-cli",
-            key: "stored-key",
-          },
+      createAuthProfileStoreFixture({
+        [authProfileId]: {
+          type: "api_key",
+          provider: "claude-cli",
+          key: "stored-key",
         },
-      },
+      }),
       agentDir,
     );
 
@@ -4372,7 +4340,8 @@ describe("prepareCliRunContext", () => {
       });
       expect(context.preparedBackend.mcpClientGrantCapture?.transportToken).toBe("loopback-token");
       context.preparedBackend.mcpClientGrantCapture?.adoptProcessToken("stable-loopback-token");
-      context.preparedBackend.mcpClientGrantCapture?.activate("capture-test");
+      const assertCaptureCurrent = () => {};
+      context.preparedBackend.mcpClientGrantCapture?.activate("capture-test", assertCaptureCurrent);
       context.preparedBackend.mcpClientGrantCapture?.deactivate("capture-test");
       expect(transferMcpLoopbackClientGrant).toHaveBeenCalledExactlyOnceWith({
         sourceToken: "loopback-token",
@@ -4383,6 +4352,7 @@ describe("prepareCliRunContext", () => {
         token: "stable-loopback-token",
         runtimeOwnerToken: "loopback-owner-token",
         captureKey: "capture-test",
+        assertCurrent: assertCaptureCurrent,
       });
       expect(deactivateMcpLoopbackClientGrantCapture).toHaveBeenCalledExactlyOnceWith({
         token: "stable-loopback-token",
@@ -4491,7 +4461,7 @@ describe("prepareCliRunContext", () => {
     ).toBeNull();
     expect(projectNativeToolAuthority).not.toHaveBeenCalled();
     expect(captureNativeToolAuthority).not.toHaveBeenCalled();
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read", "Bash"]);
 
     expect(projectNativeToolAuthority).toHaveBeenCalledExactlyOnceWith(["Read", "Bash"]);
@@ -4537,7 +4507,7 @@ describe("prepareCliRunContext", () => {
             ? {}
             : { cliToolAvailability: { native: selected, openClaw: ["message"] } },
         );
-      capture.activate("native-capture");
+      capture.activate("native-capture", () => {});
       observe(observed);
 
       expect(projectNativeToolAuthority).toHaveBeenCalledExactlyOnceWith(projected);
@@ -4585,7 +4555,7 @@ describe("prepareCliRunContext", () => {
       ["read", "web_fetch", "web_search"],
       { toolOverrides: { webSearch: false } },
     );
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read", "WebFetch", "WebSearch"]);
 
     expect(captureNativeToolAuthority).toHaveBeenLastCalledWith(["read", "web_fetch"]);
@@ -4599,7 +4569,7 @@ describe("prepareCliRunContext", () => {
   ])("clears native authority before rejecting a $name runtime snapshot", async ({ tools }) => {
     const { capture, observe, projectNativeToolAuthority, captureNativeToolAuthority } =
       await prepareNativeAuthority(["read"]);
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read"]);
     projectNativeToolAuthority.mockClear();
 
@@ -4611,7 +4581,7 @@ describe("prepareCliRunContext", () => {
   it("clears native authority before rejecting a non-canonical backend projection", async () => {
     const { capture, observe, projectNativeToolAuthority, captureNativeToolAuthority } =
       await prepareNativeAuthority(["read"]);
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read"]);
     projectNativeToolAuthority.mockReturnValue(["Bash"]);
 
@@ -4625,7 +4595,7 @@ describe("prepareCliRunContext", () => {
       const { capture, observe, projectNativeToolAuthority, captureNativeToolAuthority } =
         await prepareNativeAuthority(["read"]);
       if (state === "stale") {
-        capture.activate("native-capture");
+        capture.activate("native-capture", () => {});
         observe(["Read"]);
         captureNativeToolAuthority.mockReturnValue(false);
         projectNativeToolAuthority.mockClear();
@@ -5698,8 +5668,11 @@ describe("prepareCliRunContext", () => {
       },
     });
 
+    const config = createCliBackendConfig();
+    const runId = "run-test-openclaw-mcp";
+    const admission = prepareSystemAgentRunAdmission(config, runId, "main", "cli-ring-zero-test");
     const params: RunCliAgentParams & { systemAgentTool: SystemAgentToolOptions } = {
-      admittedRunContext: createTestAdmittedRunContext("run-test-openclaw-mcp"),
+      preparedRunAdmission: admission,
       sessionId: "session-test",
       sessionFile,
       sessionTarget,
@@ -5708,45 +5681,50 @@ describe("prepareCliRunContext", () => {
       provider: "claude-cli",
       model: "test-model",
       timeoutMs: 1_000,
-      runId: "run-test-openclaw-mcp",
-      config: createCliBackendConfig(),
+      runId,
+      config,
       systemAgentTool: { surface: "cli" },
       cliToolAvailability: {
         native: [],
         openClaw: ["openclaw"],
       },
     };
-    const context = await prepareCliRunContext(params);
-
-    // Ring-zero runs never touch the loopback surface (no message tools).
-    expect(getActiveMcpLoopbackRuntime).not.toHaveBeenCalled();
-    expect(context.mcpDeliveryCapture).toBeUndefined();
-    const args = context.preparedBackend.backend.args ?? [];
-    expect(args).toContain("--strict-mcp-config");
-    expect(args).not.toContain("--tools");
-    expect(args).not.toContain("--allowedTools");
-    expect(context.preparedBackend.backend.resumeArgs).toEqual(
-      expect.arrayContaining(["--strict-mcp-config"]),
-    );
-    expect(resolveExecutionArgs).not.toHaveBeenCalled();
-    expect(context.params.cliToolAvailability).toEqual({
-      native: [],
-      openClaw: ["openclaw"],
-    });
-    const mcpConfigPath = expectDefined(
-      args[args.indexOf("--mcp-config") + 1],
-      'args[args.indexOf("--mcp-config") + 1] test invariant',
-    );
-    const raw = JSON.parse(fs.readFileSync(mcpConfigPath, "utf-8")) as {
-      mcpServers?: Record<string, { env?: Record<string, string> }>;
-    };
-    expect(Object.keys(raw.mcpServers ?? {})).toEqual(["openclaw"]);
-    expect(raw.mcpServers?.openclaw?.env).toMatchObject({
-      OPENCLAW_TOOLS_MCP_TOOLS: "openclaw",
-      OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_SURFACE: "cli",
-    });
-
-    await context.preparedBackend.cleanup?.();
+    try {
+      const context = await prepareCliRunContext(params);
+      try {
+        // Ring-zero runs never touch the loopback surface (no message tools).
+        expect(getActiveMcpLoopbackRuntime).not.toHaveBeenCalled();
+        expect(context.mcpDeliveryCapture).toBeUndefined();
+        const args = context.preparedBackend.backend.args ?? [];
+        expect(args).toContain("--strict-mcp-config");
+        expect(args).not.toContain("--tools");
+        expect(args).not.toContain("--allowedTools");
+        expect(context.preparedBackend.backend.resumeArgs).toEqual(
+          expect.arrayContaining(["--strict-mcp-config"]),
+        );
+        expect(resolveExecutionArgs).not.toHaveBeenCalled();
+        expect(context.params.cliToolAvailability).toEqual({
+          native: [],
+          openClaw: ["openclaw"],
+        });
+        const mcpConfigPath = expectDefined(
+          args[args.indexOf("--mcp-config") + 1],
+          'args[args.indexOf("--mcp-config") + 1] test invariant',
+        );
+        const raw = JSON.parse(fs.readFileSync(mcpConfigPath, "utf-8")) as {
+          mcpServers?: Record<string, { env?: Record<string, string> }>;
+        };
+        expect(Object.keys(raw.mcpServers ?? {})).toEqual(["openclaw"]);
+        expect(raw.mcpServers?.openclaw?.env).toMatchObject({
+          OPENCLAW_TOOLS_MCP_TOOLS: "openclaw",
+          OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_SURFACE: "cli",
+        });
+      } finally {
+        await context.preparedBackend.cleanup?.();
+      }
+    } finally {
+      admission.close();
+    }
   });
 
   it("fails closed for native tool-capable CLI backends when tools are disabled", async () => {
@@ -5899,13 +5877,10 @@ describe("prepareCliRunContext", () => {
       const { dir, sessionTarget } = fixture.session;
       const agentDir = path.join(dir, "agents", "main", "agent");
       saveAuthProfileStore(
-        {
-          version: 1,
-          profiles: {
-            "test:a": { type: "token", provider: "test-cli", token: "synthetic-account-a" },
-            "test:b": { type: "token", provider: "test-cli", token: "synthetic-account-b" },
-          },
-        },
+        createAuthProfileStoreFixture({
+          "test:a": { type: "token", provider: "test-cli", token: "synthetic-account-a" },
+          "test:b": { type: "token", provider: "test-cli", token: "synthetic-account-b" },
+        }),
         agentDir,
       );
       const inputs: string[] = [];
@@ -6357,6 +6332,66 @@ describe("prepareCliRunContext", () => {
     });
   });
 
+  it.each(["prepared", "admitted"] as const)(
+    "stops CLI skill preparation before sandbox materialization when %s authority is revoked",
+    async (phase) => {
+      const { dir } = fixture.session;
+      const skillDir = path.join(dir, "skills", "awaited-probe");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(skillDir, "SKILL.md"),
+        '---\nname: awaited-probe\ndescription: Probe before sandbox setup\nmetadata: {"openclaw":{"requires":{"bins":["cli-preparation-fixture-tool"]}}}\n---\n',
+      );
+      const started = createDeferred();
+      const release = createDeferred();
+      const originalAccess = fs.promises.access;
+      const access = vi.spyOn(fs.promises, "access").mockImplementation(async (file, mode) => {
+        if (String(file).includes("cli-preparation-fixture-tool")) {
+          started.resolve();
+          await release.promise;
+          throw new Error("fixture executable is absent");
+        }
+        return originalAccess(file, mode);
+      });
+      const revoked = new Error("skill preparation source revoked");
+      let current = true;
+      const admission = prepareAgentRunAdmission({
+        cfg: {},
+        facts: {
+          runId: "cli-skills-revocation",
+          agentId: "main",
+          ingress: { kind: "system", boundary: "skills-test", state: "present" },
+        },
+        operationalRunInstance: createOperationalRunInstanceRef("cli-skills-revocation"),
+        assertSourceCurrent: () => {
+          if (!current) {
+            throw revoked;
+          }
+        },
+      });
+      try {
+        const pending = fixture.prepare({
+          runId: "cli-skills-revocation",
+          ...(phase === "prepared"
+            ? { preparedRunAdmission: admission }
+            : { admittedRunContext: await admission.admit("embedded") }),
+          workspaceDir: dir,
+          config: { plugins: { enabled: false }, skills: { load: { watch: false } } },
+        });
+        const rejected = expect(pending).rejects.toThrow(/revoked|authority/);
+        await started.promise;
+        current = false;
+        release.resolve();
+        await rejected;
+        expect(ensureSandboxWorkspaceForSessionMock).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        admission.close();
+        access.mockRestore();
+      }
+    },
+  );
+
   it.each(["agent:main:sandboxed-user", "global"])(
     "renders sandbox-readable CLI skills for the prepared owner of %s",
     async (sessionKey) => {
@@ -6455,7 +6490,7 @@ describe("prepareCliRunContext", () => {
         "utf-8",
       );
     }
-    const snapshot = buildSkillSnapshot(dir, {
+    const snapshot = await buildSkillSnapshot(dir, {
       bundledSkillsDir: path.join(dir, "missing-bundled-skills"),
       managedSkillsDir: path.join(dir, "missing-managed-skills"),
     });

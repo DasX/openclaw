@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import type {
-  PreservedSessionWorktree,
   SessionCatalogPullRequestSummary,
   SessionsCatalogListResult,
   SessionsPatchManyParams,
@@ -21,6 +20,7 @@ import type { ApplicationOverlays } from "../app/overlays-types.ts";
 import type { AppSidebarSessionNavigationElement } from "../components/app-sidebar-session-navigation.ts";
 import type { SessionDataController } from "../components/session-data-controller.ts";
 import type { SessionOrganizerController } from "../components/session-organizer-controller.ts";
+import type { ContextualSidebar } from "../components/sidebar-context-state.ts";
 import type { AgentIdentityCapability } from "../lib/agents/identity.ts";
 import {
   createSessionCapability,
@@ -28,6 +28,8 @@ import {
   type SessionListOptions,
 } from "../lib/sessions/index.ts";
 import { reconcileSessionHistory } from "../lib/sessions/reconcile.ts";
+import { createSessionArchiveState } from "../lib/sessions/session-archive-state.ts";
+import { createSessionRowProvenance } from "../lib/sessions/session-row-provenance.ts";
 import {
   createSidebarContextLifecycle,
   disposeSidebarContextLifecycles,
@@ -37,6 +39,7 @@ import {
   hiddenScopeUpgradeCapability,
 } from "./application-context.ts";
 import { gatewayHelloForMethods, SESSION_MUTATION_TEST_METHODS } from "./gateway-methods.ts";
+import { settleLitElements } from "./lit-settle.ts";
 import { createStorageMock } from "./storage.ts";
 
 // The attention widget owns independent health RPC tests. Keep those requests
@@ -57,6 +60,8 @@ export type SidebarLifecycleState = HTMLElement & {
   basePath: string;
   hiddenSessionCatalogIds: ReadonlySet<string>;
   activeRouteId?: string;
+  contextualSidebar?: ContextualSidebar;
+  router?: AppSidebarSessionNavigationElement["router"];
   enabledRouteIds?: readonly NavigationRouteId[];
   connected: boolean;
   offline: boolean;
@@ -105,10 +110,6 @@ export type SidebarLifecycleState = HTMLElement & {
   onToggleSidebar?: () => void;
   onOpenNewSession?: (agentId: string, target?: { catalogId: string }) => void;
   variant: "panel" | "drawer";
-};
-
-export type LobsterPetElement = HTMLElement & {
-  runOutcome: "ok" | "error" | "aborted";
 };
 
 export type TestSessionMenu = HTMLElement & {
@@ -244,22 +245,21 @@ export function successfulSessionPatch(key: string) {
   };
 }
 
-export function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 export function createSessionsHarness(agentId: string, keys: string[]) {
   let state = createSessionState(agentId, keys);
   let canonicalListRevision = 1;
   const listeners = new Set<(next: SessionState) => void>();
   const pullRequestSummaries = new Map<string, SessionCatalogPullRequestSummary>();
-  const archiveVisibilityByKey = new Map<string, "pending" | "archived">();
+  const archiveProvenance = createSessionRowProvenance();
+  const archiveState = createSessionArchiveState(
+    (key) => state.result?.sessions.find((row) => row.key === key),
+    () => {
+      for (const listener of listeners) {
+        listener(state);
+      }
+    },
+    archiveProvenance,
+  );
   const groupsPut = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const groupsRename = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const groupsDelete = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
@@ -270,17 +270,17 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
   const deleteSession = vi.fn((): Promise<SessionDeleteResult> =>
     Promise.resolve({ deleted: false }),
   );
-  const deleteMany = vi.fn(() =>
+  const deleteMany = vi.fn<SessionCapability["deleteMany"]>(() =>
     Promise.resolve({
-      deleted: [] as string[],
-      errors: [] as string[],
-      preservedWorktrees: [] as PreservedSessionWorktree[],
+      deleted: [],
+      errors: [],
+      preservedWorktrees: [],
     }),
   );
   const refresh = vi.fn((_options?: Parameters<SessionCapability["refresh"]>[0]) =>
     Promise.resolve(),
   );
-  const refreshReplacement = vi.fn(() => Promise.resolve());
+  const refreshReplacement = vi.fn(() => Promise.resolve(state.result));
   const patchMany = vi.fn(
     async (
       targets: SessionsPatchManyParams["targets"],
@@ -370,19 +370,8 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     groupsDelete,
     create,
     patch,
-    archiveVisibility: (key: string) => archiveVisibilityByKey.get(key),
-    setArchivePending(key: string, pending: boolean) {
-      if (pending) {
-        archiveVisibilityByKey.set(key, "pending");
-      } else if (state.result?.sessions.find((row) => row.key === key)?.archived) {
-        archiveVisibilityByKey.set(key, "archived");
-      } else {
-        archiveVisibilityByKey.delete(key);
-      }
-      for (const listener of listeners) {
-        listener(state);
-      }
-    },
+    archiveVisibility: archiveState.visibility,
+    beginArchive: archiveState.beginPending,
     assignOwner,
     patchMany,
     deletionState: () => undefined,
@@ -432,6 +421,8 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
       scopedSessions!.inheritRow(...args),
     projectRows: (rows: readonly GatewaySessionRow[]) => scopedSessions!.projectRows(rows),
     refresh,
+    invalidate: (...args: Parameters<SessionCapability["invalidate"]>) =>
+      scopedSessions!.invalidate(...args),
     refreshReplacement,
     subscribeMessages,
     unsubscribeMessages,
@@ -520,12 +511,13 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     unsubscribeMessages,
     publish,
     publishList(statePatch: Partial<SessionState>) {
+      canonicalListRevision += 1;
       for (const row of statePatch.result?.sessions ?? []) {
-        if (row.archived !== true && archiveVisibilityByKey.get(row.key) === "archived") {
-          archiveVisibilityByKey.delete(row.key);
+        archiveProvenance.observeReadRow(row, canonicalListRevision, statePatch.agentId);
+        if (row.archived === true || archiveState.visibility(row.key) === "archived") {
+          archiveState.observe(row.key, row.archived === true, row);
         }
       }
-      canonicalListRevision += 1;
       publish(statePatch);
     },
   };
@@ -564,11 +556,12 @@ export function createContext(
     ensureList: async (): Promise<AgentsListResult | null> => agents.state.agentsList,
     subscribe: () => () => undefined,
   };
-  const { theme, agentSelection } = createSidebarContextLifecycle(gateway, agents, selectedAgentId);
-  sidebarSessionGatewayBindings.get(sessions)?.(gateway, agentSelection);
+  const lifecycle = createSidebarContextLifecycle(gateway, agents, selectedAgentId);
+  sidebarSessionGatewayBindings.get(sessions)?.(gateway, lifecycle.agentSelection);
   return {
     config: createApplicationConfigCapability({ resourceBasePath: "" }),
     gateway,
+    ...lifecycle,
     sessions,
     plugins: {
       registrations: () => [],
@@ -579,8 +572,6 @@ export function createContext(
     placementStartup: { pause: vi.fn<ApplicationContext["placementStartup"]["pause"]>() },
     agents,
     agentIdentity,
-    agentSelection,
-    theme,
     scopeUpgrade: hiddenScopeUpgradeCapability,
     overlays: {
       snapshot: { approvalQueue },
@@ -720,8 +711,12 @@ export function setupSidebarTest() {
       modal.dispatchEvent(new CustomEvent("modal-cancel", { cancelable: true }));
     }
     await vi.dynamicImportSettled();
+    const sidebars =
+      document.body.querySelectorAll<AppSidebarSessionNavigationElement>("openclaw-app-sidebar");
     document.body.replaceChildren();
     disposeSidebarContextLifecycles();
+    // Disconnection queues Lit updates; finish them before retiring the DOM globals.
+    await settleLitElements(sidebars);
     if (originalLocalStorage) {
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
     } else {

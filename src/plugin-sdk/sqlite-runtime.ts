@@ -1,6 +1,7 @@
 // Narrow SQLite schema, path, and transaction helpers for first-party runtime.
 
 export type { Generated, Selectable } from "kysely";
+export { runQueuedStoreWrite, type StoreWriterQueue } from "../shared/store-writer-queue.js";
 export {
   openSqliteWorkerStore,
   SqliteWorkerError,
@@ -18,6 +19,7 @@ export {
   withOpenClawAgentDatabaseAsync,
 } from "../state/openclaw-agent-db.js";
 export { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
+export { withOpenClawAgentDatabaseWrite } from "../state/openclaw-agent-db-write.js";
 export { assertOpenClawAgentDatabaseForMaintenance } from "../state/openclaw-agent-db-maintenance.js";
 export { ensureOpenClawAgentStandingIntentsSchema } from "../state/openclaw-agent-standing-intents-schema.js";
 export {
@@ -30,7 +32,7 @@ export {
   prepareSqliteQuerySync,
   sqliteStringSet,
 } from "../infra/kysely-sync.js";
-export { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+export { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "../infra/node-sqlite.js";
 export {
   prepareSqliteReadOnlyLocation,
   prepareSqliteReadOnlyLocationSync,

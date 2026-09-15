@@ -147,18 +147,32 @@ restart/stop and detached restart or Windows Startup-folder fallbacks that canno
 retain this ownership. Ordinary user-invoked `openclaw gateway` commands keep their
 existing behavior.
 
+On Windows, capability probes stay alive until the updater finishes binding their
+process identity. If Windows cannot supply a process creation timestamp, the
+updater retains the identity established by the live parent or uses the child's
+recorded launcher identity, with a warning in the run history and diagnostic logs.
+A different observed identity still refuses the
+handoff. Scheduled Tasks using `InteractiveToken` remain supported; this does not
+require storing a task password.
+
 This target-CLI protection does not cover every Doctor or plugin child, the
 in-process service preparation before package mutation, or the separate
 deferred-install activation checks.
 
 ## Options
 
-Updater-managed `openclaw update finalize` runs repair Doctor without an automatic
-wall-clock deadline, including post-plugin repair. It waits for completion,
-failure, or manual cancellation. An explicit `--timeout <seconds>` still limits
-each finalization phase and its child commands. Post-plugin config validation and
-readiness checks keep their separate three-minute defaults; other finalization
-phase limits are unchanged.
+Updater-managed `openclaw update finalize` runs repair Doctor without a separate
+per-Doctor deadline, including post-plugin repair. The enclosing activation deadline
+still applies. An explicit `--timeout <seconds>` limits each finalization phase and
+its child commands. Admission and config phases scale with shared SQLite state.
+Post-plugin config validation and readiness checks use the measured shared and
+agent database sizes after Doctor finishes, including WAL files. Serial plugin
+operations retain individual deadlines within the enclosing activation budget. That
+budget uses the measured database sizes, observed candidate startup, plugin count,
+and the caller's step allowance. Migrated finalization receives the same allowance;
+it does not choose a separate default. Expiry reports `update-activation-timeout`
+and retains ownership until writers settle; it does not authorize rollback or restart.
+Use `openclaw update status` and Doctor for recovery guidance.
 
 | Flag                                             | Description                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -201,6 +215,11 @@ compatible state before the updater records history. The selected release's
 Doctor runs before activation, including when npm's install hooks already created
 the database. Existing databases retain their downgrade protections.
 
+If database schema preflight cannot inspect the configured paths because the
+config is invalid, its refusal lists the config file and invalid fields. Run
+`openclaw doctor --fix` to repair retired or unrecognized fields, correct any
+remaining errors, and retry the update. Preflight leaves the config unchanged.
+
 Explicit package specs on a fresh profile first stage with a temporary OpenClaw
 profile. The updater inspects the staged runtime's declared schema and Node
 requirements before admitting changes to the selected profile. Artifacts without
@@ -220,6 +239,9 @@ govern later foreground and automatic updates, even after a one-off beta
 install. Use `--channel` to change that policy.
 
 For explicit package artifacts, configured plugin availability is checked against the privately staged package version before rehearsal or activation. `--dry-run` does not stage the artifact and reports that this check remains pending.
+
+Managed update handoffs preserve the selected artifact, including already-current
+repeats, so target checks use that artifact's database schema and runtime requirements.
 
 For source checkouts, `--dry-run` previews the update flow without fetching Git
 refs or checking working-tree changes. The real update checks for uncommitted

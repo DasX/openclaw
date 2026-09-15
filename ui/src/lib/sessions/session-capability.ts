@@ -4,6 +4,8 @@ import type {
   SessionOwner,
   SessionsAssignOwnerParams,
   SessionsDeleteResult,
+  SessionsPatchManyParams,
+  SessionsPatchManyResult,
   SessionsRecoverResult,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import type { SessionCatalogPullRequestSummary } from "../../../../packages/gateway-protocol/src/schema/sessions-catalog.js";
@@ -121,7 +123,7 @@ export type SessionDeleteOutcome = Pick<SessionsDeleteResult, "deleted" | "workt
 
 export type SessionDeleteBatchResult = {
   deleted: string[];
-  errors: string[];
+  errors: { target: SessionDeleteTarget; error: unknown }[];
   preservedWorktrees: PreservedSessionWorktree[];
 };
 
@@ -218,7 +220,7 @@ export type SessionCapability = {
     target: SessionRowTarget,
     listener: (row: GatewaySessionRow | null) => void,
     /** Matching events can omit descriptor-only fields; re-read those without watching roster revisions. */
-    options?: { onInvalidate?: () => void },
+    options?: { onInvalidate?: (reason?: string) => void },
   ) => SessionRowObservation;
   /** Preserve an existing row observation through a local presentation copy. */
   inheritRow: (
@@ -233,7 +235,8 @@ export type SessionCapability = {
   refresh: (options?: SessionRefreshOptions) => Promise<void>;
   /** Schedules background list refreshes without replacing queued foreground queries. */
   invalidate: () => void;
-  /** Forces the remembered roster query; null means the attempt retired or failed. */
+  /** Refreshes the remembered query without superseding queued foreground intent.
+   * An explicit agent forces replacement; null means the attempt retired or failed. */
   refreshReplacement: (agentId?: string | null) => Promise<SessionsListResult | null>;
   createResult: (
     params?: SessionCreateParams,
@@ -242,8 +245,12 @@ export type SessionCapability = {
   create: (params?: SessionCreateParams) => Promise<string | null>;
   recover: (params: { key: string; agentId?: string }) => Promise<SessionsRecoverResult | null>;
   patch: SessionPatchRoute;
+  patchMany: (
+    targets: SessionsPatchManyParams["targets"],
+    patch: SessionsPatchManyParams["patch"],
+  ) => Promise<SessionsPatchManyResult | null>;
   archiveVisibility: (key: string) => SessionArchiveVisibility | undefined;
-  setArchivePending: (key: string, pending: boolean) => void;
+  beginArchive: (key: string, sessionId: string | undefined) => (() => void) | null;
   assignOwner: (
     key: string,
     owner: SessionsAssignOwnerParams["owner"],

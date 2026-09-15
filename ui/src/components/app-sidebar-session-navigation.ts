@@ -21,6 +21,7 @@ import {
 } from "../lib/sessions/session-key.ts";
 import { projectSidebarAgentSessionRows } from "./app-sidebar-agent-session-rows.ts";
 import { AppSidebarBase } from "./app-sidebar-base.ts";
+import { excludeSessionCatalogRows } from "./app-sidebar-session-catalog-state.ts";
 import {
   adoptedCatalogSessionKeys,
   projectSidebarSessionCatalogs,
@@ -59,12 +60,12 @@ import {
   loadStoredSidebarSessionSortMode,
   loadStoredSidebarSessionStatusFilter,
   loadStoredSidebarSessionsGrouping,
-  loadStoredSidebarSessionsHideEmptyGroups,
   loadStoredSidebarSessionsShowCron,
   loadStoredSidebarSessionsShowPreview,
   loadStoredSidebarSessionsShowSystem,
   resolveSidebarSessionSortMode,
   storeSidebarSessionSortMode,
+  type SidebarEmptyGroupsMode,
   type SidebarRecentSession,
   type SidebarSessionSortMode,
   type SidebarSessionStatusFilter,
@@ -74,6 +75,7 @@ import { SessionDataController } from "./session-data-controller.ts";
 import type { SessionOrganizerController } from "./session-organizer-controller.ts";
 import type { SessionOwnerOption } from "./session-owner-chip.ts";
 import { SessionOwnerFilterController } from "./session-owner-filter-controller.ts";
+import { SidebarEmptyGroupsController } from "./sidebar-empty-groups-controller.ts";
 import type { SidebarMenusController } from "./sidebar-menus-controller.ts";
 
 /** Session-row projection, selection, sorting, and agent scope navigation. */
@@ -167,14 +169,25 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   @state() sessionsShowCron = loadStoredSidebarSessionsShowCron();
   @state() sessionsShowPreview = loadStoredSidebarSessionsShowPreview();
   @state() sessionsShowSystem = loadStoredSidebarSessionsShowSystem();
-  @state() sessionsHideEmptyGroups = loadStoredSidebarSessionsHideEmptyGroups();
+  private readonly emptyGroups = new SidebarEmptyGroupsController(this, () => this.context);
+
+  get sessionsEmptyGroupsMode(): SidebarEmptyGroupsMode {
+    return this.emptyGroups.mode;
+  }
+
+  setSessionsEmptyGroupsMode(mode: SidebarEmptyGroupsMode): void {
+    this.emptyGroups.set(mode);
+  }
   @state() sessionsStatusFilter: SidebarSessionStatusFilter =
     loadStoredSidebarSessionStatusFilter();
   @state() hiddenSessionCatalogIds = loadStoredHiddenSessionCatalogIds();
 
   visibleSessionCatalogs = () =>
     visibleSessionCatalogProjection(
-      this.sessionData.sessionCatalogs,
+      excludeSessionCatalogRows(
+        this.sessionData.sessionCatalogs,
+        this.sessionData.pendingCatalogArchives,
+      ),
       this.hiddenSessionCatalogIds,
       this.sessionsStatusFilter === "archived",
     );
@@ -233,6 +246,13 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     }
   }
 
+  protected override willUpdate(changedProperties: PropertyValues<this>) {
+    if (this.emptyGroups.reconcile() && this.sidebarMenus.sessionSortMenuPosition) {
+      this.sidebarMenus.closeSessionSortMenu();
+    }
+    super.willUpdate(changedProperties);
+  }
+
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
     if (this.sessionSortMode === "people" && this.sessionPeopleSortCapability() === false) {
@@ -242,6 +262,47 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     if (isSessionRouteId(this.activeRouteId)) {
       void this.sessionData.loadActiveSessionLineage(activeRouteKey);
     }
+    const revalidating = this.childSessionParents();
+    this.sessionData.retireStaleChildSessions(revalidating);
+    const context = this.context;
+    const client = context?.gateway.snapshot.client;
+    const scope = this.sessionData.childSessionScope;
+    if (context && client && revalidating.size > 0) {
+      const isCurrent = () =>
+        this.context === context &&
+        this.sessionData.childSessionScope === scope &&
+        context.gateway.snapshot.client === client &&
+        this.isConnected;
+      let admittedParents: Set<string> | undefined;
+      void context.connectionBootstrap
+        .run(
+          scope,
+          async () => {
+            if (isCurrent()) {
+              // Expansion can change while queued; only the current presentation owns these reads.
+              admittedParents = this.childSessionParents();
+              await Promise.all(
+                [...admittedParents].map((key) => this.sessionData.loadChildSessions(key)),
+              );
+            }
+          },
+          { background: true },
+        )
+        .then(() => {
+          // Completion-driven renders can run before the scheduler releases the batch key.
+          const completed = admittedParents;
+          if (
+            completed &&
+            isCurrent() &&
+            [...this.childSessionParents()].some((key) => !completed.has(key))
+          ) {
+            this.requestUpdate();
+          }
+        });
+    }
+  }
+
+  private childSessionParents(): Set<string> {
     const revalidating = new Set<string>();
     const pending = [...this.visibleSessionRowsInOrder()];
     while (pending.length > 0) {
@@ -255,16 +316,13 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
         (session.visuallyActive || this.isSessionChildrenExpanded(session))
       ) {
         revalidating.add(session.key);
-        // Selected collapsed rows need child liveness so delegated work does not look finished.
-        void this.sessionData.loadChildSessions(session.key);
       }
     }
     const mainRow = this.mainSessionRow();
     if (mainRow && (mainRow.childSessions?.length ?? 0) > 0) {
       revalidating.add(mainRow.key);
-      void this.sessionData.loadChildSessions(mainRow.key);
     }
-    this.sessionData.retireStaleChildSessions(revalidating);
+    return revalidating;
   }
 
   setSessionOwnerFilter = (ownerId: string | null, involvingMe = false) =>
@@ -417,7 +475,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       sectionOrder: this.knownSectionOrder(),
       catalogIds: catalogs.map((catalog) => catalog.id),
       collapsedSections,
-      hideEmptyGroups: this.sessionsHideEmptyGroups,
+      emptyGroupsMode: this.sessionsEmptyGroupsMode,
       ownerFiltered: this.sessionOwnerFilterActive || this.sessionInvolvingMeFilterActive,
       visibleSessionLimits: roster
         ? this.rosterVisibleSessionLimits
@@ -443,7 +501,8 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     return buildReconciledSidebarZone({
       sidebarEntries: this.sidebarEntries,
       rows,
-      pluginNavigationKeys: new Set(this.pluginNavigation().map((entry) => entry.key)),
+      pluginNavigation: this.pluginNavigation(),
+      pluginTabs: this.context?.gateway.snapshot.hello?.controlUiTabs,
     });
   }
 

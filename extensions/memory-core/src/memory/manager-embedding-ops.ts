@@ -29,7 +29,10 @@ import {
 } from "openclaw/plugin-sdk/sqlite-runtime";
 import { chunkItems } from "openclaw/plugin-sdk/text-chunking";
 import { hasMemorySessionTombstone } from "../memory-session-tombstones.js";
-import { withMemoryWorkspaceLock } from "../memory-workspace-lock.js";
+import {
+  withMemoryWorkspaceLock,
+  withMemoryWorkspacePreparation,
+} from "../memory-workspace-lock.js";
 import { readSessionResetRecallCutoffMetadata } from "../session-reset-recall-metadata.js";
 import type { EmbeddingProvider } from "./embeddings.js";
 import type { IndexedMemoryChunk } from "./manager-chunk-writer.js";
@@ -55,6 +58,7 @@ import {
   resolveMemoryIndexProviderIdentities,
   type MemoryIndexProviderIdentity,
 } from "./manager-reindex-state.js";
+import type { MemorySourceIndexReplacement } from "./manager-source-index-kernel.js";
 import {
   MemoryManagerSyncOps,
   type MemoryIndexWorkItem,
@@ -379,13 +383,18 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
        )`,
     );
     while (excess() > 0) {
-      await runSqliteImmediateTransaction(this.db, async () => () => {
-        // Purges can reduce the cache while admission waits; retain the newest cap.
-        const currentExcess = excess();
-        if (currentExcess > 0) {
-          remove.run(Math.min(currentExcess, EMBEDDING_CACHE_PRUNE_BATCH_SIZE));
-        }
-      });
+      await runSqliteImmediateTransaction(
+        this.db,
+        async () => () => {
+          // Purges can reduce the cache while admission waits; retain the newest cap.
+          const currentExcess = excess();
+          if (currentExcess > 0) {
+            remove.run(Math.min(currentExcess, EMBEDDING_CACHE_PRUNE_BATCH_SIZE));
+          }
+        },
+        undefined,
+        (write) => this.withDatabaseWrite(write),
+      );
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
@@ -639,6 +648,40 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     }
   }
 
+  private async withGeneratedEmbeddingCacheWrite(
+    generation: MemorySemanticProviderGeneration,
+    write: () => void,
+  ): Promise<void> {
+    await this.withPublishedDatabase(async () => {
+      if (
+        this.syncProviderGeneration !== generation ||
+        generation.cacheWritesInvalidated ||
+        generation.database.closed ||
+        this.database !== generation.database
+      ) {
+        return;
+      }
+      // Rebuilds use a shadow index, but generated results belong to the exact
+      // published owner captured by the generation, including after admission.
+      await this.withDatabaseWrite(() =>
+        runSqliteImmediateTransactionSync(generation.database.db, () => {
+          if (
+            this.syncProviderGeneration !== generation ||
+            generation.cacheWritesInvalidated ||
+            generation.database.closed
+          ) {
+            return;
+          }
+          if (readMemoryDatabaseRevision(generation.database.db) !== generation.databaseRevision) {
+            generation.cacheWritesInvalidated = true;
+            return;
+          }
+          write();
+        }),
+      );
+    });
+  }
+
   private async persistGeneratedEmbeddings(
     candidates: MemoryEmbeddingCacheCandidate[],
     embeddings: number[][],
@@ -670,23 +713,12 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       ) {
         // Separate successful batches can disagree. Neither dimension is authoritative;
         // discard this identity's ambiguous cache so retries can recover after restart.
-        await withMemoryWorkspaceLock(this.workspaceDir, async () => {
-          if (
-            this.syncProviderGeneration !== generation ||
-            generation.cacheWritesInvalidated ||
-            generation.database.closed
-          ) {
-            return;
-          }
-          runSqliteImmediateTransactionSync(generation.database.db, () => {
-            if (
-              readMemoryDatabaseRevision(generation.database.db) === generation.databaseRevision
-            ) {
-              clearMemoryEmbeddingCacheIdentities(generation.database.db, generation.identities);
-            }
+        await withMemoryWorkspaceLock(this.workspaceDir, () =>
+          this.withGeneratedEmbeddingCacheWrite(generation, () => {
+            clearMemoryEmbeddingCacheIdentities(generation.database.db, generation.identities);
             generation.cacheWritesInvalidated = true;
-          });
-        });
+          }),
+        );
       }
       throw new Error(
         "memory embeddings: malformed vector response (count, dimensions, or coordinates)",
@@ -732,18 +764,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       if (accepted.length === 0) {
         return;
       }
-      runSqliteImmediateTransactionSync(generation.database.db, () => {
-        if (
-          this.syncProviderGeneration !== generation ||
-          generation.cacheWritesInvalidated ||
-          generation.database.closed
-        ) {
-          return;
-        }
-        if (readMemoryDatabaseRevision(generation.database.db) !== generation.databaseRevision) {
-          generation.cacheWritesInvalidated = true;
-          return;
-        }
+      await this.withGeneratedEmbeddingCacheWrite(generation, () => {
         upsertMemoryEmbeddingCache({
           db: generation.database.db,
           enabled: true,
@@ -916,10 +937,58 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     vectorReady: boolean,
   ): Promise<void> {
     await withMemoryWorkspaceLock(this.workspaceDir, async () => {
-      const published = await runSqliteImmediateTransaction(this.db, async () => {
+      const database = this.database;
+      const shadowDeadline =
+        database.isShadow && source === "sessions"
+          ? database.captureShadowWriteDeadline()
+          : undefined;
+      const assertCurrent = () => {
+        if (
+          this.closed ||
+          database.closed ||
+          !database.db.isOpen ||
+          this.database !== database ||
+          (generation &&
+            (generation.database !== this.publishedDatabase ||
+              generation.database.closed ||
+              !generation.database.db.isOpen ||
+              this.syncProviderGeneration !== generation))
+        ) {
+          throw new Error("Memory source owner changed before replacement");
+        }
+        // The workspace lock remains held through the Worker reply. Forget's
+        // tombstone writer uses this same lock and bumps the publication revision.
+        if (
+          source === "sessions" &&
+          hasMemorySessionTombstone(
+            (generation?.database ?? database).db,
+            this.agentId,
+            expectDefined(entry.sessionId, "memory index session identity"),
+          )
+        ) {
+          this.markFailedFullReindexRetry({ memory: false, sessions: true });
+          throw new Error(
+            "A session was forgotten while memory indexing was running; retry the memory index.",
+          );
+        }
+      };
+      const createReplacement = (): MemorySourceIndexReplacement => ({
+        entry: { path: entry.path, hash: entry.hash, mtimeMs: entry.mtimeMs, size: entry.size },
+        chunks,
+        embeddings,
+        model: generation?.provider?.model ?? "fts-only",
+        now: Date.now(),
+        vectorReady,
+        ...(source === "sessions"
+          ? {
+              source,
+              agentId: this.agentId,
+              sessionId: expectDefined(entry.sessionId, "memory index session identity"),
+            }
+          : { source }),
+      });
+      const prepare = async (): Promise<MemorySourceIndexReplacement | undefined> => {
         if (source === "memory") {
-          // The lock excludes purge and promotion writers while the exact file
-          // snapshot is validated and its derived index records are committed.
           const current = await buildFileEntry(
             entry.absPath,
             this.workspaceDir,
@@ -933,41 +1002,51 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
             return undefined;
           }
         }
-        const now = Date.now();
-        const model = generation?.provider?.model ?? "fts-only";
-        return () => {
-          const result = this.database.sourceIndex.replace(
-            {
-              entry,
-              chunks,
-              embeddings,
-              model,
-              now,
-              vectorReady,
-              ...(source === "sessions"
-                ? {
-                    source,
-                    agentId: this.agentId,
-                    sessionId: expectDefined(entry.sessionId, "memory index session identity"),
+        return createReplacement();
+      };
+      const sessionReplacement = source === "sessions" ? createReplacement() : undefined;
+      const staging =
+        shadowDeadline !== undefined && sessionReplacement?.source === "sessions"
+          ? await database.replaceShadowSession(sessionReplacement, assertCurrent, shadowDeadline)
+          : undefined;
+      const published =
+        staging?.kind === "staged"
+          ? { databaseRevision: undefined }
+          : await runSqliteImmediateTransaction(
+              database.db,
+              async () => {
+                const replacement = await prepare();
+                if (!replacement) {
+                  return undefined;
+                }
+                return () => {
+                  assertCurrent();
+                  if (
+                    generation &&
+                    database.db === generation.database.db &&
+                    readMemoryDatabaseRevision(database.db) !== generation.databaseRevision
+                  ) {
+                    generation.cacheWritesInvalidated = true;
                   }
-                : { source }),
-            },
-            (generation?.database ?? this.database).sourceIndex,
-          );
-          if (result === "forgotten") {
-            this.markFailedFullReindexRetry({ memory: false, sessions: true });
-            throw new Error(
-              "A session was forgotten while memory indexing was running; retry the memory index.",
+                  database.sourceIndex.replace(replacement);
+                  return {
+                    databaseRevision:
+                      generation && database.db === generation.database.db
+                        ? readMemoryDatabaseRevision(database.db)
+                        : undefined,
+                  };
+                };
+              },
+              staging?.kind === "caller" ? { beginDeadlineNs: staging.beginDeadlineNs } : undefined,
+              (write) => this.withDatabaseWrite(write),
             );
-          }
-          return true;
-        };
-      });
       if (!published) {
         return;
       }
-      if (generation && this.db === generation.database.db) {
-        generation.databaseRevision = readMemoryDatabaseRevision(generation.database.db);
+      if (generation && published.databaseRevision !== undefined) {
+        // Admission can resume another writer before this continuation runs.
+        // Adopt only the revision captured by our committed publication.
+        generation.databaseRevision = published.databaseRevision;
       }
       this.database.vectorDegradedWriteWarningShown = logMemoryVectorDegradedWrite({
         vectorEnabled: this.vector.enabled,
@@ -985,17 +1064,20 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     options: { source: MemorySource; content?: string },
     generation: MemorySyncProviderGeneration | null,
   ): Promise<PreparedMemoryIndexEntry | null> {
-    return await withMemoryWorkspaceLock(this.workspaceDir, async () => {
+    const source = options.source;
+    const kind = entry.kind;
+    const suppliedContent = options.content ?? entry.content;
+    const prepare = async (): Promise<PreparedMemoryIndexEntry | null> => {
       const pathClassification = await resolveMemoryPathClassification({
         absolutePath: entry.absPath,
-        source: options.source,
+        source,
         workspaceDir: this.workspaceDir,
       });
-      if ("kind" in entry && entry.kind === "multimodal") {
+      if (kind === "multimodal") {
         const multimodalChunk = await buildMultimodalChunkForIndexing(entry);
         if (!multimodalChunk) {
           this.dirty = true;
-          await this.deleteIndexedFile(entry.path, options.source);
+          await this.deleteIndexedFile(entry.path, source);
           return null;
         }
         const chunk: IndexedMemoryChunk = {
@@ -1006,26 +1088,25 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         };
         chunk.provenance = resolveChunkProvenance(
           entry,
-          options.source,
+          source,
           chunk,
           pathClassification.originClass,
         );
         return {
           entry,
-          source: options.source,
+          source,
           chunks: [chunk],
           structuredInputBytes: multimodalChunk.structuredInputBytes,
         };
       }
 
       const content =
-        options.content ??
-        entry.content ??
+        suppliedContent ??
         (await retryTransientMemoryRead(
           () => fs.readFile(entry.absPath, "utf-8"),
           `read memory markdown for indexing ${entry.absPath}`,
         ).catch((err: unknown) => {
-          if (options.source !== "memory" || !isFileMissingError(err)) {
+          if (source !== "memory" || !isFileMissingError(err)) {
             throw err;
           }
           return null;
@@ -1042,7 +1123,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
           lineMap: entry.lineMap,
           lineProvenance: entry.lineProvenance,
         },
-        source: options.source,
+        source,
         content,
         pathClassification,
         chunking: this.settings.chunking,
@@ -1056,10 +1137,13 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       return {
         entry:
           prepared.contentHash !== undefined ? { ...entry, hash: prepared.contentHash } : entry,
-        source: options.source,
+        source,
         chunks: prepared.chunks,
       };
-    });
+    };
+    return source === "sessions" && kind !== "multimodal" && typeof suppliedContent === "string"
+      ? withMemoryWorkspacePreparation(this.workspaceDir, prepare)
+      : withMemoryWorkspaceLock(this.workspaceDir, prepare);
   }
 
   protected override async indexFiles(items: MemoryIndexWorkItem[]): Promise<void> {

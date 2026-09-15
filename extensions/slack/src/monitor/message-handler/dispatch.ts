@@ -340,7 +340,7 @@ async function dispatchSlackMessageWithSetup(
           draftStream && !draftPreviewCommitted.value && !delivery.observedFinalReplyDelivery
             ? {
                 flush: draftStream.flush,
-                clear: draftStream.clear,
+                clear: () => draftStream.clear({ preserveHumanReplies: true }),
                 discardPending: draftStream.discardPending,
                 seal: draftStream.seal,
                 id: () => {
@@ -603,7 +603,11 @@ async function dispatchSlackMessageWithSetup(
           if (payload.phase !== "update") {
             return false;
           }
-          return await progress.pushPlanProgress(payload.steps, payload.explanation);
+          return await progress.pushPlanProgress(
+            payload.steps,
+            payload.explanation,
+            payload.explanationFormat,
+          );
         },
         onApprovalEvent: async (payload) => {
           return await progress.progressDraft.pushApprovalEvent(payload);
@@ -657,6 +661,16 @@ async function dispatchSlackMessageWithSetup(
   const anyReplyDelivered = hasVisibleInboundReplyDispatch(settledDispatchResult, {
     observedReplyDelivery: delivery.observedReplyDelivery,
   });
+
+  if (
+    !progress.isProgressMode &&
+    anyReplyDelivered &&
+    !delivery.observedFinalReplyDelivery &&
+    !dispatchError &&
+    !agentRunFailed
+  ) {
+    await draftStream?.clear({ preserveHumanReplies: true });
+  }
 
   if (
     progress.isProgressMode &&

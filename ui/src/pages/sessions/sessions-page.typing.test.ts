@@ -25,12 +25,15 @@ function result(key: string): SessionsListResult {
 async function mountTypingPage(initialResult = result("agent:main:initial")) {
   const pending: Array<ReturnType<typeof createDeferred<SessionsListResult>>> = [];
   const requests: unknown[] = [];
-  const request = vi.fn(async (method: string, params?: unknown) => {
+  const request = vi.fn(async (method: string, params?: { includeUnknown?: boolean }) => {
     if (method === "sessions.subscribe") {
-      return { subscribed: true, list: result("agent:main:sidebar") };
+      return { subscribed: true };
     }
     if (method !== "sessions.list") {
       throw new Error(`Unexpected request: ${method}`);
+    }
+    if (params?.includeUnknown !== false) {
+      return result("agent:main:sidebar");
     }
     requests.push(params);
     if (requests.length === 1) {
@@ -120,6 +123,7 @@ describe("Sessions page typing ownership", () => {
       );
       const query = { search: "retired", includeDerivedTitles: false };
       let unsubscribe = sessions.subscribeList(query, vi.fn());
+      const updatedObserved = createDeferred();
       const loading = sessions.refreshList(query);
       try {
         if (timing !== "unsubscribed") {
@@ -143,7 +147,11 @@ describe("Sessions page typing ownership", () => {
           document.dispatchEvent(new Event("visibilitychange"));
         }
         if (resubscribe) {
-          unsubscribe = sessions.subscribeList(query, vi.fn());
+          unsubscribe = sessions.subscribeList(query, (next) => {
+            if (next.result?.sessions[0]?.key === "agent:main:updated") {
+              updatedObserved.resolve();
+            }
+          });
           expect(filteredCalls).toBe(1);
         }
         active.resolve(result("agent:main:retired"));
@@ -156,6 +164,7 @@ describe("Sessions page typing ownership", () => {
         }
         expect(filteredCalls).toBe(resubscribe ? 2 : 1);
         if (resubscribe) {
+          await updatedObserved.promise;
           expect(sessions.listSnapshot(query).result?.sessions[0]?.key).toBe("agent:main:updated");
         }
       } finally {

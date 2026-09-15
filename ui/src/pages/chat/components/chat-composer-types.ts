@@ -28,7 +28,7 @@ import type { RealtimeTalkLevelSignal } from "../realtime-talk-level.ts";
 import type { RealtimeTalkStatus } from "../realtime-talk.ts";
 import type { ChatRunUiStatus } from "../run-lifecycle.ts";
 import type { FallbackStatus } from "../tool-stream-contract.ts";
-import type { ChatAttachmentControlsProps } from "./chat-attachments.ts";
+import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import type { HumanMentionDirectory, HumanMentionMenu } from "./chat-composer-mention-menu.ts";
 import type {
   ChatComposerCapabilityMenuProps,
@@ -93,6 +93,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   progressCard?: ProgressCard | null;
   runActive?: boolean;
   collapseTaskProgress?: boolean;
+  readingHistory?: boolean;
   runId?: string | null;
   onDismissProgressCard?: (card: ProgressCard) => void;
   gatewayQuestionPrompts?: readonly QuestionPrompt[];

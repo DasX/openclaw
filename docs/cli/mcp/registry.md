@@ -43,6 +43,7 @@ Those saved definitions are for runtimes that OpenClaw launches or configures la
     - repeated MCP tool request/protocol failures pause that server briefly so one broken server does not consume the whole turn
     - session-scoped MCP runtimes stay alive between turns until session reset/deletion or compaction ID rollover, explicit Stop, a relevant server config change, or Gateway shutdown; owned stdio children terminate during cleanup
     - detached one-shot runs without a surviving runtime session retire their MCP runtimes at run end; a retained transcript does not extend that lifetime
+    - canceling compaction closes MCP runtimes created for that compaction, including pending startup and tool discovery
     - `mcp.sessionIdleTtlMs` is an opt-in idle timeout in milliseconds: unset or `0` keeps runtimes alive, and positive finite values enable idle eviction (fractions round down)
     - a Gateway admits at most 256 OpenClaw-managed runtimes with server connections across sessions and requester partitions; sessions without available servers and sign-in-only catalogs do not consume this limit. Reaching the limit rejects new admissions until you stop or reset unused sessions. See [MCP configuration](/gateway/config-extensions#mcp) for details
 
@@ -75,7 +76,7 @@ Notes:
 - `show` without a name prints the full configured MCP server object.
 - `status` classifies configured transports without connecting. `--verbose` includes resolved launch, timeout, OAuth, filter, and parallel-call details, including when stored OAuth tokens require additional authorization. Credential-bearing stdio arguments are redacted in text and JSON output.
 - `doctor` performs static checks without connecting. Add `--probe` when the command should also verify that enabled servers connect.
-- `probe` connects and reports tool counts, resources/prompts support, list-change support, and diagnostics.
+- `probe` connects to enabled saved servers and reports tool counts, resources/prompts support, list-change support, and diagnostics. If none are enabled, plain output explains that no servers can be probed and shows add/enable commands; `--json` keeps its empty result envelope. A named disabled server is rejected with an enable hint.
 - `add` accepts stdio flags such as `--command`, `--arg`, `--env`, and `--cwd`, or HTTP flags such as `--url`, `--transport`, `--header`, `--auth oauth`, TLS, timeout, and tool-selection flags. Use `--approval auto|prompt|approve` to set the Codex tool approval mode.
 - `set` expects one JSON object value on the command line.
 - `configure` updates enablement, tool filters, timeouts, OAuth, TLS, Codex approval mode, and parallel-tool-call hints without replacing the whole server definition. Add `--probe` to verify the updated server before saving.

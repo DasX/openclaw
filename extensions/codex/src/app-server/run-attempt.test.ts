@@ -29,8 +29,8 @@ import {
   appendSessionTranscriptMessageByIdentity,
   readSessionTranscriptEvents,
 } from "openclaw/plugin-sdk/session-transcript-runtime";
+import { WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import WebSocket from "ws";
 import { defaultCodexAppInventoryCache } from "./app-inventory-cache.js";
 import { codexAppInventoryResponse } from "./app-inventory.test-helpers.js";
 import {
@@ -2943,6 +2943,34 @@ describe("runCodexAppServerAttempt", () => {
       ],
     });
 
+    const noteResponse = await harness.handleServerRequest({
+      id: "request-plan-note",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-plan-note",
+        namespace: null,
+        tool: "progress_card",
+        arguments: {
+          markdown:
+            '<progress aria-label="private" value="1" max="2"></progress>\n\n**Working** [results](https://example.com "<script>").',
+        },
+      },
+    });
+    expect(noteResponse).toMatchObject({ success: true });
+    expect(onAgentEvent).toHaveBeenCalledWith({
+      stream: "plan",
+      data: {
+        phase: "update",
+        title: "Plan updated",
+        source: "openclaw",
+        explanation: "Working results.",
+        explanationFormat: "plain",
+        steps: [],
+      },
+    });
+
     const clearResponse = await harness.handleServerRequest({
       id: "request-plan-clear",
       method: "item/tool/call",
@@ -2956,7 +2984,7 @@ describe("runCodexAppServerAttempt", () => {
       },
     });
     expect(clearResponse).toMatchObject({ success: true });
-    expect(executeProgressCard).toHaveBeenCalledTimes(3);
+    expect(executeProgressCard).toHaveBeenCalledTimes(4);
     expect(onAgentEvent).toHaveBeenCalledWith({
       stream: "plan",
       data: {
@@ -3198,47 +3226,6 @@ describe("runCodexAppServerAttempt", () => {
     await run;
     expect(retireSpy).not.toHaveBeenCalled();
     expect(closeAndWait).not.toHaveBeenCalled();
-  });
-
-  it("projects dynamic progress cards through the shared safe status contract", async () => {
-    const params = createRunParams();
-    const onAgentEvent = vi.fn();
-    params.onAgentEvent = onAgentEvent;
-    const projector = new CodexAppServerEventProjector(params, "thread-1", "turn-1");
-
-    await projector.recordDynamicProgressCardUpdate({
-      markdown: '<progress aria-label="private" value="1" max="2"></progress>',
-      plan: [{ step: "Ship", status: "completed" }],
-    });
-    await projector.recordDynamicProgressCardUpdate({ markdown: "Working" });
-    await projector.recordDynamicProgressCardUpdate({});
-
-    expect(onAgentEvent).toHaveBeenNthCalledWith(1, {
-      stream: "plan",
-      data: {
-        phase: "update",
-        title: "Plan updated",
-        source: "openclaw",
-        explanation: "1/1 complete",
-        steps: [{ step: "Ship", status: "completed" }],
-      },
-    });
-    expect(onAgentEvent).toHaveBeenNthCalledWith(2, {
-      stream: "plan",
-      data: {
-        phase: "update",
-        title: "Plan updated",
-        source: "openclaw",
-        explanation: "Progress updated",
-        steps: [],
-      },
-    });
-    expect(onAgentEvent).toHaveBeenNthCalledWith(3, {
-      stream: "plan",
-      data: { phase: "update", title: "Plan updated", source: "openclaw", steps: [] },
-    });
-    expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain("<progress");
-    expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain("private");
   });
 
   it("keeps searchable Codex dynamic tools canonical in mirrored transcript snapshots", async () => {
@@ -3686,6 +3673,119 @@ describe("runCodexAppServerAttempt", () => {
     expect(inputText).toContain("Current user request:");
     expect(inputText).toContain("make the default webpage openclaw");
   });
+  it.each([
+    { kind: "hidden child", node: "subagent:fork-proof", via: "spawn", fork: true, preserve: true },
+    {
+      kind: "visible child",
+      node: "dashboard:fork-proof",
+      via: "spawn",
+      fork: true,
+      preserve: true,
+    },
+    { kind: "ordinary startup", node: "main", via: "run", fork: false, preserve: false },
+    {
+      kind: "skipped fork",
+      node: "subagent:fork-proof",
+      via: "spawn",
+      fork: false,
+      preserve: false,
+    },
+    {
+      kind: "unrelated parent",
+      node: "subagent:fork-proof",
+      via: "spawn",
+      fork: true,
+      preserve: false,
+    },
+    {
+      kind: "operator fork",
+      node: "dashboard:fork-proof",
+      via: "operator",
+      fork: true,
+      preserve: false,
+    },
+  ] as const)(
+    "scopes fresh-thread tool evidence to recorded spawn forks ($kind)",
+    async ({ kind, node, via, fork, preserve }) => {
+      const sessionKey = `agent:main:${node}`;
+      const storePath = path.join(tempDir, "fork-proof.sqlite");
+      const params = createParams(sessionKey, path.join(tempDir, "fork-proof-workspace"));
+      params.sessionId = node;
+      params.sessionKey = sessionKey;
+      params.sessionTarget = { agentId: "main", sessionKey, sessionId: node, storePath };
+      const parentSessionKey = "agent:main:parent-proof";
+      await upsertSessionEntry({
+        agentId: "main",
+        sessionKey,
+        storePath,
+        entry: {
+          sessionId: node,
+          sessionFile: sessionKey,
+          createdVia: via,
+          parentSessionKey,
+          forkedFromParent: true,
+          ...(fork
+            ? {
+                forkSource: {
+                  sessionKey:
+                    kind === "unrelated parent" ? "agent:main:other-parent" : parentSessionKey,
+                  sessionId: "parent-proof",
+                },
+              }
+            : {}),
+          updatedAt: Date.now(),
+        },
+      });
+      SessionManager.open({
+        agentId: "main",
+        sessionKey,
+        sessionId: node,
+        storePath,
+      }).appendMessage(
+        userMessage("Inspect the completed tool evidence, then delegate analysis.", 1),
+      );
+      const prior = new CodexAppServerEventProjector(params, "parent-thread", "parent-turn");
+      prior.recordDynamicToolCall({
+        callId: "fork-proof-tool",
+        tool: "read",
+        arguments: { path: "private-input-fixture.txt" },
+      });
+      prior.recordDynamicToolResult({
+        callId: "fork-proof-tool",
+        tool: "read",
+        success: true,
+        terminalType: "completed",
+        contentItems: [
+          {
+            type: "inputText",
+            text: "The synthetic result code is COBALT-ORCHID-7429.\nOPENAI_API_KEY=sk-1234567890abcdef",
+          },
+        ],
+      });
+      await prior.transcriptCheckpoint.flush(true);
+      params.prompt =
+        "[Subagent Task]\nReport the synthetic result code from inherited completed tool evidence.";
+      const harness = createStartedThreadHarness();
+      const run = runCodexAppServerAttempt(params);
+      await harness.waitForMethod("turn/start");
+      await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+      await run;
+
+      const turnStart = harness.requests.find((request) => request.method === "turn/start");
+      const inputText = JSON.stringify(turnStart?.params);
+      expect(inputText).toContain("Inspect the completed tool evidence, then delegate analysis.");
+      expect(inputText).toContain("[Subagent Task]");
+      expect(inputText).not.toContain("private-input-fixture.txt");
+      expect(inputText).not.toContain("sk-1234567890abcdef");
+      if (preserve) {
+        expect(inputText).toContain("COBALT-ORCHID-7429");
+        expect(inputText).not.toContain("[content omitted]");
+      } else {
+        expect(inputText).not.toContain("COBALT-ORCHID-7429");
+        expect(inputText).toContain("[content omitted]");
+      }
+    },
+  );
   it.each([
     { boundary: "none", tail: "user-assistant" },
     { boundary: "compaction", tail: "user-assistant" },

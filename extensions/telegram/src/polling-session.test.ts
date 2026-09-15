@@ -9,6 +9,7 @@ import type { Update } from "grammy/types";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import { DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS as TELEGRAM_SPOOLED_RETRY_MAX_ATTEMPTS } from "openclaw/plugin-sdk/channel-outbound";
 import { toErrorObject as toLintErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   isIngressClaimOwnedByOtherLiveProcess as isTelegramSpooledUpdateClaimOwnedByOtherLiveProcess,
   resolveIngressRetryDelayMs,
@@ -1198,10 +1199,7 @@ describe("TelegramPollingSession", () => {
   it("keeps isolated intake moving while the durable offset catches up", async () => {
     await withTempSpool(async (tempDir) => {
       const abort = new AbortController();
-      let releaseOffsetWrite: (() => void) | undefined;
-      const offsetWrite = new Promise<void>((resolve) => {
-        releaseOffsetWrite = resolve;
-      });
+      const offsetWrite = createDeferred<void>();
       const handleUpdate = vi.fn(async () => undefined);
       const worker = createListeningIngressWorker();
       const { runPromise } = startIsolatedIngressSession({
@@ -1209,7 +1207,7 @@ describe("TelegramPollingSession", () => {
         spoolDir: tempDir,
         handleUpdate,
         createWorker: worker.createWorker,
-        persistUpdateId: vi.fn(async () => await offsetWrite),
+        persistUpdateId: vi.fn(async () => await offsetWrite.promise),
       });
       try {
         await waitForTelegramTestState(() => expect(worker.hasListener()).toBe(true));
@@ -1228,7 +1226,7 @@ describe("TelegramPollingSession", () => {
         );
         await waitForTelegramTestState(() => expect(handleUpdate).toHaveBeenCalledOnce());
       } finally {
-        releaseOffsetWrite?.();
+        offsetWrite.resolve();
         abort.abort();
         await runPromise;
       }
@@ -1646,7 +1644,7 @@ describe("TelegramPollingSession", () => {
       let requestCount = 0;
       const server = createServer((_request, response) => {
         requestCount += 1;
-        response.writeHead(429, { "content-type": "application/json" });
+        response.writeHead(429, { connection: "close", "content-type": "application/json" });
         response.end(
           JSON.stringify({
             ok: false,
@@ -1685,9 +1683,8 @@ describe("TelegramPollingSession", () => {
       });
       const createWorker = vi.fn(() => {
         const worker = new Worker(
-          new URL("./telegram-ingress-worker.runtime.ts", import.meta.url),
+          new URL("../../../dist/telegram-ingress-worker.runtime.js", import.meta.url),
           {
-            execArgv: ["--import", "tsx"],
             workerData: {
               runtime: TELEGRAM_INGRESS_WORKER_RUNTIME_MARKER,
               token: "tok",

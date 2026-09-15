@@ -10,6 +10,8 @@ const UPGRADE_SURVIVOR_SCENARIOS = Object.freeze([
   "channel-post-core-restore",
   "plugin-deps-cleanup",
   "configured-plugin-installs",
+  "missing-configured-plugin-migration",
+  "custom-plugin-siblings",
   "stale-source-plugin-shadow",
   "prerelease-plugin-registry",
   "tilde-log-path",
@@ -24,6 +26,16 @@ const UPGRADE_SURVIVOR_SCENARIOS = Object.freeze([
 
 // Oldest release line supported by the operator-state upgrade regression gate.
 export const OLDEST_SUPPORTED_UPGRADE_SURVIVOR_BASELINE = "2026.6.34";
+export const CUSTOM_PLUGIN_SIBLINGS_BASELINE = "openclaw@2026.9.4";
+
+const scenarioMinimumBaselines = new Map([
+  ["custom-plugin-siblings", CUSTOM_PLUGIN_SIBLINGS_BASELINE],
+  ["legacy-operator-state", `openclaw@${OLDEST_SUPPORTED_UPGRADE_SURVIVOR_BASELINE}`],
+  ["plugin-deps-cleanup", "openclaw@2026.4.23"],
+  ["acpx-openclaw-tools-bridge", "openclaw@2026.4.22"],
+  ["mobile-pairing-reconnect", "openclaw@2026.7.1"],
+  ["watchos-direct-node", "openclaw@2026.8.1"],
+]);
 
 // These black-box scenarios are implemented entirely by the current trusted
 // release harness and treat the selected tree only as the package under test.
@@ -42,6 +54,7 @@ const aggregateScenarios = UPGRADE_SURVIVOR_SCENARIOS.filter(
   (scenario) =>
     scenario !== "msteams-polls" &&
     scenario !== "abandoned-update" &&
+    scenario !== "missing-configured-plugin-migration" &&
     scenario !== "mobile-pairing-reconnect" &&
     scenario !== "watchos-direct-node" &&
     scenario !== "prerelease-plugin-registry" &&
@@ -135,69 +148,15 @@ function comparePublishedReleaseVersion(a, b) {
   return a.year - b.year || a.month - b.month || a.patch - b.patch;
 }
 
-function supportsUpgradeSurvivorPluginDependencyCleanup(baselineSpec) {
-  if (!baselineSpec) {
-    return true;
-  }
-  const version = parsePublishedReleaseVersion(baselineSpec);
-  if (!version) {
-    return true;
-  }
-  return comparePublishedReleaseVersion(version, { year: 2026, month: 4, patch: 23 }) >= 0;
-}
-
-function supportsUpgradeSurvivorAcpToolsBridge(baselineSpec) {
-  if (!baselineSpec) {
-    return true;
-  }
-  const version = parsePublishedReleaseVersion(baselineSpec);
-  if (!version) {
-    return true;
-  }
-  return comparePublishedReleaseVersion(version, { year: 2026, month: 4, patch: 22 }) >= 0;
-}
-
-function supportsUpgradeSurvivorWatchDirectNode(baselineSpec) {
-  if (!baselineSpec) {
-    return true;
-  }
-  const version = parsePublishedReleaseVersion(baselineSpec);
-  if (!version) {
-    return true;
-  }
-  return comparePublishedReleaseVersion(version, { year: 2026, month: 8, patch: 1 }) >= 0;
-}
-
-function supportsUpgradeSurvivorMobilePairingReconnect(baselineSpec) {
-  if (!baselineSpec) {
-    return true;
-  }
-  const version = parsePublishedReleaseVersion(baselineSpec);
-  if (!version) {
-    return true;
-  }
-  return comparePublishedReleaseVersion(version, { year: 2026, month: 7, patch: 1 }) >= 0;
-}
-
-function supportsUpgradeSurvivorLegacyOperatorState(baselineSpec) {
-  const version = parsePublishedReleaseVersion(baselineSpec);
-  const floor = parsePublishedReleaseVersion(
-    `openclaw@${OLDEST_SUPPORTED_UPGRADE_SURVIVOR_BASELINE}`,
-  );
-  return !version || comparePublishedReleaseVersion(version, floor) >= 0;
-}
-
 export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec) {
+  const version = parsePublishedReleaseVersion(baselineSpec);
+  if (scenario === "abandoned-update" || scenario === "missing-configured-plugin-migration") {
+    return baselineSpec === "openclaw@2026.9.2";
+  }
+  const minimumBaseline = scenarioMinimumBaselines.get(scenario);
   return (
-    (scenario !== "abandoned-update" || baselineSpec === "openclaw@2026.9.2") &&
-    (scenario !== "legacy-operator-state" ||
-      supportsUpgradeSurvivorLegacyOperatorState(baselineSpec)) &&
-    (scenario !== "plugin-deps-cleanup" ||
-      supportsUpgradeSurvivorPluginDependencyCleanup(baselineSpec)) &&
-    (scenario !== "acpx-openclaw-tools-bridge" ||
-      supportsUpgradeSurvivorAcpToolsBridge(baselineSpec)) &&
-    (scenario !== "mobile-pairing-reconnect" ||
-      supportsUpgradeSurvivorMobilePairingReconnect(baselineSpec)) &&
-    (scenario !== "watchos-direct-node" || supportsUpgradeSurvivorWatchDirectNode(baselineSpec))
+    !minimumBaseline ||
+    !version ||
+    comparePublishedReleaseVersion(version, parsePublishedReleaseVersion(minimumBaseline)) >= 0
   );
 }

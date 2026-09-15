@@ -2,7 +2,6 @@
 
 import { nothing } from "lit";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import type { PreservedSessionWorktree } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type {
@@ -258,7 +257,7 @@ describe("sessions page lifecycle", () => {
 
   it.each([
     ["green", "Green"],
-    [null, "Default"],
+    [null, "No color"],
   ] as const)("patches color %s from the sessions page menu", async (color, label) => {
     const row = {
       key: "agent:main:color",
@@ -664,6 +663,7 @@ describe("sessions page lifecycle", () => {
       message: 'Stop the cloud worker for "Cloud task"?',
       confirmLabel: "Stop worker",
       danger: true,
+      signal: expect.any(AbortSignal),
     });
     expect(request).toHaveBeenCalledWith(
       "sessions.reclaim",
@@ -712,6 +712,7 @@ describe("sessions page lifecycle", () => {
       message: 'Stop the cloud worker for "Cloud task"?',
       confirmLabel: "Stop worker",
       danger: true,
+      signal: expect.any(AbortSignal),
     });
     expect(request).toHaveBeenCalledWith(
       "sessions.reclaim",
@@ -738,11 +739,7 @@ describe("sessions page lifecycle", () => {
   });
 
   it("drops stale mutation state, errors, and navigation after disconnect", async () => {
-    const deleted = createDeferred<{
-      deleted: string[];
-      errors: string[];
-      preservedWorktrees: PreservedSessionWorktree[];
-    }>();
+    const deleted = createDeferred<Awaited<ReturnType<SessionCapability["deleteMany"]>>>();
     const patched = createDeferred<unknown>();
     const forked = createDeferred<string | null>();
     const branched = createDeferred<{ key: string }>();
@@ -784,7 +781,11 @@ describe("sessions page lifecycle", () => {
     await vi.waitFor(() => expect(sessions.deleteMany).toHaveBeenCalledOnce());
 
     mutableGateway.emit({ phase: "reconnecting", client });
-    deleted.resolve({ deleted: ["main"], errors: ["stale delete error"], preservedWorktrees: [] });
+    deleted.resolve({
+      deleted: ["main"],
+      errors: [{ target: { key: "main" }, error: new Error("stale delete error") }],
+      preservedWorktrees: [],
+    });
     patched.resolve({ ok: true });
     forked.resolve("forked");
     branched.resolve({ key: "branched" });

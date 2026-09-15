@@ -28,7 +28,7 @@ Outside onboarding, this page can show at most one dismissible event chip per vi
 
 ## Home dock
 
-Use the **Home** button in the sidebar footer to open the selected agent's main conversation alongside your current page. Home and Ask OpenClaw share the dock. When the same Home conversation is already open as the page, the dock stays hidden rather than showing it twice.
+Use the **Home** button in the sidebar footer, or in the toolbar when the sidebar is collapsed, to open the selected agent's main conversation alongside your current page. Select the **Ask OpenClaw** tab in the same dock for system setup and repair. When the same Home conversation is already open as the page, the dock stays hidden rather than showing it twice.
 
 Home can include a bounded, quoted work-context reference with your message. That reference belongs to the page's agent and session, not merely the Home conversation receiving it, and stays current when session titles or visible files change. It is reference data, not permission to access another conversation; you can remove it before sending.
 
@@ -56,6 +56,8 @@ Use **Ctrl + backtick** to toggle the **Terminal** tab in the selected Chat pane
 Terminal sessions appear as tabs in the Chat side-panel header; choosing **Terminal** again in the panel's **+** menu opens another shell, while sessions, upload, and dock-to-bottom actions sit in the header. A Terminal moved to the main area keeps its own tab strip.
 
 The unified panel also hosts **Browser**, **Files**, **Tasks**, **Review**, **Side chat**, and capability-dependent **Desktop** and **Discussion** tabs. Its open or minimized state, active tab, tab order, width, dock, and expanded state are stored per session in the current browser profile, so switching sessions restores each session's own working layout. Drag tabs to reorder them, close a tab without closing the other tools, or use the panel close button to minimize the whole panel.
+
+A connected **Desktop** viewer stays connected for 30 seconds while its tab is hidden, so a quick switch to Chat and back restores the same desktop and sizing mode. Input and remote resizing pause while hidden. After 30 seconds, the viewer disconnects and reconnects when reopened. Closing the Desktop tab, changing its session or machine, or losing the Gateway connection releases it immediately. Hiding Desktop during a mouse or touch drag also disconnects it so pressed remote buttons cannot linger. **Disconnect** keeps it disconnected until you choose **Reconnect**. Desktop uses one centered loading indicator while resolving its source and connecting.
 
 Owner-authorized, unsandboxed agents can use the `terminal` tool to list, read, resize, or close terminals an operator already opened from the same Chat session's Terminal panel. Agents cannot open shells, and access remains exact-session scoped: an agent cannot inspect or control standalone operator terminals or terminals belonging to another session. Terminal input follows the effective session and host-exec permission policy: **Full access** (`full`, or YOLO) sends it immediately; **Guarded** (`guarded`) and **Workspace** (`workspace`, including accept-only or Guardian-reviewed flows) require an explicit, one-time approval for that exact input; **Read only** (`read-only`) or `tools.exec.mode: "deny"` forbids input entirely. Approving one input never grants unrestricted access to the terminal.
 
@@ -90,9 +92,19 @@ The main terminal page at `/terminal` is also available as a [focus presentation
 
 ## Browser panel
 
+Ask your agent to "open the browser sidebar" or "show the browser side panel"
+to reveal this panel. When the `screen` tool is available, the agent uses
+`browser_show` (`browser_hide` to hide it). `sidebar_show` and `sidebar_hide`
+control the session list instead. Opening the Browser panel does not create or
+expand a [Browser dashboard](/web/dashboards#share-a-browser-dashboard-with-your-agent).
+
 The Control UI ships a **Browser** tab in the unified Chat side panel that renders the Gateway-controlled browser (the same one agents drive through the [browser tool](/tools/browser-control)) in any regular web browser - no native webview required. It appears in the panel's **+** menu when the connected Gateway advertises `browser.request` to an `operator.admin` connection; the globe action in **Files** toggles it. In a regular web browser, choosing **Browser** again while its panel tab is already open creates another Agent browser tab. The panel shows a live screencast, with screenshot fallback when streaming is unavailable, plus tabs, an editable URL bar, back/forward/reload, and open-in-your-browser, and forwards clicks, wheel scrolling, and basic typing to the remote page. The remote page follows the shared panel: opening it, resizing it, or switching tabs resizes the remote browser viewport to the panel's available space, so the snapshot fills the panel instead of rendering at whatever size an agent last used.
 
 Browser tabs appear directly in the Chat side-panel header, with the URL toolbar below. Each tab shows its page favicon when automatic favicon fetching is enabled and an icon is available. Closing the last browser tab leaves the Browser panel open so you can create another tab with **+**. When Browser is moved to the main area, its tabs appear above its own toolbar.
+
+While an Agent browser preview refreshes, the current page stays visible and the reload icon spins in the toolbar. A loading skeleton appears only before the first page image is available. If refreshing fails, the panel keeps the previous image and shows the error above it.
+
+To paste into an Agent browser tab or Browser dashboard, click the page's input field and press **⌘V** on macOS or **Ctrl+V** on Windows/Linux, or right-click the field and choose **Paste**. Plain text is inserted at the remote cursor, including password fields and fields inside frames. Pasting does not submit the form or copy your clipboard to the Gateway's system clipboard. This requires a managed browser; Chrome MCP existing-session profiles do not support it.
 
 In the macOS app, the same panel also hosts **Mac tabs**, rendered natively by WebKit, alongside **Agent browser tabs** from the Gateway. Mac tabs are available without `browser.request`; Agent browser tabs retain the Gateway and operator-access requirements above. External links clicked in the dashboard open as Mac tabs in the chat side panel, or in the shell-level Browser dock on non-chat routes. While Settings is open, external links open in the default browser because the Browser panel is hidden. Mac tabs have a tab strip, URL bar, back/forward/reload/stop, open-in-default-browser, and close controls. Mac tabs show the page’s own icon. Mac tabs belong to the chat session that opened them: another session starts with its own empty Browser panel, and returning restores the original session’s tabs. The window retains those tabs until they are closed or the window ends. Opening the same link reuses its existing tab only within that session, including a retained original URL after a redirect. The non-chat Browser dock has its own tabs. Login cookies remain shared within the window. Selecting another tab while a link is opening keeps your selection when the open request completes.
 

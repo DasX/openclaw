@@ -1,4 +1,7 @@
-import { describeRunningOpenClawBuild } from "../infra/sqlite-user-version.js";
+import {
+  describeRunningOpenClawBuild,
+  SqliteSchemaVersionError,
+} from "../infra/sqlite-user-version.js";
 import type {
   DeferredStateSchemaPublication,
   IncompatibleOpenClawDatabase,
@@ -8,13 +11,24 @@ import type {
 import { OPENCLAW_DATABASE_SCHEMA_DOCS_URL } from "./openclaw-state-db-contract.js";
 import type { StateSchemaPublicationBlocker } from "./openclaw-state-schema-publication.js";
 
-function formatDoctorIncompatibleDatabase(database: IncompatibleOpenClawDatabase): string {
-  const agent = database.agentId ? ` for agent ${database.agentId}` : "";
-  const writer = database.writerAppVersion ? `; writer build ${database.writerAppVersion}` : "";
-  return `${database.kind} database${agent} ${database.path} uses schema ${database.foundVersion}; this build supports ${database.supportedVersion}${writer}.`;
+/** Fatal refusal when persisted schemas were written by a newer build. */
+export class OpenClawDatabaseSchemaPreflightError extends SqliteSchemaVersionError {
+  constructor(
+    readonly incompatibleDatabases: readonly IncompatibleOpenClawDatabase[],
+    options: { operation?: OpenClawDatabaseSchemaPreflightOperation } = {},
+  ) {
+    const operation = options.operation ?? "gateway-startup";
+    super(formatIncompatibleDatabaseSchemas(incompatibleDatabases, operation));
+    this.name = "OpenClawDatabaseSchemaPreflightError";
+  }
 }
 
-export function formatIncompatibleDatabaseSchemas(
+function formatIncompatibleDatabase(database: IncompatibleOpenClawDatabase): string {
+  const agent = database.agentId ? ` for agent ${database.agentId}` : "";
+  return `${database.kind} database${agent} ${database.path} uses schema ${database.foundVersion}; this build supports ${database.supportedVersion}; writer build ${database.writerAppVersion ?? "unknown"}.`;
+}
+
+function formatIncompatibleDatabaseSchemas(
   incompatibleDatabases: readonly IncompatibleOpenClawDatabase[],
   operation: OpenClawDatabaseSchemaPreflightOperation,
 ): string {
@@ -24,13 +38,12 @@ export function formatIncompatibleDatabaseSchemas(
       : operation === "gateway-restart"
         ? "Gateway refused restart"
         : "Gateway refused startup";
-  const doctorGuidance =
-    operation === "doctor"
-      ? ` ${incompatibleDatabases.map(formatDoctorIncompatibleDatabase).join(" ")} Run Doctor with the OpenClaw install that wrote this state (typically the active Gateway install), or another build that supports these schemas.`
-      : "";
   return (
     `${prefix} because ${incompatibleDatabases.length} OpenClaw database schema(s) are newer than this build. ` +
-    `Refused by ${describeRunningOpenClawBuild()}.${doctorGuidance} See ${OPENCLAW_DATABASE_SCHEMA_DOCS_URL}.`
+    `${incompatibleDatabases.map(formatIncompatibleDatabase).join(" ")} ` +
+    `Refused by ${describeRunningOpenClawBuild()}. ` +
+    "Run a build at least as new as the writer that supports these schemas, or stop the service and restore your pre-upgrade backup created with openclaw backup create. " +
+    `See ${OPENCLAW_DATABASE_SCHEMA_DOCS_URL}.`
   );
 }
 

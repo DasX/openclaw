@@ -36,6 +36,12 @@ The Gateway startup preflight reads schema headers only. For ordinary rollback-m
 
 Private snapshots remain necessary inside owner-held source-exclusion or canonical-mutation scopes, for incomplete WAL families whose inspection would create source sidecars, and for rollback journals requiring private recovery. Those cases use the existing snapshot owner and deadline; ordinary inspection errors do not trigger a full-copy fallback. Shared-state preflight is unchanged. `openclaw database preflight` performs the release-local shape comparison for an explicit copied file. The background verifier also scans already-open databases about once daily.
 
+Schema-only agent inspections during Doctor and restart checks read metadata in
+a child process, within one SQLite read transaction, without copying the whole
+database. Empty files, rollback journals, incomplete WAL sidecars, and
+owner-provided snapshots retain the private snapshot path. Full startup integrity
+admission, writable-open integrity checks, and repair validation remain unchanged.
+
 Memory search and maintenance managers borrow the verified per-agent connection. Acquisition does not reopen or rescan a healthy shared handle. Native and transformed plugin modules share the same process-owned connection lifecycle, query cache, and commit observers. Nested synchronous writes use SQLite savepoints on that connection. A manager retains that exact connection against cache eviction until its work drains, then releases its borrow without closing the database. Explicit quarantine and disposal still revoke it. Full memory rebuilds use separate temporary shadow databases and publish their derived tables in one synchronous transaction. Read-only memory status keeps its separate diagnostic connection and does not create or migrate a missing database.
 
 If nested rollback or savepoint cleanup fails, the transaction owner preserves the original failure, discards staged state and post-commit observers, and closes the connection. Catching that failure cannot resume writes on the abandoned handle. A later operation must acquire a fresh connection through its database owner. Doctor plugin-state imports retain earlier committed batches; an aborted batch cannot commit its prefix. Ordinary row refusals that successfully roll back their savepoint still commit the successful prefix for resumable imports.
@@ -61,11 +67,30 @@ Agent database maintenance fences other writers with a 60-second lease in the sh
 
 Asynchronous agent-database admission runs the first full-file integrity check in a read-only child process when that check is outside a write transaction. Later ordinary opens reuse remembered verification. Maintenance retains its independent full check. The connection and owning scope remain held until the child closes, including on cancellation or timeout. Schema changes, index repairs, and compaction retain their synchronous phases.
 
+The integrity child allows SQLite to cache up to about 64 MiB of database pages
+while checking indexes and foreign keys. SQLite allocates those pages as needed,
+and the cache ends with the child; retained Gateway connections keep their
+existing cache settings. Full integrity and foreign-key checks still run.
+
 Explicit session-maintenance finalization uses this asynchronous admission if its writable handle was evicted during archive or deletion preparation. It keeps its place in the session writer queue and rechecks maintenance and deletion authority before committing. Automatic maintenance retires when its original handle closes instead of reopening it.
 
-The integrity child and both asynchronous and synchronous read-only snapshot workers share a lifetime budget: 30 seconds for startup and shutdown plus one second per 32 MiB of source database file size, rounded up, capped at 30 minutes. A full copy or full scan reads the whole file at least once; the budget allows for a conservative cold-cache read rate of 32 MiB/s. A 9.4 GiB database gets 331 seconds. Budgets above 30 seconds are logged once per call at debug level with the operation, path, size, and applied budget, keeping ordinary CLI output quiet. If the snapshot worker cannot stat the source, it uses the 30-second base budget and lets the child report the underlying error.
+The integrity child and both asynchronous and synchronous read-only snapshot workers share a size-derived lifetime budget. It includes a five-minute startup and shutdown allowance, then budgets four file-sized IO passes with tenfold headroom below the 32 MiB/s reference rate for older disks. A verified raw copy reads the source and writes a private file, then compares both; other inspection modes use the same conservative allowance. Sizing includes the main database, WAL, SHM, and rollback journal.
+
+A 2 GiB database gets 2,860 seconds, and workers finish as soon as their work completes. The size-derived allowance has only the runtime's timer-representability ceiling. Budgets above the startup allowance are logged once per call at debug level with the operation, path, measured size, and applied budget. If the snapshot worker cannot stat the source, it uses the startup allowance and lets the child report the underlying error.
+
+Update schema inspection and candidate snapshots use this same allowance as an inactivity watchdog. Larger caller budgets remain available, and observed private-copy progress renews the deadline. See [How updates run](/cli/update/how-updates-run).
 
 The synchronous byte-neutral snapshot strategy is for small or quiescent databases. Inspections of a live agent database, including memory-core readiness, use the asynchronous online-backup worker.
+
+Full startup readiness checks agent ownership, integrity, foreign keys, and schema
+in one fresh read-only transaction in a disposable child. Complete WAL families
+and rollback-mode databases without journals do not need a full private copy.
+Empty files, incomplete WAL families, rollback recovery, and source-exclusion or
+canonical-mutation scopes retain private snapshot inspection. The parent waits
+for native close before accepting the result or releasing its scope. The source
+database and WAL remain unchanged; native WAL readers may update SHM read marks.
+Admission before the migration lease and the fresh check before migration writes
+remain separate, with no cached readiness result shared between them.
 
 Integrity-child timeout and incomplete-exit errors include `lastObservedPhase`:
 
@@ -79,6 +104,20 @@ Integrity-child timeout and incomplete-exit errors include `lastObservedPhase`:
 
 These phases describe messages the parent received, not the child's exact current location or native CPU time. `checking` does not distinguish the integrity check from the foreign-key check. A final result can report failure; phase messages never establish successful validation or release ownership.
 
+Slow asynchronous agent-database opens include optional wall-time measurements:
+
+| Field                       | Measured interval                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `integrityWorkerCheckMs`    | Full integrity and foreign-key checks inside the child, excluding opening and closing the connection.                                 |
+| `integrityWorkerLifetimeMs` | Parent-observed time from forking the child through its close event, including startup, IPC, cleanup and event delivery.              |
+| `integrityOutsideWorkerMs`  | The integrity gate's remaining time outside that child lifetime, including parent preparation, scheduling and admission revalidation. |
+
+Missing measurements stay absent, including a child check killed before reporting
+its duration. These fields are distinct from the calling driver's synchronous
+`integrityCheckSyncMs` and `integrityOutsideCheckMs`. None measures CPU time or
+isolates storage waiting. The parent still waits for child closure and revalidates
+the database and current authority before admission continues.
+
 Startup errors containing `state lease heartbeat did not become ready` include `phase=startup`, the settlement trigger (`timeout` or `message`), and the status observed before the parent marks failure. `status=starting` distinguishes readiness still pending from `status=lost`, where loss was already recorded. `elapsedMs` measures monotonic time since heartbeat startup began; `timeoutMs` is the startup wait budget, capped at five seconds or the remaining initial lease lifetime. These fields do not establish why startup stalled or ownership was lost.
 
 The heartbeat proves ownership, not migration progress. A live but stuck maintenance process can keep its lease; stop that process before retrying Doctor.
@@ -86,6 +125,35 @@ The heartbeat proves ownership, not migration progress. A live but stuck mainten
 ## Troubleshooting
 
 `SQLite read-only worker` failures append `code` and numeric SQLite `errcode` diagnostics when the underlying error supplies valid values, including through a bounded cause chain. Report the full code suffix when investigating a failure. Snapshot and integrity-child timeout errors include the applied budget and source file size; snapshot timeouts report an unknown size if the source stat failed. Integrity-child timeouts also retain `lastObservedPhase`. A generic `disk I/O error` or `SQLITE_IOERR` alone does not prove the disk is full.
+
+### The shared-state WAL keeps growing
+
+The running Gateway records the result of its existing WAL maintenance pass,
+normally every 30 minutes. `openclaw status --deep` and Doctor show a **SQLite
+WAL** warning after two consecutive blocked checkpoints, or after one blocked
+checkpoint when the WAL exceeds both twice the database size and the existing
+64 MiB journal-size limit. Checkpoint errors warn immediately. A later complete
+checkpoint clears the warning; a large WAL alone does not mean a checkpoint is
+blocked. File-size observation failures are recorded and logged separately from
+SQLite's completion result; they do not turn a completed checkpoint into a failure.
+
+The warning includes observed WAL and database sizes, checkpointed and total WAL
+frames, the last observed complete checkpoint, the consecutive blocked count,
+and the observation time. SQLite can report `busy=0` for an incomplete PASSIVE
+checkpoint; fewer checkpointed frames than total frames still records a blocked
+checkpoint. These facts do not identify which reader or competing checkpoint
+prevented completion.
+
+Observations belong to the open database handle in the Gateway process. They
+reset when that handle is replaced or the Gateway restarts. Status and Doctor
+read the recorded observation through the existing status RPC; they do not run
+a checkpoint or open a diagnostic database. Before the first observation, or
+when an older Gateway supplies no observations, this warning is absent.
+
+If the warning persists, capture `openclaw status --deep` output and restart the
+Gateway gracefully with `openclaw gateway restart`. Report the captured output
+if the warning returns. Do not delete the WAL: it can contain committed data
+that has not reached the main database file.
 
 ### Doctor reports orphan task delivery rows
 

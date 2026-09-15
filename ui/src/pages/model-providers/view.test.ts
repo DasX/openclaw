@@ -4,97 +4,10 @@ import { nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n/index.ts";
 import { choosePickerValue, updatePickers } from "../../test-helpers/select-picker.ts";
-import type { ModelProviderCard } from "./data.ts";
+import { card, mount, props, text } from "./view.test-support.ts";
 import { renderModelProviders } from "./view.ts";
 
-type ModelProvidersViewProps = Parameters<typeof renderModelProviders>[0];
 type SegmentedGroup = HTMLElement & { disabled: boolean; value: string };
-
-function card(overrides: Partial<ModelProviderCard> = {}): ModelProviderCard {
-  return {
-    id: "openai",
-    displayName: "OpenAI",
-    profiles: [],
-    profileProviderIds: {},
-    profileOrders: {},
-    profileOrderStoredProviders: [],
-    profileOrderExplicitProviders: [],
-    profileOrderLocks: {},
-    credentialProviderIds: ["openai"],
-    logoutTargets: [],
-    hasConfigApiKey: false,
-    modelCount: 1,
-    availableModelCount: 1,
-    apiKey: { source: "env", envVar: "OPENAI_API_KEY" },
-    ...overrides,
-  };
-}
-
-function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProvidersViewProps {
-  return {
-    connected: true,
-    loading: false,
-    refreshing: false,
-    error: null,
-    providerUsageFailed: false,
-    supplementalLoading: false,
-    updatedAt: 1,
-    costDays: 30,
-    credentialAgentLabel: "Writer",
-    cards: [card()],
-    configuredModels: [{ id: "openai/gpt-5", provider: "openai", name: "GPT-5", available: true }],
-    defaultModels: { primary: "openai/gpt-5", fallbacks: [], utilityModel: null },
-    thinkingLevel: "off",
-    thinkingOverridden: true,
-    fastMode: false,
-    fastModeOverridden: true,
-    catalogDiscovering: false,
-    catalogDiscoveryError: null,
-    configBusy: false,
-    quickAddSupported: true,
-    unconfiguredProviders: [{ id: "anthropic", displayName: "Anthropic" }],
-    canViewProfiles: true,
-    canMutate: true,
-    mutationBlockedReason: null,
-    providerUsageStalled: false,
-    probeAvailable: true,
-    busy: {},
-    messages: {},
-    probeResults: {},
-    keyEditorProvider: null,
-    keyDraft: "",
-    profileOrders: {},
-    addProviderOpen: false,
-    addProviderId: "",
-    addProviderKey: "",
-    onRefresh: () => undefined,
-    onOpenKeyEditor: () => undefined,
-    onCloseKeyEditor: () => undefined,
-    onKeyDraftChange: () => undefined,
-    onSaveKey: () => undefined,
-    onRemoveKey: () => undefined,
-    onProbe: () => undefined,
-    onRequestLogout: () => undefined,
-    onProfileOrderChange: () => undefined,
-    onAddProviderToggle: () => undefined,
-    onAddProviderIdChange: () => undefined,
-    onAddProviderKeyChange: () => undefined,
-    onAddProvider: () => undefined,
-    onPrimaryChange: () => undefined,
-    onFallbackChange: () => undefined,
-    onUtilityChange: () => undefined,
-    onThinkingChange: () => undefined,
-    onThinkingReset: () => undefined,
-    onFastModeChange: () => undefined,
-    onFastModeReset: () => undefined,
-    onCatalogRetry: () => undefined,
-    onOpenModelSetup: () => undefined,
-    onConnect: () => undefined,
-    canConnect: () => false,
-    loginBusy: false,
-    ...overrides,
-  };
-}
 
 it("retains a saved unavailable model without offering it for another default setting", async () => {
   const onUtilityChange = vi.fn();
@@ -133,17 +46,6 @@ it("retains a saved unavailable model without offering it for another default se
   await choosePickerValue(utility, "__openclaw_automatic_utility__");
   expect(onUtilityChange).toHaveBeenCalledExactlyOnceWith(null);
 });
-
-function mount(viewProps: ModelProvidersViewProps): HTMLDivElement {
-  const container = document.createElement("div");
-  document.body.append(container);
-  render(renderModelProviders(viewProps), container);
-  return container;
-}
-
-function text(element: Element | null): string {
-  return element?.textContent?.replace(/\s+/gu, " ").trim() ?? "";
-}
 
 function button(container: Element, label: string): HTMLButtonElement | undefined {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].find((entry) =>
@@ -505,6 +407,7 @@ describe("renderModelProviders", () => {
         addProviderKey: "new-provider-key",
         canMutate: false,
         mutationBlockedReason: "Operator admin access required",
+        defaultsMutationBlockedReason: "Operator admin access required",
         messages: {
           defaults: {
             kind: "error",
@@ -697,27 +600,34 @@ describe("renderModelProviders", () => {
     expect(onOpenModelSetup).toHaveBeenCalledOnce();
   });
 
-  it("does not present catalog-rejected credentials as signed in", () => {
-    const container = mount(
-      props({
-        cards: [
-          card({
-            auth: { kind: "ok", profileCount: 1 },
-            profiles: [{ profileId: "openai:chatgpt", type: "oauth", status: "ok" }],
-            catalogStatus: "auth-rejected",
-            modelCount: 0,
-            availableModelCount: 0,
-          }),
-        ],
-        configuredModels: [],
-        defaultModels: { primary: "", fallbacks: [], utilityModel: null },
-      }),
-    );
+  it.each([false, true])(
+    "does not present catalog-rejected credentials as signed in (configured key: %s)",
+    (hasConfigApiKey) => {
+      const container = mount(
+        props({
+          cards: [
+            card({
+              auth: { kind: "ok", profileCount: 1 },
+              profiles: [{ profileId: "openai:chatgpt", type: "oauth", status: "ok" }],
+              hasConfigApiKey,
+              catalogStatus: "auth-rejected",
+              modelCount: 0,
+              availableModelCount: 0,
+            }),
+          ],
+          configuredModels: [],
+          defaultModels: { primary: "", fallbacks: [], utilityModel: null },
+        }),
+      );
 
-    const provider = container.querySelector('[data-provider-id="openai"]');
-    expect(text(provider)).toContain("Credentials rejected");
-    expect(text(provider)).not.toContain("Signed in");
-  });
+      const provider = container.querySelector('[data-provider-id="openai"]');
+      expect(text(provider)).toContain("Credentials rejected");
+      expect(text(provider)).not.toContain("Signed in");
+      expect(text(container.querySelector(".model-providers__profile-status"))).toContain(
+        "Credentials configured",
+      );
+    },
+  );
 
   it("does not report an unverified API key as ready", () => {
     const container = mount(
@@ -786,7 +696,7 @@ describe("renderModelProviders", () => {
       props({
         cards: [
           card({
-            localCost: { totalCost: 12, totalTokens: 1_000, sessionCount: 2 },
+            localCost: { totalCost: 12, totalTokens: 1_000, messageCount: 2 },
           }),
         ],
       }),
