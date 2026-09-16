@@ -31,6 +31,7 @@ import {
   type RpcResponse,
 } from "./protocol.js";
 import { createCodexRequestAttempt, type CodexRequestAttempt } from "./request-attempt.js";
+import type { CodexRequestWaiterFinished } from "./request-observation.js";
 import { CodexAppServerRpcError } from "./rpc-error.js";
 import { createStdioTransport } from "./transport-stdio.js";
 import { createWebSocketTransport } from "./transport-websocket.js";
@@ -65,6 +66,7 @@ type RequestOptions = {
   signal?: AbortSignal;
   assertCurrent?: () => void;
   catalogListKey?: CodexCatalogListRequestKey;
+  attemptWaiterFinished?: CodexRequestWaiterFinished;
 };
 
 /** Process-local generation fence for bindings tied to one app-server client instance. */
@@ -592,6 +594,7 @@ export class CodexAppServerClient {
             ...options,
             ...(remainingTimeoutMs !== undefined ? { timeoutMs: remainingTimeoutMs } : {}),
           },
+          retry + 1,
           onWriteStateChange,
           deadline,
           onResponse,
@@ -662,6 +665,7 @@ export class CodexAppServerClient {
     method: string,
     params: unknown,
     options: RequestOptions,
+    overloadAttemptOrdinal: number,
     onWriteStateChange?: (mayHaveWritten: boolean) => void,
     deadline?: number,
     onResponse?: () => void,
@@ -692,7 +696,10 @@ export class CodexAppServerClient {
       sharedRequests = this.catalogListRequests.get(sharing.scope);
       const existing = sharedRequests?.get(sharedKey);
       if (existing) {
-        return existing.wait<T>(options, deadline);
+        return existing.wait<T>(
+          { ...options, disposition: "joined", overloadAttemptOrdinal },
+          deadline,
+        );
       }
       if (!sharedRequests) {
         sharedRequests = new Map();
@@ -712,6 +719,9 @@ export class CodexAppServerClient {
     const attempt = createCodexRequestAttempt({
       method,
       retainWritten: sharing !== undefined || onResponse !== undefined,
+      ...(method === "thread/list"
+        ? { diagnosticIdentity: { clientInstanceId: this.instanceId, rpcId: id } }
+        : {}),
       onResponse: onResponse
         ? (mayHaveWritten) => {
             onWriteStateChange?.(mayHaveWritten);
@@ -743,7 +753,12 @@ export class CodexAppServerClient {
     // Stateful ownership assertions remain pre-write checks. A native response
     // can arrive after authority changed; only catalog waiters revalidate here.
     const result = attempt.wait<T>(
-      { ...options, assertCurrent: sharing ? options.assertCurrent : undefined },
+      {
+        ...options,
+        assertCurrent: sharing ? options.assertCurrent : undefined,
+        disposition: "new",
+        overloadAttemptOrdinal,
+      },
       deadline,
     );
     if (!attempt.pending) {

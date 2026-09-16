@@ -58,6 +58,14 @@ offline, except that **Stop** can queue an exact local run ID for replay. A sess
 is not replayed because newer work may start in that session before the connection returns.
 
 Editing an unsent queued message remains safe if the connection drops mid-edit.
+Open queued-message edits stay available when you switch conversations, even after
+visiting enough chats to replace older cached views. Finish or cancel the edit to
+release that retained conversation.
+An open queued-message edit also blocks automatic UI reloads after a Gateway update.
+Use **Review edit** in the reload notice to return to its conversation and split,
+even after switching to another page.
+Save or cancel the edit, then use **Refresh for full capabilities** to continue.
+Explicit browser reloads do not preserve an unsaved queued-message correction.
 If another pane changes or removes that message, the edit stays open: copy your
 correction, cancel the edit, and review the queue before trying again. A full queue
 asks you to wait or remove a message. If browser storage prevents saving an edit,
@@ -66,7 +74,9 @@ save clears the previous error.
 
 Page and sidebar refreshes that fail because the Gateway is suspending, restarting, starting,
 or unreachable show no inline error: the footer connection indicator owns that state. Each panel
-keeps its last data and refreshes automatically once the Gateway accepts work again. Other refresh
+keeps its last data and refreshes automatically once the Gateway accepts work again.
+Established conversation names remain visible in the browser tab and chat headings,
+including split views, while reconnecting to the same Gateway and account. Other refresh
 failures remain visible inline with their message and are retried automatically when the Gateway
 becomes available again. These refresh callouts have no manual **Retry** button.
 

@@ -113,6 +113,7 @@ export function listSessionTranscriptArchivesReadOnly(
   scope: Pick<SessionAccessScope, "agentId" | "env" | "storePath"> & {
     archiveNames?: readonly string[];
     sessionIds?: readonly string[];
+    includeAllAgents?: boolean;
   },
 ) {
   const selectors = [...new Set(scope.sessionIds ?? [])];
@@ -123,7 +124,12 @@ export function listSessionTranscriptArchivesReadOnly(
   const resolved = resolveSqliteReadScope(scope);
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) =>
-      listTranscriptArchivesFromDatabase(database, resolved.agentId, selectors, archiveNames),
+      listTranscriptArchivesFromDatabase(
+        database,
+        scope.includeAllAgents ? undefined : resolved.agentId,
+        selectors,
+        archiveNames,
+      ),
     toDatabaseOptions(resolved),
   );
   return result.found ? result.value : [];

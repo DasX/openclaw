@@ -1,6 +1,8 @@
 // Exercise registered sessions_spawn through real Gateway, storage, and provider HTTP.
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import { createServer } from "node:http";
+import path from "node:path";
 import { json } from "node:stream/consumers";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -287,9 +289,17 @@ describe("sessions_spawn model fallback through the Gateway", () => {
             gateway: { auth: { mode: "token", token } },
             hooks: { enabled: false },
           };
+          const agentDir = resolveAgentDir(cfg, "main");
+          await fs.mkdir(agentDir, { recursive: true });
+          // This proof owns model fallback, while transient retry pacing has focused coverage.
+          await fs.writeFile(
+            path.join(agentDir, "settings.json"),
+            `${JSON.stringify({ retry: { provider: { maxRetries: 0 } } })}\n`,
+            "utf8",
+          );
           if (scenario.configuredProfile || scenario.model?.includes("@")) {
             upsertAuthProfile({
-              agentDir: resolveAgentDir(cfg, "main"),
+              agentDir,
               profileId: PROFILE,
               credential: {
                 type: "api_key",
@@ -429,6 +439,7 @@ describe("sessions_spawn model fallback through the Gateway", () => {
             });
           }
           expect(childRequests).toContainEqual(expect.objectContaining({ model: "primary" }));
+          expect(childRequests.filter((request) => request.model === "primary")).toHaveLength(1);
           expect(provider.errors).toEqual([]);
           if (scenario.backup) {
             expect(childRequests.map((request) => request.model)).toContain(scenario.backup);

@@ -2978,7 +2978,7 @@ src/infra/restart-sentinel-store.ts	10
 src/infra/restart-sentinel.ts	1
 src/infra/restart-stale-pids.ts	3
 src/infra/retry-policy.ts	3
-src/infra/session-cost-usage-aggregation.ts	5
+src/infra/session-cost-usage-aggregation.ts	3
 src/infra/session-cost-usage-cache.sqlite.ts	1
 src/infra/session-cost-usage-collection.ts	3
 src/infra/session-cost-usage-pricing.ts	6
@@ -3735,7 +3735,6 @@ ui/src/pages/chat/chat-send-ack.ts	2
 ui/src/pages/chat/chat-send-composer.ts	1
 ui/src/pages/chat/chat-send-request.ts	1
 ui/src/pages/chat/chat-send-timing.ts	6
-ui/src/pages/chat/chat-session-companion.ts	3
 ui/src/pages/chat/chat-state-events.ts	6
 ui/src/pages/chat/chat-state-page.ts	5
 ui/src/pages/chat/chat-state-route.ts	1
