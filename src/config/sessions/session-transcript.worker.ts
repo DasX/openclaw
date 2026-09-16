@@ -66,7 +66,6 @@ type SessionTranscriptWorkerValues = {
   "session-entry": {
     entry: SessionFileEntry | null;
     resetRecallCutoff: ReturnType<typeof readSessionEntryResetRecallCutoff>;
-    readError?: string;
   };
 };
 
@@ -146,14 +145,10 @@ serveWorkerTasks(
           const { buildSessionEntryInProcess, readSessionEntryResetRecallCutoff } =
             await import("../../../packages/memory-host-sdk/src/host/session-files.js");
           const { createSensitiveTextRedactor } = await import("../../logging/redact.js");
-          let readError: string | undefined;
           const entry = await buildSessionEntryInProcess(
             request.absPath,
             request.options,
             createSensitiveTextRedactor(request.redaction),
-            (error) => {
-              readError = String(error);
-            },
           );
           return {
             ok: true,
@@ -162,7 +157,6 @@ serveWorkerTasks(
               resetRecallCutoff: entry
                 ? readSessionEntryResetRecallCutoff(entry)
                 : { state: "absent" },
-              ...(readError !== undefined ? { readError } : {}),
             },
           };
         },

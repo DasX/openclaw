@@ -10,6 +10,7 @@ import {
   normalizeAgentId,
   resolveAgentIdFromSessionKey,
 } from "../../../lib/sessions/session-key.ts";
+import { isSessionWorkspaceFileSelected } from "../../../lib/sessions/workspace.ts";
 import type {
   SessionWorkspaceHost,
   SessionWorkspaceState,
@@ -183,8 +184,17 @@ export function loadSessionWorkspace(
       };
       if (
         workspace.activeId &&
-        !fileItems.some((file) => `file:${file.path}` === workspace.activeId) &&
-        !browserItems.some((entry) => `file:${entry.path}` === workspace.activeId) &&
+        !fileItems.some((file) =>
+          isSessionWorkspaceFileSelected(
+            workspace.activeId,
+            files?.root,
+            file.path,
+            file.workspacePath,
+          ),
+        ) &&
+        !browserItems.some((entry) =>
+          isSessionWorkspaceFileSelected(workspace.activeId, files?.root, entry.path, entry.path),
+        ) &&
         !artifactItems.some((artifact) => `artifact:${artifact.id}` === workspace.activeId)
       ) {
         workspace.activeId = null;

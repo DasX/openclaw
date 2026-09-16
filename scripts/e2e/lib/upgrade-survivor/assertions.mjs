@@ -42,6 +42,8 @@ const SCENARIOS = new Set([
   "configured-plugin-installs",
   "missing-configured-plugin-migration",
   "custom-plugin-siblings",
+  "projects-doctor",
+  "taskflow-restoration",
   "stale-source-plugin-shadow",
   "prerelease-plugin-registry",
   "tilde-log-path",
@@ -1664,6 +1666,13 @@ function assertSuccessfulUpdateJson([file, expectedVersion, observationRoot]) {
   const result = readUpdateJson(file, observationRoot);
   const plugins = result?.postUpdate?.plugins;
   assert(result?.status === "ok", `update did not report ok: ${String(result?.status)}`);
+  if (["projects-doctor", "taskflow-restoration"].includes(getScenario())) {
+    assertStrict.equal(
+      result.before?.version,
+      "2026.9.4",
+      "Worker cell used the wrong published driver",
+    );
+  }
   const expectedMissingPluginFailure =
     getScenario() === "missing-configured-plugin-migration"
       ? assertExpectedMissingCodexOutcome(result, expectedVersion)

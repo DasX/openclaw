@@ -12,7 +12,7 @@ import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-ad
 import { readAgentDeletionJournal } from "../../state/agent-deletion-journal.js";
 import { listOpenClawRegisteredAgentDatabases } from "../../state/openclaw-agent-db-registry.js";
 import {
-  closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   isOpenClawAgentDatabaseOpen,
   withOpenClawAgentDatabaseAsync,
   resolveOpenClawAgentSqlitePath,
@@ -125,7 +125,9 @@ export function assertSessionStoreMigrationComplete(params: {
     let hasUnindexedHistory: boolean | undefined;
     return [...required].some(({ target, destination }) => {
       const receipt = readDeferredPluginSessionImport({
-        target: { ...target, sqlitePath: destination },
+        cfg: params.cfg,
+        target,
+        sqlitePath: destination,
         env,
       });
       // Owners without a database can never hold a replayable receipt (receipts bind
@@ -234,6 +236,17 @@ export async function runSessionStartupMigration(params: {
             setCanonicalSqliteSessionMainKey(database, mainKey),
           );
         }
+      } catch (error) {
+        params.log.warn(
+          `session: SQLite startup maintenance failed for ${target.agentId}; continuing: ${String(error)}`,
+        );
+      }
+      // Canonical refusal is readiness failure. Drain before worktree and runtime
+      // visitors can otherwise parse a whole migrated store on the main thread.
+      const { certifySessionCanonicalValidationPending } =
+        await import("./session-canonical-validation-readiness.js");
+      await certifySessionCanonicalValidationPending(options);
+      try {
         // Workspace metadata participates in claim matching. Preserve it during a
         // partial move so the next attempt can finish removing the source claim.
         if (!result.armed || result.complete) {
@@ -257,8 +270,8 @@ export async function runSessionStartupMigration(params: {
         handedOff = true;
       }
     } finally {
-      if (!alreadyOpen && !handedOff && isOpenClawAgentDatabaseOpen(databasePath)) {
-        closeOpenClawAgentDatabaseByPath(databasePath);
+      if (!alreadyOpen && !handedOff) {
+        await closeOpenClawAgentDatabaseByPathAsync(databasePath);
       }
     }
   }

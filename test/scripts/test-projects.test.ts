@@ -740,21 +740,23 @@ describe("scripts/test-projects changed-target routing", () => {
     expectChangedTargets(["scripts/pr-lib/worktree.sh"], ["test/vitest/vitest.tooling.config.ts"]);
   });
 
-  it.each(["scripts/pr", "scripts/pr-lib/merge.sh", "scripts/pr-lib/merge-outcome.sh"])(
-    "routes native merge changes through the outcome owner for %s",
-    (scriptPath) => {
-      expectChangedTargets(
-        [scriptPath],
-        [
-          "test/scripts/pr-merge.test.ts",
-          "test/scripts/pr-merge-outcome.test.ts",
-          ...(scriptPath === "scripts/pr"
-            ? ["test/scripts/pr-operation-lock.test.ts", "test/scripts/pr-wrappers.test.ts"]
-            : []),
-        ],
-      );
-    },
-  );
+  it.each([
+    "scripts/pr",
+    "scripts/pr-lib/merge.sh",
+    "scripts/pr-lib/merge-outcome.sh",
+    "scripts/pr-lib/merge-legacy-refusal.mjs",
+  ])("routes native merge changes through the outcome owner for %s", (scriptPath) => {
+    expectChangedTargets(
+      [scriptPath],
+      [
+        "test/scripts/pr-merge.test.ts",
+        "test/scripts/pr-merge-outcome.test.ts",
+        ...(scriptPath === "scripts/pr"
+          ? ["test/scripts/pr-operation-lock.test.ts", "test/scripts/pr-wrappers.test.ts"]
+          : []),
+      ],
+    );
+  });
 
   it("routes unmatched script changes to the tooling suite instead of skipping tests", () => {
     const targets = ["scripts/check-no-raw-http2-imports.mts"];
@@ -3755,6 +3757,27 @@ describe("scripts/test-projects changed-target routing", () => {
       },
       ...listExpectedFullExtensionRunPlans(),
     ]);
+  });
+
+  it.each([
+    {
+      file: "src/cli/native-hook-relay-cli.locator-worker.test.ts",
+      config: "test/vitest/vitest.infra.config.ts",
+    },
+    {
+      file: "src/gateway/server-methods/native-hook-relay.test.ts",
+      config: "test/vitest/vitest.gateway-database-workers.config.ts",
+    },
+    {
+      file: "extensions/codex/src/app-server/run-attempt-one-shot-cleanup.test.ts",
+      config: "test/vitest/vitest.extension-database-workers.config.ts",
+    },
+    {
+      file: "extensions/codex/src/app-server/run-attempt.context-engine.test.ts",
+      config: "test/vitest/vitest.extension-database-workers.config.ts",
+    },
+  ])("routes native hook relay fixture $file to its host broker", ({ file, config }) => {
+    expectSingleVitestRunPlan(buildVitestRunPlans([file]), { config, includePatterns: [file] });
   });
 
   it("routes explicit active-memory and Codex extension tests to their shards", () => {

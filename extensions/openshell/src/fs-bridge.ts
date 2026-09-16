@@ -26,7 +26,6 @@ type ResolvedMountPath = SandboxResolvedPath & {
 };
 
 type FsSafeRoot = Awaited<ReturnType<typeof fsRoot>>;
-type FsSafeStat = Awaited<ReturnType<FsSafeRoot["stat"]>>;
 
 export function createOpenShellFsBridge(params: {
   sandbox: OpenShellFsBridgeContext;
@@ -451,45 +450,22 @@ async function removeLocalRootPath(params: {
     if (params.force === false) {
       await fsPromises.lstat(params.hostPath);
     }
-    if (params.recursive) {
-      const stats = await fsPromises.lstat(params.hostPath).catch((err: unknown) => {
-        if (isNotFoundError(err)) {
-          return null;
-        }
-        throw err;
+    // Clearing a mounted root removes its contents while retaining the mount directory.
+    const targets = params.recursive && !relativePath ? await root.list("") : [relativePath];
+    for (const target of targets) {
+      await root.remove(target, {
+        force: params.force !== false,
+        ...(params.recursive
+          ? { recursive: true, order: "sorted" as const, maxEntries: Infinity, maxDepth: Infinity }
+          : {}),
       });
-      if (stats?.isSymbolicLink()) {
-        await root.remove(relativePath);
-        return;
-      }
-      await removeRootTree(root, relativePath);
-      return;
     }
-    await root.remove(relativePath);
   } catch (err) {
     if (params.force !== false && isNotFoundError(err)) {
       return;
     }
     throw err;
   }
-}
-
-async function removeRootTree(
-  root: FsSafeRoot,
-  relativePath: string,
-  knownStats?: FsSafeStat,
-): Promise<void> {
-  const stats = knownStats ?? (await root.stat(relativePath));
-  if (stats.isDirectory && !stats.isSymbolicLink) {
-    const entries = await root.list(relativePath, { withFileTypes: true });
-    for (const entry of entries) {
-      await removeRootTree(root, path.join(relativePath, entry.name), entry);
-    }
-    if (!relativePath) {
-      return;
-    }
-  }
-  await root.remove(relativePath);
 }
 
 async function moveLocalRootPath(params: {
