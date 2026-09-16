@@ -359,6 +359,7 @@ describe("dispatch input custody after a question response", () => {
     { code: "UNAVAILABLE", reason: "QUESTION_INVALID_ANSWER" },
   ])("does not report $code/$reason as an invalid answer", async ({ code, reason }) => {
     const fixture = createQuestionDispatch(`rejection-${code}-${reason}`);
+    const dispatcher = createDispatcher();
     const error = new GatewayClientRequestError({
       code,
       message: "question request failed",
@@ -386,26 +387,54 @@ describe("dispatch input custody after a question response", () => {
     );
     question.attachRegistration(Promise.resolve());
     try {
-      const result = runReplyQuestionInput({
-        commandBody: "answer",
-        followupRun: createQueueTestRun({ prompt: "answer" }),
-        sessionKey: fixture.operation.key,
-        sessionCtx: fixture.ctx,
+      const result = dispatchReplyFromConfig({
+        ctx: fixture.ctx,
+        cfg: { ...automaticDirectReplyConfig, diagnostics: { enabled: true } },
+        dispatcher,
+        replyOptions: { turnAdoptionLifecycle: { onAdopted: async () => {} } },
+        replyResolver: async (ctx, opts) => {
+          const reply = await runReplyQuestionInput({
+            commandBody: "answer",
+            followupRun: createQueueTestRun({ prompt: "answer" }),
+            sessionKey: fixture.operation.key,
+            sessionCtx: ctx,
+            opts,
+          });
+          expect(reply.handled).toBe(true);
+          return reply.handled ? reply.payload : undefined;
+        },
       });
       if (code === "UNAVAILABLE") {
         await expect(result).resolves.toMatchObject({
-          handled: true,
-          payload: {
-            text: expect.stringContaining("confirmation was lost"),
-            isError: true,
-          },
+          queuedFinal: true,
         });
         expect(question.isResolving()).toBe(true);
+        expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            text: expect.stringContaining("confirmation was lost"),
+            isError: true,
+          }),
+        );
+        expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: "error", reason: "question-response-indeterminate" }),
+        );
       } else {
         await expect(result).rejects.toBe(error);
         expect(question.isResolving()).toBe(false);
+        expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+        expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: "error", error: String(error) }),
+        );
       }
+      expect(dispatcher.sendFinalReply).not.toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining("The answer was not accepted") }),
+      );
+      expect(diagnosticMocks.logMessageProcessed).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "question-response-rejected" }),
+      );
       expect(fixture.cancel).not.toHaveBeenCalled();
+      expect(fixture.operation.result).toBeNull();
+      expect(replyRunRegistry.get(fixture.operation.key)).toBe(fixture.operation);
     } finally {
       question.dispose();
       fixture.operation.complete();
