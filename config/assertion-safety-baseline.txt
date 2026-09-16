@@ -676,7 +676,7 @@ extensions/matrix/src/matrix/sdk/idb-persistence.ts	4
 extensions/matrix/src/matrix/sdk/transport.ts	3
 extensions/matrix/src/matrix/sdk/verification-manager.ts	3
 extensions/matrix/src/matrix/send.ts	9
-extensions/matrix/src/matrix/send/chunking.ts	4
+extensions/matrix/src/matrix/send/chunking.ts	2
 extensions/matrix/src/matrix/send/client.ts	1
 extensions/matrix/src/matrix/send/formatting.ts	1
 extensions/matrix/src/matrix/thread-bindings.ts	2
@@ -1781,7 +1781,7 @@ src/agents/fast-mode.ts	1
 src/agents/harness/builtin-openclaw.ts	2
 src/agents/harness/context-engine-lifecycle.ts	3
 src/agents/harness/context-engine-turn-outbox.ts	3
-src/agents/harness/gateway-question.ts	6
+src/agents/harness/gateway-question.ts	4
 src/agents/harness/hook-helpers.ts	1
 src/agents/harness/host-capability.ts	3
 src/agents/harness/lifecycle-hook-helpers.ts	1
@@ -2301,7 +2301,6 @@ src/commands/audit.ts	2
 src/commands/auth-choice-options.ts	2
 src/commands/auth-choice-prompt.ts	1
 src/commands/auth-choice.apply.api-providers.ts	1
-src/commands/backup-git.ts	1
 src/commands/backup-restore.ts	1
 src/commands/backup-schedule.ts	1
 src/commands/backup-verify.ts	2
@@ -2966,7 +2965,7 @@ src/infra/private-mode.ts	2
 src/infra/provider-usage.auth.ts	2
 src/infra/provider-usage.fetch.codex.ts	1
 src/infra/provider-usage.fetch.deepseek.ts	1
-src/infra/provider-usage.fetch.minimax.ts	2
+src/infra/provider-usage.fetch.minimax.ts	1
 src/infra/push-apns-http2.ts	1
 src/infra/push-apns.relay.ts	1
 src/infra/push-apns.ts	3
@@ -3736,7 +3735,6 @@ ui/src/pages/chat/chat-send-ack.ts	2
 ui/src/pages/chat/chat-send-composer.ts	1
 ui/src/pages/chat/chat-send-request.ts	1
 ui/src/pages/chat/chat-send-timing.ts	6
-ui/src/pages/chat/chat-session-companion.ts	3
 ui/src/pages/chat/chat-state-events.ts	6
 ui/src/pages/chat/chat-state-page.ts	5
 ui/src/pages/chat/chat-state-route.ts	1

@@ -1049,7 +1049,9 @@ function buildCronPayload(form: CronFormState, source: CronPayload | null, isUpd
     ...(thinking !== undefined ? { thinking } : {}),
     ...(timeoutRaw && Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0
       ? { timeoutSeconds }
-      : {}),
+      : isUpdate && original?.timeoutSeconds !== undefined
+        ? { timeoutSeconds: null }
+        : {}),
     ...(lightContext !== undefined ? { lightContext } : {}),
     ...restrictions,
     ...(cloned?.fallbacks ? { fallbacks: [...cloned.fallbacks] } : {}),
@@ -1474,6 +1476,11 @@ export async function loadCronRuns(
     append,
   };
   activeCronRunsRequests.set(state, request);
+  // Retained rows cannot authorize an append until their replacement page arrives.
+  if (!append) {
+    state.cronRunsHasMore = false;
+    state.cronRunsNextOffset = null;
+  }
   state.cronRunsLoadingMore = append;
   try {
     const res = await client.request<CronRunsResult>("cron.runs", {

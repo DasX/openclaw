@@ -434,9 +434,15 @@ describe("CI changed Node test plan", () => {
       ]),
     ).toEqual([
       {
+        config: "test/vitest/vitest.extension-database-workers.config.ts",
+        forwardedArgs: [],
+        includePatterns: ["extensions/copilot/harness.test.ts"],
+        watchMode: false,
+      },
+      {
         config: "test/vitest/vitest.extensions.config.ts",
         forwardedArgs: [],
-        includePatterns: ["extensions/copilot/index.test.ts", "extensions/copilot/harness.test.ts"],
+        includePatterns: ["extensions/copilot/index.test.ts"],
         watchMode: false,
       },
     ]);
