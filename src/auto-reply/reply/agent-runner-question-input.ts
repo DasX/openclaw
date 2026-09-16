@@ -80,6 +80,11 @@ export async function runReplyQuestionInput(
       caller,
       assertSourceCurrent,
       sourceRecorder: followupRun.userTurnTranscriptRecorder,
+      onAnswerProcessed: () => {
+        if (state) {
+          state.questionInputHandled = true;
+        }
+      },
     });
     if (!claimed) {
       return { handled: false };

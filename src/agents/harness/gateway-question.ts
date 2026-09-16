@@ -229,37 +229,41 @@ export async function claimPendingAgentQuestionAnswerFromCaller(params: {
   sourceRecorder?: UserTurnTranscriptRecorder;
   caller: ReplyToolAuthorityOverlay;
   assertSourceCurrent: () => void;
+  onAnswerProcessed?: () => void;
 }): Promise<boolean> {
   const state = params.sessionKey ? pendingAgentQuestions.get(params.sessionKey.trim()) : undefined;
-  return claimPendingAgentQuestionAnswer({
-    sessionKey: params.sessionKey,
-    text: params.text,
-    persist: params.persist,
-    sourceRecorder: params.sourceRecorder,
-    authority: {
-      kind: "source-bound",
-      assertCurrent: () => {
-        try {
-          params.assertSourceCurrent();
-          if (state) {
-            if (!state.answerAuthority) {
-              throw new Error("pending question has no prepared creator authority");
+  return claimQuestionAnswer(
+    {
+      sessionKey: params.sessionKey,
+      text: params.text,
+      persist: params.persist,
+      sourceRecorder: params.sourceRecorder,
+      authority: {
+        kind: "source-bound",
+        assertCurrent: () => {
+          try {
+            params.assertSourceCurrent();
+            if (state) {
+              if (!state.answerAuthority) {
+                throw new Error("pending question has no prepared creator authority");
+              }
+              state.answerAuthority.assertCaller(params.caller);
+              if (pendingAgentQuestions.get(state.sessionKey) !== state) {
+                throw new Error("pending question is no longer current");
+              }
             }
-            state.answerAuthority.assertCaller(params.caller);
-            if (pendingAgentQuestions.get(state.sessionKey) !== state) {
-              throw new Error("pending question is no longer current");
-            }
+            params.assertSourceCurrent();
+          } catch (error) {
+            throw new QuestionDispatchRefusedError(
+              error instanceof Error ? error.message : "question answer authority refused",
+              { cause: error },
+            );
           }
-          params.assertSourceCurrent();
-        } catch (error) {
-          throw new QuestionDispatchRefusedError(
-            error instanceof Error ? error.message : "question answer authority refused",
-            { cause: error },
-          );
-        }
+        },
       },
     },
-  });
+    params.onAnswerProcessed,
+  );
 }
 
 /** Owns reservation and persistence; absent questions return before checking caller authority. */
@@ -270,6 +274,13 @@ export async function claimPendingAgentQuestionAnswer(params: {
   sourceRecorder?: UserTurnTranscriptRecorder;
   authority?: QuestionInputAuthority;
 }): Promise<boolean> {
+  return claimQuestionAnswer(params);
+}
+
+async function claimQuestionAnswer(
+  params: Parameters<typeof claimPendingAgentQuestionAnswer>[0],
+  onAnswerProcessed?: () => void,
+): Promise<boolean> {
   const sessionKey = params.sessionKey?.trim();
   const state = sessionKey ? pendingAgentQuestions.get(sessionKey) : undefined;
   if (!state || state.resolving || (state.kind === "gateway" && state.cancelRequested)) {
@@ -348,6 +359,12 @@ export async function claimPendingAgentQuestionAnswer(params: {
       // These resolve rejections precede commitment. UNAVAILABLE can follow a
       // saved secret, and waiter rejection can follow commitment, so neither qualifies.
       if (rejection?.code === "INVALID_REQUEST" || rejection?.code === "FORBIDDEN") {
+        if (
+          rejection.code === "INVALID_REQUEST" &&
+          rejection.reason === "QUESTION_INVALID_ANSWER"
+        ) {
+          onAnswerProcessed?.();
+        }
         throw error;
       }
       // The existing bounded waiter owns the deadline, not a shorter grace timer.
@@ -362,6 +379,9 @@ export async function claimPendingAgentQuestionAnswer(params: {
         throw new QuestionAnswerUnconfirmedError(error);
       }
       consumed = answer.status === "answered" && answer.resolutionId === resolutionId;
+    }
+    if (consumed) {
+      onAnswerProcessed?.();
     }
     return consumed;
   } finally {

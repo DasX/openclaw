@@ -142,9 +142,7 @@ export function createManagedServiceManagerBoundary({
         configPath: path.join(root, "openclaw.json"),
         options,
       }),
-      {
-        mode: 0o755,
-      },
+      { mode: 0o755 },
     );
     const env = {
       ...process.env,
@@ -202,8 +200,7 @@ export function createManagedServiceManagerBoundary({
         string[],
         { env: NodeJS.ProcessEnv },
       ];
-      const scriptPath = generatedArgs[0];
-      const generatedParamsPath = generatedArgs[1];
+      const [scriptPath, generatedParamsPath] = generatedArgs;
       if (!scriptPath || !generatedParamsPath) {
         throw new Error("expected generated managed handoff script and parameters");
       }
