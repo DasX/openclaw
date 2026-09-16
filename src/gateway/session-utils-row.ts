@@ -487,8 +487,6 @@ export function buildGatewaySessionRow(params: {
     }).mode,
     modelProvider: rowModelIdentity.provider,
     model: rowModelIdentity.model,
-    // "configured" marks a default stand-in, not an observed selection: the session can run a
-    // model chosen by a source this resolution never sees, such as an automation payload model.
     modelSelectionSource: selectedModel.selectionSource,
     activeModelProvider: activeModel?.provider,
     activeModel: activeModel?.model,

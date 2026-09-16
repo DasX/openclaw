@@ -42,7 +42,7 @@ export const SessionRunStatusSchema = Type.Union([
  *   configured default. The session may still be executing a different model chosen by
  *   a source this resolution cannot observe, such as an automation payload model.
  */
-export const SessionModelSelectionSourceSchema = Type.Union([
+const SessionModelSelectionSourceSchema = Type.Union([
   Type.Literal("runtime"),
   Type.Literal("override"),
   Type.Literal("configured"),

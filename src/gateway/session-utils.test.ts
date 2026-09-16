@@ -1909,6 +1909,7 @@ describe("gateway session utils", () => {
           skipTranscriptUsageFallback: true,
         });
       const nativeRow = readRow(nativeKey);
+      expect(nativeRow.modelSelectionSource).toBe("runtime");
       expect(nativeRow).toMatchObject({ modelProvider: "openai", model: "gpt-5.6-luna" });
       const matches = await listSessionFixture({
         cfg,
@@ -1925,7 +1926,11 @@ describe("gateway session utils", () => {
       expect(readRow(concreteKey)).toMatchObject({ modelProvider: "openai", model: "gpt-5.6-sol" });
       expect(readRow(unprovenKey)).toMatchObject({ modelProvider: "openai", model: "gpt-5.6-sol" });
       expect(native.model).toBe("stale-model");
+      expect(readRow(hostAuthKey).modelSelectionSource).toBe("runtime");
+      expect(readRow(concreteKey).modelSelectionSource).toBe("override");
+      expect(readRow(unprovenKey).modelSelectionSource).toBe("configured");
       bindings.delete(nativeKey);
+      expect(readRow(nativeKey).modelSelectionSource).toBe("configured");
       expect(readRow(nativeKey)).toMatchObject({ modelProvider: "openai", model: "gpt-5.6-sol" });
     },
   );

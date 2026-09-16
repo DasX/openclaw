@@ -24,8 +24,6 @@ export function resolveSessionSelectedModelRef(
   } & ModelManifestNormalizationContext,
 ): ReturnType<typeof resolveSessionModelRefCore> & {
   storedOverrideSource: StoredModelOverride["source"] | null;
-  // Callers cannot otherwise tell an observed selection from the configured default this
-  // resolution falls back to when no runtime or override reports one.
   selectionSource: SessionModelSelectionSource;
 } {
   // Ownership is session-specific; never reuse the ordinary override cache for native tuples.
