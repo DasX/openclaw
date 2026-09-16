@@ -1,10 +1,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { GatewayClientRequestError } from "../../../packages/gateway-client/src/request-error.js";
+import type { AgentQuestionDispatcher } from "../../agents/harness/gateway-question-dispatch.js";
 import { registerPendingAgentQuestion } from "../../agents/harness/gateway-question.js";
 import {
   createAgentQuestionAnswerAuthority,
   withAgentQuestionAnswerAuthority,
 } from "../../agents/harness/host-private-capabilities.js";
 import { clearAgentHarnesses } from "../../agents/harness/registry.js";
+import { EmbeddedQuestionBroker } from "../../infra/embedded-question-broker.js";
 import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
 import { runReplyQuestionInput } from "./agent-runner-question-input.js";
@@ -217,29 +220,37 @@ describe("dispatch input custody after a question response", () => {
   it("reports an incomplete multi-question answer and keeps the question open", async () => {
     const fixture = createQuestionDispatch("incomplete-answer");
     const dispatcher = createDispatcher();
-    const resolves: unknown[] = [];
-    // Mirrors QuestionManager.validateAnswers: an unanswered question is
-    // rejected with QUESTION_INVALID_ANSWER before the resolve commits.
-    const gatewayCall = {
-      version: 2 as const,
-      call: async (request: { method: string; params?: unknown }) => {
-        if (request.method !== "question.resolve") {
-          return {};
+    const broker = new EmbeddedQuestionBroker();
+    const questionId = "ask_incomplete_answer";
+    const questions = [
+      { id: "destination", header: "Where", question: "Where to?" },
+      { id: "budget", header: "Budget", question: "How much?" },
+    ];
+    broker.request({
+      id: questionId,
+      sessionKey: fixture.operation.key,
+      questions: questions.map(({ id, ...question }) => ({
+        ...question,
+        questionId: id,
+        options: [],
+      })),
+    });
+    const onResolved = vi.fn();
+    broker.subscribe((event) => {
+      if (event.event === "question.resolved") {
+        onResolved(event.payload);
+      }
+    });
+    const onResumed = vi.fn();
+    const answer = broker.waitAnswer({ id: questionId, includeResolutionId: true });
+    const resumed = answer.then(onResumed);
+    const gatewayCall: AgentQuestionDispatcher = {
+      version: 2,
+      call: async ({ method, params, authority }) => {
+        if (authority.kind === "source-bound") {
+          authority.assertCurrent();
         }
-        resolves.push(request.params);
-        const answers = (request.params as { answers: { answers: Record<string, string[]> } })
-          .answers.answers;
-        const unanswered = Object.keys(answers).find((id) => answers[id]?.length === 0);
-        if (unanswered) {
-          const rejection = new Error(`question '${unanswered}' requires an answer`);
-          rejection.name = "GatewayClientRequestError";
-          throw Object.assign(rejection, {
-            gatewayCode: "INVALID_REQUEST",
-            details: { reason: "QUESTION_INVALID_ANSWER" },
-            retryable: false,
-          });
-        }
-        return {};
+        return broker.call(method, params);
       },
     };
     // The creator authority the source-bound claim path requires; this fixture
@@ -253,36 +264,42 @@ describe("dispatch input custody after a question response", () => {
     const question = withAgentQuestionAnswerAuthority(authority, () =>
       registerPendingAgentQuestion({
         sessionKey: fixture.operation.key,
-        questionId: "ask_incomplete_answer",
-        questions: [
-          { id: "destination", header: "Where", question: "Where to?" },
-          { id: "budget", header: "Budget", question: "How much?" },
-        ],
+        questionId,
+        questions,
         gatewayCall,
-        answer: Promise.resolve({ status: "pending" }),
+        answer,
       }),
     );
     question.attachRegistration(Promise.resolve());
-    try {
-      // One unkeyed line for two questions: the second question stays empty and
-      // the gateway rejects the whole answer before it is committed.
-      await dispatchReplyFromConfig({
-        ctx: fixture.ctx,
+    const replyResolver = vi.fn(async (ctx: MsgContext, opts?: GetReplyOptions) => {
+      const text = ctx.BodyForAgent;
+      if (typeof text !== "string") {
+        throw new Error("missing question answer text");
+      }
+      const result = await runReplyQuestionInput({
+        commandBody: text,
+        followupRun: createQueueTestRun({ prompt: text }),
+        sessionKey: fixture.operation.key,
+        sessionCtx: ctx,
+        opts,
+      });
+      expect(result.handled).toBe(true);
+      return result.handled ? result.payload : undefined;
+    });
+    const dispatch = (text: string, messageId: string) =>
+      dispatchReplyFromConfig({
+        ctx: { ...fixture.ctx, agentText: text, MessageSid: messageId },
         cfg: { ...automaticDirectReplyConfig, diagnostics: { enabled: true } },
         dispatcher,
-        replyOptions: { turnAdoptionLifecycle: { onAdopted: async () => {} } },
-        replyResolver: async (ctx, opts) => {
-          const result = await runReplyQuestionInput({
-            commandBody: "Lisbon",
-            followupRun: createQueueTestRun({ prompt: "Lisbon" }),
-            sessionKey: fixture.operation.key,
-            sessionCtx: ctx,
-            opts,
-          });
-          expect(result.handled).toBe(true);
-          return result.handled ? result.payload : undefined;
+        replyOptions: {
+          sourceReplyDeliveryMode: "message_tool_only",
+          turnAdoptionLifecycle: { onAdopted: async () => {} },
         },
+        replyResolver,
       });
+    try {
+      await dispatch("Lisbon", "incomplete-answer");
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledOnce();
       expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining("The answer was not accepted: question 'budget'"),
@@ -296,20 +313,99 @@ describe("dispatch input custody after a question response", () => {
         expect.objectContaining({ outcome: "error", reason: "question-response-rejected" }),
       );
       expect(question.isResolving()).toBe(false);
+      expect(broker.get({ id: questionId }).question).toMatchObject({ status: "pending" });
+      expect(broker.get({ id: questionId }).question.answers).toBeUndefined();
+      expect(onResolved).not.toHaveBeenCalled();
+      expect(onResumed).not.toHaveBeenCalled();
       expect(fixture.cancel).not.toHaveBeenCalled();
 
-      // The question survived the rejection, so a complete answer still lands.
-      const retry = await runReplyQuestionInput({
-        commandBody: "Lisbon\n2000",
-        followupRun: createQueueTestRun({ prompt: "Lisbon\n2000" }),
+      await dispatch("Lisbon", "incomplete-answer");
+      expect(replyResolver).toHaveBeenCalledOnce();
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledOnce();
+      expect(onResolved).not.toHaveBeenCalled();
+
+      await dispatch("1: Lisbon\n2: 2000", "complete-answer");
+      expect(broker.get({ id: questionId }).question).toMatchObject({
+        status: "answered",
+        answers: { answers: { destination: ["Lisbon"], budget: ["2000"] } },
+      });
+      await resumed;
+      expect(onResolved).toHaveBeenCalledExactlyOnceWith({
+        id: questionId,
+        status: "answered",
+        answers: { answers: { destination: ["Lisbon"], budget: ["2000"] } },
+      });
+      expect(onResumed).toHaveBeenCalledOnce();
+      expect(replyResolver).toHaveBeenCalledTimes(2);
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledOnce();
+
+      await dispatch("1: Lisbon\n2: 2000", "complete-answer");
+      expect(replyResolver).toHaveBeenCalledTimes(2);
+      expect(onResolved).toHaveBeenCalledOnce();
+      expect(onResumed).toHaveBeenCalledOnce();
+      expect(fixture.cancel).not.toHaveBeenCalled();
+    } finally {
+      question.dispose();
+      broker.stop();
+      await resumed;
+      fixture.operation.complete();
+    }
+  });
+
+  it.each([
+    { code: "INVALID_REQUEST", reason: "QUESTION_ID_IN_USE" },
+    { code: "INVALID_REQUEST", reason: undefined },
+    { code: "FORBIDDEN", reason: "QUESTION_INVALID_ANSWER" },
+    { code: "UNAVAILABLE", reason: "QUESTION_INVALID_ANSWER" },
+  ])("does not report $code/$reason as an invalid answer", async ({ code, reason }) => {
+    const fixture = createQuestionDispatch(`rejection-${code}-${reason}`);
+    const error = new GatewayClientRequestError({
+      code,
+      message: "question request failed",
+      details: { reason },
+    });
+    const authority = createAgentQuestionAnswerAuthority({
+      sessionKey: fixture.operation.key,
+      fingerprint: "question-custody-fixture",
+      project: () => "question-custody-fixture",
+      assertActive: () => {},
+    });
+    const question = withAgentQuestionAnswerAuthority(authority, () =>
+      registerPendingAgentQuestion({
+        sessionKey: fixture.operation.key,
+        questionId: "ask_rejection_control",
+        questions: [{ id: "answer", header: "Answer", question: "Continue?" }],
+        answer: Promise.resolve({ status: "pending" }),
+        gatewayCall: {
+          version: 2,
+          call: async () => {
+            throw error;
+          },
+        },
+      }),
+    );
+    question.attachRegistration(Promise.resolve());
+    try {
+      const result = runReplyQuestionInput({
+        commandBody: "answer",
+        followupRun: createQueueTestRun({ prompt: "answer" }),
         sessionKey: fixture.operation.key,
         sessionCtx: fixture.ctx,
       });
-      expect(retry).toEqual({ handled: true, payload: undefined });
-      expect(resolves).toHaveLength(2);
-      expect(resolves[1]).toMatchObject({
-        answers: { answers: { destination: ["Lisbon"], budget: ["2000"] } },
-      });
+      if (code === "UNAVAILABLE") {
+        await expect(result).resolves.toMatchObject({
+          handled: true,
+          payload: {
+            text: expect.stringContaining("confirmation was lost"),
+            isError: true,
+          },
+        });
+        expect(question.isResolving()).toBe(true);
+      } else {
+        await expect(result).rejects.toBe(error);
+        expect(question.isResolving()).toBe(false);
+      }
+      expect(fixture.cancel).not.toHaveBeenCalled();
     } finally {
       question.dispose();
       fixture.operation.complete();

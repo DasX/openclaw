@@ -10,6 +10,8 @@ import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import type { EmbeddedRunAttemptParams } from "../embedded-agent-runner/run/types.js";
 import {
   createQuestionPromptLifetime,
+  isTerminalQuestionResolveError,
+  readQuestionRejection,
   type GatewayQuestionCall,
 } from "../tools/gateway-question-lifecycle.js";
 import {
@@ -19,10 +21,6 @@ import {
   type AgentHarnessQuestionGatewayCall,
   type AgentQuestionDispatcher,
 } from "./gateway-question-dispatch.js";
-import {
-  isTerminalAgentQuestionError,
-  readQuestionRejection,
-} from "./gateway-question-rejection.js";
 import type { AgentHarnessHostCapabilities } from "./host-capability-types.js";
 import {
   captureAgentQuestionAnswerAuthority,
@@ -342,7 +340,7 @@ export async function claimPendingAgentQuestionAnswer(params: {
       if (reservation.wasRefused()) {
         throw error;
       }
-      if (isTerminalAgentQuestionError(error)) {
+      if (isTerminalQuestionResolveError(error)) {
         retainReservation = true;
         return false;
       }
@@ -407,7 +405,7 @@ export async function cancelPendingAgentQuestionForSession(params: {
         ...(reservation.extra ? ([reservation.extra] as const) : []),
       );
     } catch (error) {
-      if (reservation.wasRefused() || !isTerminalAgentQuestionError(error)) {
+      if (reservation.wasRefused() || !isTerminalQuestionResolveError(error)) {
         throw error;
       }
     }
@@ -573,7 +571,7 @@ async function runScopedAgentHarnessQuestion(
         { id: questionId, cancel: true, resolvedBy },
       )) as QuestionWaitAnswerResult;
     } catch (error) {
-      if (!isTerminalAgentQuestionError(error)) {
+      if (!isTerminalQuestionResolveError(error)) {
         throw error;
       }
       try {
