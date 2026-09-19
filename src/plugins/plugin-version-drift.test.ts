@@ -1,6 +1,7 @@
 /** Tests plugin version drift detection between package, manifest, and install records. */
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolvePluginUpdateSelection } from "../cli/plugins-update-selection.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import {
@@ -14,6 +15,7 @@ import {
   resolvePluginVersionDriftUpdateCommand,
   resolvePluginVersionDriftTargets,
 } from "./plugin-version-drift.js";
+import { resolveClawHubUpdateSpecs } from "./update-source.js";
 
 vi.mock("../infra/update-check-package-target.js", () => ({
   fetchNpmPackageTargetStatus: vi.fn(),
@@ -467,6 +469,35 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
     expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
   });
 
+  it.each([
+    { installed: "2026.9.3", latest: "2026.9.3-1" },
+    { installed: "2026.9.3-1", latest: "2026.9.3-2" },
+    { installed: "2026.9.3+hotfix.1", latest: "2026.9.3+hotfix.2" },
+  ])(
+    "offers the available ClawHub correction $installed -> $latest",
+    async ({ installed, latest }) => {
+      vi.mocked(resolveLatestVersionFromPackage).mockReturnValue(latest);
+      const report = await resolvePluginVersionDriftTargets(clawhubDriftReport(installed));
+      const entry = expectDefined(report.drifts[0], "available ClawHub correction");
+      expect(entry.targetResolution).toMatchObject({ status: "resolved", version: latest });
+      expect(resolvePluginVersionDriftRegistryLag(entry)).toBeUndefined();
+      expect(resolvePluginVersionDriftUpdateCommand(entry)).toBe(
+        "openclaw plugins update whatsapp",
+      );
+    },
+  );
+
+  it.each(["2026.9.3-1", "2026.9.3+hotfix.2"])(
+    "does not prescribe reinstalling the same ClawHub version %s",
+    async (version) => {
+      vi.mocked(resolveLatestVersionFromPackage).mockReturnValue(version);
+      const report = await resolvePluginVersionDriftTargets(clawhubDriftReport(version));
+      const entry = expectDefined(report.drifts[0], "installed ClawHub version");
+      expect(entry.targetResolution).toMatchObject({ status: "registry-current", version });
+      expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
+    },
+  );
+
   it("targets the newest ClawHub version rather than the host version", async () => {
     vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
     const report = await resolvePluginVersionDriftTargets(clawhubDriftReport("2026.9.2"));
@@ -563,15 +594,16 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
     }
   });
 
-  it("prescribes an executable repair for a stale recorded ClawHub pin", async () => {
+  it("prescribes a stale-pin repair accepted by the current selector and update owner", async () => {
+    const installRecords: Record<string, PluginInstallRecord> = {
+      whatsapp: clawhubRecord("2026.9.2", { spec: "clawhub:@openclaw/whatsapp@2026.9.2" }),
+    };
     vi.mocked(resolveLatestVersionFromPackage).mockReturnValue("2026.9.3");
     const report = await resolvePluginVersionDriftTargets(
       detectPluginVersionDrift({
         gatewayVersion: "2026.9.4",
         config: { update: { channel: "stable" } },
-        installRecords: {
-          whatsapp: clawhubRecord("2026.9.2", { spec: "clawhub:@openclaw/whatsapp@2026.9.2" }),
-        },
+        installRecords,
       }),
     );
     // An update resumes the catalog's unpinned policy for a pin at or below the
@@ -587,7 +619,39 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
       requestedTarget: "2026.9.4",
       version: "2026.9.3",
     });
-    expect(resolvePluginVersionDriftUpdateCommand(entry)).toBe("openclaw plugins update whatsapp");
+    const command = resolvePluginVersionDriftUpdateCommand(entry);
+    expect(command).toBe("openclaw plugins update whatsapp");
+    const rawId = expectDefined(command, "repair command").replace("openclaw plugins update ", "");
+    // Consume the emitted argument through the current CLI owner. An accompanying
+    // package-owned alias must deduplicate to the same installed record.
+    const selectorInput = {
+      installs: installRecords,
+      rawIds: [rawId, "whatsapp-alias"],
+      installOwnerByPluginId: new Map([["whatsapp-alias", "whatsapp"]]),
+    };
+    const selection = resolvePluginUpdateSelection(selectorInput);
+    expect(selection).toEqual({ pluginIds: ["whatsapp"] });
+    const selectedId = expectDefined(selection.pluginIds[0], "selected install owner");
+    const record = expectDefined(installRecords[selectedId], "selected install record");
+    expect(
+      resolveClawHubUpdateSpecs({
+        record,
+        officialSpec: entry.clawhubOfficialSpec,
+        updateChannel: entry.clawhubUpdateChannel,
+        officialPackageName: entry.clawhubPackage,
+        coreVersion: entry.gatewayVersion,
+      }).installSpec,
+    ).toBe("clawhub:@openclaw/whatsapp");
+    // The diagnostic is guidance, not admission: current rejected owner and alias
+    // facts still stop the actual selection without rewriting source trust.
+    for (const rejectedId of ["whatsapp", "whatsapp-alias"]) {
+      expect(
+        resolvePluginUpdateSelection({
+          ...selectorInput,
+          rejectedPluginIds: new Map([[rejectedId, "fixture ownership rejection"]]),
+        }),
+      ).toEqual({ pluginIds: [], error: "fixture ownership rejection" });
+    }
   });
 
   it("keeps a recorded pin above the target Gateway unresolved", async () => {

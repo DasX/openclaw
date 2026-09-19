@@ -224,10 +224,9 @@ async function resolveClawHubEntryTarget(
       },
     };
   }
-  if (
-    resolveOpenClawReleaseCohortVersion(latestVersion) ===
-    resolveOpenClawReleaseCohortVersion(entry.installedVersion)
-  ) {
+  // Cohorts erase correction suffixes and SemVer precedence ignores build metadata.
+  // Only the exact package version proves that the registry target is installed.
+  if (latestVersion === entry.installedVersion) {
     // ClawHub has nothing newer to install. Dropping the entry would hide the
     // registry-lag gap from every downstream diagnostic, so keep the observed
     // registry version and the expected Gateway version and suppress only the

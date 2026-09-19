@@ -218,12 +218,33 @@ describe("official Codex plugin version drift doctor evidence", () => {
 
 describe("ClawHub plugin version drift doctor evidence", () => {
   it.each([
-    { installedVersion: "2026.9.2", pluginApiRange: ">=2026.9.3", result: "resolved" },
-    { installedVersion: "2026.9.3", pluginApiRange: ">=2026.9.3", result: "current" },
-    { installedVersion: "2026.9.3", pluginApiRange: ">=2026.10.1", result: "unresolved" },
+    {
+      installedVersion: "2026.9.2",
+      pluginApiRange: ">=2026.9.3",
+      result: "resolved",
+      latestVersion: "2026.9.3",
+    },
+    {
+      installedVersion: "2026.9.3",
+      pluginApiRange: ">=2026.9.3",
+      result: "current",
+      latestVersion: "2026.9.3",
+    },
+    {
+      installedVersion: "2026.9.3",
+      pluginApiRange: ">=2026.10.1",
+      result: "unresolved",
+      latestVersion: "2026.9.3",
+    },
+    {
+      installedVersion: "2026.9.3",
+      pluginApiRange: ">=2026.9.3",
+      result: "resolved",
+      latestVersion: "2026.9.3-1",
+    },
   ])(
     "renders $result ClawHub targets consistently",
-    async ({ installedVersion, pluginApiRange, result }) => {
+    async ({ installedVersion, pluginApiRange, result, latestVersion }) => {
       vi.mocked(fetchClawHubPackageDetail).mockResolvedValueOnce({
         package: {
           name: "@openclaw/whatsapp",
@@ -233,7 +254,7 @@ describe("ClawHub plugin version drift doctor evidence", () => {
           isOfficial: true,
           createdAt: 0,
           updatedAt: 0,
-          latestVersion: "2026.9.3",
+          latestVersion,
           compatibility: { pluginApiRange },
         },
       });
@@ -272,8 +293,10 @@ describe("ClawHub plugin version drift doctor evidence", () => {
           expect(output).not.toContain("openclaw plugins update");
           expect(output).not.toContain("No install command generated");
         } else if (result === "resolved") {
-          expect(findings[0]?.message).toContain("confirmed plugin target is 2026.9.3");
-          expect(output).toContain("whatsapp: 2026.9.2 (clawhub) -> expected 2026.9.3");
+          expect(findings[0]?.message).toContain(`confirmed plugin target is ${latestVersion}`);
+          expect(output).toContain(
+            `whatsapp: ${installedVersion} (clawhub) -> expected ${latestVersion}`,
+          );
           expect(output).not.toContain("expected 2026.9.4");
           expect(findings[0]?.fixHint).toBe(
             "openclaw plugins update whatsapp && openclaw gateway restart",
