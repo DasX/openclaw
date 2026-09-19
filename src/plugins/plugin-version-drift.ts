@@ -10,6 +10,7 @@ import {
   parseRegistryNpmSpec,
   resolveOpenClawReleaseCohortVersion,
 } from "../infra/npm-registry-spec.js";
+import { isPackageVersionDowngrade } from "../infra/package-update-utils.js";
 import {
   normalizeUpdateChannel,
   resolveRegistryUpdateChannel,
@@ -238,6 +239,19 @@ async function resolveClawHubEntryTarget(
         packageName,
         requestedTarget,
         version: latestVersion,
+      },
+    };
+  }
+  // A withdrawn latest release must not turn diagnostic repair advice into a downgrade.
+  // Share the updater's release ordering, including OpenClaw correction versions.
+  if (isPackageVersionDowngrade(entry.installedVersion, latestVersion)) {
+    return {
+      ...entry,
+      targetResolution: {
+        status: "unresolved",
+        packageName,
+        requestedTarget,
+        error: `ClawHub latest ${latestVersion} is older than installed ${entry.installedVersion}`,
       },
     };
   }

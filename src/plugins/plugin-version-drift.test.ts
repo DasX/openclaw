@@ -470,6 +470,23 @@ describe("resolvePluginVersionDriftTargets for ClawHub installs", () => {
   });
 
   it.each([
+    { installed: "2026.9.3", latest: "2026.9.2" },
+    { installed: "2026.9.3-2", latest: "2026.9.3-1" },
+    { installed: "2026.9.3-1", latest: "2026.9.3" },
+    { installed: "1.2.3", latest: "1.2.2" },
+  ])("does not offer a ClawHub downgrade $installed -> $latest", async ({ installed, latest }) => {
+    vi.mocked(resolveLatestVersionFromPackage).mockReturnValue(latest);
+    const report = await resolvePluginVersionDriftTargets(clawhubDriftReport(installed));
+    const entry = expectDefined(report.drifts[0], "ClawHub registry rollback");
+    expect(entry.targetResolution).toMatchObject({
+      status: "unresolved",
+      error: expect.stringContaining("older than installed"),
+    });
+    expect(resolvePluginVersionDriftRegistryLag(entry)).toBeUndefined();
+    expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
+  });
+
+  it.each([
     { installed: "2026.9.3", latest: "2026.9.3-1" },
     { installed: "2026.9.3-1", latest: "2026.9.3-2" },
     { installed: "2026.9.3+hotfix.1", latest: "2026.9.3+hotfix.2" },
