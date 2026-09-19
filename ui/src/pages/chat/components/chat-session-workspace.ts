@@ -419,6 +419,7 @@ export function createSessionWorkspaceProps(
     state.connected &&
     state.agentsList &&
     !workspace.loading &&
+    !workspace.browserSearchTimer &&
     (!workspace.error || workspace.pendingReload) &&
     (workspace.pendingReload || workspace.list?.sessionKey !== state.sessionKey)
   ) {
@@ -435,6 +436,7 @@ export function createSessionWorkspaceProps(
     dock: workspace.dock,
     narrowLayout: options?.narrowLayout === true,
     filter: workspace.filter,
+    browserPath: workspace.browserPath,
     browserSearch: workspace.browserSearch,
     onSetFilter: (filter) => {
       workspace.filter = filter;

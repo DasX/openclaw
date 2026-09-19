@@ -20,6 +20,7 @@ The official Android app is available on [Google Play](https://play.google.com/s
 - Gateway: [Runbook](/gateway) + [Configuration](/gateway/configuration).
   - Protocols: [Gateway protocol](/gateway/protocol) (nodes + control plane).
 - Select an agent in the sidebar to view its credential status in **Settings → Providers & Models**. The page updates when the Gateway publishes model, credential, or config changes. Use **Refresh** to recheck model availability.
+- The sidebar marks sessions waiting for an answer or approval, including inactive sessions and collapsed groups. Tap the attention icon, hover over it, or focus it with a keyboard to read the oldest pending request and the count of additional requests of the same kind. The indicator clears when requests resolve, are canceled, or expire. Question previews never include answer drafts.
 - **Settings → OpenClaw** opens a dedicated Gateway settings assistant when the operator connection has `operator.admin` and the Gateway supports `openclaw.chat`. Its setup conversation stays separate from ordinary Chat, redacts secret replies locally, and moves to Chat only after you tap **Open Chat**.
 
 Its reply field switches to masked input for secret prompts. Tap it again if a prompt change closes the keyboard. Android sends sensitive replies without trimming them and clears unsent drafts when you leave this page or background the app.
@@ -57,6 +58,19 @@ when you switch away and back. Finish recording, stop dictation or Talk, and let
 media imports or pending send admission finish before using the quick picker.
 The composer stays protected during handoff, but a committed offline Gateway
 remains usable without waiting for a network connection.
+
+## Dictation and attachments
+
+Tap the composer microphone to dictate. The composer shows when recognition is
+starting, listening, or transcribing, with an interim transcript while you speak.
+Only the final transcript is added to your draft. Tap Stop to finish listening,
+or Cancel while starting or transcribing to discard that attempt. Recognition
+errors leave your existing draft intact and explain how to retry.
+
+After picking or sharing photos and files, **Preparing attachments…** stays visible
+until they are ready. Send remains disabled during preparation. **Queuing message…**
+covers local send admission; the message's outbox status then shows delivery or
+any failure. Offline messages still use the durable queue.
 
 ## Wear OS companion
 
@@ -279,6 +293,8 @@ Details and example CoreDNS config: [Bonjour](/gateway/bonjour).
 
 Create a setup code in the [Control UI](/web/control-ui) (**Devices → Pair device**) or with `openclaw qr`.
 
+That mobile **setup code** (and its QR) is what Android **Scan QR or setup code** / **Enter setup code** accept. It is a different artifact from the gateway **join URL** minted by [`openclaw devices join-code`](/cli/devices#openclaw-devices-join-code) (`https://…/j/<code>`), which enrolls a headless node host via [`openclaw connect`](/cli/connect). Pasting a join URL or bare join code into Android setup is rejected — generate a fresh mobile QR/setup code with [`openclaw qr`](/cli/qr).
+
 An explicit `--url` or `--public-url` override wins. Otherwise, setup-code URL selection uses this order:
 
 1. `plugins.entries.device-pair.config.publicUrl`, unless remote preference was requested.
@@ -430,6 +446,10 @@ Camera commands (foreground only; permission-gated): `camera.snap` (jpg), `camer
   automatically.
 - Start continuous **Talk** from the Chat waveform. Dictation, voice-note
   recording, and Talk are mutually exclusive microphone paths.
+- Your selected agent stays bound to Talk and the main chat when the same Gateway
+  reconnects, including while its agent list refreshes. Removing that agent falls
+  back to the Gateway default. Switching Gateways or restarting the app clears
+  this in-memory choice.
 - Talk Mode promotes the existing foreground service from `connectedDevice` to `connectedDevice|microphone` before capture starts, then demotes it when Talk Mode stops. The node service declares `FOREGROUND_SERVICE_CONNECTED_DEVICE` with `CHANGE_NETWORK_STATE`; Android 14+ also requires the `FOREGROUND_SERVICE_MICROPHONE` declaration, the `RECORD_AUDIO` runtime grant, and the microphone service type at runtime.
 - By default, Android Talk uses native speech recognition, Gateway chat, and `talk.speak` through the configured Gateway Talk provider. It inherits the session's thinking setting. Local system TTS is used only when `talk.speak` is unavailable.
 - Gateway config changes refresh Android's cached Talk settings on the next use, without reconnecting or interrupting an active capture.

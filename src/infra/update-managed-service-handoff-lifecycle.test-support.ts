@@ -27,6 +27,7 @@ export type ManagedServiceManagerBoundaryOptions = {
   launchdFault?: "wrong-parent" | "missing-restored-pid" | "dead-restored-pid";
   launchdTeardown?: {
     bootoutDelayMs?: number;
+    waitForNativeTimeout?: boolean;
     clockEachCommandMs?: number;
     loadedPrints?: number;
     pendingBootstrapFailures?: number;
@@ -303,7 +304,9 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 fs.appendFileSync(${JSON.stringify(commandsPath)}, args.join(" ") + "\\n");
 const action = args.find((arg) => ["show", "stop", "reset-failed", "start", "print", "disable", "bootout", "enable", "bootstrap", "kickstart"].includes(arg));
 void (async () => {
-  const { isPidDefinitelyDead } = await import(${JSON.stringify(new URL("../shared/pid-alive.ts", import.meta.url).href)});
+  const { isPidDefinitelyDead } = action === ${JSON.stringify(kind === "systemd" ? "stop" : "print")}
+    ? await import(${JSON.stringify(new URL("../shared/pid-alive.ts", import.meta.url).href)})
+    : {};
   if (${JSON.stringify(kind)} === "systemd" && action === "stop") {
     ${managedServiceStateUpdateScript(statePath, "state.parked = true")};
     while (!isPidDefinitelyDead(${parentPid})) sleep(10);
@@ -409,7 +412,10 @@ if (${JSON.stringify(kind)} === "systemd") {
 }
   `,
   )};
-  if (action === "bootout" && ${options?.launchdTeardown?.bootoutDelayMs ?? 0}) {
+  if (action === "bootout" && ${Boolean(options?.launchdTeardown?.bootoutDelayMs || options?.launchdTeardown?.waitForNativeTimeout)}) {
+    if (${options?.launchdTeardown?.waitForNativeTimeout === true}) {
+      while (!fs.existsSync(${JSON.stringify(statePath + ".native-timeout")})) sleep(5);
+    }
     await new Promise((resolve) => setTimeout(resolve, ${options?.launchdTeardown?.bootoutDelayMs ?? 0}));
     ${managedServiceStateUpdateScript(statePath, "state.bootoutCompleted = true")};
   }

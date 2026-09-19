@@ -31,6 +31,7 @@ import {
 import type {
   BestEffortConfigSnapshot,
   ConfigSnapshotReadOptions,
+  ConfigSnapshotMetadataReadOptions,
   ConfigWriteNotification,
   ConfigWriteOptions,
   ConfigWriteResult,
@@ -43,6 +44,7 @@ import { ConfigWritePostCommitError, type ConfigWriteRollbackStatus } from "./io
 import { rollbackConfigFileWriteIfUnchanged } from "./io.write-safety.js";
 import { formatConfigIssueSummary } from "./issue-format.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
+import type { CapturedRuntimeConfigRead } from "./runtime-config-capture-state.js";
 import {
   createRuntimeConfigWriteNotification,
   finalizeRuntimeSnapshotWrite,
@@ -55,6 +57,7 @@ import {
   notifyRuntimeConfigWriteListeners,
   preflightManagedRuntimeConfigWrite,
   preflightRuntimeSnapshotWrite,
+  projectRuntimeConfigWritePreparedCandidates,
   registerManagedRuntimeConfigWriteOwner,
   registerRuntimeConfigWriteListener,
   type RuntimeConfigSnapshotRefreshOptions,
@@ -79,6 +82,7 @@ export function registerConfigWriteListener(
   listener: (event: ConfigWriteNotification) => void,
   options: {
     ownsRuntimeActivationFor?: string;
+    prepareSnapshot?: Parameters<typeof registerManagedRuntimeConfigWriteOwner>[2];
     preCommitRuntimePreflight?: (
       sourceConfig: OpenClawConfig,
       refreshOptions?: RuntimeConfigSnapshotRefreshOptions,
@@ -89,6 +93,7 @@ export function registerConfigWriteListener(
     ? registerManagedRuntimeConfigWriteOwner(
         options.ownsRuntimeActivationFor,
         options.preCommitRuntimePreflight,
+        options.prepareSnapshot,
       )
     : undefined;
   const unregisterListener = registerRuntimeConfigWriteListener((event) => {
@@ -135,9 +140,17 @@ export function getRuntimeConfig(options?: {
 }
 
 /** Capture the config source before a task read, and load only if its owner needs config facts. */
+export function captureRuntimeConfigAsyncReader(options: {
+  assertCurrent?: () => void;
+  capture: true;
+}): () => Promise<CapturedRuntimeConfigRead>;
+export function captureRuntimeConfigAsyncReader(options?: {
+  assertCurrent?: () => void;
+  capture?: false;
+}): () => Promise<OpenClawConfig>;
 export function captureRuntimeConfigAsyncReader(
-  options: { assertCurrent?: () => void } = {},
-): () => Promise<OpenClawConfig> {
+  options: { assertCurrent?: () => void; capture?: boolean } = {},
+): () => Promise<OpenClawConfig | CapturedRuntimeConfigRead> {
   const sourceEnv = process.env;
   const cwd = tryProcessCwd();
   const readSelectors = () =>
@@ -173,31 +186,31 @@ export function captureRuntimeConfigAsyncReader(
       );
     },
   });
-  let pending: Promise<OpenClawConfig> | undefined;
+  let pending: Promise<OpenClawConfig | CapturedRuntimeConfigRead> | undefined;
   return () => {
     assertCurrent();
-    return (pending ??= loadPinnedRuntimeConfigAsync(
-      async (assertPinned) => {
+    const loadFresh = async (assertPinned: () => void) => {
+      try {
+        assertPinned();
         try {
-          assertPinned();
-          try {
-            await loadDotEnvAsync({ env: stage.env, quiet: true, cwd });
-          } finally {
-            stage.captureDotEnvBaseline();
-          }
-          assertPinned();
-          const config = await io.loadConfigAsync({ assertCurrent: assertPinned });
-          assertPinned();
-          return { config, runtimeEnv: preparePublication(stage.prepare(config)) };
-        } catch (error) {
-          assertPinned();
-          const publication = preparePublication(stage.prepareFailure()).publish();
-          publication.commit();
-          throw error;
+          await loadDotEnvAsync({ env: stage.env, quiet: true, cwd });
+        } finally {
+          stage.captureDotEnvBaseline();
         }
-      },
-      { assertCurrent },
-    ));
+        assertPinned();
+        const config = await io.loadConfigAsync({ assertCurrent: assertPinned });
+        assertPinned();
+        return { config, runtimeEnv: preparePublication(stage.prepare(config)) };
+      } catch (error) {
+        assertPinned();
+        const publication = preparePublication(stage.prepareFailure()).publish();
+        publication.commit();
+        throw error;
+      }
+    };
+    return (pending ??= options.capture
+      ? loadPinnedRuntimeConfigAsync(loadFresh, { assertCurrent, capture: true })
+      : loadPinnedRuntimeConfigAsync(loadFresh, { assertCurrent }));
   };
 }
 
@@ -324,7 +337,7 @@ export async function readConfigFileSnapshot(
 
 export async function readConfigFileSnapshotWithPluginMetadata(
   options?: Pick<
-    ConfigSnapshotReadOptions,
+    ConfigSnapshotMetadataReadOptions,
     | "allowCurrentPluginMetadata"
     | "deferredPluginMigrations"
     | "allowSuspiciousRecovery"
@@ -332,6 +345,7 @@ export async function readConfigFileSnapshotWithPluginMetadata(
     | "lowerPrecedenceEnv"
     | "measure"
     | "observe"
+    | "prepareValidation"
     | "recoverSuspicious"
     | "skipPluginValidation"
   >,
@@ -346,6 +360,7 @@ export async function readConfigFileSnapshotWithPluginMetadata(
     ...(options?.lowerPrecedenceEnv ? { lowerPrecedenceEnv: options.lowerPrecedenceEnv } : {}),
     ...(options?.skipPluginValidation ? { pluginValidation: "skip" as const } : {}),
   }).readConfigFileSnapshotWithPluginMetadata({
+    prepareValidation: options?.prepareValidation,
     allowCurrentPluginMetadata: options?.allowCurrentPluginMetadata,
     recoverSuspicious: options?.recoverSuspicious === true,
     allowSuspiciousRecovery: options?.allowSuspiciousRecovery,
@@ -623,17 +638,10 @@ async function finalizeCommittedConfigWrite(params: {
     if (!notificationRuntimeConfig) {
       return;
     }
-    const notificationPreparedCandidates = new Map(
-      [...managedPreparedCandidates].map(([ownerId, candidate]) => [
-        ownerId,
-        {
-          ...candidate,
-          runtimeConfig:
-            candidate.reapplyRuntimeOverlays?.(canonicalRuntimeConfig) ?? candidate.runtimeConfig,
-          compareConfig:
-            candidate.reapplyCompareOverlays?.(canonicalSourceConfig) ?? candidate.compareConfig,
-        },
-      ]),
+    const notificationPreparedCandidates = projectRuntimeConfigWritePreparedCandidates(
+      managedPreparedCandidates,
+      canonicalRuntimeConfig,
+      canonicalSourceConfig,
     );
     notifyRuntimeConfigWriteListeners(
       attachRuntimeConfigWriteApplication(

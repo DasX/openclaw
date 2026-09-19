@@ -190,7 +190,7 @@ suite.define(() => {
               }),
             });
             await expect.poll(() => trigger.textContent()).toContain(model.name);
-            expect(await trigger.getAttribute("aria-busy")).toBe("false");
+            await expect.poll(() => trigger.getAttribute("aria-busy")).toBe("false");
             expect(await trigger.locator(".btn__spinner").count()).toBe(0);
             expect(
               await composer
@@ -515,7 +515,8 @@ suite.define(() => {
         });
       }
       await options.first().click();
-      await expect.poll(() => new URL(page.url()).pathname).toBe("/settings/model-setup");
+      await expect.poll(() => new URL(page.url()).pathname).toBe("/settings/model-providers");
+      expect(new URL(page.url()).searchParams.get("connect")).toBe("1");
     });
   });
 

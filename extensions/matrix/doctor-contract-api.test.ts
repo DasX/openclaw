@@ -32,10 +32,9 @@ import { SqliteBackedMatrixSyncStore } from "./src/matrix/client/file-sync-store
 import { openMatrixStorageMetaStoreOptions } from "./src/matrix/client/storage-metadata.js";
 import {
   MATRIX_IDB_SNAPSHOT_FILENAME,
-  MATRIX_RECOVERY_KEY_FILENAME,
   openMatrixIdbSnapshotStoreOptions,
   readMatrixIdbSnapshotJson,
-  readMatrixRecoveryKeyStateForPath,
+  openMatrixRecoveryKeyStoreOptions,
   scoreMatrixCryptoStateInStore,
   writeMatrixIdbSnapshotJson,
   type MatrixIdbSnapshotRecord,
@@ -150,7 +149,7 @@ describe("matrix doctor contract state migrations", () => {
       warnings: [],
     });
 
-    const store = new SqliteBackedMatrixSyncStore(storageRootDir);
+    const store = await SqliteBackedMatrixSyncStore.create(storageRootDir);
     expect(store.hasSavedSync()).toBe(true);
     expect(store.hasSavedSyncFromCleanShutdown()).toBe(true);
     await expect(store.getSavedSyncToken()).resolves.toBe("legacy-token");
@@ -305,8 +304,12 @@ describe("matrix doctor contract state migrations", () => {
     });
 
     expect(
-      readMatrixRecoveryKeyStateForPath(path.join(storageRootDir, MATRIX_RECOVERY_KEY_FILENAME))
-        ?.keyId,
+      (
+        await createPluginStateKeyedStoreForTests<{ keyId: string }>(
+          "matrix",
+          openMatrixRecoveryKeyStoreOptions(storageRootDir),
+        ).lookup("current")
+      )?.keyId,
     ).toBe("SSSS");
     expect(fs.existsSync(path.join(storageRootDir, "recovery-key.json"))).toBe(false);
   });
@@ -370,7 +373,7 @@ describe("matrix doctor contract state migrations", () => {
     expect(archivePath).toMatch(/crypto-idb-snapshot\.json\.migrated-\d{4}-/u);
     expect(JSON.parse(fs.readFileSync(archivePath ?? "", "utf8"))).toEqual(snapshot);
 
-    expect(scoreMatrixCryptoStateInStore(storageRootDir)).toBe(5);
+    expect(await scoreMatrixCryptoStateInStore(storageRootDir)).toBe(5);
     expect(JSON.parse((await readMatrixIdbSnapshotJson(storageRootDir)) ?? "null")).toEqual(
       snapshot,
     );

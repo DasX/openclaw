@@ -33,7 +33,7 @@ type TransactionDatabase = DatabaseSync & {
   [abortedTransactionSymbol]?: { error: unknown };
 };
 
-function assertTransactionUsable(db: TransactionDatabase): void {
+export function assertTransactionUsable(db: TransactionDatabase): void {
   const aborted = db[abortedTransactionSymbol];
   if (aborted) {
     throw aborted.error;
@@ -105,6 +105,13 @@ export function retainSqliteWriteAdmissionService(
       }
     }
   };
+}
+
+/** Native coordinator waits must keep the same worker's current-authority grants serviceable. */
+export function sqliteWriteAdmissionServicesForLocation(
+  location: string,
+): ReadonlySet<() => void> | undefined {
+  return writeAdmissionServices.get(normalizeWriteAdmissionLocation(location));
 }
 
 type SqliteBeginAdmissionDiagnostics = {

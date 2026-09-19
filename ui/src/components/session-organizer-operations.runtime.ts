@@ -43,6 +43,8 @@ export {
   updateSessionGroupDefaults,
 } from "./session-organizer-catalog.ts";
 
+export { setSessionInvolvement } from "./session-organizer-batch-mutations.ts";
+
 export async function patchSession(
   host: SessionActionHost,
   session: SessionActionRow,
@@ -606,7 +608,10 @@ export async function stopCloudWorker(
     if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
       return;
     }
-    await scope.sessions.refreshReplacement(agentId);
+    const outcome = await scope.sessions.reconcileMutation(agentId);
+    if (outcome.status === "failed" && host.sessionData.isSessionMutationScopeCurrent(scope)) {
+      host.sessionData.publishSessionMutationError(scope, outcome.error);
+    }
   } catch (error) {
     host.sessionData.publishSessionMutationError(scope, error);
   }

@@ -54,11 +54,7 @@ import { assertSecretOwnerAvailable } from "../secrets/runtime-degraded-state.js
 import { assertRuntimeMediaRequestSecretOwnerAvailable } from "../secrets/runtime-media-secret-owner.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { MediaAttachmentCache } from "./attachments.js";
-import {
-  CLI_OUTPUT_MAX_BUFFER,
-  DEFAULT_TIMEOUT_SECONDS,
-  MIN_AUDIO_FILE_BYTES,
-} from "./defaults.constants.js";
+import { CLI_OUTPUT_MAX_BUFFER, MIN_AUDIO_FILE_BYTES } from "./defaults.constants.js";
 import {
   normalizeImageDescriptionInput,
   optimizeImageDescriptionInput,
@@ -70,7 +66,8 @@ import {
 } from "./local-audio.js";
 import { resolveOpenAiAudioAuthModelApi } from "./openai-audio-api.js";
 import { getMediaUnderstandingProvider, normalizeMediaProviderId } from "./provider-registry.js";
-import { resolveMaxBytes, resolveMaxChars, resolvePrompt, resolveTimeoutMs } from "./resolve.js";
+import { resolveCliModelEntry, resolveEntryRunOptions } from "./resolve.js";
+import { isTranscriptArtifactText } from "./transcription-text.js";
 import type {
   AudioTranscriptionResult,
   MediaAttachment,
@@ -407,39 +404,6 @@ export function buildModelDecision(params: {
   };
 }
 
-function resolveEntryRunOptions(params: {
-  capability: MediaUnderstandingCapability;
-  entry: MediaUnderstandingModelConfig;
-  cfg: OpenClawConfig;
-  config?: MediaUnderstandingConfig;
-}): {
-  maxBytes: number;
-  maxChars?: number;
-  timeoutMs: number;
-  prompt: string;
-  hasConfiguredPrompt: boolean;
-} {
-  const { capability, entry, cfg } = params;
-  const maxBytes = resolveMaxBytes({ capability, entry, cfg, config: params.config });
-  const maxChars = resolveMaxChars({ capability, entry, cfg, config: params.config });
-  const timeoutMs = resolveTimeoutMs(
-    entry.timeoutSeconds ??
-      params.config?.timeoutSeconds ??
-      cfg.tools?.media?.[capability]?.timeoutSeconds,
-    DEFAULT_TIMEOUT_SECONDS[capability],
-  );
-  const configuredPrompt =
-    entry.prompt ?? params.config?.prompt ?? cfg.tools?.media?.[capability]?.prompt;
-  const prompt = resolvePrompt(capability, configuredPrompt, maxChars);
-  return {
-    maxBytes,
-    maxChars,
-    timeoutMs,
-    prompt,
-    hasConfiguredPrompt: Boolean(configuredPrompt?.trim()),
-  };
-}
-
 function resolveMediaRequestOverrides(config: MediaUnderstandingConfig | undefined): {
   prompt?: string;
   language?: string;
@@ -452,27 +416,6 @@ function resolveMediaRequestOverrides(config: MediaUnderstandingConfig | undefin
     prompt: overrides["_requestPromptOverride"],
     language: overrides["_requestLanguageOverride"],
   };
-}
-
-function resolveAudioProviderPrompt(params: {
-  prompt: string;
-  hasConfiguredPrompt: boolean;
-  language?: string;
-}): string | undefined {
-  const language = normalizeLowercaseStringOrEmpty(params.language);
-  const isExplicitEnglish =
-    language === "en" ||
-    language === "eng" ||
-    language === "english" ||
-    language.startsWith("en-") ||
-    language.startsWith("en_");
-  if (params.hasConfiguredPrompt || isExplicitEnglish) {
-    return params.prompt;
-  }
-  // OpenAI-compatible transcription prompts guide style/context and should
-  // match the audio language; omit OpenClaw's English default for autodetection
-  // and non-English hints unless the user supplied an explicit prompt.
-  return undefined;
 }
 
 type ProviderExecutionAuth =
@@ -865,13 +808,8 @@ export async function runProviderEntry(params: {
     });
     assertMinAudioSize({ size: media.size, attachmentIndex: params.attachmentIndex });
     const audioLanguage = requestOverrides.language ?? entry.language ?? params.config?.language;
-    const audioPrompt =
-      requestOverrides.prompt ??
-      resolveAudioProviderPrompt({
-        prompt,
-        hasConfiguredPrompt,
-        language: audioLanguage,
-      });
+    // STT prompts are spelling/context hints; injected instructions can be echoed on silence.
+    const audioPrompt = requestOverrides.prompt ?? (hasConfiguredPrompt ? prompt : undefined);
     const transport = resolveProviderRequestContext({
       providerId,
       cfg,
@@ -951,6 +889,9 @@ export async function runProviderEntry(params: {
               execute: async (apiKey) => transcribeAudio(buildRequest({ kind: "api-key", apiKey })),
             })
           : await transcribeAudio(buildRequest({ kind: "none" }));
+    }
+    if (isTranscriptArtifactText(result.text)) {
+      return ok(null);
     }
     return ok({
       kind: "audio.transcription",
@@ -1051,11 +992,11 @@ export async function runCliEntry(params: {
 }): Promise<MediaUnderstandingOutput | null> {
   const { entry, capability, cfg, ctx } = params;
   const attachmentIndex = params.attachment.index;
-  const command = entry.command?.trim();
-  const args = entry.args ?? [];
-  if (!command) {
-    throw new Error(`CLI entry missing command for ${capability}`);
+  const cli = resolveCliModelEntry(entry);
+  if (!cli.ok) {
+    throw cli.error;
   }
+  const { command, args } = cli.value;
   const requestOverrides = resolveMediaRequestOverrides(params.config);
   const language = requestOverrides.language ?? entry.language ?? params.config?.language;
   const { maxBytes, maxChars, timeoutMs, prompt } = resolveEntryRunOptions({
@@ -1149,7 +1090,7 @@ export async function runCliEntry(params: {
       mediaPath,
     });
     const text = trimOutput(resolved, maxChars);
-    if (!text) {
+    if (!text || (capability === "audio" && isTranscriptArtifactText(resolved))) {
       return null;
     }
     return {

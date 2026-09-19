@@ -20,6 +20,12 @@ JSON exposes them as `migrationWarnings`; they clear when the plugin migration
 completes. If migration state cannot be read, `migrationWarningsError` reports
 that failure while availability and run history remain visible.
 
+When the Gateway is reachable, status also reads its recorded channel warnings
+without probing channel services. JSON exposes these as `channelIssues`. This
+includes blocked channel startup after a local plugin requests trusted runtime
+state, with the source and supported installation remedy. An unavailable Gateway
+does not prevent availability or run-history output.
+
 ```bash
 openclaw update status
 openclaw update status --json
@@ -69,6 +75,11 @@ use candidate code before its own history admission completes.
 
 Triage preserves the original update report. Any update launched during repair
 gets a separate `runId`.
+
+Unexpected automatic-update campaign failures retain the error code, when present,
+and a redacted diagnostic in the run history as well as the Gateway log. Status
+and the bounded run report show the cause after the campaign clears. This requires
+the updated Gateway; older runs cannot recover a cause that was never recorded.
 
 An admitted `openclaw update --json` includes `runId` and the `run` record. `openclaw update status --json`
 includes `activeRun` when a run is active and `lastRun` when history exists.
@@ -210,6 +221,16 @@ automatic rollback cannot complete. Phase timings, repair attempts, and
 verification facts are included only when observed. Chat reports are limited to 1,500 characters;
 `update.runs.get` preserves the bounded record for detailed inspection.
 
+If a stable Gateway is still starting when the readiness allowance ends, the run
+finishes `skipped` with reason `gateway-readiness-unverified`. This means the
+installation completed, readiness was not confirmed, and recovery backups were
+retained. `finishedAtMs` records when observation ended; `confirmedAtMs` remains
+`null`. The warning log preserves the elapsed allowance and last service/HTTP
+observation. No background readiness continuation is promised. Check current
+health with `openclaw gateway status --deep`; later health does not rewrite this
+historical outcome. A Gateway that becomes ready within the allowance records
+`succeeded` and `confirmedAtMs` when readiness is reached.
+
 Standalone finalization and repair record the installed target version before
 Doctor runs. Failed Doctor steps retain the observed child exit code alongside
 the bounded, redacted failure reason; a terminated child can have a `null` exit
@@ -220,14 +241,16 @@ required migrations remain errors. Historical runs cannot recover facts that
 their updater never recorded.
 
 Current updaters record their process identities and refresh the ledger
-every 30 seconds during long build, install, and finalization phases. Finalization
-pauses those writes while repair Doctor runs, including the post-plugin Doctor.
-These phases record their start and completion; the recorded driver identity
-protects the running update while its last-activity timestamp stays unchanged.
+every 30 seconds during long build, install, and finalization phases. Those
+writes pause whenever a Doctor child is repairing state: finalization pauses them
+for repair Doctor, including the post-plugin Doctor, and installation pauses them
+for the activation Doctor step. These phases record their start and completion;
+the recorded driver identity protects the running update while its last-activity
+timestamp stays unchanged.
 The Gateway checks for
-abandoned runs at startup and while following active updates. After more than
-30 minutes without step or heartbeat activity, verifiably dead recorded drivers
-allow the Gateway to finish the run as `failed` with reason `abandoned` and a
+abandoned runs at startup and while following active updates. When verified
+completion cannot be recovered, more than 30 minutes without step or heartbeat
+activity and verifiably dead recorded drivers allow the Gateway to finish the run as `failed` with reason `abandoned` and a
 `reconcile:abandoned` step naming the rule. A live, unreadable, or foreign-host
 driver prevents reconciliation. Each helper or finalization child records its
 own identity and retains earlier drivers, because detached children can outlive
@@ -236,6 +259,20 @@ with one warning and the run requires explicit recovery. Known parent identities
 remain protected, and automatic reconciliation stays disabled for that run.
 Heartbeat write errors warn once per driver run and do not interrupt a running
 build, install, or finalization phase.
+
+An updated candidate records its installed version and build identity after
+post-core work finishes, before handing completion back to the installed updater.
+If the updater exits during restart verification, the Gateway or Doctor can
+finish the run as `succeeded` after fresh checks confirm that the installed and
+serving builds match that recorded target and the Gateway is ready. This also
+allows a matching `abandoned` outcome to be corrected, with the reconciliation
+recorded in history. Live or unobservable drivers, retained recovery work, and
+recorded repair, failure, or rollback evidence remain protected.
+
+Older interrupted runs may lack the target build identity needed for that check.
+Doctor names the abandoned run and explains why it cannot settle it; a matching
+version number alone is insufficient. Inspect the run's recorded steps and use
+[`openclaw update repair`](/cli/update/repair-and-recovery) when recovery is needed.
 
 Historical identityless rows outside the legacy-expiry shape require explicit
 `update repair` or a new operator-started `openclaw update`.

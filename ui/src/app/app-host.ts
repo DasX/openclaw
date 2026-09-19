@@ -64,6 +64,7 @@ import {
   DESKTOP_PANEL_ELEMENT,
   EXEC_APPROVAL_ELEMENT,
   LazyCustomElementRequestController,
+  LINK_READER_PANEL_ELEMENT,
   type OptionalCustomElement,
   TERMINAL_PANEL_ELEMENT,
 } from "./lazy-custom-element.ts";
@@ -115,6 +116,7 @@ class OpenClawShell
   readonly commandPaletteElement = COMMAND_PALETTE_ELEMENT;
   readonly terminalPanelElement = TERMINAL_PANEL_ELEMENT;
   readonly browserPanelElement = BROWSER_PANEL_ELEMENT;
+  readonly linkReaderPanelElement = LINK_READER_PANEL_ELEMENT;
   readonly desktopPanelElement = DESKTOP_PANEL_ELEMENT;
   readonly execApprovalElement = EXEC_APPROVAL_ELEMENT;
   readonly onboardingMemoryImportElement = {
@@ -201,12 +203,7 @@ class OpenClawShell
       }
     });
   }
-  // Lazy: the critical-notice module stays out of the startup chunk (perf
-  // budget); loaded on the first session.observer digest after boot.
-  criticalNoticeRuntime: Promise<
-    typeof import("../pages/chat/critical-observer-notice.runtime.ts")
-  > | null = null;
-  // Lazy for the same reason: the pairing modal is opened from Settings, not at
+  // Lazy: the pairing modal is opened from Settings, not at
   // boot, so its template, icons, and strings stay off the startup chunk.
   @state() devicePairSetupRenderer:
     | typeof import("../pages/devices/view-pairing.runtime.ts").renderDevicePairSetup
@@ -402,6 +399,16 @@ class OpenClawShell
           this.observeDeletedSessions(sessions.state);
           this.recoverDeletedActiveSession(sessions.state);
         },
+        () => this.performUpdate(),
+      )
+      .watch(
+        () => this.context?.placementStartup,
+        (startup, notify) => startup.subscribe(notify),
+        () => {
+          if (this.context) {
+            this.recoverDeletedActiveSession(this.context.sessions.state);
+          }
+        },
       )
       .watch(
         () => this.context?.runtimeConfig,
@@ -566,9 +573,9 @@ class OpenClawShell
     this.shellNavigation.navigate(routeId, options);
   }
 
-  recoverNotFoundRoute() {
+  readonly recoverNotFoundRoute = () => {
     return this.shellNavigation.recoverNotFoundRoute();
-  }
+  };
 
   recoverDeletedActiveSession(sessionState: ApplicationContext["sessions"]["state"]) {
     this.shellNavigation.recoverDeletedActiveSession(sessionState);

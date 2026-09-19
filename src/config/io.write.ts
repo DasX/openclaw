@@ -160,6 +160,7 @@ export async function writeConfigFileFromContext(
 
   const {
     nextConfig,
+    clearedSessionStoreOwner,
     explicitSetPaths,
     explicitSetValueSource,
     persistCanonicalAgentRoster,
@@ -183,6 +184,7 @@ export async function writeConfigFileFromContext(
 
   let persistCandidate: unknown = nextConfig;
   let envRefMap: Map<string, string> | null = null;
+  let authoredPreviousSource: unknown;
   const changedPaths = new Set<string>();
   collectChangedPaths(inputBasis.config, nextConfig, "", changedPaths);
   for (const changedPath of [...explicitSetPaths, ...(options.unsetPaths ?? [])]) {
@@ -240,6 +242,7 @@ export async function writeConfigFileFromContext(
       );
       const collected = new Map<string, string>();
       collectEnvRefPaths(resolvedIncludes, "", collected);
+      authoredPreviousSource = resolvedIncludes;
       if (collected.size > 0) {
         envRefMap = collected;
       }
@@ -276,12 +279,14 @@ export async function writeConfigFileFromContext(
   validateCandidate(validationCandidate);
   // SAFETY: the original resolved input was just validated; retain raw values, not parser defaults.
   const validatedCandidate = validationCandidate as OpenClawConfig;
+  const previousSource =
+    authoredPreviousSource ?? snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig;
   const materialized = stampConfigVersion(
     snapshot.exists
       ? validatedCandidate
       : initializeNativeSessionCatalogPreferences(validatedCandidate),
     options.lastTouchedVersionOverride,
-    snapshot.exists ? (snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig) : null,
+    snapshot.exists ? previousSource : null,
   );
   // Resolve policy from included facts, but persist only its delta beside authored directives.
   persistCandidate = applyMergePatch(
@@ -609,6 +614,11 @@ export async function writeConfigFileFromContext(
     });
     if (!options.skipPluginValidation) {
       logConfigWarningsOnce({ configPath, warnings: validated.warnings, logger: deps.logger });
+    }
+    if (clearedSessionStoreOwner && !options.skipOutputLogs) {
+      deps.logger.warn(
+        "Cleared agents.defaults.sessionStore.agentId because session.store changed. Set that owner path explicitly to assign the destination store's owner.",
+      );
     }
     setDeferredPluginMigrationConfigFacts(sourceConfigForPreflight, deferredPluginMigrations);
     return {

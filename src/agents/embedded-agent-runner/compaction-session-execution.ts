@@ -46,7 +46,11 @@ import { createAgentSessionForEmbeddedRunner } from "../sessions/sdk.js";
 import { setSessionModelUsageSink } from "../sessions/session-model-usage.js";
 import { normalizeUsage, type UsageLike } from "../usage.js";
 import { resolveCompactionFailure } from "./compact-reasons.js";
-import { compactionCheckpointStore, persistCompactionCheckpoint } from "./compaction-checkpoint.js";
+import {
+  captureCompactionCheckpointSnapshotAsync,
+  cleanupCompactionCheckpointSnapshot,
+  persistCompactionCheckpoint,
+} from "./compaction-checkpoint.js";
 import {
   containsRealConversationMessages,
   normalizeObservedTokenCount,
@@ -126,6 +130,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
   try {
     const compactionTimeoutMs = resolveCompactionTimeoutMs(params.config);
     const accountingRecorder = readCompactionAccountingRecorder(params.contextEngineRuntimeContext);
+    const recordCompaction = accountingRecorder?.recordCompaction;
     const memoryTranscript = accountingRecorder?.memoryTranscript;
     const sessionTarget =
       memoryTranscript?.sessionTarget ??
@@ -163,7 +168,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
     );
     checkpointSnapshot = memoryTranscript
       ? null
-      : await compactionCheckpointStore.captureSnapshot({
+      : await captureCompactionCheckpointSnapshotAsync({
           sessionManager,
           sessionFile: params.sessionFile,
           sessionTarget,
@@ -283,7 +288,14 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
         );
         session = createdSession.session;
         session[agentSessionSetContextReplacementHook](
-          accountingRecorder?.recordCompaction,
+          recordCompaction
+            ? (tokensAfter, tokensBefore) =>
+                recordCompaction({
+                  tokensBefore,
+                  tokensAfter,
+                  compactionKind: "context-engine",
+                })
+            : undefined,
           assertActive,
         );
         session.setActiveToolsByName(sessionToolAllowlist);
@@ -475,7 +487,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
         // Setup completed: give the first provider request a full safety window.
         params.compactionTimeoutReset?.();
         let serverTokensAfter: number | undefined;
-        const recordServerCompaction = () => {
+        const recordServerCompaction = (tokensBefore: number) => {
           // Endpoint output_tokens omits retained inputs; observe the actual
           // replacement window synchronously with its accepted rewrite.
           serverTokensAfter = estimateLlmBoundaryTokenPressure({
@@ -489,7 +501,11 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
               enabled: compactionReplayEnabled,
             },
           });
-          accountingRecorder?.recordCompaction?.(serverTokensAfter);
+          recordCompaction?.({
+            tokensBefore,
+            tokensAfter: serverTokensAfter,
+            compactionKind: "server-endpoint",
+          });
         };
         const serverResult = params.transcriptBytePreflightAuthority
           ? undefined
@@ -719,7 +735,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
   } finally {
     setSessionModelUsageSink(compactionSessionManager, null);
     if (!checkpointSnapshotRetained) {
-      await compactionCheckpointStore.cleanupSnapshot(checkpointSnapshot);
+      await cleanupCompactionCheckpointSnapshot(checkpointSnapshot);
     }
   }
 }

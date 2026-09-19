@@ -19,8 +19,12 @@ import {
   resolveUiDefaultAgentId,
   resolveUiSessionRowAgentId,
 } from "../lib/sessions/session-key.ts";
-import { projectSidebarAgentSessionRows } from "./app-sidebar-agent-session-rows.ts";
+import {
+  projectSidebarAgentSessionRows,
+  projectSidebarHomeSession,
+} from "./app-sidebar-agent-session-rows.ts";
 import { AppSidebarBase } from "./app-sidebar-base.ts";
+import { scheduleSidebarChildSessions } from "./app-sidebar-child-session-data.ts";
 import { excludeSessionCatalogRows } from "./app-sidebar-session-catalog-state.ts";
 import {
   adoptedCatalogSessionKeys,
@@ -262,44 +266,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     if (isSessionRouteId(this.activeRouteId)) {
       void this.sessionData.loadActiveSessionLineage(activeRouteKey);
     }
-    const revalidating = this.childSessionParents();
-    this.sessionData.retireStaleChildSessions(revalidating);
-    const context = this.context;
-    const client = context?.gateway.snapshot.client;
-    const scope = this.sessionData.childSessionScope;
-    if (context && client && revalidating.size > 0) {
-      const isCurrent = () =>
-        this.context === context &&
-        this.sessionData.childSessionScope === scope &&
-        context.gateway.snapshot.client === client &&
-        this.isConnected;
-      let admittedParents: Set<string> | undefined;
-      void context.connectionBootstrap
-        .run(
-          scope,
-          async () => {
-            if (isCurrent()) {
-              // Expansion can change while queued; only the current presentation owns these reads.
-              admittedParents = this.childSessionParents();
-              await Promise.all(
-                [...admittedParents].map((key) => this.sessionData.loadChildSessions(key)),
-              );
-            }
-          },
-          { background: true },
-        )
-        .then(() => {
-          // Completion-driven renders can run before the scheduler releases the batch key.
-          const completed = admittedParents;
-          if (
-            completed &&
-            isCurrent() &&
-            [...this.childSessionParents()].some((key) => !completed.has(key))
-          ) {
-            this.requestUpdate();
-          }
-        });
-    }
+    scheduleSidebarChildSessions(this.sessionData, () => this.childSessionParents());
   }
 
   private childSessionParents(): Set<string> {
@@ -315,12 +282,22 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
         session.childSessionKeys.length > 0 &&
         (session.visuallyActive || this.isSessionChildrenExpanded(session))
       ) {
-        revalidating.add(session.key);
+        for (const key of session.childLoadParentKeys ?? [session.key]) {
+          revalidating.add(key);
+        }
       }
     }
-    const mainRow = this.mainSessionRow();
-    if (mainRow && (mainRow.childSessions?.length ?? 0) > 0) {
-      revalidating.add(mainRow.key);
+    const grouped = this.groupedSessionSource;
+    const homeAgents = grouped
+      ? grouped.agentIds.filter((id) => !grouped.collapsedAgentIds.has(id))
+      : [this.expandedAgentId()];
+    for (const agentId of homeAgents) {
+      const mainRow = this.mainSessionRow(agentId);
+      if (mainRow?.childSessions?.length) {
+        for (const key of this.projectHomeSession(mainRow, agentId).childLoadParentKeys ?? []) {
+          revalidating.add(key);
+        }
+      }
     }
     return revalidating;
   }
@@ -750,6 +727,17 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     return resolveSidebarHomeAttention(this.attention, sessionKey, row);
   }
 
+  projectHomeSession(row: GatewaySessionRow, agentId: string): SidebarRecentSession {
+    return projectSidebarHomeSession({
+      host: this,
+      row,
+      agentId,
+      result: this.groupedSessionSource?.result,
+      navigationState: this.getSessionNavigationState(),
+      knownSessionAttention: this.attention.knownSessionAttention(),
+    });
+  }
+
   /** Gateway row backing the identity card (unread/running state), if loaded. */
   mainSessionRow(agentId?: string): GatewaySessionRow | null {
     const normalized = normalizeAgentId(agentId ?? this.expandedAgentId());
@@ -759,7 +747,8 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       (normalized === normalizeAgentId(this.sessionData.sessionsAgentId ?? "")
         ? (this.sessionData.sessionsResult?.sessions ?? [])
         : (this.sessionData.sessionResultsByAgent[normalized]?.sessions ?? []));
-    return findSidebarMainSessionRow(rows, mainKey);
+    const lineage = this.sessionData.activeSessionLineageRoot;
+    return findSidebarMainSessionRow(lineage ? [...rows, lineage] : rows, mainKey);
   }
 
   /** Identity-card click: the agent's rolling main session, or Settings offline. */
@@ -782,10 +771,13 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   }
 
   toggleSessionChildren(session: SidebarRecentSession) {
-    if (!this.sessionProjection.toggleChildren(session).expanded) {
-      this.sessionData.discardEmptyChildSessionSnapshot(session.key);
-    } else {
-      this.sessionData.retryChildSessions(session.key);
+    const { expanded } = this.sessionProjection.toggleChildren(session);
+    for (const key of session.childLoadParentKeys ?? [session.key]) {
+      if (expanded) {
+        this.sessionData.retryChildSessions(key);
+      } else {
+        this.sessionData.discardEmptyChildSessionSnapshot(key);
+      }
     }
     this.requestUpdate();
   }

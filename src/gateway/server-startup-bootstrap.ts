@@ -52,7 +52,7 @@ import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-rea
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../state/openclaw-state-ownership.js";
 import { ADMIN_SCOPE } from "./method-scopes.js";
-import { listCoreGatewayMethodNames } from "./methods/core-descriptors.js";
+import { listCoreGatewayMethodNames } from "./methods/core-method-policy.js";
 import {
   mergeActivationSectionsIntoRuntimeConfig,
   resolveGatewayReloadPluginActivationCandidate,
@@ -150,6 +150,9 @@ export async function prepareGatewayServerBootstrap(input: {
       preflightOpenClawDatabaseSchemas({
         signal,
         env: process.env,
+        reuseStartupSchemaPreparation: true,
+        onAgentInspection: (stats) =>
+          startupTrace.detail("state.schema-preflight", Object.entries(stats)),
       });
     const databaseSchemas = await startupTrace.measure("state.schema-preflight", () =>
       opts.startupOperation

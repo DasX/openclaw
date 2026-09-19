@@ -12,7 +12,7 @@ import type { QuestionPrompt } from "../../../app/question-prompt.ts";
 import type { BrowserTabSelection } from "../../../components/browser/browser-target.ts";
 import { copyMarkdownLabel, handleCopyButton } from "../../../components/copy-button.ts";
 import { icons } from "../../../components/icons.ts";
-import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import type { MarkdownRenderOptions } from "../../../components/markdown-render-options.ts";
 import type { SessionLinkTarget } from "../../../components/markdown-session-links.ts";
 import { releaseMarkdownTables } from "../../../components/markdown-tables.ts";
@@ -42,6 +42,7 @@ import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.typ
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import { resolveChatContextCopy, usesNativeContextMenu } from "./chat-context-copy.ts";
 import type { ChatHistoryBoundaryProps } from "./chat-history-boundary.ts";
+import { isConfirmedActionPopoverFocused } from "./chat-message-confirmation.ts";
 import type { MessageActionDetails } from "./chat-message-markdown.ts";
 import type { ArtifactDownloadResolver } from "./chat-message-media.ts";
 import type { ChatSendStatusActions } from "./chat-message-send-status.ts";
@@ -50,13 +51,18 @@ import {
   openChatRewindConfirmation,
   type MessageReplyTarget,
 } from "./chat-message.ts";
-import { handleChatSelectionPointerUp, removeChatSelectionPopup } from "./chat-selection-popup.ts";
+import {
+  handleChatSelectionPointerUp,
+  isChatSelectionPopupFocused,
+  removeChatSelectionPopup,
+} from "./chat-selection-popup.ts";
 import type { SidebarContent, SidebarFullMessageLoader } from "./chat-sidebar.ts";
 
 registerChatMessageMetadataEnglish();
 
 export type ChatThreadState = {
   asyncQuestionDrafts: Map<string, AsyncQuestionDraft>;
+  asyncQuestionRevision: number;
   asyncQuestionScope?: string;
   turnRecapWatch: TurnRecapWatch | null;
   searchOpen: boolean;
@@ -194,6 +200,7 @@ type TranscriptInteractionProps = Pick<
 function createTranscriptState(): ChatThreadState {
   return {
     asyncQuestionDrafts: new Map(),
+    asyncQuestionRevision: 0,
     turnRecapWatch: null,
     searchOpen: false,
     searchQuery: "",
@@ -217,6 +224,18 @@ export function getTranscriptState(paneId: string): ChatThreadState {
   return state;
 }
 
+export function isThreadPresentationFocused(paneId: string, owner: HTMLElement): boolean {
+  const menu = activeReplyContextMenu?.paneId === paneId ? activeReplyContextMenu.element : null;
+  return (
+    owner.contains(owner.ownerDocument.activeElement) ||
+    isChatSelectionPopupFocused(paneId) ||
+    isConfirmedActionPopoverFocused(owner) ||
+    Boolean(
+      menu && (menu.contains(document.activeElement) || isConfirmedActionPopoverFocused(menu)),
+    )
+  );
+}
+
 export function dismissThreadPortals(paneId?: string, owner?: ParentNode): void {
   removeReplyContextMenu(paneId);
   if (owner) {
@@ -224,7 +243,7 @@ export function dismissThreadPortals(paneId?: string, owner?: ParentNode): void 
   }
   // The selection popup is body-portaled; pane teardown/route changes must
   // drop it so it cannot outlive the render that owns its callbacks.
-  removeChatSelectionPopup();
+  removeChatSelectionPopup(paneId);
 }
 
 export function resetTranscriptSession(paneId: string, owner?: ParentNode): void {
@@ -264,7 +283,22 @@ export function renderTranscriptSearch(
     return nothing;
   }
   return html`
-    <div class="agent-chat__search-bar">
+    <div
+      class="agent-chat__search-bar"
+      @keydown=${(event: KeyboardEvent) => {
+        if (
+          event.key !== "Escape" ||
+          event.defaultPrevented ||
+          event.isComposing ||
+          event.keyCode === 229
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        closeTranscriptSearch(state, requestUpdate);
+      }}
+    >
       ${icons.search}
       <input
         type="text"
@@ -439,6 +473,7 @@ export function handleTranscriptPointerUp(event: PointerEvent, props: Transcript
     return;
   }
   handleChatSelectionPointerUp(event, {
+    paneId: props.paneId,
     onAddToChat: props.onAddToChat,
     onAskSideChat: (selection) => {
       const question = buildCompanionQuestionPrefill(selection);

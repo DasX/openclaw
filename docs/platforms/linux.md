@@ -382,6 +382,14 @@ Canvas bridge or its A2UI push commands.
 
 ## Gateway service (systemd)
 
+On Linux hosts without a supported service manager, run the Gateway in the
+foreground or through your own supervisor, such as rc.d. `openclaw gateway status
+--deep` reports **no supported service manager detected** and identifies a
+remaining service unit as stale. That recorded unit does not select the status
+probe's configuration or port. Updates continue with a service warning; restart
+your manually launched Gateway after the update. An unavailable user session bus
+on a systemd host remains a separate service-access diagnostic.
+
 Install with one of:
 
 ```bash
@@ -399,6 +407,16 @@ openclaw doctor
 `openclaw gateway install` renders a systemd **user** unit by default. Full
 service guidance, including the **system**-level unit variant for shared or
 always-on hosts, lives in the [Gateway runbook](/gateway#supervision-and-service-lifecycle).
+
+Managed units escape literal paths automatically. In a custom unit, do not add
+shell quotes around `WorkingDirectory=` or `EnvironmentFile=` paths, even when
+they contain spaces. Use a separate `EnvironmentFile=` directive for each absolute
+path; systemd ignores relative paths. Write `%%` for a literal percent sign.
+`EnvironmentFile=` also accepts glob patterns, so escape literal glob characters
+with a backslash. Managed working-directory paths must not end in spaces or
+tabs: systemd 255 loses that trailing whitespace when starting the process.
+OpenClaw rejects those paths rather than risk using a different directory;
+choose a path without trailing whitespace.
 
 Write a unit by hand only for a custom setup. Minimal user-unit example
 (`~/.config/systemd/user/openclaw-gateway[-<profile>].service`):
@@ -455,6 +473,10 @@ Covered child process surfaces:
 - MCP stdio server children
 - Managed local model and embedding service children
 - OpenClaw-launched browser/Chrome processes (via the plugin SDK process runtime)
+
+Sandbox backend transports keep their prepared environment and inherited OOM
+score instead of receiving this wrapper. Workload resource policy belongs to
+the sandbox backend; ordinary host commands and PTYs retain the child-first bias.
 
 The wrapper is Linux-only and skipped when `/bin/sh` is unavailable, or when
 the child env sets `OPENCLAW_CHILD_OOM_SCORE_ADJ` to `0`, `false`, `no`, or

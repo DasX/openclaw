@@ -3,7 +3,7 @@ import { createLazyPromise } from "../../shared/lazy-promise.js";
 import {
   listCoreGatewayHandlerMethodNames,
   type CoreGatewayHandlerFamily,
-} from "../methods/core-descriptors.js";
+} from "../methods/core-method-policy.js";
 import { createLazyCoreHandlers } from "./lazy-core-handlers.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
@@ -31,6 +31,10 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   "channel-pairing": () =>
     import("./channel-pairing.js").then((module) => module.channelPairingHandlers),
   chat: () => import("./chat.js").then((module) => module.chatHandlers),
+  "chat-send": () =>
+    import("./chat-send-external-entry.js").then((module) => ({
+      "chat.send": module.handleDirectExternalChatSend,
+    })),
   // Cancellation must not wait for unrelated chat history and send workflows to load.
   "chat-abort": () =>
     import("./chat-abort-handler.js").then((module) => ({
@@ -66,6 +70,8 @@ const CORE_GATEWAY_HANDLER_MODULES = {
     import("./models-auth-status.js").then((module) => module.modelsAuthStatusHandlers),
   "models-auth-login": () =>
     import("./models-auth-login.js").then((module) => module.modelsAuthLoginHandlers),
+  "mcp-auth-login": () =>
+    import("./mcp-auth-login.js").then((module) => module.mcpAuthLoginHandlers),
   "models-auth-order": () =>
     import("./models-auth-order.js").then((module) => module.modelsAuthOrderHandlers),
   models: () => import("./models.js").then((module) => module.modelsHandlers),

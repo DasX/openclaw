@@ -9,7 +9,6 @@ import { resolveGatewayNativeServiceIdentityConflict } from "../../daemon/consta
 import { disableCurrentOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
 import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
 import { resolveManagedGatewayServiceCommand } from "../../daemon/service-types.js";
-import { resolveGatewayService } from "../../daemon/service.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
@@ -95,6 +94,7 @@ import {
   assertGatewayServiceManagementAllowedForUpdate,
   gatewayServiceCommandUsesRoot,
   isGatewayServiceManagementAllowedForUpdate,
+  readManagedGatewayServiceForUpdate,
   resolveManagedServicePackageUpdatePlan,
 } from "./update-command-service-plan.js";
 
@@ -122,28 +122,9 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
     !env[UPDATE_RUN_ID_ENV] &&
     isGatewayServiceManagementAllowedForUpdate(env)
   ) {
-    // Admission needs only the command owner. Leave runtime/status inspection to
-    // the safety preflight, after persisted service selectors have been validated.
-    const service = resolveGatewayService();
-    const absent = await service.isAbsent?.({ env }).catch(() => false);
-    const command = absent
-      ? null
-      : await service
-          .readCommand(env, { requireEffective: true, requireLoaded: true })
-          .catch((cause: unknown) => {
-            throw new GatewayServiceUpdateOwnershipError(
-              "Gateway service inspection is unavailable before update admission. Run `openclaw gateway status --deep` from the service's owning account and retry when service access is restored.",
-              cause,
-            );
-          });
+    const command = (await readManagedGatewayServiceForUpdate(env))?.command ?? null;
     if (command) {
       const usesRoot = await gatewayServiceCommandUsesRoot({ root: params.root, command });
-      if (usesRoot === null) {
-        throw new GatewayServiceUpdateOwnershipError(
-          "Gateway service package ownership could not be resolved before update admission; inspect the service from its owning account and retry.",
-          undefined,
-        );
-      }
       if (usesRoot) {
         env = resolveOwnedManagedUpdateEnv({
           processEnv: env,
@@ -408,10 +389,11 @@ export function createUpdateRunProgress(
 }
 
 export function completeUpdateCommandRun(
-  result: UpdateRunResult,
+  input: UpdateRunResult,
   run: UpdateCommandOptions["run"],
   completion: { rolledBack?: boolean; downtimeMs?: number } = {},
 ): UpdateRunResult {
+  const result = normalizeControlPlaneUpdateResult(input);
   if (!run) {
     return result;
   }
@@ -546,8 +528,11 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   }
   // The shim can move during preparation; the loaded module owns the executing generation.
   const executingRoot = resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });
-  const discoveredRoot = await resolveUpdateRoot();
+  const discoveredRoot = opts.sourceUpdate?.root ?? (await resolveUpdateRoot());
   const installKind = await resolveUpdateInstallKind(discoveredRoot, { timeoutMs });
+  if (opts.sourceUpdate && installKind !== "git") {
+    throw new Error("Doctor source update requires the accepted Git checkout.");
+  }
   const pkgOwnership = createFreeBsdPkgOwnershipInspection(timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS);
   // Inspect the invoking installation before a service can redirect its root,
   // runtime or state. This also covers package-to-Git and preview requests.

@@ -9,7 +9,9 @@ import { isRecord } from "../utils.js";
 import { coerceDoctorSessionRouteStateOwners } from "./doctor-session-route-state-owner-types.js";
 import * as capabilityNormalizers from "./manifest-capability-normalizers.js";
 import { normalizeManifestCommandAliases } from "./manifest-command-aliases.js";
+import { normalizeConfigGroups } from "./manifest-config-groups.js";
 import * as modelProviderNormalizers from "./manifest-model-provider-normalizers.js";
+import { normalizeManifestPlatforms } from "./manifest-platforms.js";
 import * as setupNormalizers from "./manifest-setup-normalizers.js";
 import type {
   PluginManifestBackupResource,
@@ -220,9 +222,7 @@ export function loadPluginManifest(
   }
 
   const requiresPlugins = normalizeTrimmedStringList(raw.requiresPlugins);
-  const enabledByDefaultOnPlatforms = setupNormalizers.normalizeManifestDefaultPlatforms(
-    raw.enabledByDefaultOnPlatforms,
-  );
+  const enabledByDefaultOnPlatforms = normalizeManifestPlatforms(raw.enabledByDefaultOnPlatforms);
   const legacyPluginIds = normalizeTrimmedStringList(raw.legacyPluginIds);
   const autoEnableWhenConfiguredProviders = normalizeTrimmedStringList(
     raw.autoEnableWhenConfiguredProviders,
@@ -342,6 +342,7 @@ export function loadPluginManifest(
       catalog: capabilityNormalizers.normalizeManifestCatalog(raw.catalog),
       version: normalizeOptionalString(raw.version),
       uiHints: setupNormalizers.normalizeConfigUiHints(raw.uiHints),
+      configGroups: normalizeConfigGroups(raw.configGroups, configSchema),
       contracts,
       transcriptSources: capabilityNormalizers.normalizeManifestTranscriptSources(
         raw.transcriptSources,
