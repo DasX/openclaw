@@ -20,6 +20,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { removePreparedWorkerOwnershipColumns } from "../../state/openclaw-state-schema-v17.test-support.js";
+import type { UpdateCommandOptions } from "./shared.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 
 const mocks = vi.hoisted(() => ({
@@ -111,6 +112,36 @@ describe("post-plugin update readiness", () => {
     }));
   });
 
+  it("keeps a fresh Doctor requester refusal terminal when later checks would pass", async () => {
+    const isCurrent = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const opts: UpdateCommandOptions = {
+      run: {
+        runId: "live-run",
+        env: {},
+        executorFence: { assertCurrent: vi.fn() },
+        requesterAuthority: { requester: {}, isCurrent },
+      },
+    };
+    await expect(completePostCorePluginUpdate({ ...updateOptions, opts })).rejects.toThrow(
+      "requester-revoked",
+    );
+    expect(isCurrent).toHaveBeenCalledTimes(1);
+    expect(mocks.runExec).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "  "])(
+    "never downgrades a present run with invalid id %j to legacy Doctor",
+    async (runId) => {
+      const opts: UpdateCommandOptions = {
+        run: { runId, env: {}, executorFence: { assertCurrent: vi.fn() } },
+      };
+      await expect(
+        runUpdateFinalizationDoctorInFreshProcess({ ...updateOptions, opts, phase: "post-plugin" }),
+      ).rejects.toThrow("original update executor");
+      expect(mocks.runExec).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { phase: "pre-plugin", operatorPolicy: "external" },
     { phase: "post-plugin", operatorPolicy: "external" },
@@ -144,6 +175,27 @@ describe("post-plugin update readiness", () => {
         phase,
         root: tempDirs.make("fresh-doctor-policy-"),
       });
+    },
+  );
+
+  it.each([
+    { phase: "pre-plugin", timeout: undefined, expected: undefined },
+    { phase: "post-plugin", timeout: undefined, expected: undefined },
+    { phase: "pre-plugin", timeout: "3", expected: 3_000 },
+    { phase: "post-plugin", timeout: "3", expected: 3_000 },
+  ] as const)(
+    "uses the operator deadline for $phase Doctor ($timeout)",
+    async ({ phase, timeout, expected }) => {
+      await runUpdateFinalizationDoctorInFreshProcess({
+        ...updateOptions,
+        phase,
+        opts: { timeout },
+      });
+      expect(mocks.runExec).toHaveBeenCalledExactlyOnceWith(
+        "/usr/bin/node",
+        expect.arrayContaining(["doctor", "--repair"]),
+        expect.objectContaining({ timeoutMs: expected }),
+      );
     },
   );
 
