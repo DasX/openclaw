@@ -14,6 +14,7 @@ import { extract as extractTar, list as listTar, type ReadEntry } from "tar";
 import { coerceErrorMessage } from "./lib/error-format.mts";
 import { LOCAL_BUILD_METADATA_DIST_PATHS } from "./lib/local-build-metadata-paths.mts";
 import { collectNpmPackInventory, compareNpmPackInventory } from "./lib/npm-pack-inventory.mts";
+import { assertNpmShrinkwrapDependencies } from "./lib/npm-shrinkwrap-dependencies.mjs";
 import { collectPackageDistImportErrors } from "./lib/package-dist-imports.mjs";
 import {
   comparePackageDistInventory,
@@ -125,6 +126,11 @@ const REQUIRED_BUNDLED_WORKSPACE_RUNTIME_ENTRIES = new Map([
         specifier: "@openclaw/ai/transports",
         entry: "dist/transports.mjs",
         whenExported: "./transports",
+      },
+      {
+        specifier: "@openclaw/ai/internal/openai-completions-compat",
+        entry: "dist/internal/openai-completions-compat.mjs",
+        whenExported: "./internal/openai-completions-compat",
       },
       {
         specifier: "@openclaw/ai/internal/openai-responses-payload-policy",
@@ -793,6 +799,7 @@ if (hasShrinkwrap && !declaresShrinkwrap) {
 if (hasShrinkwrap && declaresShrinkwrap) {
   try {
     const shrinkwrap = JSON.parse(readTarEntry("npm-shrinkwrap.json")) as ShrinkwrapManifest;
+    assertNpmShrinkwrapDependencies(packageJson, shrinkwrap);
     const rootPackage = shrinkwrap.packages?.[""];
     if (shrinkwrap.name !== "openclaw") {
       errors.push("npm-shrinkwrap.json root name must be openclaw");

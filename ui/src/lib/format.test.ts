@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { i18n } from "../i18n/index.ts";
 import { captureI18nStateForTesting } from "../i18n/lib/translate.test-support.ts";
+import { formatDurationCompact, formatDurationHuman } from "./format-duration.ts";
 import {
   clampText,
   createMsFormatter,
@@ -10,8 +11,6 @@ import {
   formatDateMs,
   formatCompactTokenCount,
   formatContextTokenCapacity,
-  formatDurationCompact,
-  formatDurationHuman,
   formatMs,
   formatRelativeTimestamp,
   formatTimeAgo,
@@ -259,6 +258,23 @@ describe("stripThinkingTags", () => {
 });
 
 describe("formatUnknownText", () => {
+  it.each([
+    { name: "null", value: null, expected: "" },
+    { name: "undefined", value: undefined, expected: "" },
+    { name: "string", value: "agent", expected: "agent" },
+    { name: "number", value: 42, expected: "42" },
+    { name: "boolean", value: false, expected: "false" },
+    { name: "bigint", value: 42n, expected: "42" },
+    { name: "function", value: () => "not source text", expected: "[object Function]" },
+    {
+      name: "function with JSON representation",
+      value: Object.assign(() => undefined, { toJSON: () => ({ ok: true }) }),
+      expected: '{"ok":true}',
+    },
+  ])("preserves $name formatting", ({ value, expected }) => {
+    expect(formatUnknownText(value)).toBe(expected);
+  });
+
   it("stringifies plain objects without throwing", () => {
     expect(formatUnknownText({ ok: true })).toBe('{"ok":true}');
   });
@@ -269,8 +285,14 @@ describe("formatUnknownText", () => {
     expect(formatUnknownText(circular)).toBe("[object Object]");
   });
 
-  it("formats symbols without relying on object coercion", () => {
-    expect(formatUnknownText(Symbol("agent"))).toBe("Symbol(agent)");
+  it.each([
+    { name: "named", value: Symbol("agent"), expected: "Symbol(agent)" },
+    { name: "anonymous", value: Symbol(undefined), expected: "Symbol()" },
+    { name: "empty", value: Symbol(""), expected: "Symbol()" },
+    { name: "registered", value: Symbol.for("会議"), expected: "Symbol(会議)" },
+    { name: "well-known", value: Symbol.iterator, expected: "Symbol(Symbol.iterator)" },
+  ])("formats $name symbols without object coercion", ({ value, expected }) => {
+    expect(formatUnknownText(value)).toBe(expected);
   });
 });
 

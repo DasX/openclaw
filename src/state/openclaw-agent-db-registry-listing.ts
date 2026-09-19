@@ -10,7 +10,7 @@ import {
   type OpenClawRegisteredAgentDatabase,
 } from "./openclaw-agent-db-contract.js";
 import {
-  withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
+  withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync,
   withExistingOpenClawStateDatabaseReadOnly,
 } from "./openclaw-state-db-readonly.js";
 import { detectOpenClawStateDatabaseSchemaMigrationsFromDatabase } from "./openclaw-state-db-schema-repair.js";
@@ -134,10 +134,31 @@ export function readOpenClawAgentDatabaseRegistryRows(database: DatabaseSync, pa
   ).rows;
 }
 
-function readRegisteredAgentDatabases(
+export function readAgentDatabasePreflightTargets(database: DatabaseSync, registryPath: string) {
+  return readOpenClawAgentDatabaseRegistryRows(database, registryPath).flatMap((row) =>
+    typeof row.agent_id === "string" && typeof row.path === "string"
+      ? [
+          {
+            agentId: row.agent_id,
+            path: resolveOpenClawRegisteredAgentDatabasePath(registryPath, row.path),
+          },
+        ]
+      : [],
+  );
+}
+
+export function readRegisteredAgentDatabases(
+  options: AgentDatabaseRegistryListOptions,
+  artifactPreserving: false,
+): OpenClawRegisteredAgentDatabase[];
+export function readRegisteredAgentDatabases(
+  options: AgentDatabaseRegistryListOptions,
+  artifactPreserving: true,
+): Promise<OpenClawRegisteredAgentDatabase[]>;
+export function readRegisteredAgentDatabases(
   options: AgentDatabaseRegistryListOptions,
   artifactPreserving: boolean,
-): OpenClawRegisteredAgentDatabase[] {
+): OpenClawRegisteredAgentDatabase[] | Promise<OpenClawRegisteredAgentDatabase[]> {
   const pathname = resolveAgentDatabaseRegistryPath(options);
   const read = ({ db: database }: { db: import("node:sqlite").DatabaseSync }) => {
     const schemaMigrations = detectOpenClawStateDatabaseSchemaMigrationsFromDatabase(
@@ -157,24 +178,26 @@ function readRegisteredAgentDatabases(
       sizeBytes: row.size_bytes,
     }));
   };
-  const entries = artifactPreserving
-    ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(read, options)
-    : withExistingOpenClawStateDatabaseReadOnly(read, options);
-  if (entries === undefined) {
-    if (hasUnavailableMissingSqlitePath(pathname)) {
-      throw new Error(`OpenClaw state database ${pathname} is unavailable.`);
+  const finish = (entries: OpenClawRegisteredAgentDatabase[] | undefined) => {
+    if (entries === undefined) {
+      if (hasUnavailableMissingSqlitePath(pathname)) {
+        throw new Error(`OpenClaw state database ${pathname} is unavailable.`);
+      }
+      return [];
     }
-    return [];
-  }
-  return options.includeIncompatibleSchemaVersions
-    ? entries
-    : entries.filter((entry) => entry.schemaVersion === OPENCLAW_AGENT_SCHEMA_VERSION);
+    return options.includeIncompatibleSchemaVersions
+      ? entries
+      : entries.filter((entry) => entry.schemaVersion === OPENCLAW_AGENT_SCHEMA_VERSION);
+  };
+  return artifactPreserving
+    ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync(read, options).then(finish)
+    : finish(withExistingOpenClawStateDatabaseReadOnly(read, options));
 }
 
 /** Inspect a copied registry without creating SQLite artifacts or runtime memo state. */
-export function inspectOpenClawRegisteredAgentDatabases(
+export async function inspectOpenClawRegisteredAgentDatabases(
   options: AgentDatabaseRegistryListOptions = {},
-): OpenClawRegisteredAgentDatabase[] {
+): Promise<OpenClawRegisteredAgentDatabase[]> {
   return readRegisteredAgentDatabases(options, true);
 }
 

@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { LegacyStateMigrationPlan } from "../infra/state-migrations.types.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../infra/update-control-plane-sentinel.js";
@@ -51,7 +52,8 @@ function runUpdateProcess(root: string, args: string[], env: NodeJS.ProcessEnv =
   const configPath = path.join(root, "config", "openclaw.json");
   const stateDir = path.join(root, "state");
   const entryPath = path.resolve("openclaw.mjs");
-  return spawnSync(process.execPath, [entryPath, ...args], {
+  const nodeArgs = process.versions.bun ? [] : resolveVitestNodeArgs({ ...process.env, ...env });
+  return spawnSync(process.execPath, [...nodeArgs, entryPath, ...args], {
     cwd: path.resolve("."),
     encoding: "utf8",
     env: {
@@ -89,7 +91,7 @@ function runUpdateProcess(root: string, args: string[], env: NodeJS.ProcessEnv =
 async function expectUnrecordedPreview(root: string, before: string[]): Promise<void> {
   expect(await snapshotTree(root)).toEqual(before);
 
-  const status = runUpdateProcess(root, ["update", "status", "--json"]);
+  const status = runUpdateProcess(root, ["update", "status", "--timeout", "1", "--json"]);
   expect(status.error).toBeUndefined();
   expect(status.status, status.stderr).toBe(0);
   const report = JSON.parse(status.stdout);
@@ -186,7 +188,14 @@ process.stdin.resume();
     const configBefore = await fs.readFile(configPath);
     const treeBefore = await snapshotTree(root);
 
-    const result = runUpdateProcess(root, ["update", "--dry-run", "--no-restart", "--json"]);
+    const result = runUpdateProcess(root, [
+      "update",
+      "--dry-run",
+      "--no-restart",
+      "--timeout",
+      "1",
+      "--json",
+    ]);
 
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
@@ -221,7 +230,14 @@ process.stdin.resume();
     };
     const treeBefore = await snapshotTree(root);
 
-    const result = runUpdateProcess(root, ["--update", "--dry-run", "--no-restart", "--json"]);
+    const result = runUpdateProcess(root, [
+      "--update",
+      "--dry-run",
+      "--no-restart",
+      "--timeout",
+      "1",
+      "--json",
+    ]);
 
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);

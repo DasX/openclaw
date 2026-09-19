@@ -9,7 +9,6 @@ import { resolveGatewayNativeServiceIdentityConflict } from "../../daemon/consta
 import { disableCurrentOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
 import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
 import { resolveManagedGatewayServiceCommand } from "../../daemon/service-types.js";
-import { resolveGatewayService } from "../../daemon/service.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
@@ -29,7 +28,12 @@ import {
   type DevUpdateTarget,
   UPDATE_DEV_TARGET_REF_ENV,
 } from "../../infra/update-dev-target.js";
+import {
+  createFreeBsdPkgOwnershipInspection,
+  type FreeBsdPkgOwnershipInspection,
+} from "../../infra/update-freebsd-pkg-ownership.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
+import { cleanupStaleManagedServiceUpdateHandoffs } from "../../infra/update-managed-service-handoff-cleanup.js";
 import {
   POST_CORE_UPDATE_CHANNEL_ENV,
   POST_CORE_UPDATE_ENV,
@@ -52,9 +56,19 @@ import {
 } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord, UpdateRunStep } from "../../infra/update-run-record.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
-import { inspectUpdateRecoveries, loadUpdateRecovery } from "../../infra/update-run-recovery.js";
+import {
+  inspectUpdateRecoveries,
+  loadUpdateRecovery,
+  type UpdateRecoveryFence,
+} from "../../infra/update-run-recovery.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
+import {
+  AUTO_UPDATE_STEP_TIMEOUT_MS,
+  DEFAULT_UPDATE_STEP_TIMEOUT_MS,
+  UPDATE_RUNNER_TIMEOUT_MS,
+} from "../../infra/update-run-timeouts.js";
 import type { UpdateRunResult, UpdateStepProgress } from "../../infra/update-runner.js";
+import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
@@ -72,6 +86,7 @@ import {
 import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
 import {
   resolveOwnedManagedUpdateEnv,
+  withOwnedManagedUpdateEnv,
   resolveServiceRefreshEnv,
 } from "./update-command-service-env.js";
 import {
@@ -79,6 +94,7 @@ import {
   assertGatewayServiceManagementAllowedForUpdate,
   gatewayServiceCommandUsesRoot,
   isGatewayServiceManagementAllowedForUpdate,
+  readManagedGatewayServiceForUpdate,
   resolveManagedServicePackageUpdatePlan,
 } from "./update-command-service-plan.js";
 
@@ -93,7 +109,11 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
   opts: UpdateCommandOptions;
   root: string;
   invocationCwd?: string;
+  pkgOwnership?: FreeBsdPkgOwnershipInspection;
 }): Promise<NodeJS.ProcessEnv> {
+  const pkgOwnership =
+    params.pkgOwnership ?? createFreeBsdPkgOwnershipInspection(UPDATE_RUNNER_TIMEOUT_MS);
+  await pkgOwnership.assertUnowned(params.root);
   let env = resolveServiceRefreshEnv(process.env, params.invocationCwd);
   // A preview belongs to its explicit state directory. Real updates follow the
   // same owned service selectors as finalization, then freeze them for all writers.
@@ -102,28 +122,9 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
     !env[UPDATE_RUN_ID_ENV] &&
     isGatewayServiceManagementAllowedForUpdate(env)
   ) {
-    // Admission needs only the command owner. Leave runtime/status inspection to
-    // the safety preflight, after persisted service selectors have been validated.
-    const service = resolveGatewayService();
-    const absent = await service.isAbsent?.({ env }).catch(() => false);
-    const command = absent
-      ? null
-      : await service
-          .readCommand(env, { requireEffective: true, requireLoaded: true })
-          .catch((cause: unknown) => {
-            throw new GatewayServiceUpdateOwnershipError(
-              "Gateway service inspection is unavailable before update admission. Run `openclaw gateway status --deep` from the service's owning account and retry when service access is restored.",
-              cause,
-            );
-          });
+    const command = (await readManagedGatewayServiceForUpdate(env))?.command ?? null;
     if (command) {
       const usesRoot = await gatewayServiceCommandUsesRoot({ root: params.root, command });
-      if (usesRoot === null) {
-        throw new GatewayServiceUpdateOwnershipError(
-          "Gateway service package ownership could not be resolved before update admission; inspect the service from its owning account and retry.",
-          undefined,
-        );
-      }
       if (usesRoot) {
         env = resolveOwnedManagedUpdateEnv({
           processEnv: env,
@@ -168,6 +169,7 @@ export async function admitUpdateCommandRun(params: {
   opts: UpdateCommandOptions;
   root: string;
   invocationCwd?: string;
+  pkgOwnership?: FreeBsdPkgOwnershipInspection;
   initialization?: {
     env: NodeJS.ProcessEnv;
     runId: string;
@@ -213,6 +215,10 @@ export async function admitUpdateCommandRun(params: {
     });
   }
   const driver = readUpdateRunDriver();
+  const ledgerOptions = {
+    env,
+    busyTimeoutMs: parseUpdateTimeoutMs(params.opts.timeout) ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS,
+  };
   const created = createUpdateRun(
     {
       runId: env[UPDATE_RUN_ID_ENV]?.trim() || params.initialization?.runId,
@@ -224,14 +230,19 @@ export async function admitUpdateCommandRun(params: {
       target: { channel: params.opts.channel, tag: params.opts.tag },
       before: { version: VERSION },
     },
-    { env },
+    ledgerOptions,
   );
-  const record = adoptUpdateRun(created.runId, { env });
+  const record = adoptUpdateRun(created.runId, ledgerOptions);
   const requester = resolveManagedUpdateRequester(record.origin.requester);
   const requesterAuthority = requester
     ? await createManagedUpdateRequesterAuthority(requester, env)
     : undefined;
-  const run = { runId: record.runId, env, ...(requesterAuthority ? { requesterAuthority } : {}) };
+  const run = {
+    runId: record.runId,
+    defaultStepTimeoutMs: record.trigger === "campaign" ? AUTO_UPDATE_STEP_TIMEOUT_MS : undefined,
+    env,
+    ...(requesterAuthority ? { requesterAuthority } : {}),
+  };
   if (
     !env[UPDATE_RUN_ID_ENV] &&
     env.OPENCLAW_UPDATE_RUN_HANDOFF !== "1" &&
@@ -378,10 +389,11 @@ export function createUpdateRunProgress(
 }
 
 export function completeUpdateCommandRun(
-  result: UpdateRunResult,
+  input: UpdateRunResult,
   run: UpdateCommandOptions["run"],
   completion: { rolledBack?: boolean; downtimeMs?: number } = {},
 ): UpdateRunResult {
+  const result = normalizeControlPlaneUpdateResult(input);
   if (!run) {
     return result;
   }
@@ -476,7 +488,7 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   // Refuse before preflight can inspect write ownership or admit a live run ledger.
   const runtimeFailure = process.versions.bun
     ? null
-    : nodeRuntimeFailure(process.versions.node, detectCurrentSqliteCapabilities());
+    : nodeRuntimeFailure(process.versions.node, await detectCurrentSqliteCapabilities());
   if (runtimeFailure) {
     const error = `${runtimeFailure}\n${formatUnsupportedNodeVersionMessage(process.versions.node)}`;
     if (opts.json) {
@@ -516,8 +528,15 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   }
   // The shim can move during preparation; the loaded module owns the executing generation.
   const executingRoot = resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });
-  const discoveredRoot = await resolveUpdateRoot();
-  const installKind = await resolveUpdateInstallKind(discoveredRoot);
+  const discoveredRoot = opts.sourceUpdate?.root ?? (await resolveUpdateRoot());
+  const installKind = await resolveUpdateInstallKind(discoveredRoot, { timeoutMs });
+  if (opts.sourceUpdate && installKind !== "git") {
+    throw new Error("Doctor source update requires the accepted Git checkout.");
+  }
+  const pkgOwnership = createFreeBsdPkgOwnershipInspection(timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS);
+  // Inspect the invoking installation before a service can redirect its root,
+  // runtime or state. This also covers package-to-Git and preview requests.
+  await pkgOwnership.assertUnowned(discoveredRoot);
   // A post-core marker cannot bypass pending recovery without the live original
   // owner. Check both roots before config/autostart preparation or history.
   assertUpdatePackageActivationAdmission(discoveredRoot, {
@@ -525,7 +544,7 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   });
   const servicePlan =
     installKind === "package"
-      ? await resolveManagedServicePackageUpdatePlan({ root: discoveredRoot })
+      ? await resolveManagedServicePackageUpdatePlan({ root: discoveredRoot, pkgOwnership })
       : undefined;
   if (servicePlan?.rootRedirect) {
     assertUpdatePackageActivationAdmission(servicePlan.rootRedirect.root, {
@@ -573,5 +592,27 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
     discoveredRoot,
     installKind,
     servicePlan,
+    pkgOwnership,
   };
+}
+
+/** Prepare mutable runtime state only under the admitted installation owner. */
+export async function prepareMutableUpdateRuntime(
+  env: NodeJS.ProcessEnv | undefined,
+  fence: UpdateRecoveryFence,
+) {
+  return await withOwnedManagedUpdateEnv(env, async () => {
+    fence.assertCurrent();
+    await cleanupStaleManagedServiceUpdateHandoffs().catch(() => undefined);
+    fence.assertCurrent();
+    await assertOpenClawStateWriteAllowedAtPath({
+      databasePath: resolveOpenClawStateSqlitePath(process.env),
+    });
+    fence.assertCurrent();
+    await disableCurrentOpenClawUpdateLaunchdJob().catch(() => undefined);
+    fence.assertCurrent();
+    const records = await loadInstalledPluginIndexInstallRecords();
+    fence.assertCurrent();
+    return records;
+  });
 }

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -40,19 +41,31 @@ vi.mock("./session-accessor.sqlite-worker-request.js", async (importOriginal) =>
     ...actual,
     runSqliteMutationWorkerRequest: <Result>(
       params: Parameters<typeof actual.runSqliteMutationWorkerRequest<Result>>[0],
-    ) =>
-      actual.runSqliteMutationWorkerRequest({
+    ) => {
+      let inWriteAdmission: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined;
+      return actual.runSqliteMutationWorkerRequest<Result>({
         ...params,
+        withWriteAdmission: (performWrite, diagnostics) =>
+          params.withWriteAdmission((refusal) => {
+            // Bound Worker messages otherwise run outside the active writer context.
+            inWriteAdmission = AsyncLocalStorage.snapshot();
+            return performWrite(refusal);
+          }, diagnostics),
         onCommitRequest: () => {
-          checkpoint.startForeground?.();
-          // Let foreground continuations run while the reclamation Worker holds its writer lock.
+          if (!inWriteAdmission) {
+            throw new Error("Worker requested commit without writer admission");
+          }
+          inWriteAdmission(() => checkpoint.startForeground?.());
+          // Let prepared foreground continuations run before the queued parent
+          // authorizer, while the actual reclamation Worker holds its writer lock.
           const authorization = setImmediate().then(() => {
             params.onCommitRequest();
           });
           checkpoint.authorizations.push(authorization);
           void authorization.catch(() => {});
         },
-      }),
+      });
+    },
   };
 });
 

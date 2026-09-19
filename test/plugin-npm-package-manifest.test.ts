@@ -746,7 +746,7 @@ describe("plugin npm package manifest staging", () => {
     { name: "missing specifier", partial: { exportName: "hasState" } },
     { name: "blank specifier", partial: { specifier: " \t", exportName: "hasState" } },
   ])(
-    "packs the plugin icon and loads both channel-state probes from one artifact ($name)",
+    "packs plugin identity and activity artwork with channel-state probes ($name)",
     ({ partial }) => {
       const repoDir = makeTempRepoRoot(tempDirs, "openclaw-plugin-npm-package-state-runtime-");
       const packageDir = writePublishablePluginPackage(repoDir);
@@ -783,6 +783,10 @@ describe("plugin npm package manifest staging", () => {
       writeFileText(join(packageDir, "dist", "index.cjs"), "module.exports = {};\n");
       writeFileText(join(packageDir, "dist", "setup-entry.cjs"), "module.exports = {};\n");
       writeFileText(join(packageDir, "assets", "icon.png"), "portable-package-icon");
+      const activitySvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>';
+      writeFileText(join(packageDir, "assets", "activity.svg"), activitySvg);
+      writeFileText(join(packageDir, "assets", "activity", "diffs.svg"), activitySvg);
+      writeFileText(join(packageDir, "assets", "activity", "notes.txt"), "unpublished-notes");
       writeFileText(join(packageDir, "assets", "design-source.svg"), "unpublished-design");
       writeFileText(
         join(packageDir, "dist", "configured-state.cjs"),
@@ -842,6 +846,9 @@ describe("plugin npm package manifest staging", () => {
         expect(packedFiles).toContain("dist/configured-state.cjs");
         expect(packedFiles).toContain("dist/auth-presence.cjs");
         expect(packedFiles).toContain("assets/icon.png");
+        expect(packedFiles).toContain("assets/activity.svg");
+        expect(packedFiles).toContain("assets/activity/diffs.svg");
+        expect(packedFiles).not.toContain("assets/activity/notes.txt");
         expect(packedFiles).not.toContain("assets/design-source.svg");
         expect(packedFiles).not.toContain("configured-state.ts");
         expect(packedFiles).not.toContain("auth-presence.ts");
@@ -860,6 +867,9 @@ describe("plugin npm package manifest staging", () => {
         expect(readFileSync(join(packageRoot, "assets", "icon.png"), "utf8")).toBe(
           "portable-package-icon",
         );
+        for (const activityPath of ["assets/activity.svg", "assets/activity/diffs.svg"]) {
+          expect(readFileSync(join(packageRoot, activityPath), "utf8")).toBe(activitySvg);
+        }
         if (partial) {
           const channel = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"))
             .openclaw.channel;
@@ -945,6 +955,7 @@ process.stdout.write("PACKED_PLUGIN_CHANNEL_STATE_OK\\n");
     "split destination",
     "failed command",
     "ancestor optional",
+    "legacy shrinkwrap",
   ])("preserves source dependencies while staging npm bundles with %s", (scenario) => {
     const repoDir = makeTempRepoRoot(tempDirs, "openclaw-plugin-npm-package-portable-optional-");
     const packageDir = writePublishablePluginPackage(repoDir);
@@ -984,6 +995,16 @@ process.stdout.write("PACKED_PLUGIN_CHANNEL_STATE_OK\\n");
     const sourceOnlyPath = join(packageDir, "node_modules", "source-only", "marker");
     writeFileText(sourceOnlyPath, "keep\n");
     const originalText = readFileSync(join(packageDir, "package.json"), "utf8");
+    const shrinkwrapPath = join(packageDir, "npm-shrinkwrap.json");
+    const legacyShrinkwrap = `${JSON.stringify({
+      name: "@openclaw/diffs",
+      version: "2026.5.3",
+      lockfileVersion: 3,
+      packages: {},
+    })}\n`;
+    if (scenario === "legacy shrinkwrap") {
+      writeFileText(shrinkwrapPath, legacyShrinkwrap);
+    }
     const outputDir =
       scenario.includes("destination") && scenario !== "default destination"
         ? join(packageDir, "artifacts")
@@ -1031,6 +1052,9 @@ process.stdout.write("PACKED_PLUGIN_CHANNEL_STATE_OK\\n");
     expect(readFileSync(sourceOnlyPath, "utf8")).toBe("keep\n");
     expect(existsSync(join(packageDir, "package-lock.json"))).toBe(false);
     expect(readFileSync(join(packageDir, "package.json"), "utf8")).toBe(originalText);
+    if (scenario === "legacy shrinkwrap") {
+      expect(readFileSync(shrinkwrapPath, "utf8")).toBe(legacyShrinkwrap);
+    }
     if (scenario === "failed command") {
       const stagingDir = result.stdout.trim();
       expect(stagingDir).not.toBe("");

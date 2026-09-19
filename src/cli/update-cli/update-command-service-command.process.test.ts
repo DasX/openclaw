@@ -1,15 +1,19 @@
 import { expect, it } from "vitest";
+import { resolveTestNodeExecPath } from "../../test-utils/node-process.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { formatCliProcessFailure, runCliProcessChild } from "../cli-process-child.test-helpers.js";
 
 it.each([
   "restart",
   "install",
+  "restart managed",
+  "install managed",
   "missing candidate",
   "unregistered executor",
   "missing executor",
   "restart revoked",
   "install revoked",
+  "install slow",
 ] as const)("handles %s after replacing the updater's module files", async (scenario) => {
   await withOpenClawTestState(
     { prefix: "openclaw-update-command-replacement-", scenario: "minimal", applyEnv: false },
@@ -19,14 +23,17 @@ it.each([
           import { existsSync } from "node:fs";
           import fs from "node:fs/promises";
           import { registerHooks } from "node:module";
+          import { mock } from "node:test";
           import path from "node:path";
           import { pathToFileURL } from "node:url";
 
           const scenario = ${JSON.stringify(scenario)};
+          const realSetTimeout = setTimeout;
           const action = scenario.startsWith("install") ? "install" : "restart";
           const root = ${JSON.stringify(state.path("installation"))};
           const dist = path.join(root, "dist");
           const receipt = path.join(root, "candidate.json");
+          const release = path.join(root, "release");
           const owner = ${JSON.stringify(new URL("./update-command-service-command.ts", import.meta.url).href)};
           await fs.mkdir(dist, { recursive: true });
 
@@ -56,6 +63,13 @@ it.each([
 
           await fs.rm(dist, { recursive: true });
           await fs.mkdir(dist);
+          const managedEnv = scenario.endsWith(" managed") ? {
+            ...process.env,
+            OPENCLAW_SERVICE_MARKER: "openclaw",
+            OPENCLAW_SERVICE_KIND: "gateway",
+            OPENCLAW_GATEWAY_SERVICE_PID: "1234",
+            OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.recovery-fixture",
+          } : undefined;
           const params = {
             result: { root, mode: "npm" },
             opts: { json: true, ...(scenario === "missing executor" ? { run: { runId: "original", env: process.env } } : scenario === "unregistered executor" ? {
@@ -64,7 +78,9 @@ it.each([
               } },
             } : {}) },
             invocationEnv: process.env,
-            timeoutMs: 10_000,
+            serviceEnv: managedEnv,
+            serviceInstallEnv: managedEnv,
+            timeoutMs: scenario === "install slow" ? 120_000 : 10_000,
             assertCurrent() {
               if (scenario !== "unregistered executor" && scenario.endsWith("revoked") && existsSync(receipt)) {
                 throw new Error("Update authority revoked during native command");
@@ -83,24 +99,45 @@ it.each([
               '  node: process.execPath,',
               '  config: process.env.OPENCLAW_CONFIG_PATH,',
               '  compileCacheDisabled: process.env.NODE_DISABLE_COMPILE_CACHE,',
+              '  serviceMarker: process.env.OPENCLAW_SERVICE_MARKER,',
+              '  serviceKind: process.env.OPENCLAW_SERVICE_KIND,',
+              '  servicePid: process.env.OPENCLAW_GATEWAY_SERVICE_PID,',
+              '  serviceLabel: process.env.OPENCLAW_LAUNCHD_LABEL,',
               '}));',
+              scenario === "install slow" ? 'const timer = setInterval(() => { if (fs.existsSync(' + JSON.stringify(release) + ')) clearInterval(timer); }, 5);' : '',
             ].join("\n"));
             if (scenario === "missing executor") {
-              await assert.rejects(runUpdatedInstallGatewayCommand(params, action, true), {
+              await assert.rejects(runUpdatedInstallGatewayCommand(params, action), {
                 message: "Native command requires its original update executor.",
               });
               assert.equal(existsSync(receipt), false);
             } else if (scenario === "unregistered executor") {
-              await assert.rejects(runUpdatedInstallGatewayCommand(params, action, true), {
+              await assert.rejects(runUpdatedInstallGatewayCommand(params, action), {
                 message: "Child continuation requires its live executor.",
               });
               assert.equal(existsSync(receipt), false);
             } else if (scenario.endsWith("revoked")) {
-              await assert.rejects(runUpdatedInstallGatewayCommand(params, action, true), {
+              await assert.rejects(runUpdatedInstallGatewayCommand(params, action), {
                 message: "Update authority revoked during native command",
               });
+            } else if (scenario === "install slow") {
+              mock.timers.enable({ apis: ["setTimeout"] });
+              let settled = false;
+              const completed = runUpdatedInstallGatewayCommand(params, action).then(
+                (value) => { settled = true; return value; },
+                (error) => { settled = true; return error; },
+              );
+              while (!existsSync(receipt)) await new Promise(setImmediate);
+              mock.timers.tick(61_000);
+              await fs.writeFile(release, "done");
+              while (!settled) {
+                await new Promise((resolve) => realSetTimeout(resolve, 1));
+                mock.timers.tick(1);
+              }
+              mock.timers.reset();
+              assert.equal(await completed, "unverified");
             } else {
-              assert.equal(await runUpdatedInstallGatewayCommand(params, action, true), "unverified");
+              assert.equal(await runUpdatedInstallGatewayCommand(params, action), "unverified");
             }
             if (scenario !== "unregistered executor" && scenario !== "missing executor") {
               const observed = JSON.parse(await fs.readFile(receipt, "utf8"));
@@ -109,12 +146,14 @@ it.each([
                 node: process.execPath,
                 config: process.env.OPENCLAW_CONFIG_PATH,
                 compileCacheDisabled: "1",
+                ...(managedEnv ? { serviceLabel: "ai.openclaw.recovery-fixture" } : {}),
               });
             }
           }
           console.log("UPDATE_COMMAND_AFTER_REPLACEMENT_OK");
         `;
       const result = await runCliProcessChild({
+        nodeExecutable: resolveTestNodeExecPath(),
         nodeArgs: ["--import", "./scripts/tsx.mjs", "--input-type=module", "--eval", script],
         env: {
           PATH: process.env.PATH,

@@ -12,6 +12,7 @@ import {
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -21,7 +22,6 @@ import { tryAcquireExclusiveSqliteCoordinator } from "./sqlite-coordinator.js";
 import { captureCoordinatorDatabase } from "./sqlite-coordinator.test-support.js";
 import {
   SQLITE_WORKER_MAX_RESULT_BYTES,
-  SQLITE_WORKER_TRANSFER_FRAME_BYTES,
   type SqliteWorkerReply,
 } from "./sqlite-worker-contract.js";
 import {
@@ -32,7 +32,9 @@ import {
   type SqliteWorkerStore,
 } from "./sqlite-worker-store.js";
 import type { FixtureOpenInput, FixtureOperations } from "./sqlite-worker-store.test-support.js";
+import { SQLITE_WORKER_TRANSFER_FRAME_BYTES } from "./sqlite-worker-transfer.js";
 import * as coordinatorOwner from "./state-database-coordinator.js";
+import { getTrackedWorkerCpuSources } from "./worker-cpu.js";
 
 const stores = new Set<SqliteWorkerStore<FixtureOperations>>();
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -115,6 +117,15 @@ async function openWithGateway(file: string) {
 const nodeIt = process.versions.bun ? it.skip : it;
 
 describe("SQLite worker store", () => {
+  it("registers storage-worker CPU sources until native close", async () => {
+    const initial = getTrackedWorkerCpuSources();
+    const store = await open(databasePath());
+    const opened = getTrackedWorkerCpuSources();
+    expect(opened.workers).toHaveLength(initial.workers.length + 1);
+    await store.close();
+    expect(getTrackedWorkerCpuSources().workers).toEqual(initial.workers);
+    expect(getTrackedWorkerCpuSources().revision).toBeGreaterThan(opened.revision);
+  });
   it.each(["read", "client close", "global close", "abort", "failed frame"] as const)(
     "preserves a complete large result through %s",
     async (action) => {
@@ -204,6 +215,15 @@ describe("SQLite worker store", () => {
         expect(frames.every((frame) => frame.backingBytes <= SQLITE_WORKER_MAX_RESULT_BYTES)).toBe(
           true,
         );
+        if (action === "read") {
+          const ownership = await store.execute({ type: "takeReplyOwnership", input: undefined });
+          expect(ownership.some((reply) => reply.kind === "inline")).toBe(true);
+          expect(ownership.filter((reply) => reply.kind === "frame")).toHaveLength(frames.length);
+          for (const reply of ownership) {
+            expect(reply.before).toBeGreaterThan(0);
+            expect.soft(reply.after, `${reply.kind} reply (${reply.before} bytes)`).toBe(0);
+          }
+        }
       } finally {
         messages.mockRestore();
         requests.mockRestore();
@@ -810,18 +830,63 @@ describe("SQLite worker store", () => {
     expect(await read(recovered)).toEqual(["preserved", "after recovery"]);
   });
 
-  it.each([false, true])(
-    "awaits delayed native cleanup before close settles (reject: %s)",
-    async (reject) => {
+  it.each([
+    { reject: false, owner: "client" },
+    { reject: true, owner: "client" },
+    { reject: false, owner: "host" },
+  ] as const)(
+    "awaits delayed native cleanup before $owner close settles (reject: $reject)",
+    async ({ reject, owner }) => {
       const file = databasePath();
       const markerPath = path.join(path.dirname(file), "closed");
       const store = await open(file);
+      const peer = owner === "host" ? await open(file) : undefined;
       await append(store, "preserved");
       await store.execute({ type: "delayClose", input: { markerPath, reject } });
       stores.delete(store);
+      // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply preserves the emitting worker below.
+      const originalEmit = Worker.prototype.emit;
       const events = vi.spyOn(Worker.prototype, "emit");
+      const replyHeld = createDeferredCore();
+      let resumeReply: (() => void) | undefined;
+      if (peer) {
+        events.mockImplementation(function (this: Worker, ...args: Parameters<Worker["emit"]>) {
+          const [event, reply] = args;
+          if (event === "message" && isRecord(reply) && reply.ok === true && !resumeReply) {
+            let delivered = false;
+            resumeReply = () => {
+              if (delivered) {
+                return;
+              }
+              delivered = true;
+              Reflect.apply(originalEmit, this, args);
+            };
+            replyHeld.resolve();
+            return true;
+          }
+          return Reflect.apply(originalEmit, this, args);
+        });
+      }
+      const cleanup = Promise.allSettled([
+        peer ? drainGlobalSingletonLifecycleState("restart") : store.close(),
+      ]);
+      let clientCleanup: Promise<PromiseSettledResult<void>[]> | undefined;
       try {
-        const [result] = await Promise.allSettled([store.close()]);
+        if (peer) {
+          await replyHeld.promise;
+          let clientClosed = false;
+          clientCleanup = Promise.allSettled([store.close()]).then((results) => {
+            clientClosed = true;
+            return results;
+          });
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          expect(clientClosed).toBe(false);
+          resumeReply?.();
+          expect(await clientCleanup).toEqual([{ status: "fulfilled", value: undefined }]);
+        }
+        const [result] = await cleanup;
         expect(events.mock.calls.filter(([event]) => event === "error")).toEqual([]);
         expect(await readFile(markerPath, "utf8")).toBe("native database closed");
         if (reject) {
@@ -838,6 +903,10 @@ describe("SQLite worker store", () => {
         }
       } finally {
         events.mockRestore();
+        resumeReply?.();
+        await cleanup;
+        await clientCleanup;
+        await peer?.close();
       }
       const recovered = await open(file);
       expect(await read(recovered)).toEqual(["preserved"]);

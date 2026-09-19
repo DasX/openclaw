@@ -1,3 +1,4 @@
+import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { z } from "zod";
 import { resolveNodeStartupTlsEnvironment } from "../../bootstrap/node-startup-env.js";
 import {
@@ -26,12 +27,14 @@ export async function runGatewayInstallWithLoadBoundary(params: {
   cwd?: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  timeoutMs: number;
   boundary: UpdateServiceLoadBoundary;
+  onResult?: (stdout: string) => void;
 }): Promise<"unverified"> {
   const controller = new AbortController();
   const signal = AbortSignal.any([
     controller.signal,
-    AbortSignal.timeout(60_000),
+    AbortSignal.timeout(resolveTimerTimeoutMs(params.timeoutMs, 1)),
     ...(params.signal ? [params.signal] : []),
   ]);
   signal.throwIfAborted();
@@ -99,6 +102,7 @@ export async function runGatewayInstallWithLoadBoundary(params: {
     await handoff;
     params.signal?.throwIfAborted();
     params.boundary.assertCurrent();
+    params.onResult?.(result.stdout);
     if (failure || !approved || result.failed || result.exitCode !== 0) {
       throw new UpdateServiceLoadBoundaryError(
         "Staged gateway install did not complete its sealed load.",

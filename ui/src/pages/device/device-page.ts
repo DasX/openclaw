@@ -23,11 +23,13 @@ import {
 } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
+import { registerAppsEnglish } from "../../i18n/locales/en-apps.ts";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import "./device.css";
 
+registerAppsEnglish();
 registerSettingsEnglish();
 
 type CookieSyncEdits = {
@@ -379,6 +381,7 @@ class DevicePage extends OpenClawLightDomElement {
           ? renderSettingsSection(
               { title: t("configPage.deviceSettings.app") },
               html`
+                ${this.toggle("app.nativeExperienceEnabled", app.nativeExperienceEnabled, "nativeExperience", t("configPage.deviceSettings.nativeExperienceHint"))}
                 ${
                   app.appearance !== undefined
                     ? renderSettingsRow({

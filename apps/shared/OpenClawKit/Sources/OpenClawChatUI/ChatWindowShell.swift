@@ -14,6 +14,11 @@ public struct OpenClawChatWindowShell: View {
 
     @State private var viewModel: OpenClawChatViewModel
     @Environment(\.colorScheme) private var colorScheme
+    /// Keep absent keys available to the app's legacy trace-preference migration.
+    @AppStorage(OpenClawChatWindowShell.assistantReasoningDefaultsKey)
+    private var storedShowsReasoning: Bool?
+    @AppStorage(OpenClawChatWindowShell.assistantToolActivityDefaultsKey)
+    private var storedShowsToolActivity: Bool?
     @State private var sessionQuery = ""
     @State private var isConfirmingClearHistory = false
     @State private var isPresentingSessions = false
@@ -21,6 +26,7 @@ public struct OpenClawChatWindowShell: View {
     @State private var isPresentingNewSessionOptions = false
     @State private var renameSessionTarget: OpenClawChatSessionTarget?
     @State private var renameText = ""
+    private let attentionRequests: [OpenClawChatAttentionRequest]
     private let userAccent: Color?
     private let displayOptions: OpenClawChatDisplayOptions
     private let emptyAssistantIntro: String?
@@ -34,6 +40,7 @@ public struct OpenClawChatWindowShell: View {
     public init(
         viewModel: OpenClawChatViewModel,
         userAccent: Color? = nil,
+        attentionRequests: [OpenClawChatAttentionRequest] = [],
         displayOptions: OpenClawChatDisplayOptions? = nil,
         showsAssistantTrace: Bool = false,
         emptyAssistantIntro: String? = nil,
@@ -44,6 +51,7 @@ public struct OpenClawChatWindowShell: View {
         mediaPlaybackAllowed: @escaping @MainActor @Sendable () -> Bool = { true })
     {
         _viewModel = State(initialValue: viewModel)
+        self.attentionRequests = attentionRequests
         self.userAccent = userAccent
         self.displayOptions = displayOptions ?? .assistantTrace(showsAssistantTrace)
         self.emptyAssistantIntro = emptyAssistantIntro
@@ -58,7 +66,8 @@ public struct OpenClawChatWindowShell: View {
         NavigationSplitView {
             ChatSessionSidebar(
                 viewModel: self.viewModel,
-                query: self.$sessionQuery)
+                query: self.$sessionQuery,
+                additionalAttentionRequests: self.attentionRequests)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
         } detail: {
             OpenClawChatView(
@@ -141,7 +150,8 @@ public struct OpenClawChatWindowShell: View {
                 Text("New Thread")
                     .font(OpenClawChatTypography.body)
             }
-            .keyboardShortcut("n", modifiers: [.command])
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .focusable(false)
 
             Button {
                 self.viewModel.refresh()
@@ -151,6 +161,7 @@ public struct OpenClawChatWindowShell: View {
                     .font(OpenClawChatTypography.body)
             }
             .keyboardShortcut("r", modifiers: [.command])
+            .focusable(false)
 
             Button {
                 self.exportTranscript()
@@ -159,6 +170,7 @@ public struct OpenClawChatWindowShell: View {
                     .font(OpenClawChatTypography.body)
             }
             .keyboardShortcut("e", modifiers: [.command, .shift])
+            .focusable(false)
             .disabled(self.viewModel.messages.isEmpty)
 
             Button {
@@ -168,6 +180,7 @@ public struct OpenClawChatWindowShell: View {
                     .font(OpenClawChatTypography.body)
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+            .focusable(false)
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -191,30 +204,91 @@ public struct OpenClawChatWindowShell: View {
 
     @ToolbarContentBuilder
     private var detailToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .principal) {
+                self.conversationIdentity
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .principal) {
+                self.conversationIdentity
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            self.sessionActionsMenu
+        }
+    }
+
+    private var conversationIdentity: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
             HStack(spacing: 8) {
                 if let agent = self.viewModel.selectedAgent {
-                    ChatSidebarAgentAvatar(agent: agent, size: 26)
+                    ChatSidebarAgentAvatar(agent: agent, size: 24)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(self.activeSessionTitle)
                         .font(OpenClawChatTypography.body(size: 13, weight: .semibold, relativeTo: .headline))
-                    if let agent = self.viewModel.selectedAgent {
-                        Text(verbatim: agent.displayName)
-                            .font(OpenClawChatTypography.caption)
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if let agent = self.viewModel.selectedAgent {
+                            Text(verbatim: agent.displayName)
+                        }
+                        if let status = self.conversationStatus(at: context.date) {
+                            Text(verbatim: "·").accessibilityHidden(true)
+                            Label(status.title, systemImage: status.symbol)
+                                .labelStyle(.titleAndIcon)
+                                .foregroundStyle(status.tint)
+                        }
                     }
+                    .font(OpenClawChatTypography.caption)
+                    .foregroundStyle(.secondary)
                 }
                 .lineLimit(1)
-                if OpenClawSessionColor(name: self.activeSessionEntry?.color) != nil {
-                    OpenClawSessionColorDot(color: self.activeSessionEntry?.color)
-                }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 4)
             .padding(.vertical, 6)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("chat-conversation-identity")
         }
-        ToolbarItem(placement: .primaryAction) {
-            self.sessionActionsMenu
+    }
+
+    private func conversationStatus(at date: Date) -> (title: String, symbol: String, tint: Color)? {
+        if !self.viewModel.healthOK {
+            return (String(localized: "Connecting…"), "network", .secondary)
+        }
+        if self.viewModel.composerModelAvailabilityMessage != nil {
+            return (String(localized: "Sign-in needed"), "key", OpenClawChatTheme.warning)
+        }
+        if self.viewModel.visibleQuestionCards.contains(where: { $0.status(at: date) == .pending }) {
+            return (String(localized: "Needs you"), "bubble.left", OpenClawChatTheme.warning)
+        }
+        let activity = self.activeSessionEntry.flatMap {
+            ChatSessionSidebarModel.activity(for: $0, now: date.timeIntervalSince1970 * 1000)
+        }
+        if activity?.kind == .attention {
+            return (String(localized: "Needs you"), "exclamationmark.bubble", OpenClawChatTheme.warning)
+        }
+        if activity?.kind == .queued {
+            return (String(localized: "Queued"), "hourglass", .secondary)
+        }
+        if self.viewModel.hasBlockingRunActivity {
+            return (String(localized: "Working"), "circle.dotted", .secondary)
+        }
+        guard let activity else { return nil }
+        switch activity.kind {
+        case .attention:
+            return (String(localized: "Needs you"), "exclamationmark.bubble", OpenClawChatTheme.warning)
+        case .running:
+            return (String(localized: "Working"), "circle.dotted", .secondary)
+        case .queued:
+            return (String(localized: "Queued"), "hourglass", .secondary)
+        case .failed:
+            return (String(localized: "Failed"), "exclamationmark.triangle", OpenClawChatTheme.warning)
+        case .finished:
+            return (String(localized: "Finished"), "checkmark", .secondary)
+        case .idle:
+            return (String(localized: "Ready"), "circle", .secondary)
+        case .unknown:
+            return nil
         }
     }
 
@@ -225,7 +299,7 @@ public struct OpenClawChatWindowShell: View {
             } label: {
                 chatWindowActionLabel("New Thread", systemImage: "square.and.pencil")
             }
-            .keyboardShortcut("n", modifiers: [.command])
+            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button {
                 self.isPresentingNewSessionOptions = true
@@ -348,27 +422,21 @@ public struct OpenClawChatWindowShell: View {
 
             Toggle(isOn: Binding(
                 get: { self.displayOptions.contains(.reasoning) },
-                set: {
-                    UserDefaults.standard.set(
-                        $0,
-                        forKey: Self.assistantReasoningDefaultsKey)
-                })) {
-                    chatWindowActionLabel(
-                        "Show Reasoning",
-                        systemImage: "brain.head.profile")
-                }
+                set: { self.storedShowsReasoning = $0 }))
+            {
+                chatWindowActionLabel(
+                    "Show Reasoning",
+                    systemImage: "brain.head.profile")
+            }
 
             Toggle(isOn: Binding(
                 get: { self.displayOptions.contains(.toolActivity) },
-                set: {
-                    UserDefaults.standard.set(
-                        $0,
-                        forKey: Self.assistantToolActivityDefaultsKey)
-                })) {
-                    chatWindowActionLabel(
-                        "Show Tool Activity",
-                        systemImage: "hammer")
-                }
+                set: { self.storedShowsToolActivity = $0 }))
+            {
+                chatWindowActionLabel(
+                    "Show Tool Activity",
+                    systemImage: "hammer")
+            }
 
             Divider()
 

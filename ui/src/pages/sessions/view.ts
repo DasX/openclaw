@@ -33,12 +33,8 @@ import {
   normalizeThinkingOptionValue,
   resolveChatThinkingSelectState,
 } from "../../lib/chat/thinking.ts";
-import {
-  formatDurationCompact,
-  formatMs,
-  formatRelativeTimestamp,
-  formatCompactTokenCount,
-} from "../../lib/format.ts";
+import { formatDurationCompact } from "../../lib/format-duration.ts";
+import { formatMs, formatRelativeTimestamp, formatCompactTokenCount } from "../../lib/format.ts";
 import { handleContextMenuEvent } from "../../lib/keyboard-shortcuts.ts";
 import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
 import { presenceViewerLabel } from "../../lib/presence-users.ts";
@@ -70,6 +66,7 @@ type TranscriptSearchState =
   | { status: "error"; message: string }
   | {
       status: "results";
+      sessions: GatewaySessionRow[];
       results: SessionsSearchHit[];
       indexing: boolean;
       truncated: boolean;
@@ -380,10 +377,11 @@ function transcriptSearchSessionLabel(hit: SessionsSearchHit, rows: GatewaySessi
   );
 }
 
-function renderTranscriptSearch(props: SessionsProps, rows: GatewaySessionRow[]) {
+function renderTranscriptSearch(props: SessionsProps) {
   const hasQuery = props.transcriptSearchQuery.trim().length > 0;
   const state = props.transcriptSearch;
   const results = state.status === "results" ? state.results : [];
+  const rows = state.status === "results" ? state.sessions : [];
   const loading = state.status === "loading";
   return html`
     <section
@@ -1043,7 +1041,7 @@ export function renderSessions(props: SessionsProps) {
       {
         title: t("sessionsView.transcriptSearchTitle"),
       },
-      renderTranscriptSearch(props, rawRows),
+      renderTranscriptSearch(props),
     ),
     renderSettingsSection(
       {
@@ -1440,7 +1438,6 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
         basePath: props.basePath,
         row,
         mainKey: props.mainKey,
-        preferenceDerivedFace: true,
       }).href
     : null;
   const displayKind = resolveSessionDisplayKind(row);

@@ -138,6 +138,7 @@ public struct OpenClawChatView: View {
     @State private var isAtLiveEdge = true
     @State private var isUserScrolling = false
     @State private var isKeyboardVisible = false
+    @State private var hoveredMessageID: UUID?
     @State private var restoresLiveEdgeAfterKeyboardShows = false
     @State private var expandedUserMessageIDs: Set<UUID> = []
     @State private var searchMessageID: UUID?
@@ -210,6 +211,14 @@ public struct OpenClawChatView: View {
         #endif
     }
 
+    private var collapsesCompletedWork: Bool {
+        #if os(iOS)
+        true
+        #else
+        self.isDesktopLayout
+        #endif
+    }
+
     /// `showsAssistantTrace` remains as a source-compatible convenience that sets both display options.
     public init(
         viewModel: OpenClawChatViewModel,
@@ -270,7 +279,10 @@ public struct OpenClawChatView: View {
             self.content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear { self.viewModel.load() }
+        .onAppear {
+            self.viewModel.refreshSourceContext()
+            self.viewModel.load()
+        }
         .onChange(of: self.turnRecapObservation, initial: true) { _, observation in
             self.updateTurnRecap(observation)
         }
@@ -561,6 +573,10 @@ public struct OpenClawChatView: View {
             case let .historyDivider(divider):
                 ChatHistoryDividerRow(divider: divider)
                     .frame(maxWidth: .infinity)
+            case let .completedWork(work):
+                ChatCompletedWorkDisclosure(work: work) { message in
+                    self.messageRow(for: message, contextWindowTokens: contextWindowTokens)
+                }
             }
         }
 
@@ -586,8 +602,8 @@ public struct OpenClawChatView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
 
-        if self.displayOptions.contains(.toolActivity), !self.viewModel.pendingToolCalls.isEmpty {
-            ChatPendingToolsBubble(toolCalls: self.viewModel.pendingToolCalls)
+        if self.displayOptions.contains(.toolActivity), !self.viewModel.toolActivities.isEmpty {
+            ChatPendingToolsBubble(toolCalls: self.viewModel.toolActivities)
                 .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -613,6 +629,12 @@ public struct OpenClawChatView: View {
     {
         let bubble = ChatMessageBubble(
             message: msg,
+            sourcePreviews: self.viewModel.sourcePreviews(for: msg),
+            sourceContextRevision: self.viewModel.sourcePreviewState.revision,
+            sourceFaviconsEnabled: self.viewModel.sourcePreviewState.context?.automaticallyFetchFavicons == true,
+            loadSourceFavicon: { [weak viewModel] host in
+                await viewModel?.transport.loadSourceFavicon(host: host)
+            },
             style: self.style,
             markdownVariant: self.markdownVariant,
             userAccent: self.userAccent,
@@ -681,11 +703,15 @@ public struct OpenClawChatView: View {
                 HStack(spacing: 12) {
                     self.copyMessageButton(for: msg)
                         .help("Copy message")
+                        .modifier(ChatHoverAction(revealed: self.hoveredMessageID == msg.id))
                     self.replyMessageButton(for: msg)
                         .help("Reply")
+                        .modifier(ChatHoverAction(revealed: self.hoveredMessageID == msg.id))
                     self.listenMessageButton(for: msg)
+                        .modifier(ChatHoverAction(revealed: self.hoveredMessageID == msg.id))
                     self.messageActionsMenu(for: msg)
                         .help("Message actions")
+                        .modifier(ChatHoverAction(revealed: self.hoveredMessageID == msg.id))
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -698,6 +724,13 @@ public struct OpenClawChatView: View {
             #endif
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        .onHover { hovering in
+            if hovering {
+                self.hoveredMessageID = msg.id
+            } else if self.hoveredMessageID == msg.id {
+                self.hoveredMessageID = nil
+            }
+        }
         #if os(iOS)
         if isUser {
             row.contextMenu { self.messageMenuActions(for: msg) }
@@ -792,9 +825,25 @@ public struct OpenClawChatView: View {
         } else {
             base = self.viewModel.messages
         }
-        return ChatTranscriptRow.build(from: self.mergeToolResults(in: base)).filter { row in
-            guard case let .message(message) = row else { return true }
-            return self.shouldDisplayMessage(message)
+        var rows = ChatTranscriptRow.build(from: self.mergeToolResults(in: base))
+        if self.collapsesCompletedWork {
+            rows = ChatTranscriptRow.collapseCompletedWork(
+                rows,
+                runWorking: self.viewModel.hasBlockingRunActivity || self.viewModel.streamingAssistantText != nil,
+                activeRunIDs: Set(self.viewModel.liveAdvertisedRunIDs).union(self.viewModel.liveLocalRunIDs),
+                searchActive: self.isSearchPresented)
+        }
+        return rows.compactMap { row in
+            switch row {
+            case let .message(message):
+                return self.shouldDisplayMessage(message) ? row : nil
+            case let .completedWork(work):
+                let visible = work.messages.filter(self.shouldDisplayMessage)
+                return visible.isEmpty ? nil : .completedWork(.init(
+                    anchorID: work.anchorID, messages: visible, durationMilliseconds: work.durationMilliseconds))
+            default:
+                return row
+            }
         }
     }
 
@@ -880,7 +929,10 @@ public struct OpenClawChatView: View {
     }
 
     private var activeErrorText: String? {
-        let activeError = self.viewModel.composerModelAvailabilityMessage ?? self.viewModel.errorText
+        let showsContextualSignIn = self.isDesktopLayout && self.composerChrome == .clean
+        let activeError = showsContextualSignIn
+            ? self.viewModel.errorText
+            : self.viewModel.composerModelAvailabilityMessage ?? self.viewModel.errorText
         guard let text = activeError?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !text.isEmpty
@@ -1159,6 +1211,11 @@ extension OpenClawChatView {
 
             guard let toolCallId = message.toolCallId,
                   let last = result.last,
+                  message.turnBoundary != true,
+                  !message.isForwardedTurnBoundary,
+                  !last.isForwardedTurnBoundary,
+                  message.transcriptRunID == nil || last.transcriptRunID == nil ||
+                  message.transcriptRunID == last.transcriptRunID,
                   toolCallIds(in: last).contains(toolCallId)
             else {
                 result.append(message)
@@ -1166,12 +1223,9 @@ extension OpenClawChatView {
             }
 
             let toolText = self.toolResultText(from: message)
-            if toolText.isEmpty {
-                continue
-            }
-
             var content = last.content
-            // Tool-result diff metadata arrives on the message, but the UI renders the merged block.
+            // Preserve empty results too: receiving a result owns the outcome,
+            // independently of whether it contains display text.
             content.append(
                 OpenClawChatMessageContent(
                     type: "tool_result",
@@ -1204,7 +1258,14 @@ extension OpenClawChatView {
                 details: last.details,
                 isError: last.isError,
                 provenance: last.provenance,
-                historyMarker: last.historyMarker)
+                historyMarker: last.historyMarker,
+                phase: last.phase,
+                turnBoundary: last.turnBoundary,
+                steerTargetRunID: last.steerTargetRunID,
+                streamFallback: last.streamFallback,
+                activity: message.activity.map { terminal in
+                    (last.activity ?? []).filter { $0.toolCallId != toolCallId } + terminal
+                } ?? last.activity)
             result[result.count - 1] = merged
         }
 
@@ -1223,7 +1284,7 @@ extension OpenClawChatView {
         }
 
         if self.isToolResultMessage(message) {
-            return self.displayOptions.contains(.toolActivity) && !primaryText.isEmpty
+            return self.displayOptions.contains(.toolActivity)
         }
 
         if !primaryText.isEmpty {
@@ -1253,20 +1314,11 @@ extension OpenClawChatView {
     }
 
     private func toolCalls(in message: OpenClawChatMessage) -> [OpenClawChatMessageContent] {
-        message.content.filter { content in
-            let kind = (content.type ?? "").lowercased()
-            if ["toolcall", "tool_call", "tooluse", "tool_use"].contains(kind) {
-                return true
-            }
-            return content.name != nil && content.arguments != nil
-        }
+        message.content.filter(\.isToolCall)
     }
 
     private func inlineToolResults(in message: OpenClawChatMessage) -> [OpenClawChatMessageContent] {
-        message.content.filter { content in
-            let kind = (content.type ?? "").lowercased()
-            return kind == "toolresult" || kind == "tool_result"
-        }
+        message.content.filter(\.isToolResult)
     }
 
     private func toolCallIds(in message: OpenClawChatMessage) -> Set<String> {

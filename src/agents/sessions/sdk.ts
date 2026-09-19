@@ -114,15 +114,6 @@ interface CreateAgentSessionResult {
   modelFallbackMessage?: string;
 }
 
-// Re-exports
-
-export type {
-  ExtensionAPI,
-  ExtensionContext,
-  ExtensionFactory,
-  ToolDefinition,
-} from "./extensions/index.js";
-
 // Helper Functions
 
 function createSessionPrepareNextTurnWithContext(
@@ -455,6 +446,9 @@ async function createAgentSessionImpl(
       if (!auth.ok) {
         throw new Error(auth.error);
       }
+      // Isolated session streams bypass the process-default stream facade.
+      await import("../ai-transport-runtime-host.js");
+      optionsLocal?.signal?.throwIfAborted();
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
       const attributionHeaders = getAttributionHeaders(modelResult, settingsManager);
       return modelRegistryRuntime.llmRuntime.streamSimple(modelResult, context, {

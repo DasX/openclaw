@@ -9,6 +9,12 @@ read_when:
 Explicit SQLite maintenance runs offline, with the Gateway stopped. This page covers
 shared-state compaction and the targeted session SQLite modes.
 
+On Linux, a stopped Gateway service can still have child processes in its systemd
+cgroup. Doctor and update maintenance remain blocked until those processes exit.
+Inspect the service status and journal, and have the process owner stop the
+remaining children before retrying. A root-owned child may require administrator
+help even when the Gateway itself runs as a user service.
+
 ## Shared state SQLite compaction
 
 See [Database schemas](/reference/database-schemas) for schema versioning, integrity checks, and downgrade recovery.
@@ -70,11 +76,23 @@ To upgrade history from an older file-backed installation, stop the Gateway
 (`openclaw gateway stop`), back up its state (`openclaw backup create --verify`),
 and run `openclaw doctor --fix` before restarting it with
 `openclaw gateway start`.
+
+Doctor migrates existing databases at every configured `agents.entries.<id>.agentDir`,
+including custom paths outside the default agent tree and databases absent from the
+registry. Configured session stores and retained legacy databases are also checked.
+If a configured database still needs a schema migration after `--fix`, Doctor reports
+its path and exits non-zero instead of printing `Doctor complete`.
+
 `openclaw doctor --session-sqlite <mode>` provides targeted inspection,
 import, validation, and SQLite maintenance. Legacy `sessions.json` files are
 migration sources. Hot transcript JSONL files are imported and archived after
 successful import; archive-tier JSONL files remain support artifacts, not
 runtime fallbacks.
+
+When a plugin migration is deferred, the verified import receipt also captures
+unreferenced JSONL inputs. Completing the plugin migration archives those originals
+with the same identity and byte checks as indexed transcripts. Files created after
+capture remain in place, and changed originals prevent settlement until resolved.
 
 Doctor also discovers primary conversation transcripts omitted from the legacy
 registry, including timestamp-prefixed filenames. It verifies the session header,
@@ -290,7 +308,9 @@ artifacts to their original paths. This supports recovery from retained original
 it does not reverse SQLite schema migrations or replace a pre-update backup.
 
 Run recovery before `openclaw update cleanup` retires those originals. After
-cleanup, restore reports intentional disposal and cannot recreate them. Sessions
-created only in SQLite will not appear to an older file-backed runtime. If you
+cleanup, restore reports intentional disposal and cannot recreate them.
+Shared-state discovery uses private read-only snapshots, including for custom
+stores, so a refused restore leaves the shared database and its WAL unchanged.
+Sessions created only in SQLite will not appear to an older file-backed runtime. If you
 upgrade again, use the normal migration validation sequence above to compare
 restored artifacts with SQLite rows before importing.

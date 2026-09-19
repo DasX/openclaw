@@ -6,11 +6,7 @@ import {
 // Control UI module implements format behavior.
 import { asDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import {
-  resolveCompactDurationParts,
-  resolveSingleUnitDurationParts,
-  type DurationPart,
-} from "../../../src/infra/format-time/format-duration-internal.ts";
+import type { DurationPart } from "../../../src/infra/format-time/format-duration-internal.ts";
 import { i18n, t } from "../i18n/index.ts";
 import { formatUiError } from "./format-error.ts";
 
@@ -121,17 +117,6 @@ export function formatRelativeTimestamp(
   return options.suffix === false ? formatUnit({ value, unit }) : formatRelative(signedValue, unit);
 }
 
-export function formatDurationCompact(ms?: number | null): string | undefined {
-  return resolveCompactDurationParts(ms)?.map(formatUnit).join(" ");
-}
-
-export function formatDurationHuman(ms?: number | null, fallback = t("common.na")): string {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) {
-    return fallback;
-  }
-  return resolveSingleUnitDurationParts(ms).map(formatUnit).join(" ");
-}
-
 export function formatUnknownText(value: unknown): string {
   if (value == null) {
     return "";
@@ -139,11 +124,13 @@ export function formatUnknownText(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint" ||
+    typeof value === "symbol"
+  ) {
     return String(value);
-  }
-  if (typeof value === "symbol") {
-    return value.description ? `Symbol(${value.description})` : "Symbol()";
   }
   try {
     const serialized = JSON.stringify(value);

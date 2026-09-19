@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { request as httpRequest, type Server } from "node:http";
 import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
@@ -5,9 +6,11 @@ import net, { type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
+import { promisify } from "node:util";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPlaybackMediaFixture } from "../../../test/fixtures/media-playback.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { gitNullConfigPath } from "../../infra/git-exec.js";
 import { generateLocalProxyLeaf } from "../../proxy-capture/ca.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -41,7 +44,6 @@ let auditEvents: SecretEgressProxyAuditEvent[];
 let originRequests: OriginRequest[];
 let originPort: number;
 let proxy: SecretEgressProxyHandle;
-let run: Readonly<{ instanceId: string; runId: string }>;
 let proxyEnv: Record<string, string>;
 
 function registerSentinel(params: {
@@ -50,13 +52,13 @@ function registerSentinel(params: {
   name?: string;
   targetProxy?: SecretEgressProxyHandle;
 }): Record<string, string> {
-  return (params.targetProxy ?? proxy).registerRun(run, [
+  return (params.targetProxy ?? proxy).registerProcess([
     {
       name: params.name ?? "SERVICE_API_KEY",
       sentinel: params.sentinel,
       allowedHosts: params.allowedHosts,
     },
-  ]);
+  ]).env;
 }
 
 function copyInitialCa(sourceDir: string, targetDir: string): void {
@@ -281,6 +283,15 @@ beforeEach(async () => {
           headers: { ...request.headers },
           url: request.url ?? "",
         });
+        if (request.url?.startsWith("/git/")) {
+          response.writeHead(200, { "Content-Type": "text/plain", Connection: "close" });
+          response.end(
+            request.url === "/git/HEAD"
+              ? "ref: refs/heads/main\n"
+              : `${"a".repeat(40)}\trefs/heads/main\n`,
+          );
+          return;
+        }
         const status =
           request.url === "/fixed-length" && request.headers["content-length"] === undefined
             ? 411
@@ -294,8 +305,7 @@ beforeEach(async () => {
       });
     }),
   );
-  run = Object.freeze({ instanceId: "instance-1", runId: "run-1" });
-  proxyEnv = proxy.registerRun(run);
+  proxyEnv = proxy.registerProcess().env;
   if (!seed) {
     // Capture after cold setup succeeds, before a case can mutate its files.
     const dir = seedDirs.make("openclaw-egress-proxy-seed-");
@@ -504,8 +514,31 @@ describe("secret egress proxy", () => {
     },
   );
 
-  it("activates Node environment proxy support for registered Gateway runs", () => {
+  it("activates Node environment proxy support for registered Gateway processes", () => {
     expect(proxyEnv.NODE_USE_ENV_PROXY).toBe("1");
+  });
+
+  it("lets Git HTTPS discovery trust the registered proxy certificate", async () => {
+    const result = await promisify(execFile)(
+      "git",
+      ["ls-remote", `https://localhost:${originPort}/git`, "refs/heads/main"],
+      {
+        cwd: caDir,
+        env: {
+          PATH: process.env.PATH,
+          SystemRoot: process.env.SystemRoot,
+          HOME: caDir,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: gitNullConfigPath(),
+          GIT_TERMINAL_PROMPT: "0",
+          ...proxyEnv,
+        },
+        timeout: 10_000,
+      },
+    );
+    expect(result.stdout).toBe(`${"a".repeat(40)}\trefs/heads/main\n`);
+    expect(originRequests.some((request) => request.url.startsWith("/git/info/refs"))).toBe(true);
+    expect(auditEvents).toContainEqual(expect.objectContaining({ kind: "forwarded" }));
   });
 
   it("survives a client that resets a refused tunnel instead of crashing the Gateway", async () => {
@@ -561,7 +594,7 @@ describe("secret egress proxy", () => {
     await expect(
       requestThroughTunnel({
         caPath: allowedProxy.caCertPath,
-        proxyEnv: allowedProxy.registerRun(run),
+        proxyEnv: allowedProxy.registerProcess().env,
       }),
     ).resolves.toMatchObject({ body: "ok", status: 200 });
 
@@ -579,7 +612,7 @@ describe("secret egress proxy", () => {
       onAudit: (event) => refusedEvents.push(event),
     });
     proxies.push(restrictedProxy);
-    const restrictedEnv = restrictedProxy.registerRun(run);
+    const restrictedEnv = restrictedProxy.registerProcess().env;
     const auth = basicProxyAuth(registeredPassword(restrictedEnv));
 
     const refused = await rawConnect({ auth, proxyOrigin: restrictedProxy.proxyOrigin });
@@ -772,7 +805,7 @@ describe("secret egress proxy", () => {
     });
     proxies.push(bypassProxy);
     tempDirs.push(path.dirname(bypassProxy.caCertPath));
-    const bypassEnv = bypassProxy.registerRun(run);
+    const bypassEnv = bypassProxy.registerProcess().env;
     const sentinel = mintSecretSentinel("bypass-secret", { label: "egress-bypass" });
 
     await expect(
@@ -793,10 +826,14 @@ describe("secret egress proxy", () => {
     ]);
   });
 
-  it("revokes Basic authorization with the exact owning run and keeps audits payload-free", async () => {
+  it("revokes only the owning process's Basic authorization and keeps audits payload-free", async () => {
     const secret = "audit-secret-value";
     const sentinel = mintSecretSentinel(secret, { label: "egress-audit" });
-    proxyEnv = registerSentinel({ sentinel, allowedHosts: ["localhost"] });
+    const grant = proxy.registerProcess([
+      { name: "SERVICE_API_KEY", sentinel, allowedHosts: ["localhost"] },
+    ]);
+    proxyEnv = grant.env;
+    const sibling = proxy.registerProcess();
     await requestThroughTunnel({ headers: { "X-Secret": sentinel } });
     await expect(
       forwardedRequest(basicProxyAuth(registeredPassword(proxyEnv)), "http"),
@@ -805,12 +842,16 @@ describe("secret egress proxy", () => {
       expect.objectContaining({ kind: "refused", reason: "non-https-request" }),
     );
 
-    proxy.revokeRun(run);
+    grant.revoke();
     const refused = await rawConnect({
       auth: basicProxyAuth(registeredPassword(proxyEnv)),
     });
     expect(refused.response).toContain("407 Proxy Authentication Required");
     refused.socket.destroy();
+    await expect(forwardedRequest(basicProxyAuth(registeredPassword(proxyEnv)))).resolves.toBe(407);
+    await expect(forwardedRequest(basicProxyAuth(registeredPassword(sibling.env)))).resolves.toBe(
+      200,
+    );
 
     const auditText = JSON.stringify(auditEvents);
     expect(auditText).not.toContain(secret);

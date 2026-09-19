@@ -3,6 +3,7 @@ import { asOptionalRecord as normalizeRecord } from "@openclaw/normalization-cor
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { NodePluginToolDescriptor } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { logDebug } from "../logger.js";
 import {
   parseComputerUseCapabilityDescriptor,
   type ComputerUseCapabilityDescriptor,
@@ -16,6 +17,7 @@ import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-reque
 import type {
   OpenClawPluginNodeHostCommandAvailabilityContext,
   OpenClawPluginNodeHostCommandIo,
+  PluginLogger,
 } from "../plugins/types.js";
 import type { OpenClawPluginNodeHostCommandContext } from "../plugins/types.node-host.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
@@ -42,11 +44,15 @@ export async function ensureNodeHostPluginRegistry(params: {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   commandAllowlist?: ReadonlySet<string>;
+  onlyPluginIds?: string[];
+  logger?: PluginLogger;
 }): Promise<void> {
   const registry = (await loadPluginRegistryLoaderModule()).loadPluginRegistryHandle({
     config: params.config,
     activationSourceConfig: params.config,
     env: params.env,
+    onlyPluginIds: params.onlyPluginIds,
+    logger: params.logger,
   });
   // Resolve this registry's native readiness before publishing the first manifest.
   // No process-wide preparation cache: a replacement registry owns fresh resources.
@@ -172,6 +178,29 @@ export async function notifyRegisteredNodeHostCommandDisconnect(): Promise<void>
     if (failures.length > 1) {
       throw new AggregateError(failures, "node-host plugin disconnect cleanup failed");
     }
+  });
+}
+
+/** Retained command work remains owned even when its capability is unavailable. */
+export function hasRegisteredNodeHostCommandActiveWork(): boolean {
+  const registry = resolveNodeHostPluginRegistry();
+  return withPluginRuntimeRegistryScope(registry, () => {
+    for (const entry of registry?.nodeHostCommands ?? []) {
+      try {
+        if (entry.command.hasActiveWork?.() !== false) {
+          if (!entry.command.hasActiveWork) {
+            logDebug(
+              `node-host: ${entry.pluginId}/${entry.command.command} has no idle hook; auto-update deferred`,
+            );
+          }
+          return true;
+        }
+      } catch (error) {
+        logDebug(`node-host: plugin work state unavailable: ${String(error)}`);
+        return true;
+      }
+    }
+    return false;
   });
 }
 

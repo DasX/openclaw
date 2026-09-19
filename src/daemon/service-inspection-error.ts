@@ -1,7 +1,11 @@
 /** Native probe facts are diagnostic only; they never grant lifecycle authority. */
 const SERVICE_INSPECTION_MESSAGES = {
+  "service-manager-unavailable":
+    "No supported service manager detected. Restart the Gateway you launched manually after the update.",
   "systemd-user-bus-unavailable":
-    "The systemd user session bus is unavailable. Check XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS for the service account. On Debian/Ubuntu, install dbus-user-session and start dbus.socket in that account's user manager, then retry.",
+    "The systemd user session bus is unavailable. Check XDG_RUNTIME_DIR for the service account. Log in once or enable the user manager with sudo loginctl enable-linger <user>, then verify systemctl --user status. On Debian/Ubuntu, install dbus-user-session and run systemctl --user start dbus.socket if the runtime bus is missing. Verify busctl --user list with DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus, then retry.",
+  "systemd-busctl-unavailable":
+    "The busctl executable is unavailable. Install the systemd package providing busctl and verify busctl --user list from the service account, then retry.",
   "service-manager-access-denied":
     "The service-manager probe could not start (EACCES/EPERM). Check executable permissions and directory access for the service account, then retry from an accessible directory.",
   "launchd-gui-domain-unavailable":
@@ -22,7 +26,9 @@ export function isServiceInspectionReason(value: string): value is ServiceInspec
 }
 
 export function formatServiceInspectionReason(reason: ServiceInspectionReason): string {
-  return `${SERVICE_INSPECTION_MESSAGES[reason]} ${EXTERNAL_SERVICE_RECOVERY}`;
+  return reason === "service-manager-unavailable"
+    ? SERVICE_INSPECTION_MESSAGES[reason]
+    : `${SERVICE_INSPECTION_MESSAGES[reason]} ${EXTERNAL_SERVICE_RECOVERY}`;
 }
 
 export class ServiceInspectionError extends Error {
@@ -30,4 +36,20 @@ export class ServiceInspectionError extends Error {
     super(formatServiceInspectionReason(reason));
     this.name = "ServiceInspectionError";
   }
+}
+
+export class ServiceDefinitionInspectionError extends Error {
+  constructor(pathname: string) {
+    super(
+      `SERVICE_DEFINITION_UNKNOWN: Service definition ${JSON.stringify(pathname)} is unreadable. Inspect the file and its parent directory permissions as the service account; ask its owner to repair it before retrying.`,
+    );
+    this.name = "ServiceDefinitionInspectionError";
+  }
+}
+
+export function sanitizeServiceInspectionError(error: unknown): Error {
+  return error instanceof ServiceInspectionError ||
+    error instanceof ServiceDefinitionInspectionError
+    ? error
+    : new Error("SERVICE_DEFINITION_UNKNOWN: Service definition cannot be safely inspected.");
 }

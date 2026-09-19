@@ -9,6 +9,7 @@ import { ProviderAuthError } from "../agents/model-auth-runtime-shared.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { MediaUnderstandingConfig } from "../config/types.tools.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { createWhisperExecutable } from "./local-audio.test-support.js";
 import { runCapability } from "./runner.js";
 import { withAudioFixture } from "./runner.test-utils.js";
 import type { AudioTranscriptionRequest, MediaUnderstandingProvider } from "./types.js";
@@ -57,27 +58,6 @@ function createOpenAiAudioCfg(extra?: Partial<OpenClawConfig>): OpenClawConfig {
   } as unknown as OpenClawConfig;
 }
 
-async function createWhisperExecutable(dir: string) {
-  const executablePath = path.join(dir, "whisper");
-  await fs.writeFile(
-    executablePath,
-    [
-      "#!/bin/sh",
-      'while [ "$#" -gt 0 ]; do',
-      '  case "$1" in',
-      '    --output_dir) output_dir="$2"; shift 2 ;;',
-      '    *) audio_path="$1"; shift ;;',
-      "  esac",
-      "done",
-      'audio_name="${audio_path##*/}"',
-      'printf "%s\\n" mocked-local-whisper > "$output_dir/${audio_name%.*}.txt"',
-      "",
-    ].join("\n"),
-    { mode: 0o755 },
-  );
-  return executablePath;
-}
-
 async function runAutoAudioCase(params: {
   transcribeAudio: (req: AudioTranscriptionRequest) => Promise<{ text: string; model: string }>;
   cfgExtra?: Partial<OpenClawConfig>;
@@ -102,6 +82,25 @@ async function runAutoAudioCase(params: {
 }
 
 describe("runCapability auto audio entries", () => {
+  it.each([
+    { text: "context:", speech: false },
+    { text: "###", speech: false },
+    { text: "Transcribe the audio.", speech: false },
+    { text: "context", speech: true },
+  ])(
+    "classifies completed provider transcription $text (speech=$speech)",
+    async ({ text, speech }) => {
+      const result = await runAutoAudioCase({
+        transcribeAudio: async () => ({ text, model: "test-model" }),
+        cfgExtra: {
+          tools: { media: { models: [{ provider: "openai", capabilities: ["audio"] }] } },
+        },
+      });
+      expect(result.outputs.map((output) => output.text)).toEqual(speech ? [text] : []);
+      expect(result.decision.attachmentProcessing).toEqual({ 0: "completed" });
+    },
+  );
+
   it("resolves audio credentials after loading each attachment", async () => {
     await withAudioFixture("openclaw-audio-late-auth", async ({ ctx, media, cache }) => {
       let currentCredential = "before-download";
@@ -730,7 +729,7 @@ describe("runCapability auto audio entries", () => {
     expect(seenPrompt).toBeUndefined();
   });
 
-  it("keeps explicit and English-compatible audio prompts", async () => {
+  it("preserves explicit prompts without injecting boilerplate for English audio", async () => {
     const seenPrompts: Array<string | undefined> = [];
     const runCase = async (audio: MediaUnderstandingConfig) => {
       await runAutoAudioCase({
@@ -769,11 +768,11 @@ describe("runCapability auto audio entries", () => {
 
     expect(seenPrompts).toEqual([
       "Transcribe in Russian.",
-      "Transcribe the audio.",
-      "Transcribe the audio.",
-      "Transcribe the audio.",
-      "Transcribe the audio.",
-      "Transcribe the audio.",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
       "OpenClaw, Whisper, and Groq.",
     ]);
   });

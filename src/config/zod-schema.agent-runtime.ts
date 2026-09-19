@@ -416,6 +416,10 @@ const ToolExecBaseShape = {
     .object({
       /** Optional reviewer model override (provider/model or agent model config). */
       model: AgentModelSchema.optional(),
+      /** Optional reasoning effort for model-backed approval reviews. */
+      thinking: z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+      /** Optional Fast processing for supported provider requests. */
+      fastMode: z.boolean().optional(),
       /** Reviewer timeout in milliseconds (default: 30000). */
       timeoutMs: z.number().int().positive().optional(),
     })
@@ -635,7 +639,7 @@ const MessageToolConfigSchema = z
       .object({
         /** Allow sends to other channels within the same provider (default: true). */
         allowWithinProvider: z.boolean().optional(),
-        /** Allow sends across different providers (default: false). */
+        /** Allow sends across different providers (default: true). */
         allowAcrossProviders: z.boolean().optional(),
         /** Cross-context marker configuration. */
         marker: z

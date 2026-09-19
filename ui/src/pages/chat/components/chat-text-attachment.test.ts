@@ -59,18 +59,46 @@ it("keeps one pending presentation through metadata and text-body loading", asyn
     src: undefined,
     resolveSource: () => (pending ? { status: "pending" } : { status: "ready", src: "/notes.txt" }),
   });
-  await vi.waitFor(() => expect(panel.querySelector('[role="status"]')).not.toBeNull());
-  const presentation = panel.querySelector('[role="status"]');
+  await vi.waitFor(() =>
+    expect(panel.querySelector('[role="status"]:not([hidden])')).not.toBeNull(),
+  );
+  const presentation = panel.querySelector('[role="status"]:not([hidden])');
   const header = panel.querySelector(".chat-assistant-attachment-card__header");
   expect(fetchMock).not.toHaveBeenCalled();
   pending = false;
   panel.content = { ...panel.content };
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-  expect(panel.querySelector('[role="status"]')).toBe(presentation);
+  expect(panel.querySelector('[role="status"]:not([hidden])')).toBe(presentation);
   expect(panel.querySelector(".chat-assistant-attachment-card__header")).toBe(header);
   resolveBody(new Response("Ready text"));
   await vi.waitFor(() => expect(panel.querySelector("pre")?.textContent).toBe("Ready text"));
-  expect(panel.querySelector('[role="status"]')).toBeNull();
+  expect(panel.querySelector('[role="status"]:not([hidden])')).toBeNull();
+});
+
+it("retries a source-resolution failure through the attachment owner", async () => {
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response("Recovered text")));
+  let ready = false;
+  const panel = await mountAttachment({
+    src: undefined,
+    resolveSource: (requestUpdate) =>
+      ready
+        ? { status: "ready", src: "/recovered.txt" }
+        : {
+            status: "error",
+            reason: "Temporarily unavailable",
+            onRetry: () => {
+              ready = true;
+              requestUpdate();
+            },
+          },
+  });
+  await vi.waitFor(() => expect(panel.textContent).toContain("Temporarily unavailable"));
+  const retry = Array.from(panel.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Retry",
+  );
+  expect(retry).toBeDefined();
+  retry!.click();
+  await vi.waitFor(() => expect(panel.querySelector("pre")?.textContent).toBe("Recovered text"));
 });
 
 it.each([
@@ -309,7 +337,9 @@ it.each([
     expect(panel.querySelector("h1, script, style")).toBeNull();
     expect(panel.querySelector("pre")?.hidden).toBe(true);
     expect(panel.querySelector("pre")?.textContent).toBe(text);
-    const toggle = panel.querySelector<HTMLButtonElement>(".sidebar-file-toolbar button")!;
+    const toggle = panel.querySelector<HTMLButtonElement>(
+      ".sidebar-file-toolbar button[aria-pressed]",
+    )!;
     expect(toggle.textContent?.trim()).toBe("Source");
     toggle.click();
     await panel.querySelector("openclaw-chat-text-attachment")!.updateComplete;
@@ -324,7 +354,31 @@ it.each([
       "/__openclaw__/assistant-media?mediaTicket=text-preview",
     );
     Reflect.set(panel, "embedSandboxMode", "strict");
-    await expect.poll(() => panel.querySelector("iframe")?.srcdoc).toBe(text);
-    expect(panel.querySelector("iframe")?.getAttribute("sandbox")).toBe("");
+    await expect
+      .poll(() => {
+        const current = panel.querySelector("iframe");
+        return current !== null && current !== frame;
+      })
+      .toBe(true);
+    const strictFrame = panel.querySelector("iframe")!;
+    expect(strictFrame.hasAttribute("srcdoc")).toBe(false);
+    expect(strictFrame.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms");
+    const post = vi.spyOn(strictFrame.contentWindow!, "postMessage");
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: strictFrame.contentWindow,
+        origin: new URL(strictFrame.src).origin,
+        data: {
+          method: "ui/notifications/sandbox-proxy-ready",
+          params: { sandboxUrl: strictFrame.src },
+        },
+      }),
+    );
+    await expect.poll(() => post.mock.calls.length).toBe(1);
+    expect(post.mock.calls[0]![0].params).toEqual({
+      html: text,
+      renderId: expect.any(String),
+      allowScripts: false,
+    });
   },
 );

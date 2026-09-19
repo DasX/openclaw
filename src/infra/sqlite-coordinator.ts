@@ -2,20 +2,27 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { sameFileIdentity } from "./fs-safe-advanced.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { applyPrivateModeSync } from "./private-mode.js";
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
+import { sqliteWriteAdmissionServicesForLocation } from "./sqlite-transaction.js";
 
-export class SqliteCoordinatorError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: unknown,
-  ) {
-    super(message);
-    this.name = "SqliteCoordinatorError";
-  }
-}
+export const SqliteCoordinatorError = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteCoordinatorError"),
+  () =>
+    class CoordinatorError extends Error {
+      constructor(
+        message: string,
+        public override readonly cause?: unknown,
+      ) {
+        super(message);
+        this.name = "SqliteCoordinatorError";
+      }
+    },
+);
+export type SqliteCoordinatorError = InstanceType<typeof SqliteCoordinatorError>;
 
 export type SqliteCoordinatorLease = {
   /** This lease has relinquished custody, either to the pool or by native close. */
@@ -29,6 +36,16 @@ export function createSqliteLifecycleAggregateError(
   cause: unknown,
 ): AggregateError {
   return new AggregateError(errors, message, { cause });
+}
+
+/** Keep the first failure as the cause while retaining independent cleanup errors. */
+export function throwSqliteLifecycleErrors(errors: unknown[], message: string): void {
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw createSqliteLifecycleAggregateError(errors, message, errors[0]);
+  }
 }
 
 export function runWithSqliteCoordinator<T>(
@@ -103,26 +120,33 @@ export function ensurePrivateSqliteCoordinatorDirectory(
 
 const IDLE_COORDINATOR_TIMEOUT_MS = 30 * 60_000;
 const MAX_IDLE_COORDINATORS = 16;
-// Bootstrap imports this owner before turns. Idle timers must not retain the
-// request context that released a coordinator.
-const runInCoordinatorPoolContext = AsyncLocalStorage.snapshot();
 type IdleCoordinator = {
   database: DatabaseSync;
   identity: fs.BigIntStats;
   timer: ReturnType<typeof setTimeout>;
 };
-const idleCoordinators = new Map<string, IdleCoordinator>();
-const failedIdleCloses = new Set<DatabaseSync>();
-let exitCloseRegistered = false;
+// Bootstrap imports this owner before turns. Idle timers must not retain the
+// request context that released a coordinator.
+const coordinatorPool = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteCoordinatorPool"),
+  () => ({
+    runInCoordinatorPoolContext: AsyncLocalStorage.snapshot(),
+    idleCoordinators: new Map<string, IdleCoordinator>(),
+    failedIdleCloses: new Set<DatabaseSync>(),
+    exitCloseRegistered: false,
+    closeOnExit: closeIdleCoordinatorsOnExit,
+  }),
+);
+const { runInCoordinatorPoolContext, idleCoordinators, failedIdleCloses } = coordinatorPool;
 
 function updateCoordinatorExitClose() {
   const needed = idleCoordinators.size > 0 || failedIdleCloses.size > 0;
-  if (needed && !exitCloseRegistered) {
-    process.once("exit", closeIdleCoordinatorsOnExit);
-  } else if (!needed && exitCloseRegistered) {
-    process.removeListener("exit", closeIdleCoordinatorsOnExit);
+  if (needed && !coordinatorPool.exitCloseRegistered) {
+    process.once("exit", coordinatorPool.closeOnExit);
+  } else if (!needed && coordinatorPool.exitCloseRegistered) {
+    process.removeListener("exit", coordinatorPool.closeOnExit);
   }
-  exitCloseRegistered = needed;
+  coordinatorPool.exitCloseRegistered = needed;
 }
 
 function takeIdleCoordinator(location: string) {
@@ -255,13 +279,31 @@ function tryAcquireSqliteCoordinator(
     // Kysely transaction callbacks cannot own a lock beyond their synchronous commit section.
     // This handle never writes or commits data. Keep the empty database's initial
     // journal in memory so acquiring a lock does not create filesystem artifacts.
-    database.exec(
-      `PRAGMA busy_timeout = ${busyTimeoutMs}; PRAGMA journal_mode = MEMORY; ${
-        mode === "exclusive"
-          ? "BEGIN EXCLUSIVE;"
-          : "BEGIN; SELECT rootpage FROM sqlite_schema LIMIT 1;"
-      }`,
-    );
+    const services =
+      mode === "exclusive" ? sqliteWriteAdmissionServicesForLocation(location) : undefined;
+    const deadline = performance.now() + busyTimeoutMs;
+    for (;;) {
+      const attemptTimeout = services
+        ? Math.min(25, Math.max(0, Math.ceil(deadline - performance.now())))
+        : busyTimeoutMs;
+      try {
+        database.exec(
+          `PRAGMA busy_timeout = ${attemptTimeout}; PRAGMA journal_mode = MEMORY; ${
+            mode === "exclusive"
+              ? "BEGIN EXCLUSIVE;"
+              : "BEGIN; SELECT rootpage FROM sqlite_schema LIMIT 1;"
+          }`,
+        );
+        break;
+      } catch (error) {
+        if (!services || !isSqliteLockError(error) || performance.now() >= deadline) {
+          throw error;
+        }
+        for (const service of services) {
+          service();
+        }
+      }
+    }
     if (poolLocation && before) {
       const current = readCoordinatorIdentity(poolLocation);
       if (matchesCoordinatorIdentity(before, current)) {

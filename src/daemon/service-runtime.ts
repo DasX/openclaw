@@ -6,11 +6,16 @@ import {
   ServiceInspectionError,
   type ServiceInspectionReason,
 } from "./service-inspection-error.js";
+export type SystemdUserTransport =
+  | { kind: "session-bus" | "runtime-bus" | "private"; address: string; runtimeDir: string }
+  | { kind: "machine"; user: string };
 
 /** systemd supervision fields used to spot unhealthy or given-up gateway service state. */
 type GatewayServiceSystemdRuntime = {
+  scope?: "user" | "system";
+  transport?: SystemdUserTransport;
   unit?: string;
-  /** Native D-Bus credential of the observed user-manager connection, not the CLI UID. */
+  /** Native D-Bus credential of the observed manager, not the service account or CLI UID. */
   managerUid?: number;
   killMode?: string;
   tasksCurrent?: number;

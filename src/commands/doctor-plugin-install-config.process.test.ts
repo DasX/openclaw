@@ -1,14 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
+import { getCliProcessTestTimeout } from "../cli/cli-process-child.test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import {
   clearLoadInstalledPluginIndexInstallRecordsCache,
   readPersistedInstalledPluginIndexInstallRecords,
-  writePersistedInstalledPluginIndexInstallRecords,
 } from "../plugins/installed-plugin-index-records.js";
+import { seedInstalledPluginIndex } from "../plugins/test-helpers/installed-plugin-index.js";
 import {
   createBuiltRuntime,
   runBuiltRuntime,
@@ -16,16 +17,21 @@ import {
 } from "./doctor-config-preflight.process.test-support.js";
 import { doctorConfigRuntimeEntrypoints } from "./doctor-config-runtime.test-support.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterAll);
+const DOCTOR_CHILD_TIMEOUT_MS = 60_000;
+const VALIDATION_CHILD_TIMEOUT_MS = 30_000;
+const tempDirs = createFixtureLifetime();
+afterAll(() => tempDirs.cleanup());
 const doctorArgs = ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"];
 let runtimeRoot: string;
 
 beforeAll(() => {
-  runtimeRoot = createBuiltRuntime(fs.realpathSync(tempDirs.make("doctor-plugin-config-runtime-")));
+  runtimeRoot = createBuiltRuntime(
+    fs.realpathSync(tempDirs.createTempDir("doctor-plugin-config-runtime-")),
+  );
 });
 
 async function createDoctorFixture() {
-  const root = fs.realpathSync(tempDirs.make("doctor-plugin-config-"));
+  const root = fs.realpathSync(tempDirs.createTempDir("doctor-plugin-config-"));
   const stateDir = path.join(root, "state");
   const configPath = path.join(stateDir, "openclaw.json");
   fs.mkdirSync(stateDir, { recursive: true });
@@ -50,7 +56,7 @@ async function createDoctorFixture() {
   };
   fs.writeFileSync(configPath, JSON.stringify(config));
   // Start from current config and an existing index; the cases below own Doctor execution.
-  await writePersistedInstalledPluginIndexInstallRecords({}, { stateDir, env, config });
+  await seedInstalledPluginIndex({}, { stateDir, env, config });
   return { root, stateDir, configPath, env, config };
 }
 
@@ -62,10 +68,7 @@ describe("Doctor retired plugin install config", () => {
       const empty = kind === "empty" || kind === "empty-included";
       const included = kind === "included" || kind === "empty-included";
       const durable = { source: "path" as const, installPath: path.join(root, "current-plugin") };
-      await writePersistedInstalledPluginIndexInstallRecords(
-        { existing: durable },
-        { stateDir, env, config },
-      );
+      await seedInstalledPluginIndex({ existing: durable }, { stateDir, env, config });
       const legacy = { source: "path" as const, installPath: path.join(root, "missing-plugin") };
       config.plugins = {
         ...(kind === "empty-included" ? {} : config.plugins),
@@ -82,10 +85,11 @@ describe("Doctor retired plugin install config", () => {
       expect(fs.existsSync(`${configPath}.last-good`)).toBe(false);
 
       for (const pass of ["repair", "repeat"]) {
-        const result = runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000);
+        const result = await tempDirs.track(
+          runBuiltRuntime(runtimeRoot, env, doctorArgs, DOCTOR_CHILD_TIMEOUT_MS),
+        );
         const output = `${pass}: ${result.stdout}\n${result.stderr}`;
-        expect(result.error, output).toBeUndefined();
-        expect(result.status, output).toBe(0);
+        expect(result.code, output).toBe(0);
         const repaired = JSON.parse(fs.readFileSync(configPath, "utf8")) as OpenClawConfig;
         expect(repaired.plugins, output).not.toHaveProperty("installs");
         if (included) {
@@ -99,11 +103,18 @@ describe("Doctor retired plugin install config", () => {
         expect(readPersistedInstalledPluginIndexInstallRecords({ stateDir, env })).toEqual(
           empty ? { existing: durable } : { existing: durable, imported: legacy },
         );
-        const validation = runBuiltRuntime(runtimeRoot, env, ["config", "validate"], 30_000);
-        expect(validation.status, `${validation.stdout}\n${validation.stderr}`).toBe(0);
+        const validation = await tempDirs.track(
+          runBuiltRuntime(runtimeRoot, env, ["config", "validate"], VALIDATION_CHILD_TIMEOUT_MS),
+        );
+        expect(validation.code, `${validation.stdout}\n${validation.stderr}`).toBe(0);
       }
     },
-    120_000,
+    getCliProcessTestTimeout(
+      DOCTOR_CHILD_TIMEOUT_MS,
+      VALIDATION_CHILD_TIMEOUT_MS,
+      DOCTOR_CHILD_TIMEOUT_MS,
+      VALIDATION_CHILD_TIMEOUT_MS,
+    ),
   );
 
   it("preserves records when plain Doctor gains config-write consent after preflight", async () => {
@@ -155,7 +166,7 @@ describe("Doctor retired plugin install config", () => {
       plugins: { ...config.plugins, installs: { broken: { source: "invalid" } } },
     });
     fs.writeFileSync(configPath, raw);
-    const result = runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000);
+    const result = await tempDirs.track(runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000));
     expect(`${result.stdout}\n${result.stderr}`).toContain(
       "plugins.installs contains invalid records",
     );
@@ -171,14 +182,14 @@ describe("Doctor retired plugin install config", () => {
     );
     const configFlowUrl = resolveRuntimeWorkerUrl(doctorConfigRuntimeEntrypoints.configFlow).href;
     const writerUrl = resolveRuntimeWorkerUrl(doctorConfigRuntimeEntrypoints.configHealth).href;
-    const recordsUrl = resolveRuntimeWorkerUrl(doctorConfigRuntimeEntrypoints.installRecords).href;
+    const seedUrl = resolveRuntimeWorkerUrl(doctorConfigRuntimeEntrypoints.installIndexSeed).href;
     const result = await runIsolatedModuleScript(
       env,
       `
       import fs from "node:fs";
       const { loadAndMaybeMigrateDoctorConfig } = await import(${JSON.stringify(configFlowUrl)});
       const { runInitialConfigWriteHealth, runWriteConfigHealth } = await import(${JSON.stringify(writerUrl)});
-      const { writePersistedInstalledPluginIndexInstallRecords } = await import(${JSON.stringify(recordsUrl)});
+      const { seedInstalledPluginIndex } = await import(${JSON.stringify(seedUrl)});
       const runtime = { log() {}, error() {}, exit(code) { throw new Error(String(code)); } };
       const options = { repair: true, nonInteractive: true, workspaceSuggestions: false };
       const configResult = await loadAndMaybeMigrateDoctorConfig({
@@ -192,7 +203,7 @@ describe("Doctor retired plugin install config", () => {
         invalidatePluginMetadataSnapshot: configResult.invalidatePluginMetadataSnapshot,
         runWithPluginMetadataSnapshot: configResult.runWithPluginMetadataSnapshot,
       };
-      await writePersistedInstalledPluginIndexInstallRecords({}, { config: ctx.cfg });
+      await seedInstalledPluginIndex({}, { config: ctx.cfg });
       await runInitialConfigWriteHealth(ctx);
       fs.copyFileSync(ctx.configPath, ${JSON.stringify(path.join(root, "first-write.json"))});
       ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, bind: "loopback" } };
@@ -259,7 +270,7 @@ describe("Doctor retired plugin install config", () => {
       const original = fs.readFileSync(configPath, "utf8");
       const result =
         mode === "doctor"
-          ? runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000)
+          ? await tempDirs.track(runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000))
           : await runIsolatedModuleScript(
               env,
               `
@@ -281,8 +292,8 @@ describe("Doctor retired plugin install config", () => {
               { timeoutMs: 60_000 },
             );
       const output = `${result.stdout}\n${result.stderr}`;
-      if ("status" in result) {
-        expect(result.status, output).toBe(0);
+      if ("code" in result) {
+        expect(result.code, output).toBe(0);
       }
       clearLoadInstalledPluginIndexInstallRecordsCache();
       if (invalid) {
