@@ -1147,9 +1147,8 @@ async function runCliWithPreparedOutputMode(
   if (!isHelpOrVersionInvocation && normalizedInvocation.primary === "doctor") {
     // Debug capture can migrate shared state before Commander reaches Doctor.
     // Resolve the update guard after selectors settle, before any bootstrap writer.
-    const { guardUpdateDoctorSchemaUpgrade } =
-      await import("../commands/doctor-update-schema-guard.js");
-    doctorDatabasePreflight = await guardUpdateDoctorSchemaUpgrade({
+    const { preflightUpdateDoctorCli } = await import("../commands/doctor-update-schema-guard.js");
+    doctorDatabasePreflight = await preflightUpdateDoctorCli({
       json: options.builtInMachineOutput,
     });
   }
@@ -1587,7 +1586,7 @@ async function runCliWithPreparedOutputMode(
         ]),
       );
       const program = await startupTrace.measure("build-program", () =>
-        buildProgram({ doctorDatabasePreflight }),
+        buildProgram({ doctorDatabasePreflight, runtimeRecoveryEnv: options.runtimeRecoveryEnv }),
       );
       await options.harnessCleanup?.pluginResources?.waitForRegistrations();
 

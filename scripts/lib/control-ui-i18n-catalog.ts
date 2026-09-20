@@ -11,6 +11,7 @@ import { registerBoardWebsiteEnglish } from "../../ui/src/i18n/locales/en-board-
 import { registerBrowserEnglish } from "../../ui/src/i18n/locales/en-browser.ts";
 import { registerChatCiEnglish } from "../../ui/src/i18n/locales/en-chat-ci.ts";
 import { registerChatMessageMetadataEnglish } from "../../ui/src/i18n/locales/en-chat-message-metadata.ts";
+import { registerCommandPaletteEnglish } from "../../ui/src/i18n/locales/en-command-palette.ts";
 import { registerCronEnglish } from "../../ui/src/i18n/locales/en-cron.ts";
 import { registerDebugEnglish } from "../../ui/src/i18n/locales/en-debug.ts";
 import { registerDesktopEnglish } from "../../ui/src/i18n/locales/en-desktop.ts";
@@ -31,6 +32,7 @@ import { registerPluginManagementEnglish } from "../../ui/src/i18n/locales/en-pl
 import { registerPortalsEnglish } from "../../ui/src/i18n/locales/en-portals.ts";
 import { registerSessionPlacementEnglish } from "../../ui/src/i18n/locales/en-session-placement.ts";
 import { registerSettingsEnglish } from "../../ui/src/i18n/locales/en-settings.ts";
+import { registerSidebarAttentionEnglish } from "../../ui/src/i18n/locales/en-sidebar-attention.ts";
 import { registerSkillLibraryEnglish } from "../../ui/src/i18n/locales/en-skill-library.ts";
 import { registerSkillWorkshopEnglish } from "../../ui/src/i18n/locales/en-skill-workshop.ts";
 import { registerSkillsBrowserEnglish } from "../../ui/src/i18n/locales/en-skills-browser.ts";
@@ -62,6 +64,7 @@ const sourceFiles = [
   "en-browser.ts",
   "en-chat-ci.ts",
   "en-chat-message-metadata.ts",
+  "en-command-palette.ts",
   "en-cron.ts",
   "en-debug.ts",
   "en-desktop.ts",
@@ -82,6 +85,7 @@ const sourceFiles = [
   "en-plugin-management.ts",
   "en-portals.ts",
   "en-settings.ts",
+  "en-sidebar-attention.ts",
   "en-skill-library.ts",
   "en-skill-workshop.ts",
   "en-skills-browser.ts",
@@ -93,7 +97,7 @@ const sourceFiles = [
 
 export function loadControlUiSourceCatalog(): TranslationMap {
   const newSession: TranslationMap = {};
-  for (const [key, value] of Object.entries(en.newSession)) {
+  for (const [key, value] of Object.entries(registerNewSessionSetupEnglish.catalog.newSession)) {
     newSession[key] = value;
     if (key === "worktree") {
       for (const workspaceKey of [
@@ -103,6 +107,13 @@ export function loadControlUiSourceCatalog(): TranslationMap {
       ] as const) {
         newSession[workspaceKey] = registerNewSessionSetupEnglish.catalog.newSession[workspaceKey];
       }
+    }
+  }
+  const sessionsView: TranslationMap = {};
+  for (const [key, value] of Object.entries(en.sessionsView)) {
+    sessionsView[key] = value;
+    if (key === "searchPlaceholder") {
+      Object.assign(sessionsView, registerCommandPaletteEnglish.catalog.sessionsView);
     }
   }
   const boardWidget: TranslationMap = {};
@@ -120,12 +131,22 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     {
       ...en,
       custodian: { ...registerPluginManagementEnglish.catalog.custodian, ...en.custodian },
-      chat: { ...en.chat, messages: registerChatMessageMetadataEnglish.catalog.chat.messages },
+      chat: {
+        ...en.chat,
+        commands: registerCommandPaletteEnglish.catalog.chat.commands,
+        welcome: registerCommandPaletteEnglish.catalog.chat.welcome,
+        messages: registerChatMessageMetadataEnglish.catalog.chat.messages,
+      },
       agentTools: { ...registerGitHubEnglish.catalog.agentTools, ...en.agentTools },
       board: { ...en.board, widget: boardWidget },
       newSession,
+      sessionsView,
+      shortcutsOverlay: registerCommandPaletteEnglish.catalog.shortcutsOverlay,
+      commandPalette: registerCommandPaletteEnglish.catalog.commandPalette,
+      palette: registerCommandPaletteEnglish.catalog.palette,
       debug: registerDebugEnglish.catalog.debug,
       desktop: registerDesktopEnglish.catalog.desktop,
+      attention: registerSidebarAttentionEnglish.catalog.attention,
     },
     registerActivityEnglish.catalog,
     registerAgentsHomeEnglish.catalog,
@@ -150,6 +171,7 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     registerPluginManagementEnglish.catalog,
     registerPortalsEnglish.catalog,
     registerSettingsEnglish.catalog,
+    registerSidebarAttentionEnglish.catalog,
     registerSkillWorkshopEnglish.catalog,
     registerSkillsBrowserEnglish.catalog,
     registerSystemsEnglish.catalog,

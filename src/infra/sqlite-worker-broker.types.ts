@@ -70,6 +70,9 @@ export type Slot = {
   pendingOpens: number;
 };
 export type Actor = {
+  nativeStopped: Promise<void>;
+  markNativeStopped(): void;
+  stateDatabasePath?: string;
   id: number;
   key: string;
   databasePath: string;
@@ -84,6 +87,9 @@ export type Actor = {
   backendClosed: boolean;
   cleanupState?: "pending" | "complete";
   closing?: Promise<void>;
+  retirementRequested?: boolean;
+  retirement?: Promise<void>;
+  onReferencesDrained?: () => void;
   stateContext?: SqliteWorkerStateContext;
   gatewaySchemaFence?: NonNullable<ReturnType<typeof tryCreateGatewaySchemaFenceDelegate>>;
   pendingStateLifecycles: Set<StateLifecycleDelegate>;
@@ -105,6 +111,8 @@ export type EnqueueOptions = {
   assertCurrent?: () => void;
 };
 export type StoreClient = {
+  actor: Actor;
+  close(): Promise<void>;
   sealed: boolean;
   isAvailable(): boolean;
   scopes: Set<Promise<void>>;
@@ -128,6 +136,9 @@ export type PreparedSqliteWorkerOpen = {
   createOpenAdmission?: SqliteWorkerAdmissionFactory;
   maintenanceScope?: OpenClawDatabaseMaintenanceScope;
   retainCleanup?: (cleanup: SqliteWorkerAdmissionCleanup) => void;
+  onNativeStopped?: (stopped: Promise<void>) => void;
+  stateDatabasePath?: string;
+  createAdmission?: SqliteWorkerAdmissionFactory;
   assertCurrent?: () => void;
   moduleUrl: URL;
   databasePath: string;
@@ -141,3 +152,8 @@ export type SqliteWorkerAdmissionCleanup = {
   readonly pending: boolean;
   close(): Promise<void>;
 };
+
+export type SqliteWorkerOpenCustody = Pick<
+  PreparedSqliteWorkerOpen,
+  "maintenanceScope" | "retainCleanup" | "createAdmission" | "stateDatabasePath" | "onNativeStopped"
+>;

@@ -8,6 +8,7 @@ import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { UPDATE_GLOBAL_PERMISSION_REASON } from "../../shared/update-outcome.js";
 import type { OpenClawDatabaseSchemaPreflight } from "../../state/openclaw-database-preflight.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
+import { formatCliCommand } from "../command-format.js";
 import {
   checkTargetDatabaseSchemasForContexts,
   formatSchemaRefusalLines,
@@ -72,7 +73,7 @@ export async function previewUpdateCommand(params: {
         preflight.preflightNotes.push(`Would refuse update: ${permissions.stderrTail}`);
       }
     }
-    printUpdateDryRun({
+    await printUpdateDryRun({
       ...target,
       ...preflight,
       runId: params.runId,
@@ -98,6 +99,7 @@ export async function preflightUpdateCommandSchemas(params: {
   invocationCwd?: string;
   legacyConfigPlan?: LegacyConfigUpdatePlan;
   managedServiceRootRedirect: ManagedServiceRootRedirect | null;
+  managedServiceRoot?: string;
   channel: UpdateChannel;
   requestedChannel?: UpdateChannel | null;
   devTarget?: DevUpdateTarget;
@@ -156,12 +158,20 @@ export async function preflightUpdateCommandSchemas(params: {
         timeoutMs: updateStepTimeoutMs,
         invocationCwd,
         managedServiceRootRedirect,
+        managedServiceRoot: params.managedServiceRoot,
         legacyConfigPlan: params.legacyConfigPlan,
       });
       service = admission.service ?? admission.services.get(root);
       for (const inspectedService of admission.services.values()) {
         if (inspectedService.serviceUpdateVerdict?.kind === "unavailable") {
           preflightNotes.push(inspectedService.serviceUpdateVerdict.message);
+        } else if (
+          inspectedService.serviceUpdateVerdict?.kind === "owned" &&
+          inspectedService.serviceUpdateVerdict.requiresInstallRootRefresh
+        ) {
+          preflightNotes.push(
+            `Gateway service targets ${inspectedService.serviceUpdateVerdict.root}; ${shouldRestart ? "would reconcile it with" : `restart is disabled; run ${formatCliCommand("openclaw doctor --fix", inspectedService.serviceEnv)} to reconcile it with`} the active installation ${root}.`,
+          );
         }
       }
       const target =

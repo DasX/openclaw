@@ -1,11 +1,18 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { note } from "../../../packages/terminal-core/src/note.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { noteStaleUpdateRuns } from "../../commands/doctor-update-run.js";
 import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.js";
 import * as updateCheck from "../../infra/update-check.js";
 import { UpdateDoctorError } from "../../infra/update-doctor-result.js";
-import { createUpdateRun, listUpdateRuns } from "../../infra/update-run-ledger.js";
+import {
+  createUpdateRun,
+  finishUpdateRun,
+  getUpdateRun,
+  listUpdateRuns,
+} from "../../infra/update-run-ledger.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import {
   resolveCommandProcessSignal,
@@ -16,6 +23,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { VERSION } from "../../version.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
+import { updateRepairCommand } from "./update-repair-command.js";
 
 const mocks = vi.hoisted(() => ({
   events: [] as string[],
@@ -30,6 +38,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
+
+vi.mock("../../../packages/terminal-core/src/note.js", () => ({ note: vi.fn() }));
 
 const validConfigSnapshot = {
   path: "/tmp/openclaw.json",
@@ -192,7 +202,7 @@ vi.mock("./update-command-runtime.js", () => ({
 vi.mock("./update-command-post-core.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-post-core.js")>()),
   continuePostCoreUpdateInFreshProcess: vi.fn(),
-  postCoreUpdateParentOwnsCompletion: vi.fn(),
+  postCoreUpdateParentOwnsCompletion: vi.fn(async () => false),
   readPostCorePluginInstallRecordsFile: vi.fn(async () => {
     record("handoff-records");
     return {};
@@ -254,6 +264,7 @@ describe("update plugin lifecycle lease boundaries", () => {
     mocks.interactive = false;
     mocks.triage.mockReset().mockResolvedValue({ status: "completed", hint: "fixture" });
     mocks.maintenance.mockReset().mockResolvedValue(undefined);
+    vi.mocked(postCoreUpdateParentOwnsCompletion).mockReset().mockResolvedValue(false);
     vi.mocked(writePostCorePluginUpdateResultFile).mockReset().mockResolvedValue(undefined);
     vi.mocked(writePostCoreUpdateFailureFile).mockReset().mockResolvedValue(undefined);
     const root = dirs.make("update-lease-package-");
@@ -273,6 +284,68 @@ describe("update plugin lifecycle lease boundaries", () => {
     vi.spyOn(defaultRuntime, "log").mockImplementation(() => undefined);
     vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => undefined);
   });
+
+  it.each([false, true])(
+    "acknowledges aged abandoned history only after successful repair (failed=%s)",
+    async (failed) => {
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now");
+      const abandoned = [3, 2].map((hours) => {
+        clock.mockReturnValue(now - hours * 3_600_000);
+        const run = createUpdateRun({ trigger: "cli", before: { version: "2026.9.5" } });
+        return finishUpdateRun(run.runId, { status: "failed", reason: "abandoned" });
+      });
+      clock.mockReturnValue(now - 3_600_000);
+      const newer = createUpdateRun({ trigger: "cli" });
+      finishUpdateRun(newer.runId, { status: "succeeded" });
+      clock.mockRestore();
+
+      await noteStaleUpdateRuns({ migrateState: false });
+      for (const run of abandoned) {
+        expect(note).toHaveBeenCalledWith(
+          expect.stringContaining(`Update ${run.runId} remains abandoned:`),
+          "Update history",
+        );
+      }
+      vi.mocked(note).mockClear();
+      if (failed) {
+        vi.mocked(runUpdateFinalizationDoctorInFreshProcess).mockRejectedValueOnce(
+          new Error("Doctor failed"),
+        );
+      }
+
+      const repair = updateRepairCommand({
+        json: true,
+        yes: true,
+        timeout: "5",
+        deferCompletionCache: true,
+      });
+      if (failed) {
+        await expect(repair).rejects.toThrow("Doctor failed");
+      } else {
+        await repair;
+      }
+      for (const run of abandoned) {
+        const current = getUpdateRun(run.runId)!;
+        expect(current).toMatchObject({
+          status: "failed",
+          reason: "abandoned",
+          finishedAtMs: run.finishedAtMs,
+        });
+        expect(
+          current.steps.some(
+            (step) => step.step === "reconcile:acknowledged" && step.status === "completed",
+          ),
+        ).toBe(!failed);
+      }
+      await noteStaleUpdateRuns({ migrateState: false });
+      expect(
+        vi
+          .mocked(note)
+          .mock.calls.filter(([message]) => String(message).includes("remains abandoned:")),
+      ).toHaveLength(failed ? 2 : 0);
+    },
+  );
 
   it.each([false, true])(
     "reports the admitted Doctor failure (interactive=%s)",
@@ -537,7 +610,7 @@ describe("update plugin lifecycle lease boundaries", () => {
   it.each([undefined, "parent"])(
     "resumes with completion owner %s before publishing",
     async (owner) => {
-      vi.mocked(postCoreUpdateParentOwnsCompletion).mockResolvedValueOnce(owner === "parent");
+      vi.mocked(postCoreUpdateParentOwnsCompletion).mockResolvedValue(owner === "parent");
       vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", "/fixture/post-core-result.json");
       vi.mocked(writePostCorePluginUpdateResultFile).mockImplementationOnce(async () => {
         record("publish-result");
@@ -794,9 +867,7 @@ describe("update plugin lifecycle lease boundaries", () => {
       // recovery record; the finalizer's own invocation still uses the real ledger.
       const ledger = await import("../../infra/update-run-ledger.js");
       const reconcile = vi.spyOn(ledger, "reconcileAbandonedUpdateRuns").mockReturnValue([]);
-      const acknowledge = vi
-        .spyOn(ledger, "acknowledgeAbandonedUpdateRun")
-        .mockImplementation(() => {});
+      const acknowledge = vi.spyOn(ledger, "acknowledgeAbandonedUpdateRun").mockReturnValue(true);
       if (phase === "convergence") {
         vi.mocked(completePostCorePluginUpdate).mockImplementationOnce(async () => {
           retainCleanup();

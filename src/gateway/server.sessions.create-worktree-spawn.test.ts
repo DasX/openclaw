@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ErrorCodes, errorShape } from "../../packages/gateway-protocol/src/index.js";
+import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
 import { persistSubagentSessionTiming } from "../agents/subagents/registry/subagent-registry-helpers.js";
 import { createSessionsSpawnTool } from "../agents/tools/sessions-spawn-tool.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
@@ -35,7 +36,7 @@ import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-intern
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { settleWorkspaceRuns } from "./server.sessions.create.projects.test-support.js";
-import { dispatchInboundMessageMock, testState } from "./test-helpers.js";
+import { agentDiscoveryMock, dispatchInboundMessageMock, testState } from "./test-helpers.js";
 import {
   directSessionReq,
   getGatewayConfigModule,
@@ -180,6 +181,14 @@ beforeEach(async () => {
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = { workspace: defaultWorkspace };
   ({ storePath } = await createSessionStoreDir());
+  const { getRuntimeConfig } = await getGatewayConfigModule();
+  const { provider, model } = resolveDefaultModelForAgent({
+    cfg: getRuntimeConfig(),
+    agentId: "main",
+  });
+  agentDiscoveryMock.models = [
+    { provider, id: model, name: "Default fixture model", reasoning: false },
+  ];
 });
 
 afterEach(async () => {
@@ -197,6 +206,9 @@ test.each([
   { source: "registered", worktree: true, required: false },
   { source: "github", worktree: true, required: false },
   { source: "inherited", worktree: true, required: false },
+  { source: "registered", worktree: true, required: true },
+  { source: "github", worktree: true, required: true },
+  { source: "inherited", worktree: true, required: true },
   { source: "registered", worktree: false, required: false },
   { source: "github", worktree: false, required: false },
   { source: "registered", worktree: false, required: true },
@@ -210,9 +222,8 @@ test.each([
         { ...parent, sandbox: "required" },
       );
     }
-    const projectName = required
-      ? "non-git-workspace/tool-selected-project"
-      : "tool-selected-project";
+    const projectName =
+      required && !worktree ? "non-git-workspace/tool-selected-project" : "tool-selected-project";
     const otherRepository = await createRepository(projectName);
     const project = await registerProjectRegistry({ path: otherRepository });
     projectCloneMocks.materializeProjectClone.mockResolvedValue(project);
@@ -294,8 +305,6 @@ test.each([
 );
 
 test.each([
-  { source: "registered", worktree: true },
-  { source: "github", worktree: true },
   { source: "registered", worktree: false },
   { source: "github", worktree: false },
 ] as const)(
@@ -377,7 +386,7 @@ test.each([
   },
 );
 
-test("required parent rejects immediate registered-project worktree preparation", async () => {
+test("required parent prepares an isolated registered-project worktree without setup", async () => {
   const { entry: parent } = await createManagedProjectParent();
   replaceSessionEntrySync(
     { agentId: "main", sessionKey: parentKey, storePath },
@@ -387,12 +396,58 @@ test("required parent rejects immediate registered-project worktree preparation"
   const createWorktree = vi.spyOn(managedWorktrees, "createWithOutcome");
   const key = "agent:main:dashboard:required-immediate-project";
   const result = await createChild({ key, projectId: project.id });
-  expect(result).toMatchObject({
-    ok: false,
-    error: { message: "sessions.create project is outside the sandboxed agent workspace" },
-  });
-  expect(createWorktree).not.toHaveBeenCalled();
-  expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
+  expect(result).toMatchObject({ ok: true });
+  expect(createWorktree).toHaveBeenCalledWith(
+    expect.objectContaining({ runSetupScript: false, provisionIgnoredFiles: false }),
+  );
+  const child = loadSessionEntry({ agentId: "main", sessionKey: key, storePath });
+  expect(child).toMatchObject({ sandbox: "required", projectId: project.id });
+  expect(child?.worktree?.id).toBe(managedWorktrees.findLiveByOwner("session", key)?.id);
+  expect(child?.spawnedCwd).not.toBe(repository);
+});
+
+test("required project preparation isolates host filters without rejecting the registered source", async () => {
+  const { entry: parent } = await createManagedProjectParent();
+  replaceSessionEntrySync(
+    { agentId: "main", sessionKey: parentKey, storePath },
+    { ...parent, sandbox: "required" },
+  );
+  const marker = path.join(state.root, "host-filter-marker");
+  const script = path.join(state.root, "host-filter.cjs");
+  await fs.writeFile(
+    script,
+    `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed"); process.stdin.pipe(process.stdout);`,
+  );
+  await fs.writeFile(path.join(repository, ".gitattributes"), "README.md filter=synthetic\n");
+  await execFileAsync("git", ["-C", repository, "add", ".gitattributes"]);
+  await execFileAsync("git", [
+    "-C",
+    repository,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.invalid",
+    "commit",
+    "-qm",
+    "filter declaration",
+  ]);
+  await execFileAsync("git", [
+    "-C",
+    repository,
+    "config",
+    "filter.synthetic.smudge",
+    `"${process.execPath}" "${script}"`,
+  ]);
+  const project = await registerProjectRegistry({ path: repository });
+  const key = "agent:main:dashboard:filtered-project";
+  const result = await createChild({ key, projectId: project.id });
+  expect(result).toMatchObject({ ok: true });
+  const child = loadSessionEntry({ agentId: "main", sessionKey: key, storePath });
+  expect(child?.sandbox).toBe("required");
+  expect(await fs.readFile(path.join(child!.spawnedCwd!, "README.md"), "utf8")).toBe(
+    await fs.readFile(path.join(repository, "README.md"), "utf8"),
+  );
+  await expect(fs.stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("visible spawn tool preserves project validation and external cwd authorization", async () => {

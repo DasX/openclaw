@@ -3,6 +3,7 @@ import type { AgentWaitParams } from "../../../../packages/gateway-protocol/src/
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { callGateway } from "../../../gateway/call.js";
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
+import { registerSystemEventStoreOwner } from "../../../infra/system-event-ownership.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import {
   bindGatewayContextResolver,
@@ -12,6 +13,7 @@ import {
   isGatewayRestartDraining,
   runWithGatewayIndependentRootWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
+import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { prependAgentSteeringPrompt } from "../../agent-steering-queue.js";
 import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
 import { terminateAcceptedCollectorRun } from "../spawn/subagent-spawn-cleanup.js";
@@ -27,6 +29,7 @@ import {
   type SubagentRegistryDeps,
 } from "./subagent-registry-deps.js";
 import { ANNOUNCE_EXPIRY_MS } from "./subagent-registry-helpers.js";
+import { suspendReplacedStoreNotifications } from "./subagent-registry-lifecycle-cleanup.js";
 import { finalizeSubagentTaskRun } from "./subagent-registry-lifecycle-delivery.js";
 import { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
 import { createSubagentRegistryListener } from "./subagent-registry-listener.js";
@@ -51,7 +54,7 @@ import {
   createSubagentRegistrySweeper,
   retireSupersededSubagentRun as retireSupersededSubagentRunForSweep,
 } from "./subagent-registry-sweeper.js";
-import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import type { RegisterSubagentRunOptions, SubagentRunRecord } from "./subagent-registry.types.js";
 import {
   resolveSubagentRunOrphanReason,
   resolveSubagentSessionCompletion,
@@ -79,6 +82,17 @@ function persistSubagentRuns(...runIds: string[]) {
     subagentRuns,
     runIds.length > 0 ? runIds : undefined,
   );
+}
+
+function persistSubagentRunsAsyncOrThrow(
+  context: OpenClawStateWorkerContext,
+  callbacks: { assertCurrent: () => void; onCommitted?: () => void },
+  ...runIds: string[]
+): Promise<void> {
+  return subagentRegistryDeps.persistSubagentRunsToDiskAsyncOrThrow(subagentRuns, runIds, {
+    context,
+    ...callbacks,
+  });
 }
 
 function persistSubagentRunsOrThrow(...runIds: string[]) {
@@ -172,6 +186,9 @@ const {
   settleRequesterTurnAfterSessionSpawns,
   startSubagentAnnounceCleanupFlow,
 } = subagentLifecycleController;
+registerSystemEventStoreOwner(Symbol.for("openclaw.subagentNotifications"), () =>
+  suspendReplacedStoreNotifications(subagentLifecycleController.options),
+);
 
 function scheduleSubagentDeliveryResumeRetry(
   runId: string,
@@ -383,6 +400,7 @@ const subagentRestorer = createSubagentRegistryRestorer({
       bindGatewayContextResolver(entry, lifecycleGatewayContextResolver);
       subagentRuns.commitOwnership(entry);
     }
+    suspendReplacedStoreNotifications(subagentLifecycleController.options);
     return true;
   },
   persist: persistSubagentRuns,
@@ -444,25 +462,6 @@ const subagentSweeper = createSubagentRegistrySweeper({
   sweepPendingLifecycle: (now) => pendingLifecycle.sweepExpired(now),
   completeSubagentRunWithRecovery: completionRuntime.completeSubagentRunWithRecovery,
   getGatewayRecoveryRuntime: () => activeGatewayContextResolver?.()?.recoveryRuntime,
-  abandonSubagentRestartRecoveryLaunch: (params) =>
-    subagentRunManager.abandonSubagentRestartRecoveryLaunch(params),
-  clearAcceptedSubagentRestartRecovery: (params) =>
-    subagentRunManager.clearAcceptedSubagentRestartRecovery(params),
-  clearPendingSubagentRecoveryNotice: (params) =>
-    subagentRunManager.clearPendingSubagentRecoveryNotice(params),
-  resumeSettledSubagentRestartRecovery: (params) =>
-    subagentRunManager.resumeSettledSubagentRestartRecovery(params),
-  replaceSubagentRunAfterSteer: (params) => subagentRunManager.replaceSubagentRunAfterSteer(params),
-  markSubagentRestartRecoveryLaunchAttempted: (params) =>
-    subagentRunManager.markSubagentRestartRecoveryLaunchAttempted(params),
-  markSubagentRestartRecoveryLaunchAccepted: (params) =>
-    subagentRunManager.markSubagentRestartRecoveryLaunchAccepted(params),
-  markSubagentRestartRecoveryLaunchConsumed: (params) =>
-    subagentRunManager.markSubagentRestartRecoveryLaunchConsumed(params),
-  reserveSubagentRestartRecoveryLaunch: (params) =>
-    subagentRunManager.reserveSubagentRestartRecoveryLaunch(params),
-  resetSubagentRestartRecoveryLaunchAttempt: (params) =>
-    subagentRunManager.resetSubagentRestartRecoveryLaunchAttempt(params),
   finalizeInterruptedSubagentRun: completionRuntime.finalizeInterruptedSubagentRun,
   resumeRequesterSettleWake,
   startSubagentAnnounceCleanupFlow,
@@ -491,6 +490,7 @@ const subagentListener = createSubagentRegistryListener({
 });
 
 const subagentRunManager = createSubagentRunManager({
+  persistAsyncOrThrow: persistSubagentRunsAsyncOrThrow,
   runs: subagentRuns,
   getRunsForChildSession: getSubagentRunsForChildSession,
   resumedRuns,
@@ -532,11 +532,26 @@ const subagentRunManager = createSubagentRunManager({
 export const replaceSubagentRunAfterSteerCore = subagentRunManager.replaceSubagentRunAfterSteer;
 export const claimSubagentRunKill = subagentRunManager.claimSubagentRunKill;
 export const releaseSubagentRunKillClaim = subagentRunManager.releaseSubagentRunKillClaim;
-export function registerSubagentRun(params: RegisterSubagentRunParams): void {
-  subagentRunManager.registerSubagentRun({
-    ...params,
-    gatewayContextResolver: params.gatewayContextResolver ?? activeGatewayContextResolver,
-  });
+export function registerSubagentRun(
+  params: RegisterSubagentRunParams &
+    ({ queued?: false } | { taskRowOwnership?: "gateway_best_effort" }),
+  options?: RegisterSubagentRunOptions,
+): void;
+export function registerSubagentRun(
+  params: RegisterSubagentRunParams,
+  options?: RegisterSubagentRunOptions,
+): void | Promise<void>;
+export function registerSubagentRun(
+  params: RegisterSubagentRunParams,
+  options?: RegisterSubagentRunOptions,
+): void | Promise<void> {
+  return subagentRunManager.registerSubagentRun(
+    {
+      ...params,
+      gatewayContextResolver: params.gatewayContextResolver ?? activeGatewayContextResolver,
+    },
+    options,
+  );
 }
 export const startQueuedSubagentRun = subagentRunManager.startQueuedSubagentRun;
 export const settleFailedQueuedSubagentLaunch = subagentRunManager.settleFailedQueuedSubagentLaunch;

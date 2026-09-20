@@ -15,6 +15,7 @@ import { runGatewayConversationList } from "../../gateway/conversation-list.js";
 import { runGatewayConversationSend } from "../../gateway/conversation-send.js";
 import { completeDurableDelivery } from "../../infra/outbound/delivery-completion.js";
 import type { MessageActionResult } from "../../infra/outbound/message-action-contracts.js";
+import { SQLITE_IDLE_HANDLE_TTL_MS } from "../../infra/sqlite-handle-lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "../../state/openclaw-agent-db-lease.js";
@@ -34,6 +35,7 @@ import {
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
+import { clearOpenClawAgentIntegrityVerification } from "../../state/openclaw-quarantine-store.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -335,11 +337,13 @@ test("retained reclamation operations share the first full scan until the Gatewa
     });
   }
   closeOpenClawAgentDatabasesForTest(databaseOptions.env.OPENCLAW_STATE_DIR);
+  clearOpenClawAgentIntegrityVerification(database.path, databaseOptions.env);
   const workerIds = new Set<number>();
   for (let pass = 0; pass < 3; pass += 1) {
     if (pass === 2) {
       await closeOpenClawAgentDatabasesAsync(databaseOptions.env.OPENCLAW_STATE_DIR);
       closeOpenClawAgentDatabasesForTest(databaseOptions.env.OPENCLAW_STATE_DIR);
+      clearOpenClawAgentIntegrityVerification(database.path, databaseOptions.env);
     }
     const diagnostics: SqliteSessionReclamationDiagnostics = {};
     await expect(
@@ -683,7 +687,7 @@ test("retires the previous database before opening a different agent store", asy
   expect(loadSessionEntryReadOnly(second.scopes[1]!)).toMatchObject({ sessionId: "second" });
 });
 
-test("retires after sixty idle seconds and opens a new Worker for the next request", async () => {
+test("retires after thirty idle minutes and opens a new Worker for the next request", async () => {
   const fixture = createFixture(["first", "second", "third"]);
   invalidateOpenClawAgentDatabaseValidation(fixture.database.path);
   const spawned = observeReclamationWorkers();
@@ -694,7 +698,7 @@ test("retires after sixty idle seconds and opens a new Worker for the next reque
     expect(spawned).toHaveLength(1);
     expect(fullChecks()).toBe(1);
     const exited = once(spawned[0]!, "exit");
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(SQLITE_IDLE_HANDLE_TTL_MS - 1);
     expect(spawned[0]?.threadId).toBeGreaterThan(0);
     await vi.advanceTimersByTimeAsync(1);
     await exited;

@@ -7,6 +7,7 @@ import { SqliteCoordinatorError, throwSqliteLifecycleErrors } from "../infra/sql
 import {
   retainSnapshotTempDirectory,
   retainSnapshotWork,
+  SqliteSnapshotCleanupError,
 } from "../infra/sqlite-readonly-location-cleanup.js";
 import { prepareSqliteReadOnlyLocationFromOwnedDatabase } from "../infra/sqlite-readonly-location.js";
 import type {
@@ -86,9 +87,8 @@ const stateSnapshotReads = resolveGlobalSingleton(
 export function getActiveOpenClawStateDatabaseReadSnapshot(
   options: OpenClawStateDatabaseOptions = {},
 ): object | undefined {
-  const pathname = resolveReadOnlyPath(options);
   const current = stateSnapshotReads.getStore();
-  return current?.path === pathname ? current : undefined;
+  return current?.path === resolveReadOnlyPath(options) ? current : undefined;
 }
 
 /** Resolve a composite read from one online snapshot without redirecting live writers. */
@@ -127,11 +127,18 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
     const snapshot = Object.assign(
       createRetainedReadScope(pathname, admission.identity, async () => {
         releaseSource();
-        if (!(await prepared.cleanupAsync())) {
-          throw new Error(
-            `Shared-state discovery snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
-          );
+        let cause: unknown;
+        try {
+          if (await prepared.cleanupAsync()) {
+            return;
+          }
+        } catch (error) {
+          cause = error;
         }
+        throw new SqliteSnapshotCleanupError(
+          `Shared-state discovery snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
+          { cause },
+        );
       }),
       { location: prepared.location, env },
     );
@@ -441,7 +448,7 @@ export function executeExistingOpenClawStateRead(
   const controller = new AbortController();
   const run = async (): Promise<OpenClawStateReadReply | undefined> => {
     const producerSettled = createDeferredCore();
-    const transport = createOpenClawStateReadTransport(command, (error) => controller.abort(error));
+    const transport = createOpenClawStateReadTransport(command);
     let cleanupPending: Promise<void> | undefined;
     let transportStopped = false;
     let cleaned = false;
@@ -564,10 +571,18 @@ export function executeExistingOpenClawStateRead(
       }
       let location = snapshot?.location ?? pathname;
       if (nativeSource) {
-        prepared = await prepareSqliteReadOnlyLocationFromOwnedDatabase(
-          nativeSource.db,
-          authority.assertCurrent,
-        );
+        prepared =
+          excluded || mutation
+            ? await prepareSqliteReadOnlyLocationFromOwnedDatabase(
+                nativeSource.db,
+                authority.assertCurrent,
+              )
+            : await prepareSqliteReadOnlyLocationFromOwnedDatabase(
+                nativeSource.db,
+                authority.assertCurrent,
+                authority.signal,
+                "async",
+              );
         location = prepared.location;
       } else if (!snapshot && (preserveArtifacts || excluded || mutation)) {
         await transport.validateFresh(context, authority);
@@ -635,10 +650,6 @@ export function executeExistingOpenClawStateRead(
       await cleanup();
     } catch (error) {
       cleanupErrors.push(error);
-    }
-    const taskFailure = await transport.readFailure();
-    if (taskFailure && !errors.includes(taskFailure.error)) {
-      errors.unshift(taskFailure.error);
     }
     // Cancellation can be the producer's error as well as its final admission result.
     errors.push(

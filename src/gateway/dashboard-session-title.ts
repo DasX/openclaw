@@ -5,6 +5,7 @@ import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
+import { createCrustaceanSlug } from "../agents/session-slug.js";
 import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
 import type { WorktreeSourceStage } from "../agents/worktrees/types.js";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
@@ -16,7 +17,6 @@ import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
 import { AsyncWorkScope, getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import type { ChatAttachment } from "./chat-attachments.js";
-import { deriveGoalSessionTitle } from "./derive-goal-session-title.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import {
   hasExplicitSessionName,
@@ -39,8 +39,7 @@ type DashboardSessionTitleModelEntry = Pick<
 
 const DASHBOARD_SESSION_TITLE_MAX_CHARS = 60;
 const DASHBOARD_SESSION_TITLE_SOURCE_MAX_CHARS = 1_000;
-const WORKTREE_SESSION_TITLE_TIMEOUT_MS = 8_000;
-const WORKTREE_SESSION_TITLE_ATTEMPT_TIMEOUT_MS = 4_000;
+const WORKTREE_SESSION_TITLE_WAIT_MS = 30_000;
 const DASHBOARD_SESSION_TITLE_PROMPT =
   "Generate a concise session title (3-6 words, max 60 characters) from the user's first message. Use the same language as the message, in sentence case: capitalize only the first word and words that language always capitalizes. No emoji. Return only the title.";
 
@@ -157,7 +156,6 @@ async function generateDashboardSessionTitle(params: {
   entry?: DashboardSessionTitleModelEntry;
   userMessage: string;
   attachments?: readonly ChatAttachment[];
-  timeoutMs?: number;
   utilityOnly?: boolean;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
@@ -209,7 +207,6 @@ async function generateDashboardSessionTitle(params: {
       maxLength: DASHBOARD_SESSION_TITLE_MAX_CHARS,
       abortSignal: params.abortSignal,
       assertCurrent: params.assertCurrent,
-      ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
       ...(params.utilityOnly ? { utilityOnly: true } : {}),
     });
     if (generated) {
@@ -221,17 +218,15 @@ async function generateDashboardSessionTitle(params: {
     if (params.utilityOnly) {
       return null;
     }
-    // Fall through to the deterministic goal title; keep provider errors private.
+    // Fall through to the two-word name; keep provider errors private.
   }
   // Speculative utility-only naming must not persist a provisional title that
   // would skip the healthy primary-model pass after send.
   if (params.utilityOnly) {
     return null;
   }
-  // No model (or a failed isolated completion): persist a readable topic from the
-  // first real user task so phone/Control UI sidebars are not first-bubble leftovers.
-  const fallback = deriveGoalSessionTitle(boundedSource, DASHBOARD_SESSION_TITLE_MAX_CHARS);
-  return fallback ? normalizeDashboardSessionTitle(fallback) : null;
+  // Saved titles also name Git branches; never persist raw prompt text as a fallback.
+  return createCrustaceanSlug();
 }
 
 /** Prepares a creation draft's title without creating or updating a session. */
@@ -260,7 +255,7 @@ export async function generateWorktreeSessionTitle(
     onPersisted: () => void;
   },
 ): Promise<string | undefined> {
-  const request = maybeGenerateSessionTitle({ ...params, worktree: true }).then(async (attempt) => {
+  const request = maybeGenerateSessionTitle(params).then(async (attempt) => {
     if (attempt.kind === "in-flight") {
       await attempt.settled;
     } else if (attempt.kind === "persisted") {
@@ -268,7 +263,7 @@ export async function generateWorktreeSessionTitle(
     }
   });
   try {
-    await withTimeout(request, WORKTREE_SESSION_TITLE_TIMEOUT_MS, "worktree title generation");
+    await withTimeout(request, WORKTREE_SESSION_TITLE_WAIT_MS, "worktree title generation");
   } catch (error) {
     params.onError(error);
   }
@@ -309,9 +304,12 @@ export async function maybeGenerateDashboardSessionTitle(params: {
   ) {
     return false;
   }
-  // Dashboard sends never wait on a duplicate request: only the owning call
-  // may claim persistence (and emit sessions.changed), duplicates skip fast.
-  const attempt = await maybeGenerateSessionTitle({ ...params, userMessage: sourceText });
+  // Only the writer emits sessions.changed. A failed join can retry once under
+  // this caller's authority after the previous request has left the registry.
+  let attempt = await maybeGenerateSessionTitle({ ...params, userMessage: sourceText });
+  if (attempt.kind === "in-flight" && !(await attempt.settled.catch(() => false))) {
+    attempt = await maybeGenerateSessionTitle({ ...params, userMessage: sourceText });
+  }
   return attempt.kind === "persisted";
 }
 
@@ -324,7 +322,6 @@ export async function maybeGenerateSessionTitle(params: {
   storePath: string;
   currentUserMessage?: string;
   userMessage: string;
-  worktree?: boolean;
   commitGuard?: () => void;
   withSource?: WorktreeSourceStage;
 }): Promise<SessionTitleAttempt> {
@@ -369,13 +366,10 @@ export async function maybeGenerateSessionTitle(params: {
       agentId: params.agentId,
       entry: params.entry ?? entry,
       userMessage: sourceText,
-      ...(params.worktree ? { timeoutMs: WORKTREE_SESSION_TITLE_ATTEMPT_TIMEOUT_MS } : {}),
       ...(abortSignal ? { abortSignal } : {}),
     });
   const finish = async (generation: Promise<string | null>) => {
-    const displayName = await (params.worktree
-      ? withTimeout(generation, WORKTREE_SESSION_TITLE_TIMEOUT_MS, "worktree title generation")
-      : generation);
+    const displayName = await generation;
     if (!displayName) {
       return false;
     }

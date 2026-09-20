@@ -26,6 +26,7 @@ import {
   type ChatCommandTarget,
   type ChatCommandResetOptions,
 } from "./chat-commands.ts";
+import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import {
   isInterruptedChatInput,
   readCurrentStoredChatHistory,
@@ -58,6 +59,8 @@ export type QueuedChatStorageMode = "durable" | "memory";
 export type QueuedChatSendOptions = {
   /** Fresh selected-session sends may let the Gateway resolve its effective active-run mode. */
   allowActiveRunSend?: boolean;
+  /** Confirmation-triggered sends retain their UI owner across preparation waits. */
+  canDispatch?: () => boolean;
   /** Exact submit-time leaf; restored drains omit it so intervening advances park the draft. */
   expectedLeafEntryId?: string | null;
   pendingSettings?: Promise<boolean>;
@@ -267,6 +270,9 @@ async function drainStoredChatOutbox(
       return "empty";
     }
     if (
+      // Browser input still belongs to the foreground submitter. Only its fresh
+      // admission may deliver this version; passive wakes must not drop its fence.
+      (!freshItem && chatOutboxOwner(host).hasPendingSubmission(outbox, storedItem)) ||
       (item.sendState === "unconfirmed" && (!item.sendRunId || item.localCommandName)) ||
       (item.sendState === "waiting-model" && !lane.pendingOptions.has(item.id)) ||
       // An open edit owns this row: sending the superseded text would deliver a

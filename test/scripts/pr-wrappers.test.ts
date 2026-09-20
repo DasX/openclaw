@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { isGraphqlQuotaExhausted } from "../../scripts/pr-lib/gh-api-preflight.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
   REVIEWED_HEAD,
@@ -33,6 +34,87 @@ function readScript(path: string): string {
 const anchorSubstitutionNotice = (repo: string) =>
   `scripts/pr wrapper in this worktree differs from origin/main; running the canonical checkout's wrapper (matches the origin/main trust anchor): ${repo}`;
 const itPosix = process.platform === "win32" ? it.skip : it;
+
+describe("GraphQL primary quota fallback", () => {
+  const message = "API rate limit already exceeded for user ID 123.";
+  const errorBody = (type = "RATE_LIMITED", detail = message) =>
+    JSON.stringify({ errors: [{ type, message: detail }] });
+  const response = (body: string, headers = "", status = 200) =>
+    `HTTP/2.0 ${status} Response\r\nX-RateLimit-Resource: graphql\r\nX-RateLimit-Remaining: 0\r\n${headers}\r\n${body}`;
+
+  it.each(["RATE_LIMIT", "RATE_LIMITED"])(
+    "recognizes the original %s response with and without headers",
+    (type) => {
+      const body = errorBody(type);
+      for (const stdout of [body, response(body), Buffer.from(response(body))]) {
+        expect(isGraphqlQuotaExhausted({ status: 1, stdout })).toBe(true);
+      }
+    },
+  );
+  it.each([
+    { stdout: response(JSON.stringify({ message }), "", 403) },
+    { stderr: `gh: ${message}\n` },
+    { stderr: Buffer.from("gh: API rate limit exceeded for fixture-user (HTTP 403)\n") },
+  ])("recognizes native gh primary exhaustion: %j", (failure) => {
+    expect(isGraphqlQuotaExhausted({ status: 1, ...failure })).toBe(true);
+  });
+  it.each([
+    {
+      name: "secondary throttle",
+      stdout: errorBody("RATE_LIMITED", "You have exceeded a secondary rate limit."),
+    },
+    { name: "abuse detection", stderr: "gh: You have triggered an abuse detection mechanism." },
+    { name: "retry-after", stdout: response(errorBody(), "Retry-After: 60\r\n") },
+    { name: "malformed retry-after", stdout: response(errorBody(), "Retry-After: unknown\r\n") },
+    {
+      name: "remaining primary budget",
+      stdout: response(errorBody()).replace("Remaining: 0", "Remaining: 50"),
+    },
+    {
+      name: "core exhaustion",
+      stdout: response(errorBody()).replace("Resource: graphql", "Resource: core"),
+    },
+    ...[401, 407, 429, 500, 503].map((status) => ({
+      name: `HTTP ${status}`,
+      stdout: response(errorBody(), "", status),
+    })),
+    { name: "generic forbidden", stderr: "gh: Resource not accessible by integration (HTTP 403)" },
+    { name: "plain 429", stderr: `gh: ${message} (HTTP 429)` },
+    {
+      name: "plain proxy failure",
+      stderr: 'Post "https://api.github.com/graphql": Proxy Authentication Required',
+    },
+    { name: "transport failure", code: "ETIMEDOUT", stderr: `gh: ${message}` },
+    { name: "interrupted response", signal: "SIGTERM", stdout: errorBody() },
+    { name: "successful final unit", status: 0, stdout: response(errorBody()) },
+    { name: "malformed response", stdout: "{", stderr: `gh: ${message}` },
+    { name: "malformed framed response", stdout: response("{"), stderr: `gh: ${message}` },
+    {
+      name: "ambiguous typed error",
+      stdout: JSON.stringify({ errors: [{ type: "RATE_LIMITED" }] }),
+    },
+    {
+      name: "mixed GraphQL errors",
+      stdout: JSON.stringify({
+        errors: [
+          { type: "RATE_LIMITED", message },
+          { type: "FORBIDDEN", message: "Access denied" },
+        ],
+      }),
+    },
+    {
+      name: "data named after quota",
+      stdout: JSON.stringify({ data: { message, type: "RATE_LIMITED" } }),
+    },
+    {
+      name: "supplemental quota",
+      message: "Supplemental quota probe: graphql 0/5000",
+      stdout: JSON.stringify({ resources: { graphql: { remaining: 0 } } }),
+    },
+  ])("does not authorize fallback for $name", ({ name: _name, ...failure }) => {
+    expect(isGraphqlQuotaExhausted({ status: 1, ...failure })).toBe(false);
+  });
+});
 
 function isolatedWrapperEnv(root: string) {
   const home = join(root, "home");
@@ -337,7 +419,7 @@ describe("scripts/pr wrappers", () => {
     expect(script).toContain('base_json=$(read_pr_view_json "$pr" "baseRefName")');
     expect(common).toContain('pr_gh pr view "$pr" --json "$fields"');
     expect(worktree).toContain('metadata=$(GH_REPO="$repo_nwo" read_pr_view_json "$pr"');
-    expect(review).toContain('pr_gh_plain pr edit "$pr" --add-assignee "$reviewer"');
+    expect(review).toContain('pr_gh_plain assign-reviewer "$pr" "$reviewer"');
     expect(push).toContain('pr_gh_plain api graphql --input "$payload_file"');
     expect(push).not.toContain("pr_gh_plain api graphql --input -");
     expect(merge).toContain('pr_gh_plain pr merge "$pr"');
@@ -812,7 +894,7 @@ describe("scripts/pr wrappers", () => {
     const fixture = makeMismatchedWrapperRepo({ toolingOnly: true });
     const tooling = join(fixture.root, "tooling");
     const origin = fixture.git(fixture.canonical, ["remote", "get-url", "origin"]).stdout.trim();
-    fixture.git(fixture.root, ["clone", "--quiet", origin, tooling]);
+    fixture.git(fixture.root, ["clone", "--no-local", "--quiet", origin, tooling]);
     writeFileSync(join(tooling, ".git/info/exclude"), "node_modules/\n");
     linkPrWrapperDependencies(tooling);
     const stale = join(fixture.root, "stale-tsx");
@@ -1413,8 +1495,8 @@ exit 99
     writeFileSync(
       join(fixture.bin, "gh"),
       `#!/bin/sh
-if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
-  printf 'HTTP/2.0 200 OK\\n\\n{"data":{"viewer":{"login":"fixture-user"}}}\\n'
+if [ "$*" = "api user --include" ]; then
+  printf 'HTTP/2.0 200 OK\\n\\n{"login":"fixture-user"}\\n'
   exit 0
 fi
 echo "Unexpected gh call: $*" >&2
@@ -1890,14 +1972,14 @@ exit 99
     );
   });
 
-  const viewer = { data: { viewer: { login: "fixture-user" } } };
+  const writer = { login: "fixture-user" };
   const quota = {
-    "X-RateLimit-Resource": "graphql",
+    "X-RateLimit-Resource": "core",
     "X-RateLimit-Limit": "5000",
     "X-RateLimit-Remaining": "0",
     "X-RateLimit-Reset": "1893456000",
   };
-  const rateError = { errors: [{ type: "RATE_LIMITED", message: "synthetic-private-detail" }] };
+  const rateError = { message: "API rate limit exceeded for synthetic-private-detail" };
   const preflightCases: {
     name: string;
     status?: number;
@@ -1909,21 +1991,6 @@ exit 99
     details?: string[];
     absent?: string[];
   }[] = [
-    ...[{ type: "RATE_LIMITED" }, { type: "RATE_LIMIT", code: "graphql_rate_limit" }].map(
-      (error) => ({
-        name: `primary GraphQL quota exhaustion (${error.type})`,
-        status: 200,
-        code: 1,
-        body: { errors: [{ ...error, message: "synthetic-private-detail" }] },
-        headers: quota,
-        diagnostic: "rate limited",
-        details: [
-          "resource=graphql; remaining=0; limit=5000",
-          "reset=2030-01-01T00:00:00Z",
-          "Wait until 2030-01-01T00:00:00Z (UTC), then retry manually.",
-        ],
-      }),
-    ),
     {
       name: "primary HTTP 403 exhaustion",
       status: 403,
@@ -1931,7 +1998,11 @@ exit 99
       body: { message: "API rate limit exceeded for synthetic-private-detail" },
       headers: quota,
       diagnostic: "rate limited",
-      details: ["remaining=0", "Wait"],
+      details: [
+        "resource=core; remaining=0; limit=5000",
+        "reset=2030-01-01T00:00:00Z",
+        "Wait until 2030-01-01T00:00:00Z (UTC), then retry manually.",
+      ],
     },
     {
       name: "HTTP 429 throttle",
@@ -1996,7 +2067,7 @@ exit 99
     })),
     { name: "transport failure", code: 1, diagnostic: "failed" },
     {
-      name: "unknown GraphQL error",
+      name: "unknown API error",
       status: 200,
       code: 1,
       body: { errors: [{ type: "SYNTHETIC_UNKNOWN", message: "synthetic-private-detail" }] },
@@ -2022,10 +2093,10 @@ exit 99
       ],
     },
     {
-      name: "successful process without viewer",
+      name: "successful process without writer",
       status: 200,
       code: 0,
-      body: { data: { viewer: null } },
+      body: {},
       headers: quota,
       diagnostic: "failed",
       details: [
@@ -2035,50 +2106,69 @@ exit 99
       ],
     },
     {
-      name: "empty viewer",
+      name: "empty writer",
       status: 200,
       code: 0,
-      body: { data: { viewer: { login: "  " } } },
+      body: { login: "  " },
       diagnostic: "failed",
     },
     {
-      name: "wrong viewer type",
+      name: "wrong writer type",
       status: 200,
       code: 0,
-      body: { data: { viewer: { login: 42 } } },
+      body: { login: 42 },
       diagnostic: "failed",
     },
     {
-      name: "partial viewer with errors",
+      name: "partial writer with errors",
       status: 200,
       code: 0,
-      body: { ...viewer, errors: [{ type: "FORBIDDEN" }] },
+      body: { ...writer, errors: [{ type: "FORBIDDEN" }] },
       diagnostic: "failed",
     },
     {
-      name: "viewer with failed process",
+      name: "writer with failed process",
       status: 200,
       code: 1,
-      body: viewer,
+      body: writer,
       diagnostic: "failed",
     },
-    { name: "missing HTTP framing", code: 0, body: viewer, diagnostic: "failed" },
-    { name: "valid viewer", status: 200, code: 0, body: viewer },
-    { name: "successful last quota request", status: 200, code: 0, body: viewer, headers: quota },
+    {
+      name: "GraphQL viewer shape is not writer evidence",
+      status: 200,
+      code: 0,
+      body: { data: { viewer: writer } },
+      diagnostic: "failed",
+    },
+    { name: "missing HTTP framing", code: 0, body: writer, diagnostic: "failed" },
+    { name: "valid writer", status: 200, code: 0, body: writer },
+    { name: "successful last quota request", status: 200, code: 0, body: writer, headers: quota },
   ];
 
   const esmPreflightCase: (typeof preflightCases)[number] = {
-    name: "valid viewer below an ESM package",
+    name: "valid writer below an ESM package",
     status: 200,
     code: 0,
-    body: viewer,
+    body: writer,
   };
   it.each([
-    ...preflightCases.map((scenario) => ({ ...scenario, route: "default", esmParent: false })),
-    { ...preflightCases[0]!, route: "override", esmParent: false },
-    { ...esmPreflightCase, route: "default", esmParent: true },
-    { ...esmPreflightCase, route: "override", esmParent: true },
-  ])("GitHub API preflight: $name ($route)", ({ route, esmParent, ...scenario }) => {
+    ...preflightCases.map((scenario) => ({
+      ...scenario,
+      route: "default",
+      esmParent: false,
+      hostname: "",
+    })),
+    { ...preflightCases[0]!, route: "override", esmParent: false, hostname: "" },
+    { ...esmPreflightCase, route: "default", esmParent: true, hostname: "" },
+    { ...esmPreflightCase, route: "override", esmParent: true, hostname: "" },
+    {
+      ...esmPreflightCase,
+      name: "writer on the explicitly selected host",
+      route: "override",
+      esmParent: false,
+      hostname: "github.fixture.invalid",
+    },
+  ])("GitHub API preflight: $name ($route)", ({ route, esmParent, hostname, ...scenario }) => {
     const quotaIntercepted =
       scenario.code !== 0 &&
       ([403, 429].includes(scenario.status ?? 0) || scenario.diagnostic === "rate limited");
@@ -2112,7 +2202,7 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
 if (args[0] === "api" && args[1] === "rate_limit") {
   console.log(JSON.stringify({ resources: {
-    graphql: { remaining: 0, limit: 5000, reset: 1893456000 },
+    graphql: { remaining: 5000, limit: 5000, reset: 1893459600 },
     core: { remaining: 4999, limit: 5000, reset: 1893459600 },
   } }));
   process.exit(0);
@@ -2140,7 +2230,11 @@ process.exit(${scenario.code});
           'source "$PWD/scripts/pr-lib/worktree.sh"',
           'repo_root() { printf "%s\\n" "$HOME"; }',
           "mark_pr_operation_side_effects_started() { echo UNEXPECTED_SIDE_EFFECT; return 99; }",
-          scenario.diagnostic ? "enter_worktree 42 false || exit 1" : "ensure_gh_api_auth",
+          scenario.diagnostic
+            ? "enter_worktree 42 false || exit 1"
+            : hostname
+              ? `pr_gh_writer_login ${hostname}`
+              : "ensure_gh_api_auth",
         ].join("\n"),
       ],
       {
@@ -2157,9 +2251,15 @@ process.exit(${scenario.code});
     expect(result.stdout).not.toContain("UNEXPECTED");
     expect(result.stdout + result.stderr).not.toMatch(/synthetic-private-detail|UNEXPECTED_ROUTE/);
     if (quotaIntercepted) {
-      expect(result.stderr).toContain("GitHub API request failed (resource=graphql)");
-      expect(result.stderr).toContain("graphql 0/5000 reset=2030-01-01T00:00:00Z");
-      expect(result.stderr).toContain("core 4999/5000 reset=2030-01-01T01:00:00Z");
+      expect(result.stderr).toContain("GitHub API request failed (resource=core)");
+      expect(result.stderr).toContain(`original response: HTTP ${scenario.status}`);
+      expect(result.stderr).not.toContain("Supplemental quota probe");
+      for (const detail of scenario.details ?? []) {
+        expect(result.stderr).toContain(detail);
+      }
+      for (const detail of scenario.absent ?? []) {
+        expect(result.stderr).not.toContain(detail);
+      }
     } else if (scenario.diagnostic) {
       expect(result.stderr).toContain(`GitHub API preflight ${scenario.diagnostic}`);
       for (const detail of scenario.details ?? []) {
@@ -2180,35 +2280,53 @@ process.exit(${scenario.code});
       }
     } else {
       expect(result.stderr).toBe("");
-      expect(result.stdout).toBe("");
+      expect(result.stdout).toBe(hostname ? "fixture-user\n" : "");
     }
     expect(
       readFileSync(calls, "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line)),
-    ).toEqual([
-      ["api", "graphql", "-f", "query=query { viewer { login } }", "--include"],
-      ...(quotaIntercepted ? [["api", "rate_limit"]] : []),
-    ]);
+    ).toEqual([["api", ...(hostname ? ["--hostname", hostname] : []), "user", "--include"]]);
   });
 
-  it.each(["default", "override"])(
-    "resolves review writer identity through the selected protected gh (%s)",
-    (route) => {
+  it.each([
+    { route: "default", host: "github.com", assigned: true, rateLimited: false },
+    { route: "override", host: "github.fixture.invalid", assigned: true, rateLimited: false },
+    { route: "override", host: "github.fixture.invalid", assigned: false, rateLimited: false },
+    { route: "default", host: "github.com", assigned: false, rateLimited: true },
+  ])(
+    "resolves and verifies review assignment through REST ($route, $host, assigned=$assigned, rateLimited=$rateLimited)",
+    ({ route, host, assigned, rateLimited }) => {
       const dir = tempDirs.make("openclaw-pr-review-writer-");
       const bin = join(dir, "bin");
-      const calls = join(dir, "calls.log");
+      const calls = join(dir, "calls.jsonl");
       mkdirSync(bin);
-      const protectedGh = `#!/bin/sh
-printf '%s\\n' "$*" >> "$OPENCLAW_TEST_CALLS"
-case "$1 $2" in
-  "browse --no-browser") printf 'https://github.com/fixture/repo\\n' ;;
-  "api user") printf 'relay-reader\\n' ;;
-  "api graphql") printf 'writer-maintainer\\n' ;;
-  "pr edit") [ "$5" = writer-maintainer ] ;;
-  *) exit 19 ;;
-esac
+      writeFileSync(join(dir, "package.json"), '{"type":"commonjs"}\n');
+      const protectedGh = `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.OPENCLAW_TEST_CALLS, JSON.stringify(args) + "\\n");
+if (args[0] === "browse" && args[1] === "--no-browser") {
+  console.log("https://${host}/fixture/repo");
+} else if (args[0] === "api" && args[1] === "user") {
+  if (args.includes("--include")) {
+    if (${rateLimited}) {
+      process.stdout.write('HTTP/2.0 403 Forbidden\\nX-RateLimit-Resource: core\\nX-RateLimit-Remaining: 0\\n\\n{"message":"API rate limit exceeded for synthetic-private-detail"}\\n');
+      process.exit(1);
+    }
+    process.stdout.write('HTTP/2.0 200 OK\\n\\n{"login":"writer-maintainer"}\\n');
+  } else {
+    console.log(JSON.stringify({ login: "relay-reader" }));
+  }
+} else if (args[0] === "api" && args.includes("repos/fixture/repo/issues/42/assignees")) {
+  if (args[args.indexOf("--hostname") + 1] !== "${host}" ||
+      args[args.indexOf("--method") + 1] !== "POST" ||
+      !args.includes("assignees[]=writer-maintainer")) process.exit(19);
+  console.log(JSON.stringify({ assignees: [{ login: "${assigned ? "writer-maintainer" : "relay-reader"}" }], private: "synthetic-private-detail" }));
+} else {
+  process.exit(19);
+}
 `;
       const pathGh = join(bin, "gh");
       const overrideGh = join(dir, "selected-gh");
@@ -2225,6 +2343,7 @@ esac
             "source scripts/pr-lib/common.sh",
             "source scripts/pr-lib/review.sh",
             'enter_worktree() { cd "$OPENCLAW_TEST_ROOT"; mkdir -p .local; }',
+            "sleep() { :; }",
             "review_claim 42",
           ].join("\n"),
         ],
@@ -2233,7 +2352,8 @@ esac
           encoding: "utf8",
           env: {
             HOME: dir,
-            GH_REPO: "fixture/repo",
+            GH_REPO: `${host}/fixture/repo`,
+            GH_HOST: host,
             GH_TOKEN: "synthetic-writer-token",
             OPENCLAW_GH_BIN: route === "override" ? overrideGh : "",
             OPENCLAW_TEST_CALLS: calls,
@@ -2242,16 +2362,31 @@ esac
           },
         },
       );
-      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(result.stdout).toContain("@writer-maintainer assigned to PR #42");
-      expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
-        expect.stringContaining("api graphql -f query=query { viewer { login } }"),
-        "browse --no-browser",
-        "pr edit 42 --add-assignee writer-maintainer --repo https://github.com/fixture/repo",
-      ]);
-      expect(readFileSync(join(dir, ".local/review-claim-user-attempt-1.log"), "utf8")).toBe(
-        "writer-maintainer\n",
-      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(assigned ? 0 : 1);
+      const ghCalls = readFileSync(calls, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(ghCalls[0]).toEqual(["api", "user", "--include"]);
+      expect(ghCalls.some((args: string[]) => args.includes("graphql"))).toBe(false);
+      const assignmentCalls = ghCalls.filter((args: string[]) => args.includes("POST"));
+      expect(assignmentCalls).toHaveLength(rateLimited ? 0 : assigned ? 1 : 3);
+      expect(result.stdout + result.stderr).not.toContain("synthetic-private-detail");
+      if (rateLimited) {
+        expect(ghCalls).toHaveLength(1);
+        expect(result.stderr).toContain("GitHub API request failed (resource=core)");
+        expect(result.stdout).not.toContain("review claim succeeded");
+      } else if (assigned) {
+        expect(result.stdout).toContain("@writer-maintainer assigned to PR #42");
+      } else {
+        expect(result.stdout).toContain("Failed to assign @writer-maintainer to PR #42");
+        expect(result.stdout).not.toContain("review claim succeeded");
+      }
+      if (!rateLimited) {
+        expect(readFileSync(join(dir, ".local/review-claim-user-attempt-1.log"), "utf8")).toBe(
+          "writer-maintainer\n",
+        );
+      }
     },
   );
 });

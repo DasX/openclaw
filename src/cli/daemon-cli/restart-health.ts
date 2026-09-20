@@ -1,4 +1,5 @@
 // Restart health probes for gateway service restarts and port listener recovery.
+import type { ChildProcess } from "node:child_process";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveGatewayServiceProbeHosts } from "../../daemon/gateway-service-probe-hosts.js";
 import type { GatewayServiceRuntime } from "../../daemon/service-runtime.js";
@@ -17,9 +18,11 @@ import {
   STARTUP_MIGRATION_HEARTBEAT_INTERVAL_MS,
   STARTUP_MIGRATION_LEASE_TTL_MS,
 } from "../../infra/startup-migration-checkpoint.js";
+import { isPidAlive } from "../../shared/pid-alive.js";
 import { sleep } from "../../utils.js";
 import {
   confirmGatewayReachable,
+  readGatewayStartupPhase,
   resolveGatewayRestartProbeContext,
   type GatewayReachability,
   type GatewayRestartProbeContext,
@@ -29,7 +32,11 @@ import {
   DEFAULT_RESTART_HEALTH_DELAY_MS,
 } from "./restart-health.constants.js";
 import type { GatewayRestartSnapshot, GatewayRestartWaitOutcome } from "./restart-health.types.js";
-import { hasListenerAttributionGap, listenerOwnedByRuntimePid } from "./restart-port-ownership.js";
+import {
+  allListenersOwnedByRuntimePid,
+  hasListenerAttributionGap,
+  listenerOwnedByRuntimePid,
+} from "./restart-port-ownership.js";
 export {
   DEFAULT_RESTART_HEALTH_ATTEMPTS,
   DEFAULT_RESTART_HEALTH_DELAY_MS,
@@ -90,7 +97,7 @@ function finalizeGatewayRestartSnapshot(
 }
 
 export async function inspectGatewayRestart(params: {
-  service: GatewayService;
+  service: Pick<GatewayService, "readCommand" | "readRuntime">;
   port: number;
   env?: NodeJS.ProcessEnv;
   expectedVersion?: string | null;
@@ -122,6 +129,9 @@ export async function inspectGatewayRestart(params: {
   );
   let reachability: GatewayReachability | null = null;
   let probeError: string | undefined;
+  let gatewayBootId: string | undefined;
+  let gatewayVersion: string | null | undefined;
+  let gatewayBuildId: string | null | undefined;
   let activatedPluginErrors: PluginHealthErrorSummary[] = [];
   let unavailablePlugins: GatewayReachability["unavailablePlugins"] = [];
   let channelProbeErrors: Array<{ id: string; error: string }> = [];
@@ -136,6 +146,9 @@ export async function inspectGatewayRestart(params: {
         ...(params.signal ? { signal: params.signal } : {}),
       });
       probeError = reachability.probeError;
+      gatewayBootId = reachability.gatewayBootId;
+      gatewayVersion = reachability.gatewayVersion;
+      gatewayBuildId = reachability.gatewayBuildId;
       activatedPluginErrors = reachability.activatedPluginErrors;
       unavailablePlugins = reachability.unavailablePlugins;
       channelProbeErrors = reachability.channelProbeErrors;
@@ -169,7 +182,20 @@ export async function inspectGatewayRestart(params: {
   }
 
   params.signal?.throwIfAborted();
-  if (portUsage.status === "busy" && runtime.status !== "running") {
+  const startupPhase =
+    portUsage.status === "busy" && params.configuredProbe
+      ? await readGatewayStartupPhase({
+          configuredProbe: params.configuredProbe,
+          port: params.port,
+          timeoutMs: remainingTimeoutMs(),
+          ...(params.signal ? { signal: params.signal } : {}),
+        })
+      : undefined;
+  if (startupPhase && (expectedVersion || expectedBuildId)) {
+    // Startup cannot conceal a previous install or a definitive plugin/channel failure.
+    await loadReachability();
+  }
+  if (!startupPhase && portUsage.status === "busy" && runtime.status !== "running") {
     const reachable = await loadReachability();
     if (reachable.reachable) {
       return finalizeGatewayRestartSnapshot(
@@ -213,23 +239,20 @@ export async function inspectGatewayRestart(params: {
           listenerOwnedByRuntimePid({ listener, runtimePid }),
         ) || listenerAttributionGap
       : gatewayListeners.length > 0 || listenerAttributionGap;
-  let healthy = running && ownsPort;
-  let gatewayBootId: string | undefined;
-  let gatewayVersion: string | null | undefined;
-  let gatewayBuildId: string | null | undefined;
+  let healthy = running && ownsPort && !startupPhase;
   if (requiresGatewayProbe && healthy && portUsage.status === "busy") {
     const reachable = await loadReachability();
     healthy = reachable.reachable;
-    gatewayBootId = reachable.gatewayBootId;
-    gatewayVersion = reachable.gatewayVersion;
-    gatewayBuildId = reachable.gatewayBuildId;
   }
-  if (!healthy && running && portUsage.status === "busy" && !requiresGatewayProbe) {
+  if (
+    !healthy &&
+    !startupPhase &&
+    running &&
+    portUsage.status === "busy" &&
+    !requiresGatewayProbe
+  ) {
     const reachable = await loadReachability();
     healthy = reachable.reachable;
-    gatewayBootId = reachable.gatewayBootId;
-    gatewayVersion = reachable.gatewayVersion;
-    gatewayBuildId = reachable.gatewayBuildId;
   }
   // Read after probes: an owner can acquire the coordinator while health is unavailable.
   const owner =
@@ -260,6 +283,7 @@ export async function inspectGatewayRestart(params: {
       ...(gatewayBootId ? { gatewayBootId } : {}),
       ...(gatewayVersion !== undefined ? { gatewayVersion } : {}),
       ...(gatewayBuildId !== undefined ? { gatewayBuildId } : {}),
+      ...(startupPhase ? { startupPhase } : {}),
       ...(probeError ? { probeError } : {}),
       ...(activatedPluginErrors.length ? { activatedPluginErrors } : {}),
       ...(unavailablePlugins.length ? { unavailablePlugins } : {}),
@@ -308,12 +332,13 @@ export function isSameGatewayRestartGeneration(
   );
 }
 
-export async function waitForGatewayHealthyRestart(params: {
-  service: GatewayService;
+type GatewayRestartWaitOptions = {
   port: number;
   attempts?: number;
   delayMs?: number;
   timeoutMs?: number;
+  /** Absolute performance.now() deadline supplied by a longer diagnostic operation. */
+  deadlineMs?: number;
   settle?: { probes: number };
   env?: NodeJS.ProcessEnv;
   expectedVersion?: string | null;
@@ -323,34 +348,86 @@ export async function waitForGatewayHealthyRestart(params: {
   supervisorKeepsAlive?: boolean;
   isStartupMigrationActive?: typeof hasActiveStartupMigrationLease;
   probeHosts?: readonly string[];
+  probeContext?: GatewayRestartProbeContext;
+  onProgress?: (phase: string) => void;
   signal?: AbortSignal;
-}): Promise<GatewayRestartSnapshot> {
+};
+
+export async function waitForGatewayHealthyRestart(
+  params: GatewayRestartWaitOptions &
+    (
+      | { service: Pick<GatewayService, "readCommand" | "readRuntime">; child?: never }
+      | { child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">; service?: never }
+    ),
+): Promise<GatewayRestartSnapshot> {
   params.signal?.throwIfAborted();
+  const child = params.child;
+  const service: Pick<GatewayService, "readCommand" | "readRuntime"> = params.service ?? {
+    readCommand: async () => null,
+    readRuntime: async () => ({
+      status:
+        child?.pid !== undefined &&
+        child.exitCode === null &&
+        child.signalCode === null &&
+        isPidAlive(child.pid)
+          ? "running"
+          : "stopped",
+      pid: child?.pid,
+    }),
+  };
   const startedAtMs = performance.now();
+  const remainingDeadlineMs =
+    params.deadlineMs === undefined ? undefined : Math.max(0, params.deadlineMs - startedAtMs);
+  const timeoutMs =
+    remainingDeadlineMs === undefined
+      ? params.timeoutMs
+      : Math.min(params.timeoutMs ?? remainingDeadlineMs, remainingDeadlineMs);
+  if (remainingDeadlineMs === 0) {
+    return withWaitContext(
+      {
+        runtime: { status: "unknown" },
+        portUsage: { port: params.port, status: "unknown", listeners: [], hints: [] },
+        healthy: false,
+        staleGatewayPids: [],
+        probeError: "Gateway readiness budget exhausted.",
+      },
+      "timeout",
+      0,
+    );
+  }
   const attempts = params.attempts ?? DEFAULT_RESTART_HEALTH_ATTEMPTS;
   const delayMs = params.delayMs ?? DEFAULT_RESTART_HEALTH_DELAY_MS;
   const settleProbes = Math.max(1, params.settle?.probes ?? 1);
-  const settleDurationMs = (settleProbes - 1) * delayMs;
-  const standardDeadlineMs = params.timeoutMs ?? attempts * delayMs;
+  const settleDurationMs = Math.min(
+    (settleProbes - 1) * delayMs,
+    remainingDeadlineMs === undefined
+      ? Infinity
+      : Math.max(0, remainingDeadlineMs - (params.timeoutMs ?? remainingDeadlineMs)),
+  );
+  // A longer update budget must not make an old heartbeat count as fresh progress.
+  const progressWindowMs = attempts * delayMs;
+  const standardDeadlineMs = timeoutMs ?? progressWindowMs;
   const probeTimeoutMs = () =>
-    params.timeoutMs === undefined
+    timeoutMs === undefined
       ? undefined
-      : Math.max(1, params.timeoutMs + settleDurationMs - (performance.now() - startedAtMs));
+      : Math.max(1, timeoutMs + settleDurationMs - (performance.now() - startedAtMs));
   const updateInProgress = (params.env ?? process.env).OPENCLAW_UPDATE_IN_PROGRESS === "1";
 
-  const probeContext = await resolveGatewayRestartProbeContext(params.env).catch(() => ({
-    auth: undefined,
-    config: {},
-  }));
+  const probeContext =
+    params.probeContext ??
+    (await resolveGatewayRestartProbeContext(params.env).catch(() => ({
+      auth: undefined,
+      config: {},
+    })));
   const configuredProbe = createConfiguredGatewayLocalProbe(probeContext.config);
   const probeHosts =
     params.probeHosts ??
     (await resolveGatewayServiceProbeHosts({
       env: params.env,
-      command: await params.service.readCommand(params.env ?? process.env).catch(() => null),
+      command: await service.readCommand(params.env ?? process.env).catch(() => null),
     }));
   let snapshot = await inspectGatewayRestart({
-    service: params.service,
+    service,
     port: params.port,
     env: params.env,
     expectedVersion: params.expectedVersion,
@@ -374,13 +451,42 @@ export async function waitForGatewayHealthyRestart(params: {
   let migrationActivity: { owner: string; pid: number; heartbeatAt: number } | undefined;
   let observedRunning = false;
   let observedListener = false;
-  let startupProgressDeadlineMs = standardDeadlineMs;
+  let startupProgressDeadlineMs = progressWindowMs;
   let healthyStreak: { snapshot: GatewayRestartSnapshot; probes: number } | undefined;
   let updateStartupDeadlineMs: number | undefined;
   let observedOwner: string | undefined;
   let observedPid: number | undefined;
   let observedBootId: string | undefined;
   let generationChanged = false;
+  let reportedStartupPhase: string | undefined;
+  let lastProgressPhase: string | undefined;
+  const expiredOutcome = (elapsedMs: number, atStartupCap: boolean): GatewayRestartWaitOutcome => {
+    if (generationChanged) {
+      return "generation-changed";
+    }
+    if (
+      snapshot.runtime.status !== "running" ||
+      (snapshot.runtime.pid === undefined && snapshot.gatewayBootId === undefined) ||
+      snapshot.versionMismatch ||
+      snapshot.buildIdMismatch ||
+      snapshot.channelProbeErrors?.length ||
+      (params.requirePluginHealth !== false && snapshot.activatedPluginErrors?.length) ||
+      snapshot.staleGatewayPids.length > 0
+    ) {
+      return "timeout";
+    }
+    const ownedStartup =
+      reportedStartupPhase &&
+      snapshot.portUsage.status === "busy" &&
+      snapshot.runtime.pid !== undefined &&
+      allListenersOwnedByRuntimePid(snapshot.portUsage.listeners, snapshot.runtime.pid);
+    return ownedStartup ||
+      (atStartupCap &&
+        startupProgressDeadlineMs > progressWindowMs &&
+        elapsedMs < startupProgressDeadlineMs)
+      ? "still-starting"
+      : "timeout";
+  };
 
   for (let attempt = 0; ; attempt += 1) {
     params.signal?.throwIfAborted();
@@ -395,7 +501,6 @@ export async function waitForGatewayHealthyRestart(params: {
     const identifiedBoot = observedBootId === undefined && snapshot.gatewayBootId !== undefined;
     observedPid = snapshot.runtime.pid ?? observedPid;
     observedBootId = snapshot.gatewayBootId ?? observedBootId;
-    const expiredOutcome = generationChanged ? "generation-changed" : "timeout";
     // Health probes and state-DB reads are part of the operator-visible wait. A monotonic clock
     // keeps both the normal deadline and migration watchdog bounded when those operations stall.
     let elapsedMs = Math.max(0, performance.now() - startedAtMs);
@@ -404,7 +509,7 @@ export async function waitForGatewayHealthyRestart(params: {
       // process earns the startup watchdog; later phases never reset its finite cap.
       updateStartupDeadlineMs ??= Math.max(standardDeadlineMs, STARTUP_MIGRATION_LEASE_TTL_MS);
     }
-    const boundedDeadlineMs = params.timeoutMs ?? updateStartupDeadlineMs;
+    const boundedDeadlineMs = timeoutMs ?? updateStartupDeadlineMs;
     // A managed settle streak needs a concrete process identity. Scheduled Tasks can
     // report running without exposing a PID, so Windows retains status-only proof.
     const healthy =
@@ -412,15 +517,22 @@ export async function waitForGatewayHealthyRestart(params: {
       (!params.requireRunningService ||
         (snapshot.runtime.status === "running" &&
           (process.platform === "win32" || typeof snapshot.runtime.pid === "number")));
-    snapshot.startupPhase = healthy
-      ? "settling healthy Gateway"
-      : snapshot.runtime.status !== "running"
-        ? "waiting for managed service"
-        : snapshot.portUsage.status === "free"
-          ? "waiting for Gateway listener"
-          : "waiting for Gateway health and identity";
+    reportedStartupPhase = snapshot.startupPhase;
+    snapshot.startupPhase =
+      reportedStartupPhase ??
+      (healthy
+        ? "settling healthy Gateway"
+        : snapshot.runtime.status !== "running"
+          ? "waiting for managed service"
+          : snapshot.portUsage.status === "free"
+            ? "waiting for Gateway listener"
+            : "waiting for Gateway health and identity");
     if (boundedDeadlineMs !== undefined && elapsedMs > boundedDeadlineMs + settleDurationMs) {
-      return withWaitContext({ ...snapshot, healthy: false }, expiredOutcome, elapsedMs);
+      return withWaitContext(
+        { ...snapshot, healthy: false },
+        expiredOutcome(elapsedMs, true),
+        elapsedMs,
+      );
     }
     if (healthy) {
       if (healthyStreak && isSameGatewayRestartGeneration(healthyStreak.snapshot, snapshot)) {
@@ -526,8 +638,15 @@ export async function waitForGatewayHealthyRestart(params: {
       elapsedMs = Math.max(0, performance.now() - startedAtMs);
     }
 
-    if (migrationActive) {
+    if (migrationActive && !reportedStartupPhase) {
       snapshot.startupPhase = "startup migration";
+    }
+    if (
+      (reportedStartupPhase || snapshot.runtime.status === "running") &&
+      snapshot.startupPhase !== lastProgressPhase
+    ) {
+      lastProgressPhase = snapshot.startupPhase;
+      params.onProgress?.(snapshot.startupPhase);
     }
     const runtimePid = snapshot.runtime.pid;
     const ownsListener =
@@ -547,7 +666,8 @@ export async function waitForGatewayHealthyRestart(params: {
     if (
       !healthy &&
       stableRunning &&
-      elapsedMs <= startupProgressDeadlineMs + settleDurationMs &&
+      (boundedDeadlineMs !== undefined ||
+        elapsedMs <= startupProgressDeadlineMs + settleDurationMs) &&
       (migrationProgress || migrationCompleted || startupProgress)
     ) {
       // Include one poll of observation lag after the producer's renewal interval.
@@ -555,7 +675,7 @@ export async function waitForGatewayHealthyRestart(params: {
         startupProgressDeadlineMs,
         elapsedMs +
           Math.max(
-            standardDeadlineMs,
+            progressWindowMs,
             migrationProgress
               ? STARTUP_MIGRATION_HEARTBEAT_INTERVAL_MS + STARTUP_MIGRATION_ACTIVITY_POLL_MS
               : 0,
@@ -576,22 +696,21 @@ export async function waitForGatewayHealthyRestart(params: {
               startupCapMs,
             );
       if (elapsedMs >= deadlineMs) {
-        const stillStarting =
-          boundedDeadlineMs === undefined &&
-          stableRunning &&
-          startupProgressDeadlineMs > standardDeadlineMs &&
-          elapsedMs < startupProgressDeadlineMs &&
-          elapsedMs >= startupCapMs;
         return withWaitContext(
           snapshot,
-          stillStarting ? "still-starting" : expiredOutcome,
+          expiredOutcome(elapsedMs, boundedDeadlineMs !== undefined || elapsedMs >= startupCapMs),
           elapsedMs,
         );
       }
     }
-    await sleep(delayMs, params.signal);
+    await sleep(
+      boundedDeadlineMs === undefined
+        ? delayMs
+        : Math.min(delayMs, Math.max(0, boundedDeadlineMs + settleDurationMs - elapsedMs)),
+      params.signal,
+    );
     snapshot = await inspectGatewayRestart({
-      service: params.service,
+      service,
       port: params.port,
       env: params.env,
       expectedVersion: params.expectedVersion,

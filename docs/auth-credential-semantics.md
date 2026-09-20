@@ -93,6 +93,13 @@ writing.
 OAuth upserts recheck the current local or inherited credential after admission,
 before applying the existing generation-replacement rules.
 
+Inline API-key failure bookkeeping reads and updates the selected agent's auth
+state through its existing SQLite worker. It preserves credential bytes and
+other profiles' health state. Runtime snapshot publication reads canonical local
+and shared rows off-thread, then retains the current host's resolved secrets and
+external profile overlays. A publication failure does not replay a committed
+health update. The synchronous SDK store APIs retain their existing contracts.
+
 Gateway model metadata refreshes when credentials, profile ordering or ownership,
 or model availability changes, including cooldown and blocked-state transitions.
 Usage timestamps, success history, and failure counters remain recorded without
@@ -113,13 +120,18 @@ Usage bookkeeping invalidates later cache reuse while admitted reads can finish
 their snapshots. Credential, selection, ownership, and lifecycle changes still
 invalidate in-flight preparation.
 Model selection retries that stale read once after its readers finish cleanup,
-joining already queued OAuth refreshes for the provider and explicit profile pin
-before recapturing. This keeps one refresh's claim and settlement from invalidating
-both reads. Pending refresh profiles remain candidates for model id/mode selection;
-the OAuth owner still settles the refresh before credentials can be used. Continued
-changes, admission refusals, and cleanup failures remain errors.
-Each join uses the existing refresh timeout. A caller timeout does not retire its
-durable settlement from observation, and a waiting model read cannot cancel it.
+preserving the selected agent and any explicit profile pin. If an in-process OAuth
+refresh invalidated the read, selection first observes that owner's durable
+settlement, including inherited credentials and fenced peers. This wait uses the
+existing refresh timeout and neither reads credentials nor starts another refresh.
+Reconnects release waits for the replaced claim; readers of still-fenced peers
+continue to wait for the owner's cleanup.
+Pending refresh profiles remain candidates for model id/mode selection; the OAuth
+owner still settles the refresh before credentials can be used. A caller timeout
+does not retire its durable settlement from observation, and a waiting model read
+cannot cancel it. Canceling a model request ends only its settlement wait; the
+refresh owner and other waiting requests continue independently. Continued changes,
+admission refusals, and cleanup failures remain errors.
 Workers certify committed SQLite visibility before rows enter the cache. Reads
 with unpublished or trailing WAL frames return normally without being retained.
 
@@ -234,6 +246,16 @@ Codex home, and no other managed OpenAI OAuth profile exists, import preserves
 the profile ID and its existing model and session pins. The configured model
 and native credential file stay unchanged. An explicitly isolated agent home
 continues to use the imported OpenClaw profile through its isolated runtime.
+
+Since 2026.9.5, native Codex login no longer supplies the runtime-only
+`openai:default` profile. If that OAuth profile is still declared but absent from
+an agent's canonical credential store, `openclaw doctor --fix`, Doctor lint, and
+Gateway startup warn with the import command above. The warning does not copy
+credentials or block the update. Missing-profile errors identify local store
+absence without reporting a provider HTTP 401; the error records a local lookup
+failure, not a provider rejection.
+For multiple agents, add `--agent <id>` to the login command to select the
+affected agent.
 
 Fresh imports keep account-scoped profile IDs. A matching existing account and
 user reuse their stored profile. Import from another home, missing account/user

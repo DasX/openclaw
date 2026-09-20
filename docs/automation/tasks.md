@@ -366,7 +366,7 @@ For the full operator ledger, use the CLI: `openclaw tasks list`.
 
 ### Control UI
 
-The web Control UI has a **Tasks** page in the sidebar with live active and recent background tasks. Use it to inspect progress, open linked sessions, refresh the ledger, cancel queued and running tasks, or retry/dismiss a blocked completion delivery. Task detail keeps execution status and delivery status separate and exposes the retained result for copying.
+The web Control UI has a **Tasks** page in the sidebar with live active and recent background tasks. Use it to inspect progress, open linked sessions, refresh the ledger, cancel queued and running tasks, or retry/dismiss a blocked completion delivery. Task detail keeps execution status and delivery status separate and exposes the retained result for copying. Final delivery and outcome corrections update the live task without counting delivery as additional execution time.
 
 Chat panes also have a collapsible **Background tasks** rail scoped to the current conversation, with active work, stop controls, and a finished section. Open it from the pane's **Tasks** panel action. Subagent activity below the parent conversation also opens the selected child's details.
 
@@ -375,6 +375,8 @@ Running work stays in creation order so progress updates do not move rows while 
 Select a task to open its **Review** panel beside the parent conversation; the **Tasks** tab keeps the list available. The inspector shows the child's transcript when available, or its complete sanitized input and bounded output, plus timing and tool usage. Background command details preserve the command’s line breaks and arguments; compact task-list labels do not replace the stored command. Their status follows the live process, including quiet commands, and activity updates refresh the open inspector. Current tool activity and the age of the last activity appear separately from the last completed tool. Explicit waits identify children, external results, agent messages, approval, or user input; unavailable runtime detail stays unknown.
 
 CLI-backed agent tasks use their live run to show **Running** or **Queued** when activity events are missing. The inspector updates automatically as run ownership and queue status change.
+
+Settled execution stays **Finished** while the task owner records its final outcome. Execution completion does not imply success; the task's final status still distinguishes completion, failure, cancellation, and timeout.
 
 Execution and delivery remain separate in the inspector. **Result ready** with **Queued for parent** means the child finished but its result has not been delivered. **Delivered to parent** confirms that handoff. Failed or dismissed delivery keeps the execution result visible, and cancellation and timeout retain their own labels. Stop controls address the selected active task through its execution owner. Child conversations remain view-only with **Open parent session** navigation.
 

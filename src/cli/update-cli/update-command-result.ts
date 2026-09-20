@@ -17,25 +17,140 @@ import {
   writeControlPlaneUpdateRestartSentinel,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "../../infra/update-control-plane-sentinel.js";
-import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
+import {
+  createUpdateErrorFact,
+  createUpdateFailureFact,
+  type UpdateFailureFact,
+} from "../../infra/update-failure-facts.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
-import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
+import {
+  getUpdateRun,
+  recordUpdateRunPhase,
+  recordUpdateRunStep,
+} from "../../infra/update-run-ledger.js";
+import type { UpdateRunRecord } from "../../infra/update-run-record.js";
+import { isFailedUpdateStep, updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { UpdateRecoveryStep } from "../../shared/update-outcome.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
+import { formatCliCommand } from "../command-format.js";
+import {
+  formatDaemonServiceInstallCommand,
+  resolveDaemonServiceInstallGuidance,
+} from "../daemon-cli/shared.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import type { UpdateConfigSnapshot } from "./update-command-config-snapshot.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import type { OwnedManagedUpdateContext } from "./update-command-managed-context.js";
-import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
+import type {
+  OriginalManagedServiceRuntime,
+  ManagedGatewayUpdateVerdict,
+  PreManagedServiceStop,
+  UpdateRestartParams,
+} from "./update-command-service-context-types.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
+
+export function collectServiceInspectionFailureFacts(
+  verdict: ManagedGatewayUpdateVerdict | undefined,
+): UpdateFailureFact[] | undefined {
+  return verdict?.kind === "unavailable"
+    ? [
+        createUpdateFailureFact({
+          check: "managed-service",
+          code: verdict.inspectionReason ?? "service-inspection-unavailable",
+          message: verdict.message,
+        }),
+      ]
+    : undefined;
+}
+
+export function recordServiceReconciliationWarning(
+  result: UpdateRunResult,
+  env: NodeJS.ProcessEnv,
+  message: string,
+  port?: number,
+): void {
+  defaultRuntime.error(message);
+  result.steps.push({
+    name: "managed-service-reconciliation",
+    command: formatDaemonServiceInstallCommand(env, port),
+    cwd: result.root ?? "",
+    durationMs: 0,
+    exitCode: 0,
+    advisory: { kind: "recoverable-maintenance", message },
+  });
+}
+
+export function recordServiceReconciliationWarnings(
+  result: UpdateRunResult,
+  warnings: string[],
+  run: UpdateCommandOptions["run"],
+  assertCurrent: () => void,
+): void {
+  assertCurrent();
+  const step = {
+    name: "managed-service-reconciliation",
+    command: "openclaw gateway install --force",
+    cwd: result.root ?? "",
+    durationMs: 0,
+    exitCode: 0,
+    warnings,
+  };
+  result.steps.push(step);
+  if (run) {
+    try {
+      for (const row of updateRunStepsFromResultStep(step)) {
+        recordUpdateRunStep(run.runId, { ...row, endedAtMs: Date.now() }, { env: run.env });
+      }
+    } catch {
+      assertCurrent();
+      warnings.push("Could not record the service definition warning in update history.");
+    }
+  }
+}
+
+export function prepareUpdateServiceResult(
+  params: Pick<
+    UpdateRestartParams,
+    "result" | "root" | "preManagedServiceStop" | "shouldRestart"
+  > & {
+    coreAlreadyCurrent?: boolean;
+  },
+): boolean {
+  const verdict = params.preManagedServiceStop?.serviceUpdateVerdict;
+  const serviceEnv = params.preManagedServiceStop?.serviceEnv ?? process.env;
+  if (verdict?.kind === "unavailable") {
+    params.result.steps.push({
+      name: "managed-service",
+      command: formatCliCommand("openclaw gateway status --deep", serviceEnv),
+      cwd: params.root,
+      durationMs: 0,
+      exitCode: 0,
+      advisory: { kind: "recoverable-maintenance", message: verdict.message },
+      failureFacts: collectServiceInspectionFailureFacts(verdict),
+    });
+  }
+  const shouldRestart =
+    params.shouldRestart &&
+    (!params.coreAlreadyCurrent || params.preManagedServiceStop?.running === true);
+  if (verdict?.kind === "owned" && verdict.requiresInstallRootRefresh && !shouldRestart) {
+    recordServiceReconciliationWarning(
+      params.result,
+      serviceEnv,
+      `Gateway service still targets ${verdict.root}; the active installation is ${params.result.root ?? params.root}. ` +
+        `Service reconciliation was skipped because restart is disabled or the service is stopped. ${resolveDaemonServiceInstallGuidance(undefined, serviceEnv, { stopped: params.preManagedServiceStop?.running === false, port: params.preManagedServiceStop?.servicePort })}`,
+      params.preManagedServiceStop?.servicePort,
+    );
+  }
+  return shouldRestart;
+}
 
 /** Terminal worker diagnostics do not participate in recovery decisions. */
 export function formatUpdateFinalizationError(error: unknown): string {
@@ -63,16 +178,18 @@ export type MutableUpdateExecutionResult = {
   candidateSchemaVersions?: OpenClawSchemaVersions;
   previousSchemaVersions?: OpenClawSchemaVersions;
   previousVerified?: boolean;
+  originalManagedServiceRuntime?: OriginalManagedServiceRuntime;
   activationConfig?: UpdateConfigSnapshot;
 };
 
-function createUpdateCommandFailureResult(
+export function createUpdateCommandFailureResult(
   params: Pick<UpdateRunResult, "mode" | "root" | "recovery" | "durationMs"> & {
     failure: { cause: unknown; detail?: string };
     admission?: true;
+    phase?: string;
   },
-): UpdateRunResult {
-  const { failure, admission, ...result } = params;
+): UpdateRunResult & { failedStep: UpdateStepResult } {
+  const { failure, admission, phase, ...result } = params;
   const { cause, detail } = failure;
   const preMutationFailure = cause instanceof UpdatePreMutationError;
   const pkgOwnershipFailure = cause instanceof FreeBsdPkgOwnershipError;
@@ -87,7 +204,8 @@ function createUpdateCommandFailureResult(
           ? "managed-service-preflight"
           : "update-failed";
   const failedStep: UpdateStepResult = {
-    name: preMutationFailure || pkgOwnershipFailure || admissionFailure ? reason : "update",
+    name:
+      preMutationFailure || pkgOwnershipFailure || admissionFailure ? reason : (phase ?? "update"),
     command: "openclaw update",
     cwd: result.root ?? process.cwd(),
     durationMs: result.durationMs,
@@ -96,9 +214,10 @@ function createUpdateCommandFailureResult(
     ...(detail !== undefined ? { stderrTail: detail } : {}),
     ...(preMutationFailure && cause.recoverySteps ? { recoverySteps: cause.recoverySteps } : {}),
     // Recorded diagnostics do not change post-mutation recovery eligibility.
-    ...(preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
-      ? { failureFacts: cause.failureFacts }
-      : {}),
+    failureFacts:
+      preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
+        ? cause.failureFacts
+        : [createUpdateErrorFact(phase ?? "update", cause)],
   };
   return { ...result, status: "error", reason, failedStep, steps: [failedStep] };
 }
@@ -110,12 +229,28 @@ export async function resolveMutableUpdateFailure(params: {
   mode: UpdateRunResult["mode"];
   root: string;
   originalRecovery: () => Promise<UpdateRunResult["recovery"]>;
+  run?: UpdateCommandOptions["run"];
 }): Promise<{ result: UpdateRunResult; failure: { cause: unknown; detail: string } }> {
-  if (hasCommandProcessCleanupError(params.cause)) {
+  if (
+    hasCommandProcessCleanupError(params.cause) ||
+    params.cause instanceof UpdateCommandPendingRecoveryFailure
+  ) {
     throw params.cause;
   }
   const failure = { cause: params.cause, detail: formatErrorMessage(params.cause) };
   defaultRuntime.error(failure.detail);
+  let phase: string | undefined;
+  if (params.run) {
+    try {
+      const current = getUpdateRun(params.run.runId, { env: params.run.env });
+      phase =
+        current?.steps.findLast((step) => step.status === "in_progress")?.step ?? current?.phase;
+    } catch {
+      defaultRuntime.error(
+        "Warning: Update history could not be read; retaining the original failure without its recorded phase.",
+      );
+    }
+  }
   return {
     failure,
     result: createUpdateCommandFailureResult({
@@ -127,6 +262,7 @@ export async function resolveMutableUpdateFailure(params: {
           ? await params.originalRecovery()
           : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
       failure,
+      phase,
     }),
   };
 }
@@ -175,7 +311,7 @@ export async function withUpdateAdmissionReporting<T>(
     if (opts.json) {
       defaultRuntime.error(message);
     }
-    printResult(
+    await printResult(
       createUpdateCommandFailureResult({
         mode: "unknown",
         admission: true,
@@ -222,14 +358,11 @@ export class UpdateCommandPendingRecoveryFailure extends UpdateCommandFailure {
   }
 }
 
-export function reportUpdateCommandPendingRecovery(
+export async function reportUpdateCommandPendingRecovery(
   error: UpdateCommandPendingRecoveryFailure,
   opts: Pick<UpdateCommandOptions, "json">,
-): never {
-  // printResult resolves history, which may be part of the retained evidence.
-  if (opts.json) {
-    defaultRuntime.writeJson(error.result);
-  }
+): Promise<never> {
+  await printResult(error.result, opts, { readHistory: false, nextAction: error.detail });
   defaultRuntime.error(
     `Update recovery remains pending (${error.result.reason ?? "update-failed"}). Retained state and artifacts were left for the owning updater to reconcile; automatic restart and repair were not attempted.${error.detail ? `\n${error.detail}` : ""}`,
   );
@@ -306,7 +439,7 @@ export function resolveAutomaticUpdateTriage(
     ) &&
     params.preManagedServiceStop?.serviceMutationAllowed !== false &&
     !result.steps.some((step) => step.termination === "signal");
-  const failedStep = result.steps.find((step) => step.exitCode !== 0 && !step.advisory);
+  const failedStep = result.steps.find(isFailedUpdateStep);
   const phase = result.reason ?? "update";
   return eligible
     ? {
@@ -402,9 +535,10 @@ export async function markControlPlaneUpdateRestartSentinelFailureBestEffort(par
 export function recordUpdateResultNextAction(
   params: Pick<FinishUpdateParams, "opts" | "coreAlreadyCurrent" | "ownedManagedUpdateEnv">,
   result: UpdateRunResult,
+  committed?: UpdateRunRecord,
 ) {
   const run = params.opts.run;
-  const active = run ? getUpdateRun(run.runId, { env: run.env }) : undefined;
+  const active = committed ?? (run ? getUpdateRun(run.runId, { env: run.env }) : undefined);
   const nextAction = resolveUpdateResultNextAction({
     result,
     restart: params.coreAlreadyCurrent ? params.opts.restart : undefined,

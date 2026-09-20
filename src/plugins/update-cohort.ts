@@ -16,6 +16,7 @@ import {
   capturePluginPackageUpdateSnapshot,
   reconcilePluginPackageUpdateConfig,
 } from "./plugin-package-update.js";
+import { resolveOfficialPluginCohortNpmSpecs } from "./plugin-version-drift.js";
 import type { PluginChannelSyncResult } from "./update-channel.js";
 import {
   isPluginInstallRecordUpdateSource,
@@ -44,6 +45,7 @@ export async function convergePluginReleaseCohort(params: {
   coreVersion?: string;
   versionBoundPluginIds?: ReadonlySet<string>;
   timeoutMs: number;
+  workTimeoutMs?: number | null;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   externalizedBundledPluginBridges?: readonly ExternalizedBundledPluginBridge[];
@@ -112,6 +114,8 @@ async function convergePluginReleaseCohortWithLease(
   const sync = await syncPluginsForUpdateChannel({
     config: params.config,
     channel: params.channel,
+    timeoutMs: params.timeoutMs,
+    workTimeoutMs: params.workTimeoutMs,
     coreVersion: params.coreVersion,
     skipIds: operatorManagedIds,
     workspaceDir: params.workspaceDir,
@@ -123,6 +127,13 @@ async function convergePluginReleaseCohortWithLease(
   });
   params.beforePersistentEffect?.();
   let config = sync.config;
+  const npmInstallSpecOverrides = params.coreVersion
+    ? resolveOfficialPluginCohortNpmSpecs({
+        gatewayVersion: params.coreVersion,
+        installRecords: config.plugins?.installs ?? {},
+        config,
+      })
+    : undefined;
   let changed = sync.changed;
   let npmChanged = false;
   let installOwners = Object.entries(config.plugins?.installs ?? {})
@@ -175,8 +186,10 @@ async function convergePluginReleaseCohortWithLease(
   if (repairedMissingPayloadIds.size > 0) {
     const repair = await updateNpmInstalledPlugins({
       config,
+      npmInstallSpecOverrides,
       pluginIds: [...repairedMissingPayloadIds],
       timeoutMs: params.timeoutMs,
+      workTimeoutMs: params.workTimeoutMs,
       updateChannel: params.channel,
       coreVersion: params.coreVersion,
       versionBoundPluginIds: params.versionBoundPluginIds,
@@ -198,7 +211,9 @@ async function convergePluginReleaseCohortWithLease(
 
   const update = await updateNpmInstalledPlugins({
     config,
+    npmInstallSpecOverrides,
     timeoutMs: params.timeoutMs,
+    workTimeoutMs: params.workTimeoutMs,
     updateChannel: params.channel,
     coreVersion: params.coreVersion,
     skipIds: new Set([

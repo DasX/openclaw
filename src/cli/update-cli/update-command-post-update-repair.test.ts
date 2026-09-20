@@ -19,9 +19,15 @@ import {
   recordUpdateRunPhase,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
+import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import { defaultRuntime } from "../../runtime.js";
+import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
+import { registerCurrentCoreRuntimeRefreshTests } from "./update-command-post-update-runtime-refresh.test-support.js";
 import { finishUpdate, type FinishUpdateParams } from "./update-command-post-update.js";
-import { taskRecovery } from "./update-command-post-update.test-support.js";
+import {
+  registerUnverifiedDefinitionRecoveryTest,
+  taskRecovery,
+} from "./update-command-post-update.test-support.js";
 import { repairUpdateService } from "./update-command-repair-service.js";
 import { revalidateManagedGatewayServiceAfterUpdate } from "./update-command-service-maintenance.js";
 import { inspectManagedGatewayServiceBeforeUpdate } from "./update-command-service-plan.js";
@@ -241,9 +247,11 @@ describe("post-activation repair after rollback refusal or failure", () => {
     vi.spyOn(defaultRuntime, "error").mockImplementation(() => undefined);
   });
 
-  it.each([false, true])(
-    "records the bounded readiness outcome and retains only unverified backups (ready=%s)",
-    async (ready) => {
+  it.each(["ok", "readiness-pending", "still-starting"] as const)(
+    "records the bounded readiness outcome and retains only unverified backups (%s)",
+    async (outcome) => {
+      const ready = outcome === "ok";
+      const reason = outcome === "still-starting" ? outcome : "gateway-readiness-unverified";
       const params = fixture();
       const run = params.opts.run!;
       const { transaction, packageRoot } = await createRetainedPackageSwap(
@@ -285,12 +293,16 @@ describe("post-activation repair after rollback refusal or failure", () => {
           termination: "timeout",
           advisory: { kind: "recoverable-maintenance", message: observation },
         });
+        if (outcome === "still-starting") {
+          result.reason = outcome;
+        }
         return "readiness-pending";
       });
 
-      await expect(finishUpdate(params)).resolves.toMatchObject(
-        ready ? { status: "ok" } : { status: "skipped", reason: "gateway-readiness-unverified" },
-      );
+      const result = await finishUpdate(params);
+      expect(result).toMatchObject(ready ? { status: "ok" } : { status: "skipped", reason });
+      expect(classifyUpdateOutcome(result)).toBe(ready ? "succeeded" : "noop");
+      expect(result.recovery).toBeUndefined();
 
       expect(mocks.restart).toHaveBeenCalledOnce();
       expect(mocks.rollback).not.toHaveBeenCalled();
@@ -313,7 +325,7 @@ describe("post-activation repair after rollback refusal or failure", () => {
       const recorded = getUpdateRun(run.runId, { env: run.env });
       expect(recorded).toMatchObject({
         status: ready ? "succeeded" : "skipped",
-        reason: ready ? null : "gateway-readiness-unverified",
+        reason: ready ? null : reason,
         phase: "finished",
         finishedAtMs: expect.any(Number),
         confirmedAtMs: ready ? expect.any(Number) : null,
@@ -324,49 +336,20 @@ describe("post-activation repair after rollback refusal or failure", () => {
         expect(recorded?.steps).toContainEqual(
           expect.objectContaining({ step: "warning:gateway verification", detail: observation }),
         );
+        expect(recorded?.origin.nextAction).not.toContain("Keep the gateway stopped");
+        if (outcome === "still-starting" && recorded) {
+          expect(renderUpdateRunReport(recorded).markdown).toContain("Gateway still starting");
+        }
       }
     },
   );
 
-  it("terminalizes a failed final native read after current-core plugin parking", async () => {
-    const params = fixture();
-    params.coreAlreadyCurrent = true;
-    params.preManagedServiceStop!.stopped = false;
-    params.result.status = "skipped";
-    params.result.reason = "already-current";
-    params.result.before = params.result.after;
-    mocks.stop.mockResolvedValue({ ...params.preManagedServiceStop!, stopped: true });
-    mocks.converge.mockImplementation(
-      async (convergence: {
-        result: FinishUpdateParams["result"];
-        beforeDoctor?: () => Promise<void>;
-      }) => {
-        await convergence.beforeDoctor?.();
-        mocks.readService.mockRejectedValueOnce(new Error("final native query failed"));
-        return {
-          resultWithPostUpdate: {
-            ...convergence.result,
-            postUpdate: { plugins: { status: "ok", changed: true } },
-          },
-          postUpdateConfigSnapshot: params.configSnapshot,
-        };
-      },
-    );
-    await expect(finishUpdate(params)).rejects.toMatchObject({
-      exitCode: 1,
-      result: {
-        status: "error",
-        reason: "state-migrated-no-rollback",
-        steps: expect.arrayContaining([
-          expect.objectContaining({ name: "post-update verification", exitCode: 1 }),
-        ]),
-      },
-    });
-    expect(getUpdateRun(params.opts.run!.runId, { env: params.opts.run!.env })).toMatchObject({
-      status: "failed",
-    });
-    expect(mocks.stop).toHaveBeenCalledOnce();
-    expect(mocks.restart).not.toHaveBeenCalled();
+  registerCurrentCoreRuntimeRefreshTests(fixture, mocks);
+
+  registerUnverifiedDefinitionRecoveryTest({
+    fixture,
+    makeHome: () => dirs.make("update-definition-recovery-unverified-"),
+    mocks,
   });
 
   it.each([

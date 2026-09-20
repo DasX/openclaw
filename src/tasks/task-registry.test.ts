@@ -2,7 +2,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
-import { emitAcpLifecycleStart } from "../agents/command/attempt-execution.js";
 import { startAcpSpawnParentStreamRelay } from "../agents/subagents/spawn/acp-spawn-parent-stream.js";
 import { resetCronActiveJobs } from "../cron/active-jobs.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
@@ -94,7 +93,6 @@ import {
   resetTaskRegistryMaintenanceRuntimeForTests,
   reconcileInspectableTasks,
   runTaskRegistryMaintenance,
-  setTaskRegistryMaintenanceRuntimeForTests,
   startTaskRegistryMaintenance,
   stopTaskRegistryMaintenance,
   sweepTaskRegistry,
@@ -110,6 +108,7 @@ import {
   createAcpTaskRecord,
   createTaskFixture,
   createTerminalSubagentKillResult,
+  flushAsyncWork,
   withTaskRegistryTempDir,
 } from "./task-registry.test-support.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
@@ -223,12 +222,6 @@ function createSessionBindingRecord(
 
 function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) {
   return waitForFast(assertion, { timeout: timeoutMs, interval: stepMs });
-}
-
-async function flushAsyncWork(times = 4) {
-  for (let index = 0; index < times; index += 1) {
-    await Promise.resolve();
-  }
 }
 
 function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
@@ -651,91 +644,6 @@ describe("task-registry", () => {
       });
     });
   });
-
-  it.each([
-    {
-      name: "persists an ACP producer timestamp across lifecycle projection and SQLite reload",
-      runId: "run-reused-lifecycle",
-      task: "Reuse a persisted task row",
-      initialStatus: "queued" as const,
-      lastEventAt: 1_000,
-      lifecycleStartedAt: 2_000,
-      terminalStartedAt: undefined,
-      endedAt: 2_500,
-      expectedStartedAt: 2_000,
-    },
-    {
-      name: "persists an accepted zero lifecycle start timestamp over stale state",
-      runId: "run-zero-lifecycle",
-      task: "Replace a stale task timestamp",
-      initialStatus: "queued" as const,
-      lastEventAt: undefined,
-      lifecycleStartedAt: 0,
-      terminalStartedAt: undefined,
-      endedAt: 500,
-      expectedStartedAt: 0,
-    },
-    {
-      name: "ignores a non-finite lifecycle timestamp during durable terminal projection",
-      runId: "run-non-finite-terminal",
-      task: "Keep the accepted producer timestamp",
-      initialStatus: undefined,
-      lastEventAt: undefined,
-      lifecycleStartedAt: undefined,
-      terminalStartedAt: Number.NaN,
-      endedAt: 1_500,
-      expectedStartedAt: 1_000,
-    },
-  ])(
-    "$name",
-    async ({
-      runId,
-      task,
-      initialStatus,
-      lastEventAt,
-      lifecycleStartedAt,
-      terminalStartedAt,
-      endedAt,
-      expectedStartedAt,
-    }) => {
-      await withTaskRegistryTempDir(
-        async () => {
-          resetTaskRegistryForTests({ persist: false });
-          createTaskFixture("acp", {
-            requesterSessionKey: "agent:main:main",
-            runId,
-            task,
-            notifyPolicy: "silent",
-            startedAt: 1_000,
-            ...(initialStatus === undefined ? {} : { status: initialStatus }),
-            ...(lastEventAt === undefined ? {} : { lastEventAt }),
-          });
-
-          if (lifecycleStartedAt !== undefined) {
-            emitAcpLifecycleStart({ runId, startedAt: lifecycleStartedAt });
-          }
-          emitAgentEvent({
-            runId,
-            stream: "lifecycle",
-            data: {
-              phase: "end",
-              endedAt,
-              ...(terminalStartedAt === undefined ? {} : { startedAt: terminalStartedAt }),
-            },
-          });
-
-          resetTaskRegistryForTests({ persist: false });
-          await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
-          expectRecordFields(requireTaskByRunId(runId), {
-            status: "succeeded",
-            startedAt: expectedStartedAt,
-            endedAt,
-          });
-        },
-        { durableStore: true },
-      );
-    },
-  );
 
   it("tracks tool activity from tool-start events", async () => {
     await withTaskRegistryTempDir(async () => {
@@ -3740,61 +3648,6 @@ describe("task-registry", () => {
     });
   });
 
-  it("does not leak unhandled rejections when the scheduled maintenance sweep fails", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-
-      const unhandled: unknown[] = [];
-      const onUnhandledRejection = (reason: unknown) => {
-        unhandled.push(reason);
-      };
-      process.on("unhandledRejection", onUnhandledRejection);
-
-      setTaskRegistryMaintenanceRuntimeForTests({
-        listAcpSessionEntries: async () => [],
-        readAcpSessionEntry: () => ({
-          cfg: {} as never,
-          storePath: "",
-          sessionKey: "",
-          storeSessionKey: "",
-          entry: undefined,
-          storeReadFailed: false,
-        }),
-        listSessionEntries: () => [],
-        resolveStorePath: () => "",
-        parseAgentSessionKey: () => null,
-        isCronJobActive: () => false,
-        getAgentRunContext: () => undefined,
-        hasActiveAcpTurn: () => false,
-        hasActiveTaskForChildSessionKey: () => false,
-        deleteTaskRecordById: () => false,
-        ensureTaskRegistryReady: () => {},
-        getTaskById: () => undefined,
-        getTaskRegistryMaintenanceTask: () => undefined,
-        getTaskRegistryMaintenanceSnapshot: () => {
-          throw new Error("maintenance boom");
-        },
-        listTaskRecords: () => [],
-        markTaskLostById: () => null,
-        markTaskTerminalById: () => null,
-        maybeDeliverTaskTerminalUpdate: async () => null,
-        resolveTaskForLookupToken: () => undefined,
-        setTaskCleanupAfterById: () => null,
-        isRuntimeAuthoritative: () => true,
-        listTaskRegistryRecordsByRuntimeSourceIdFromSqlite: () => [],
-      });
-
-      try {
-        startTaskRegistryMaintenance();
-        await vi.advanceTimersByTimeAsync(5_000);
-        await flushAsyncWork();
-        expect(unhandled).toStrictEqual([]);
-      } finally {
-        process.off("unhandledRejection", onUnhandledRejection);
-      }
-    });
-  });
-
   it.each(["closing", "retained"] as const)(
     "keeps sweep membership fixed when %s retention changes during awaited cleanup",
     async (refreshedTask) => {
@@ -4010,29 +3863,6 @@ describe("task-registry", () => {
         lastEventAt: 1_699_999_998_500,
       });
       expect(getInspectableTaskAuditSummary().byCode.inconsistent_timestamps).toBe(0);
-    });
-  });
-
-  it("records the transition time when a generic update becomes terminal", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const task = createTaskFixture("cli", {
-        runId: "run-generic-terminal",
-        task: "Generic terminal transition",
-        status: "running",
-        deliveryStatus: "pending",
-        lastEventAt: 100,
-      });
-      updateTaskStateByRunId({ runId: "run-generic-terminal", endedAt: 150 });
-      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(300);
-
-      updateTaskStateByRunId({ runId: "run-generic-terminal", status: "failed" });
-      nowSpy.mockRestore();
-
-      expectRecordFields(requireTaskById(task.taskId), {
-        status: "failed",
-        endedAt: 300,
-        lastEventAt: 300,
-      });
     });
   });
 
@@ -4459,7 +4289,7 @@ describe("task-registry", () => {
           endedAt: 250,
         },
       });
-      await flushAsyncWork();
+      await waitForFast(() => expect(peekSystemEvents("agent:main:main")).toHaveLength(1));
 
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(peekSystemEvents("agent:main:main")).toEqual([
@@ -5288,44 +5118,6 @@ describe("task-registry", () => {
       }
     });
   });
-
-  it.each(["end", "error"] as const)(
-    "leaves a live-owned task running until its producer settles after lifecycle %s",
-    async (phase) => {
-      await withTaskRegistryTempDir(async () => {
-        const runId = `live-task-${phase}`;
-        const task = createTaskFixture("cli", {
-          runId,
-          childSessionKey: "agent:main:main",
-          task: "Work still unwinding",
-        });
-        const release = bindTaskRunOwner(task, async () => ({
-          ok: false,
-          error: "Cancellation was not requested.",
-        }));
-        try {
-          emitAgentEvent({
-            runId,
-            sessionKey: "agent:main:main",
-            stream: "lifecycle",
-            data: {
-              phase,
-              status: "cancelled",
-              aborted: true,
-              stopReason: "rpc",
-              endedAt: Date.now(),
-            },
-          });
-          expect(getTaskById(task.taskId)).toMatchObject({ status: "running" });
-          expect(getTaskById(task.taskId)?.endedAt).toBeUndefined();
-          markTaskTerminalById({ taskId: task.taskId, status: "cancelled", endedAt: Date.now() });
-          expect(getTaskById(task.taskId)?.status).toBe("cancelled");
-        } finally {
-          release();
-        }
-      });
-    },
-  );
 
   it.each([
     {

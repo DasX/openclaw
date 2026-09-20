@@ -28,6 +28,7 @@ import {
   type DevUpdateTarget,
   UPDATE_DEV_TARGET_REF_ENV,
 } from "../../infra/update-dev-target.js";
+import { createUpdateErrorFact } from "../../infra/update-failure-facts.js";
 import {
   createFreeBsdPkgOwnershipInspection,
   type FreeBsdPkgOwnershipInspection,
@@ -52,7 +53,9 @@ import {
   getUpdateRun,
   heartbeatUpdateRun,
   recordUpdateRunPhase,
+  recordUpdateRunDiagnostics,
   recordUpdateRunStep,
+  recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord, UpdateRunStep } from "../../infra/update-run-record.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
@@ -92,7 +95,6 @@ import {
 import {
   GatewayServiceUpdateOwnershipError,
   assertGatewayServiceManagementAllowedForUpdate,
-  gatewayServiceCommandUsesRoot,
   isGatewayServiceManagementAllowedForUpdate,
   readManagedGatewayServiceForUpdate,
   resolveManagedServicePackageUpdatePlan,
@@ -102,8 +104,46 @@ import {
 // from a run ID, process absence, or another invocation's diagnostic history.
 const previewAdmissions = new WeakMap<
   object,
-  { record: UpdateRunRecord; env: NodeJS.ProcessEnv }
+  { record: UpdateRunRecord; env: NodeJS.ProcessEnv; active?: boolean }
 >();
+
+/** Advance preview custody only across this owner's committed target writes. */
+export function recordUpdateCommandTarget(
+  run: UpdateCommandOptions["run"],
+  patch: { target?: UpdateRunRecord["target"]; step?: UpdateRunStep },
+): void {
+  if (!run) {
+    return;
+  }
+  let before: UpdateRunRecord | undefined;
+  const committed = recordUpdateRunPhase(
+    run.runId,
+    "requested",
+    patch,
+    { env: run.env },
+    (record) => {
+      before = record;
+    },
+  );
+  const admission = previewAdmissions.get(run);
+  if (admission && isDeepStrictEqual(before, admission.record)) {
+    admission.record = committed;
+  }
+}
+
+/** Admission follows the managed service root before a redirect or discovered install. */
+export function resolveUpdateCommandAdmissionRoot(
+  prepared: Pick<
+    Awaited<ReturnType<typeof prepareUpdateCommand>>,
+    "servicePlan" | "discoveredRoot"
+  >,
+): string {
+  return (
+    prepared.servicePlan?.serviceRoot ??
+    prepared.servicePlan?.rootRedirect?.root ??
+    prepared.discoveredRoot
+  );
+}
 
 export async function resolveUpdateCommandAdmissionEnv(params: {
   opts: UpdateCommandOptions;
@@ -122,20 +162,24 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
     !env[UPDATE_RUN_ID_ENV] &&
     isGatewayServiceManagementAllowedForUpdate(env)
   ) {
-    const command = (await readManagedGatewayServiceForUpdate(env))?.command ?? null;
+    const command =
+      (
+        await readManagedGatewayServiceForUpdate(
+          env,
+          params.root,
+          (await resolveUpdateInstallKind(params.root)) === "package",
+        )
+      )?.command ?? null;
     if (command) {
-      const usesRoot = await gatewayServiceCommandUsesRoot({ root: params.root, command });
-      if (usesRoot) {
-        env = resolveOwnedManagedUpdateEnv({
-          processEnv: env,
-          serviceEnv: mergeGatewayServiceEnv(env, command),
-          serviceDefinitionEnv: resolveManagedGatewayServiceCommand(command)?.environment,
-          invocationCwd: params.invocationCwd,
-        });
-        // Contradictory native identity must refuse before database or target selection.
-        if (resolveGatewayNativeServiceIdentityConflict(env)) {
-          assertGatewayServiceManagementAllowedForUpdate(env);
-        }
+      env = resolveOwnedManagedUpdateEnv({
+        processEnv: env,
+        serviceEnv: mergeGatewayServiceEnv(env, command),
+        serviceDefinitionEnv: resolveManagedGatewayServiceCommand(command)?.environment,
+        invocationCwd: params.invocationCwd,
+      });
+      // Contradictory native identity must refuse before database or target selection.
+      if (resolveGatewayNativeServiceIdentityConflict(env)) {
+        assertGatewayServiceManagementAllowedForUpdate(env);
       }
     }
   }
@@ -145,7 +189,7 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
 /** Package admission must not open history or launch diagnostics on a retained operation. */
 export function assertUpdatePackageActivationAdmission(
   root: string,
-  options?: Parameters<typeof assertNoPendingPackageActivation>[1],
+  options?: Parameters<typeof assertNoPendingPackageActivation>[1] & { serviceRoot?: string },
 ): void {
   try {
     assertNoPendingPackageActivation(resolveUpdateInstallRoot(root), options);
@@ -163,11 +207,19 @@ export function assertUpdatePackageActivationAdmission(
       { cause },
     );
   }
+  // A retained publication still owns the service installation when the CLI updates another root.
+  if (options?.serviceRoot && options.serviceRoot !== root) {
+    assertUpdatePackageActivationAdmission(options.serviceRoot, {
+      continuation: options.continuation,
+    });
+  }
 }
 
 export async function admitUpdateCommandRun(params: {
   opts: UpdateCommandOptions;
   root: string;
+  installKind?: "git" | "package" | "unknown";
+  serviceRoot?: string;
   invocationCwd?: string;
   pkgOwnership?: FreeBsdPkgOwnershipInspection;
   initialization?: {
@@ -181,12 +233,13 @@ export async function admitUpdateCommandRun(params: {
     };
   };
 }): Promise<NonNullable<UpdateCommandOptions["run"]>> {
-  assertUpdatePackageActivationAdmission(params.root);
+  assertUpdatePackageActivationAdmission(params.root, { serviceRoot: params.serviceRoot });
   const env = await resolveUpdateCommandAdmissionEnv(params);
   // A previous invocation may have died with a sealed restoration plan. Detect
   // it before any writable owner open or history row creation changes that state.
   // An inherited diagnostic run ID is not a durable continuation claim.
   await assertUpdateRecoveryAdmission({ env });
+  assertUpdatePackageActivationAdmission(params.root, { serviceRoot: params.serviceRoot });
   await assertOpenClawStateWriteAllowedAtPath({
     databasePath: resolveOpenClawStateSqlitePath(env),
     env,
@@ -214,6 +267,7 @@ export async function admitUpdateCommandRun(params: {
         : {}),
     });
   }
+  assertUpdatePackageActivationAdmission(params.root, { serviceRoot: params.serviceRoot });
   const driver = readUpdateRunDriver();
   const ledgerOptions = {
     env,
@@ -227,7 +281,14 @@ export async function admitUpdateCommandRun(params: {
       origin: { driver },
       supersedeStaleIdentityless:
         !env[UPDATE_RUN_ID_ENV]?.trim() && env[POST_CORE_UPDATE_ENV] !== "1",
-      target: { channel: params.opts.channel, tag: params.opts.tag },
+      target: {
+        channel: params.opts.channel,
+        tag: params.opts.tag,
+        ...(params.installKind && params.installKind !== "unknown"
+          ? { kind: params.installKind }
+          : {}),
+        ...(params.installKind === "git" ? { installationMethod: "git-checkout" } : {}),
+      },
       before: { version: VERSION },
     },
     ledgerOptions,
@@ -263,11 +324,11 @@ export async function withUpdatePreviewSignals<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   const admission = opts.dryRun === true && opts.run ? previewAdmissions.get(opts.run) : undefined;
-  if (!admission || !opts.run) {
+  if (!admission || !opts.run || admission.active) {
     return await withMutableUpdateSignals(opts, operation);
   }
-  previewAdmissions.delete(opts.run);
-  const { record: expected, env } = admission;
+  admission.active = true;
+  const { env } = admission;
   let interrupted = false;
   let shutdown: Promise<void> | undefined;
   const unregister = registerSignalExitBarrier(async () => {
@@ -281,10 +342,10 @@ export async function withUpdatePreviewSignals<T>(
     // Missing/displaced canonical state, pending recovery, or a changed row is
     // not permission to open a writable runtime or dispose of another owner.
     await assertUpdateRecoveryAdmission({ env });
-    if (!isDeepStrictEqual(getUpdateRun(expected.runId, { env }), expected)) {
+    if (!isDeepStrictEqual(getUpdateRun(admission.record.runId, { env }), admission.record)) {
       return;
     }
-    finishInterruptedUpdatePreview(expected, { env });
+    finishInterruptedUpdatePreview(admission.record, { env });
   });
   const onSignal = (code: number) => {
     interrupted = true;
@@ -304,6 +365,7 @@ export async function withUpdatePreviewSignals<T>(
     return await operation();
   } finally {
     await shutdown;
+    previewAdmissions.delete(opts.run);
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
     unregister();
@@ -313,23 +375,45 @@ export async function withUpdatePreviewSignals<T>(
 export function failUpdateCommandRun(
   error: unknown,
   run: NonNullable<UpdateCommandOptions["run"]>,
-): void {
+): ReturnType<typeof createUpdateErrorFact> | undefined {
   const options = { env: run.env };
   // Recovery owns failure/outcome publication; outer unwind must not rewrite a
   // database whose exact contents may still be needed to reconcile restoration.
   if (loadUpdateRecovery(run.runId, options)) {
-    return;
+    return undefined;
   }
   const active = getUpdateRun(run.runId, options);
   if (active?.status !== "running") {
-    return;
+    return undefined;
   }
-  recordUpdateRunStep(
+  const step =
+    active.steps.findLast((entry) => entry.status === "in_progress")?.step ?? active.phase;
+  const fact = createUpdateErrorFact(step, error, run.env);
+  recordUpdateRunDiagnostics(
     run.runId,
-    { step: active.phase, status: "failed", detail: formatErrorMessage(error) },
+    { failure: { step, detail: fact.message, failureFacts: [fact] } },
+    defaultRuntime.error,
     options,
   );
-  finishUpdateRun(run.runId, { status: "failed", reason: "update-failed" }, options);
+  if (!active.verification.rollbackOutcome) {
+    recordUpdateRunDiagnostics(
+      run.runId,
+      (recorded) => ({
+        rollbackOutcome:
+          recorded.rollbackOutcome ??
+          (active.phase === "requested"
+            ? { status: "not-needed", reason: "Update admission failed before package mutation" }
+            : {
+                status: "not-attempted",
+                reason:
+                  "CLI unwind does not attempt package rollback after an unexpected exception",
+              }),
+      }),
+      defaultRuntime.error,
+      options,
+    );
+  }
+  return fact;
 }
 
 export function createUpdateRunProgress(
@@ -352,6 +436,9 @@ export function createUpdateRunProgress(
   };
   return {
     pendingSteps,
+    onRollbackOutcome: (rollbackOutcome) => {
+      recordUpdateRunVerification(run.runId, { rollbackOutcome }, { env: run.env });
+    },
     onHeartbeat() {
       if (!deferred) {
         heartbeatUpdateRun(run.runId, driver, { env: run.env });
@@ -442,6 +529,7 @@ export function completeUpdateCommandRun(
       { before: result.before, after: result.after },
       recordOptions,
     );
+    recordUpdateRunDiagnostics(run.runId, result, defaultRuntime.error, recordOptions);
   }
   for (const step of result.steps.flatMap(updateRunStepsFromResultStep)) {
     recordUpdateRunStep(run.runId, step, recordOptions);
@@ -544,13 +632,17 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   });
   const servicePlan =
     installKind === "package"
-      ? await resolveManagedServicePackageUpdatePlan({ root: discoveredRoot, pkgOwnership })
+      ? await resolveManagedServicePackageUpdatePlan({
+          root: discoveredRoot,
+          pkgOwnership,
+          rebind: shouldRestart,
+        })
       : undefined;
-  if (servicePlan?.rootRedirect) {
-    assertUpdatePackageActivationAdmission(servicePlan.rootRedirect.root, {
-      continuation: postCoreUpdateResume ? opts.run?.executorFence : undefined,
-    });
-  }
+  const packageAdmission = {
+    continuation: postCoreUpdateResume ? opts.run?.executorFence : undefined,
+    serviceRoot: servicePlan?.serviceRoot ?? servicePlan?.rootRedirect?.root,
+  };
+  assertUpdatePackageActivationAdmission(discoveredRoot, packageAdmission);
   opts.run?.executorFence?.assertCurrent();
   if (opts.dryRun !== true) {
     await assertOpenClawStateWriteAllowedAtPath({
@@ -572,6 +664,7 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
     });
     opts.run?.executorFence?.assertCurrent();
   }
+  assertUpdatePackageActivationAdmission(discoveredRoot, packageAdmission);
   if (opts.dryRun !== true) {
     try {
       assertConfigWriteAllowedInCurrentMode();

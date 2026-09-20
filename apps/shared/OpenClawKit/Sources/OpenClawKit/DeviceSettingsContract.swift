@@ -98,7 +98,7 @@ public enum DeviceSettingsPanel: String, CaseIterable, Sendable {
 
 public enum DeviceSettingsPermission: String, CaseIterable, Encodable, Sendable {
     case notifications, accessibility, screenRecording, microphone
-    case camera, speechRecognition, location, automation
+    case camera, speechRecognition, location
     case contacts, calendars, reminders, photos
 }
 
@@ -137,6 +137,7 @@ public enum DeviceSettingsRequest: Equatable, Sendable {
     case openSystemSettings(DeviceSettingsPermission)
     case open(DeviceSettingsPanel)
     case checkForUpdates
+    case chromeExtensionStatus
     case installChromeExtension
 
     public init?(body: Any) {
@@ -157,6 +158,9 @@ public enum DeviceSettingsRequest: Equatable, Sendable {
             else { return nil }
             self = .open(panel)
         case "check-for-updates": self = .checkForUpdates
+        case "chrome-extension-status":
+            guard payload.count == 1 else { return nil }
+            self = .chromeExtensionStatus
         case "install-chrome-extension":
             guard payload.count == 1 else { return nil }
             self = .installChromeExtension

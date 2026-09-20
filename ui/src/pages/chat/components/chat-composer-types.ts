@@ -29,6 +29,7 @@ import type { RealtimeTalkLevelSignal } from "../talk/level.ts";
 import type { RealtimeTalkStatus } from "../talk/session.ts";
 import type { RealtimeVoiceSelectionState } from "../talk/voice-selection.ts";
 import type { FallbackStatus } from "../tool-stream-contract.ts";
+import type { AsyncQuestionPresentation } from "./chat-async-question.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import type { ComposerEmojiMenu } from "./chat-composer-emoji.ts";
 import type { HumanMentionDirectory, HumanMentionMenu } from "./chat-composer-mention-menu.ts";
@@ -101,7 +102,9 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   onProgressManipulate?: () => void;
   runId?: string | null;
   onDismissProgressCard?: (card: ProgressCard) => void;
+  /** The pane scopes Gateway questions to this conversation's agent and session. */
   gatewayQuestionPrompts?: readonly QuestionPrompt[];
+  asyncQuestions?: AsyncQuestionPresentation;
   messages: unknown[];
   stream: string | null;
   queue: ChatQueueItem[];
@@ -207,8 +210,9 @@ export type ChatComposerState = SkillMenuState &
     pendingClearedSubmittedDraft: PendingClearedSubmittedDraft | null;
     goalExpandedId: string | null;
     goalComposer: (ChatGoalDraftMode & { key: string; pending: boolean }) | null;
-    activeGatewayQuestionId: string | null;
-    gatewayQuestionCollapsed: boolean;
+    activeQuestionKey: string | null;
+    gatewayQuestionIds: Set<string>;
+    questionCollapsed: boolean;
     questionTakeoverActive: boolean;
     restoreComposerFocus: boolean;
     composerInput: HTMLElement | null;

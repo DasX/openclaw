@@ -28,7 +28,9 @@ struct DeviceSettingsContractTests {
         #expect(actual["capabilities"] as? [String: Bool] == ["unattendedDesktopEnabled": false])
     }
 
-    @Test func `Chrome extension setup accepts only the exact action payload`() {
+    @Test func `Chrome extension status and setup accept only their exact action payloads`() {
+        #expect(DeviceSettingsRequest(body: ["type": "chrome-extension-status"]) == .chromeExtensionStatus)
+        #expect(DeviceSettingsRequest(body: ["type": "chrome-extension-status", "command": "other"]) == nil)
         #expect(DeviceSettingsRequest(body: ["type": "install-chrome-extension"]) == .installChromeExtension)
         #expect(DeviceSettingsRequest(body: ["type": "install-chrome-extension", "command": "other"]) == nil)
     }
@@ -120,7 +122,7 @@ struct DeviceSettingsContractTests {
                     .init(id: .notifications, status: .granted), .init(id: .accessibility, status: .denied),
                     .init(id: .screenRecording, status: .notDetermined), .init(id: .microphone, status: .unavailable),
                     .init(id: .camera, status: .granted), .init(id: .speechRecognition, status: .denied),
-                    .init(id: .location, status: .notDetermined), .init(id: .automation, status: .unavailable),
+                    .init(id: .location, status: .notDetermined),
                 ],
                 location: .init(mode: .whileUsing, precise: true)),
             voice: .init(

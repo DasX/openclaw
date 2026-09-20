@@ -58,7 +58,7 @@ import {
   createPlacementWorkspaceResultOps,
   hasCurrentWorkspaceResultClaim,
   hasWorkerWorkspacePendingResult,
-  readWorkerWorkspaceReconcilingSessionIds,
+  readWorkerWorkspaceReconciliationFacts,
 } from "./placement-workspace-result.js";
 import { consumePreparedEnvironment } from "./prepared-environment-store.js";
 import type { PreparedEnvironmentSelection } from "./store.js";
@@ -180,10 +180,14 @@ export function createWorkerSessionPlacementStore(
     getProjectionFacts(sessionId: string) {
       const id = required(sessionId, "session id");
       const db = read();
+      const move = readWorkerPlacementMove(db, id);
+      const { placements, reconcilingSessionIds } = readWorkerWorkspaceReconciliationFacts(db, [
+        id,
+      ]);
       return {
-        placement: withWorkspaceResultConflict(find(db, id)),
-        move: readWorkerPlacementMove(db, id),
-        workspaceResultReconciling: readWorkerWorkspaceReconcilingSessionIds(db, [id]).has(id),
+        placement: withWorkspaceResultConflict(placements.get(id)),
+        move,
+        workspaceResultReconciling: reconcilingSessionIds.has(id),
       };
     },
 
@@ -213,7 +217,7 @@ export function createWorkerSessionPlacementStore(
       const normalizedIds = [
         ...new Set(sessionIds.map((sessionId) => required(sessionId, "session id"))),
       ];
-      return readWorkerWorkspaceReconcilingSessionIds(read(), normalizedIds);
+      return readWorkerWorkspaceReconciliationFacts(read(), normalizedIds).reconcilingSessionIds;
     },
 
     retireSessionPlacement(input: WorkerSessionPlacementRetirement): void {
@@ -610,16 +614,18 @@ export function createWorkerSessionPlacementStore(
       return current;
     },
 
-    listForReconcile(): WorkerSessionPlacementRecord[] {
+    listForReconcile(sessionKey?: string): WorkerSessionPlacementRecord[] {
       const db = read();
+      let select = query(db)
+        .selectFrom("worker_session_placements")
+        .selectAll()
+        .where("state", "not in", ["local", "reclaimed"]);
+      if (sessionKey !== undefined) {
+        select = select.where("session_key", "=", sessionKey);
+      }
       return executeSqliteQuerySync(
         db,
-        query(db)
-          .selectFrom("worker_session_placements")
-          .selectAll()
-          .where("state", "not in", ["local", "reclaimed"])
-          .orderBy("updated_at_ms")
-          .orderBy("session_id"),
+        select.orderBy("updated_at_ms").orderBy("session_id"),
       ).rows.map((row) => withWorkspaceResultConflict(fromRow(row))!);
     },
 

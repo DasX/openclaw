@@ -149,12 +149,33 @@ Native dependency policy:
     - Local worker auto-scaling is intentionally conservative and backs off
       when the host load average is already high, so multiple concurrent
       Vitest runs do less damage by default.
+      CI hosts with at least eight available CPUs can use six workers at
+      24 to below 28 GiB and eight workers at 28–128 GiB. The measured memory allowance
+      reserves 25% of RAM even for two heavy test processes. Interactive local
+      sizing is unchanged; explicit worker overrides, load backoff, process
+      memory constraints, free-memory pressure limits, and the 16-worker cap
+      still apply. See [CI worker sizing](/ci/capacity#vitest-worker-sizing)
+      for the measurements and workflow limits.
     - The base Vitest config marks the projects/config files as
       `forceRerunTriggers` so changed-mode reruns stay correct when test
       wiring changes.
     - The config keeps `OPENCLAW_VITEST_FS_MODULE_CACHE` enabled on
       supported hosts; set `OPENCLAW_VITEST_FS_MODULE_CACHE_PATH=/abs/path`
       for one explicit cache location for direct profiling.
+    - Local Node runs also reuse compiled runtime-worker outputs from
+      `.artifacts/vitest-worker-cache`. The runner reserves an exclusive
+      checkout-local output slot and transfers verified artifacts into that slot.
+      After its borrowers and resources join, it transfers completed artifacts
+      back to the cache and removes the invocation directory. Occupied or
+      uncertain generations are never reclaimed automatically.
+      Content, compiler, configuration, or resolution changes invalidate the
+      seed; timestamp-only touches do not. Build provenance and resource receipts
+      are refreshed for each invocation, and source/output verification still
+      runs before lending and after completion. Cold local preparation overlaps
+      the independent worker and finalizer builds when at least 8 GiB of memory
+      is available; smaller hosts keep sequential compilation. CI, Bun, and custom Node loader
+      runs keep fresh compilation. This cache does not share Vitest's writable
+      filesystem module cache with another checkout.
 
   </Accordion>
 

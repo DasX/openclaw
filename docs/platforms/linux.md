@@ -190,6 +190,20 @@ variables are not copied into the service.
 
 ### Host sleep
 
+Choose **Keep computer awake** in the native tray menu to prevent idle sleep
+while the desktop companion is running, including when its windows are closed.
+The setting is off by default and remembers your choice across app restarts.
+Turning it off or quitting OpenClaw releases the keep-awake request. It does not
+change your permanent power settings or unlock the computer. If the operating
+system cannot honor a saved request, the menu marks the checked preference
+**inactive** and reports the error. You can still uncheck it to turn the saved
+preference off.
+
+Linux uses GNOME’s session manager or an xdg-desktop-portal backend that supports
+idle inhibition. Depending on the desktop, this can also prevent display dimming and automatic
+locking; manual locking remains available. The optional macOS and Windows Tauri
+builds prevent system idle sleep without requesting that the display stay on.
+
 On systems with systemd-logind, the companion prepares a suspension lease for
 its local Gateway before the host sleeps. After wake, it reconnects and resumes
 the Gateway; remote Gateway routes are left untouched. If logind or the system
@@ -305,8 +319,13 @@ On X11, use the gear in Quick Chat to record or reset a custom shortcut. The
 plain **Quick Chat** tray item. Global shortcuts are not available on Wayland, so
 the shortcut settings are hidden and the tray item remains the entry point.
 After an accepted send, Quick Chat stays open and streams the selected agent's
-plain-text reply below the composer. Press `Esc` to dismiss the bar and its reply;
-`Ctrl+Enter` still opens the dashboard.
+plain-text reply above one bottom composer, with your submitted message alongside
+the reply. Collapse the reply to keep a compact composer; expanding it restores
+the live text and any widget contents. You can prepare the next draft while a
+reply streams, then send it when the turn finishes. Return sends, Shift-Return
+adds a newline, and `Ctrl+Enter` sends and opens the dashboard. **Open dashboard**
+is also available beside the composer controls. Press `Esc` to dismiss the bar
+and its reply.
 
 ## CLI and SSH alternative
 

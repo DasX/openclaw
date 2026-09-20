@@ -54,15 +54,13 @@ import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById, type ChatAbortControllerEntry } from "../chat-abort.js";
 import { errorShapeFromError } from "../error-shape.js";
-import {
-  tryFinalizeTrackedAgentTask,
-  type GatewayAgentTaskTrackingMode,
-} from "../server-methods/agent-task-tracking.js";
+import { tryFinalizeTrackedAgentTask } from "../server-methods/agent-task-tracking.js";
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { formatForLog } from "../ws-log.js";
 import { setGatewayDedupeEntries } from "./agent-dedupe.js";
 import { captureAgentJobSession } from "./agent-job.js";
 import { readAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
+import type { GatewayAgentDispatchTaskTracking } from "./agent-run-task-tracking.js";
 import type { AgentTurnContext, AgentTurnIo } from "./types.js";
 
 function resolveResolvedAgentTimeoutStopReason(
@@ -142,31 +140,40 @@ export function deleteGatewayDedupeEntries(params: {
   }
 }
 
-export function dispatchAgentRunFromGateway(params: {
-  assertCurrent?: () => void;
-  admittedRunEntry: ChatAbortControllerEntry | undefined;
-  ingressOpts: Parameters<typeof agentCommandFromGatewayIngress>[0];
-  runId: string;
-  cronCreatorAuthority?: GatewayCronCreatorAuthorityAdmission;
-  dedupeKeys: readonly string[];
-  /**
-   * Controller whose signal is wired into `ingressOpts.abortSignal`. Used on
-   * completion to drop the matching `chatAbortControllers` entry without
-   * touching a same-runId entry owned by a concurrent chat.send.
-   */
-  abortController: AbortController;
-  cleanupAbortController: () => void;
-  io: AgentTurnIo;
-  context: AgentTurnContext;
-  taskTrackingMode: Exclude<GatewayAgentTaskTrackingMode, "plugin_subagent">;
-  canonicalSkillWorkspaceDir?: string;
-  restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
-  commandRuntimeContext?: PreparedAgentCommandRuntimeContext;
-  onSettled?: (outcome: {
-    terminalOutcome: AgentRunTerminalOutcome;
-    onRecovered?: () => void;
-  }) => Promise<boolean> | boolean;
-}) {
+type TaskSettlementAdmission =
+  | { taskTrackingMode: "none"; assertSettlementCurrent?: () => void }
+  | {
+      taskTrackingMode: Exclude<GatewayAgentDispatchTaskTracking, "none">;
+      assertSettlementCurrent: () => void;
+    };
+
+export function dispatchAgentRunFromGateway(
+  params: {
+    assertCurrent?: () => void;
+    admittedRunEntry: ChatAbortControllerEntry | undefined;
+    ingressOpts: Parameters<typeof agentCommandFromGatewayIngress>[0];
+    runId: string;
+    cronCreatorAuthority?: GatewayCronCreatorAuthorityAdmission;
+    dedupeKeys: readonly string[];
+    /**
+     * Controller whose signal is wired into `ingressOpts.abortSignal`. Used on
+     * completion to drop the matching `chatAbortControllers` entry without
+     * touching a same-runId entry owned by a concurrent chat.send.
+     */
+    abortController: AbortController;
+    cleanupAbortController: () => void;
+    io: AgentTurnIo;
+    context: AgentTurnContext;
+    canonicalSkillWorkspaceDir?: string;
+    restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
+    commandRuntimeContext?: PreparedAgentCommandRuntimeContext;
+    onSettled?: (outcome: {
+      terminalOutcome: AgentRunTerminalOutcome;
+      onRecovered?: () => void;
+    }) => Promise<boolean> | boolean;
+  } & TaskSettlementAdmission,
+) {
+  const assertSettlementCurrent = params.assertSettlementCurrent;
   const registeredRunEntry = params.admittedRunEntry;
   const jobSessionBinding = registeredRunEntry ?? params.ingressOpts;
   const registeredRunInstance = registeredRunEntry?.operationalRunInstance;
@@ -187,11 +194,14 @@ export function dispatchAgentRunFromGateway(params: {
     params.assertCurrent?.();
     params.abortController.signal.throwIfAborted();
   };
-  let trackedTask: TaskRecord | undefined;
-  let createdTask: CreatedDetachedTaskRun | undefined;
+  const registeredTask =
+    typeof params.taskTrackingMode === "object" ? params.taskTrackingMode : undefined;
+  let trackedTask: TaskRecord | undefined = registeredTask?.task;
+  let createdTask: CreatedDetachedTaskRun | undefined =
+    registeredTask?.kind === "receipt" ? registeredTask : undefined;
   let finalizeLegacyRun:
     | Extract<PreparedDetachedTaskRun, { kind: "legacy" }>["finalizeRun"]
-    | undefined;
+    | undefined = registeredTask?.kind === "legacy" ? registeredTask.finalizeRun : undefined;
   let executionActivated = false;
   let originalTaskRunOwner: ReturnType<typeof getTaskRunOwner>;
   const canSettleTrackedTask = (task: TaskRecord) => {
@@ -228,6 +238,27 @@ export function dispatchAgentRunFromGateway(params: {
       }
       return;
     }
+    if (createdTask) {
+      const settlementFailed = (error: unknown) => {
+        params.context.logGateway.warn(
+          `failed to finalize tracked agent task ${params.runId}: ${formatForLog(error)}`,
+        );
+      };
+      try {
+        if (!assertSettlementCurrent) {
+          throw new Error("Active task settlement requires its Gateway admission");
+        }
+        return createdTask
+          .finalizeActive(terminal, (current) => {
+            assertSettlementCurrent();
+            return canSettleTrackedTask(current);
+          })
+          .then(() => undefined, settlementFailed);
+      } catch (error) {
+        settlementFailed(error);
+      }
+      return;
+    }
     if (canSettleTrackedTask(task)) {
       tryFinalizeTrackedAgentTask({
         finalizeRun: finalizeLegacyRun,
@@ -246,19 +277,14 @@ export function dispatchAgentRunFromGateway(params: {
       `failed to start tracked agent task ${params.runId}: ${formatForLog(error)}`,
     );
   };
-  if (params.taskTrackingMode !== "none") {
-    const followup =
-      typeof params.taskTrackingMode === "object" ? params.taskTrackingMode : undefined;
+  if (params.taskTrackingMode === "cli") {
     try {
       assertCurrent();
       const prepared = prepareRunningTaskRun(
         {
           runtime: "cli",
           sourceId: params.runId,
-          ownerKey: followup?.requesterSessionKey ?? params.ingressOpts.sessionKey,
-          requesterSessionKey: followup?.requesterSessionKey,
-          label: followup?.label,
-          ...(followup ? { notifyPolicy: "silent" as const } : {}),
+          ownerKey: params.ingressOpts.sessionKey,
           scopeKind: "session",
           requesterOrigin: normalizeDeliveryContext({
             channel: params.ingressOpts.channel,
@@ -363,10 +389,11 @@ export function dispatchAgentRunFromGateway(params: {
       ? {
           ...ingressOptsWithSpawnFacts,
           onPostAdmittedRunContext: trackedTaskBinding?.onPostAdmission,
-          onExecutionStarted: () => {
+          onExecutionStarted: async () => {
             executionActivated = true;
-            ingressOptsWithSpawnFacts.onExecutionStarted?.();
-            trackedTaskBinding?.onExecutionStarted();
+            await ingressOptsWithSpawnFacts.onExecutionStarted?.();
+            assertCurrent();
+            await trackedTaskBinding?.onExecutionStarted();
           },
         }
       : ingressOptsWithSpawnFacts;

@@ -16,6 +16,46 @@ import {
   prepareSessionRowSelection,
 } from "./session-utils-list.js";
 
+it("selects an exact row before pagination while retaining discovery filters", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = { agents: { entries: { main: {} } } };
+    const key = "agent:main:target";
+    for (let index = 0; index < 7; index++) {
+      const sessionKey = index === 0 ? key : `${key}-${index}`;
+      replaceSessionEntrySync(
+        { agentId: "main", sessionKey },
+        { sessionId: `transcript-${index}`, updatedAt: index + 1 },
+      );
+    }
+    const projection = await createSessionRowProjection({ cfg });
+    try {
+      const page = await listProjectedSessions({
+        projection,
+        opts: { agentId: "main", search: key, limit: 5 },
+      });
+      expect(page.sessions.map((row) => row.key)).not.toContain(key);
+      const exact = await listProjectedSessions({
+        projection,
+        key,
+        opts: { agentId: "main", limit: 1 },
+      });
+      expect(exact.sessions).toMatchObject([{ key, sessionId: "transcript-0" }]);
+      replaceSessionEntrySync(
+        { agentId: "main", sessionKey: key },
+        { sessionId: "transcript-0", updatedAt: 8, archivedAt: 8 },
+      );
+      const hidden = await listProjectedSessions({
+        projection,
+        key,
+        opts: { agentId: "main", limit: 1 },
+      });
+      expect(hidden.sessions).toEqual([]);
+    } finally {
+      projection.dispose();
+    }
+  });
+});
+
 it("reuses resident key predicates across list requests and refreshes entry classification", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const cfg = { agents: { entries: { main: {} } } };
@@ -69,6 +109,27 @@ it("reuses resident key predicates across list requests and refreshes entry clas
       expect(hidden.sessions.map((row) => row.key).toSorted()).toEqual(
         expected.filter((key) => key !== sessionKey),
       );
+      for (const category of ["Research", " "]) {
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey },
+          {
+            sessionId: sessionKey,
+            updatedAt: 2,
+            spawnedBy: "agent:main:parent",
+            archivedAt: 2,
+            category,
+          },
+        );
+        const grouped = await listProjectedSessions({ projection, opts });
+        expect(grouped.sessions.map((row) => row.key).toSorted()).toEqual(
+          category.trim() ? expected : expected.filter((key) => key !== sessionKey),
+        );
+        expect(
+          (
+            await listProjectedSessions({ projection, opts: { ...opts, archived: false } })
+          ).sessions.some((row) => row.key === sessionKey),
+        ).toBe(false);
+      }
       replaceSessionEntrySync(
         { agentId: "main", sessionKey },
         { sessionId: sessionKey, updatedAt: 3, archivedAt: 2 },

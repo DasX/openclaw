@@ -1,8 +1,14 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { WorkspaceAliasRepointedError } from "../agents/workspace-state-identity.js";
 import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
+import {
+  isSqliteNativeOpenFailure,
+  markSqliteNativeOpenFailure,
+} from "../infra/sqlite-error-diagnostics.js";
 import { SqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
 import { StartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
+import { SkillUploadRequestError } from "../skills/lifecycle/upload-store-error.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
@@ -28,7 +34,22 @@ type ErrorValue =
   | { undefined: true };
 
 type ErrorIdentity =
-  | { type: "error" | "aggregate" | "ownership" | "newer-schema" | "coordinator" | "range-error" }
+  | {
+      type: "workspace-alias-repointed";
+      aliasPath: string;
+      storedWorkspacePath: string;
+      currentWorkspacePath: string;
+    }
+  | {
+      type:
+        | "error"
+        | "aggregate"
+        | "ownership"
+        | "newer-schema"
+        | "coordinator"
+        | "range-error"
+        | "skill-upload-request";
+    }
   | { type: "coordinator-contention"; family: CoordinatorFamily }
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
@@ -42,6 +63,7 @@ type ErrorNode = ErrorIdentity & {
   message: string;
   code?: string | number;
   errcode?: number;
+  nativeOpen?: true;
   cause?: ErrorValue;
   errors?: ErrorValue[];
 };
@@ -56,6 +78,17 @@ export type OpenClawStateWorkerErrorPayload = {
 type ErrorGraphOptions = { includeOrdinary?: boolean };
 
 function identifyError(error: Error): ErrorIdentity {
+  if (error instanceof WorkspaceAliasRepointedError) {
+    return {
+      type: "workspace-alias-repointed",
+      aliasPath: error.aliasPath,
+      storedWorkspacePath: error.storedWorkspacePath,
+      currentWorkspacePath: error.currentWorkspacePath,
+    };
+  }
+  if (error instanceof SkillUploadRequestError) {
+    return { type: "skill-upload-request" };
+  }
   if (error instanceof StateDatabaseCoordinatorContentionError) {
     return { type: "coordinator-contention", family: error.family };
   }
@@ -142,7 +175,8 @@ export function encodeOpenClawStateWorkerError(
     encodeValue(error);
     for (const current of errors) {
       const identity = identifyError(current);
-      canonical ||= identity.type !== "error" && identity.type !== "aggregate";
+      const nativeOpen = isSqliteNativeOpenFailure(current);
+      canonical ||= nativeOpen || (identity.type !== "error" && identity.type !== "aggregate");
       const code = "code" in current ? current.code : undefined;
       const errcode = "errcode" in current ? current.errcode : undefined;
       nodes.push({
@@ -153,6 +187,7 @@ export function encodeOpenClawStateWorkerError(
           ? { code }
           : {}),
         ...(isNativeErrorCode(errcode) ? { errcode } : {}),
+        ...(nativeOpen ? { nativeOpen: true } : {}),
         ...("cause" in current ? { cause: encodeValue(current.cause) } : {}),
         ...(current instanceof AggregateError ? { errors: current.errors.map(encodeValue) } : {}),
       });
@@ -180,12 +215,24 @@ function isMaintenanceKind(kind: unknown): kind is MaintenanceKind {
 
 function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined {
   switch (node.type) {
+    case "workspace-alias-repointed":
+      return typeof node.aliasPath === "string" &&
+        typeof node.storedWorkspacePath === "string" &&
+        typeof node.currentWorkspacePath === "string"
+        ? {
+            type: node.type,
+            aliasPath: node.aliasPath,
+            storedWorkspacePath: node.storedWorkspacePath,
+            currentWorkspacePath: node.currentWorkspacePath,
+          }
+        : undefined;
     case "error":
     case "aggregate":
     case "ownership":
     case "newer-schema":
     case "coordinator":
     case "range-error":
+    case "skill-upload-request":
       return { type: node.type };
     case "coordinator-contention":
       return node.family === "gateway-lifecycle" ||
@@ -256,6 +303,7 @@ function parseNode(value: unknown, count: number): ErrorNode | undefined {
     "message",
     "code",
     "errcode",
+    "nativeOpen",
     "cause",
   ]);
   const errors: ErrorValue[] = [];
@@ -277,6 +325,7 @@ function parseNode(value: unknown, count: number): ErrorNode | undefined {
       typeof value.code !== "string" &&
       !(typeof value.code === "number" && Number.isFinite(value.code))) ||
     ("errcode" in value && !isNativeErrorCode(value.errcode)) ||
+    ("nativeOpen" in value && value.nativeOpen !== true) ||
     ("cause" in value && !isErrorValue(value.cause, count))
   ) {
     return undefined;
@@ -289,6 +338,7 @@ function parseNode(value: unknown, count: number): ErrorNode | undefined {
       ? { code: value.code }
       : {}),
     ...(isNativeErrorCode(value.errcode) ? { errcode: value.errcode } : {}),
+    ...(value.nativeOpen === true ? { nativeOpen: true } : {}),
     ...(isErrorValue(value.cause, count) ? { cause: value.cause } : {}),
     ...(identity.type === "aggregate" ? { errors } : {}),
   };
@@ -300,10 +350,14 @@ function unreachableErrorNode(node: never): never {
 
 function createError(node: ErrorNode): Error {
   switch (node.type) {
+    case "workspace-alias-repointed":
+      return new WorkspaceAliasRepointedError(node);
     case "error":
       return new Error(node.message);
     case "range-error":
       return new RangeError(node.message);
+    case "skill-upload-request":
+      return new SkillUploadRequestError(node.message);
     case "aggregate":
       return new AggregateError([], node.message);
     case "coordinator":
@@ -367,7 +421,8 @@ function decodeErrorGraph(
       }
       visited.add(ref);
       const node = nodes[ref]!;
-      canonical ||= node.type !== "error" && node.type !== "aggregate";
+      canonical ||=
+        node.nativeOpen === true || (node.type !== "error" && node.type !== "aggregate");
       for (const edge of [...(node.cause ? [node.cause] : []), ...(node.errors ?? [])]) {
         if ("ref" in edge) {
           pending.push(edge.ref);
@@ -384,6 +439,9 @@ function decodeErrorGraph(
       const error = errors[index]!;
       error.name = node.name;
       error.message = node.message;
+      if (node.nativeOpen) {
+        markSqliteNativeOpenFailure(error);
+      }
       if (node.code !== undefined) {
         Object.defineProperty(error, "code", {
           value: node.code,

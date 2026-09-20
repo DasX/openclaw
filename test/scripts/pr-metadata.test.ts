@@ -23,7 +23,7 @@ type Fixture = {
   finalPatch?: Record<string, unknown>;
   failure?: "empty" | "exit" | "non-json" | "null" | "quota" | "forbidden";
   failureCount?: number;
-  failureTarget?: "pull" | "reread" | "files" | "graphql" | "permission" | "browse" | "checks";
+  failureTarget?: "pull" | "reread" | "files" | "user" | "permission" | "browse" | "checks";
   notify?: boolean;
   ghRepo?: string;
   ghHost?: string;
@@ -113,8 +113,8 @@ if (args[0] === "pr" && args[1] === "checks") {
   out([{name:"RATE_LIMIT",bucket:"pending",state:"PENDING"}]);
   process.exit(8);
 }
-const endpoint = args.find((arg) => arg.startsWith("repos/") || ["graphql", "rate_limit"].includes(arg));
-if (args[0] !== "api" || !endpoint) throw new Error("Only explicit REST/GraphQL endpoints are supported");
+const endpoint = args.find((arg) => arg.startsWith("repos/") || ["user", "rate_limit"].includes(arg));
+if (args[0] !== "api" || !endpoint) throw new Error("Only explicit REST endpoints are supported");
 const hostFlag = args.indexOf("--hostname");
 const apiHost = hostFlag >= 0 ? args[hostFlag + 1] : defaultHost;
 const repoURL = "https://" + apiHost + "/base-owner/base-repo";
@@ -127,7 +127,7 @@ const isPull = endpoint === "repos/base-owner/base-repo/pulls/42";
 let count = Number(fs.readFileSync(path.join(root,"count"),"utf8"));
 if (isPull) fs.writeFileSync(path.join(root,"count"), String(++count));
 const failureTarget = fixture.failureTarget || "pull";
-const fail = failureTarget === "pull" ? isPull : failureTarget === "reread" ? isPull && count > 1 : failureTarget === "graphql" ? endpoint === "graphql" : failureTarget === "permission" ? endpoint.includes("/collaborators/") : endpoint.includes("/files?");
+const fail = failureTarget === "pull" ? isPull : failureTarget === "reread" ? isPull && count > 1 : failureTarget === "user" ? endpoint === "user" : failureTarget === "permission" ? endpoint.includes("/collaborators/") : endpoint.includes("/files?");
 if (fixture.failure && fail && (fixture.failureCount === undefined || count <= fixture.failureCount)) {
   if (fixture.failure === "forbidden") {
     console.error("HTTP 403: Resource not accessible by integration; secret-response-must-not-escape");
@@ -159,11 +159,6 @@ if (endpoint === "repos/base-owner/base-repo") {
   const count = fixture.changedFiles === undefined ? 101 : fixture.changedFiles || 0;
   const files = fixture.files === undefined ? Array.from({length:count},(_,i)=>({filename:"src/file-"+i+".ts",additions:1,deletions:0,status:i===count-1?"removed":"modified"})) : fixture.files;
   out(Array.isArray(files) ? [files.slice(0,100), ...(files.length > 100 ? [files.slice(100)] : [])] : [files]);
-} else if (endpoint.includes("/check-runs?")) {
-  if (!args.includes("--paginate") || !args.includes("--slurp")) throw new Error("Checks must be paginated");
-  out([{check_runs:[{name:"ci",status:"completed",conclusion:"success",details_url:"https://example.test/check"}]},{check_runs:[{name:"lint",status:"in_progress",conclusion:null}]}]);
-} else if (endpoint.includes("/status?")) {
-  out([{statuses:[{context:"external",state:"pending",target_url:"https://example.test/status"}]}]);
 } else throw new Error("Unexpected endpoint " + endpoint);
 `,
   );
@@ -434,6 +429,10 @@ describe("PR metadata through REST", () => {
       expect(result.stderr).toContain(
         "graphql 0/5000 reset=2027-01-15T08:00:00Z core 4900/5000 reset=2027-01-15T08:05:00Z",
       );
+      expect(result.stderr).toContain(
+        "Supplemental quota probe (remaining/limit; not the failing response)",
+      );
+      expect(result.stderr).not.toContain("Wait until");
       expect(result.stderr).not.toContain("secret-response-must-not-escape");
       expect(result.calls.filter((args) => args.includes("rate_limit"))).toHaveLength(1);
     },
@@ -476,7 +475,7 @@ describe("PR metadata through REST", () => {
     expect(result.notifications).toBe("repos/base-owner/base-repo/pulls/42\nrate_limit\n");
     expect(result.stderr).toContain("resource=core");
   });
-  it("collects complete paginated files and exact-head checks without consuming GraphQL", () => {
+  it("collects complete paginated files without requesting unrelated checks or GraphQL", () => {
     const result = readPrMetadata();
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
@@ -503,11 +502,11 @@ describe("PR metadata through REST", () => {
       deletions: 0,
       changeType: "DELETED",
     });
-    expect(metadata.statusCheckRollup).toMatchObject([
-      { __typename: "CheckRun", name: "ci", status: "COMPLETED", conclusion: "SUCCESS" },
-      { __typename: "CheckRun", name: "lint", status: "IN_PROGRESS" },
-      { __typename: "StatusContext", context: "external", state: "PENDING" },
-    ]);
+    expect(
+      result.calls.some((args) =>
+        args.some((arg) => arg.includes("/check-runs?") || arg.includes("/status?")),
+      ),
+    ).toBe(false);
   });
 
   it("accepts an explicit empty diff", () => {
@@ -656,7 +655,7 @@ describe("PR metadata through REST", () => {
 
   it.each([
     { command: "pr_meta_json 42", failureTarget: "pull", resource: "core", exitCode: 1 },
-    { command: "ensure_gh_api_auth", failureTarget: "graphql", resource: "graphql", exitCode: 1 },
+    { command: "ensure_gh_api_auth", failureTarget: "user", resource: "core", exitCode: 1 },
     {
       command: "pr_gh pr view 42 --json headRefOid --jq .headRefOid",
       failureTarget: "pull",
@@ -670,11 +669,15 @@ describe("PR metadata through REST", () => {
       exitCode: 75,
     },
   ] as const)(
-    "reports both quotas for a $resource failure without retrying: $command",
+    "labels supplemental quotas for a $resource failure without retrying: $command",
     ({ command, failureTarget, resource, exitCode }) => {
       const result = readPrMetadata({ failure: "quota", failureTarget }, command);
       expect(result.status).toBe(exitCode);
       expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(
+        "Supplemental quota probe (remaining/limit; not the failing response)",
+      );
+      expect(result.stderr).not.toContain("Wait until");
       expect(result.stderr).toContain(`resource=${resource}`);
       expect(result.stderr).toContain(
         "graphql 0/5000 reset=2027-01-15T08:00:00Z core 4900/5000 reset=2027-01-15T08:05:00Z",
@@ -734,13 +737,14 @@ describe("merge outcome API diagnostics", () => {
 });
 
 describe("PR GitHub helper snapshot trust", () => {
-  it.each(["changed source", "redirected import root"])(
+  it.each(["changed source", "redirected import root", "changed response parser"])(
     "rejects %s before loading snapshot code",
     (kind) => {
       const root = tempDirs.make("openclaw-pr-gh-snapshot-");
       for (const file of [
         "pr-lib/github.sh",
         "pr-lib/github.mjs",
+        "pr-lib/gh-api-preflight.mjs",
         "lib/plain-gh.mjs",
         "lib/direct-run.mjs",
       ]) {
@@ -748,8 +752,12 @@ describe("PR GitHub helper snapshot trust", () => {
         mkdirSync(dirname(target), { recursive: true });
         copyFileSync(join(process.cwd(), "scripts", file), target);
       }
-      const target = join(root, "scripts/pr-lib/github.mjs");
-      if (kind === "changed source") {
+      const target = join(
+        root,
+        "scripts/pr-lib",
+        kind === "changed response parser" ? "gh-api-preflight.mjs" : "github.mjs",
+      );
+      if (kind !== "redirected import root") {
         writeFileSync(target, "throw new Error('unverified source ran');\n");
       } else {
         const outside = join(root, "outside/github.mjs");

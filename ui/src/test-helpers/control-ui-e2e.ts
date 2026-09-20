@@ -25,6 +25,10 @@ import type { ControlUiBuildInfo } from "../build-info.ts";
 import { createControlUiAttachmentFacts } from "./control-ui-attachment-fixtures.ts";
 import { createControlUiE2eBuildPublication } from "./control-ui-e2e-build-publication.ts";
 import {
+  defaultControlUiFeatureMethods,
+  createControlUiThemeResponses,
+} from "./control-ui-e2e-defaults.ts";
+import {
   captureControlUiE2eFailureDiagnostics,
   installControlUiE2ePageDiagnosticRing,
   installControlUiE2eUnhandledRejectionRing,
@@ -378,62 +382,7 @@ const require = createRequire(import.meta.url);
 const json5EsmPath = require.resolve("json5/dist/index.mjs");
 const json5BrowserSource = readFileSync(require.resolve("json5/dist/index.min.js"), "utf8");
 
-export const defaultControlUiFeatureMethods = [
-  "chat.abort",
-  "chat.metadata",
-  "chat.startup",
-  "config.apply",
-  "config.patch",
-  "config.schema",
-  "config.set",
-  "device.scopes.requestUpgrade",
-  "device.scopes.waitUpgrade",
-  "session.members.add",
-  "session.members.list",
-  "session.members.listEvidence",
-  "session.members.remove",
-  "session.visibility.set",
-  "sessions.abort",
-  "sessions.patchMany",
-  "sessions.branches.switch",
-  "sessions.compact",
-  "sessions.compaction.branch",
-  "sessions.compaction.restore",
-  "sessions.create",
-  "sessions.delete",
-  "sessions.dispatch",
-  "sessions.fork",
-  "sessions.groups.delete",
-  "sessions.groups.defaults",
-  "sessions.groups.list",
-  "sessions.groups.put",
-  "sessions.groups.rename",
-  "sessions.groups.update",
-  "sessions.patch",
-  "sessions.reclaim",
-  "sessions.reset",
-  "sessions.rewind",
-  "sessions.search",
-  "users.github.status",
-  "users.github.authorize.start",
-  "users.github.authorize.poll",
-  "users.github.authorize.cancel",
-  "users.github.disconnect",
-  "sessions.github.options",
-  "sessions.github.status",
-  "sessions.github.confirm",
-  "tools.github.status",
-  "tools.github.configure",
-  "tools.github.authorize.start",
-  "tools.github.authorize.poll",
-  "tools.github.authorize.cancel",
-  "update.hold",
-  "update.run",
-  "update.runs.get",
-  "update.runs.list",
-  "update.status",
-  "worktrees.branches",
-] as const;
+export { defaultControlUiFeatureMethods } from "./control-ui-e2e-defaults.ts";
 
 export type MockGatewayRequest = {
   id: string;
@@ -1065,7 +1014,7 @@ function normalizeScenario(
     sessionTranscripts: scenario.sessionTranscripts ?? {},
     maxPayload: scenario.maxPayload ?? DEFAULT_MOCK_MAX_PAYLOAD_BYTES,
     mainSessionKey,
-    methodResponses: scenario.methodResponses ?? {},
+    methodResponses: { ...createControlUiThemeResponses(), ...scenario.methodResponses },
     webSocketPassthroughPrefixes: scenario.webSocketPassthroughPrefixes ?? [],
     inFlightRun: scenario.inFlightRun ?? null,
     presenceUsers: scenario.presenceUsers ?? [],
@@ -1409,14 +1358,6 @@ function installControlUiMockGateway(
     } catch {
       // In-memory config still serves the current page.
     }
-  }
-
-  function mockConfigHash(): string {
-    return configState?.hash ?? initialConfigHash;
-  }
-
-  function mockAppliedConfigHash(): string {
-    return configState?.appliedHash ?? initialAppliedConfigHash;
   }
 
   function persistGroupsState(): void {
@@ -1967,28 +1908,32 @@ function installControlUiMockGateway(
     }
   }
 
+  function adoptConfiguredConfig(configuredConfig: Record<string, unknown>): void {
+    if (
+      configState &&
+      typeof configuredConfig.raw === "string" &&
+      typeof configuredConfig.hash === "string" &&
+      configuredConfig.hash !== lastConfiguredConfigHash
+    ) {
+      lastConfiguredConfigHash = configuredConfig.hash;
+      Object.assign(configState, {
+        raw: configuredConfig.raw,
+        hash: configuredConfig.hash,
+        appliedHash:
+          typeof configuredConfig.appliedConfigHash === "string"
+            ? configuredConfig.appliedConfigHash
+            : configuredConfig.hash,
+      });
+      persistConfigState();
+    }
+  }
+
   function buildResponse(method: string, params: unknown): unknown {
     if (configState && baseConfigResponse) {
       if (method === "config.get") {
         const configured = responseFixtures.select(method, params);
         const configuredConfig = isRecord(configured.value) ? configured.value : baseConfigResponse;
-        if (
-          typeof configuredConfig.raw === "string" &&
-          typeof configuredConfig.hash === "string" &&
-          configuredConfig.hash !== lastConfiguredConfigHash
-        ) {
-          lastConfiguredConfigHash = configuredConfig.hash;
-          configState = {
-            raw: configuredConfig.raw,
-            revision: configState.revision,
-            hash: configuredConfig.hash,
-            appliedHash:
-              typeof configuredConfig.appliedConfigHash === "string"
-                ? configuredConfig.appliedConfigHash
-                : configuredConfig.hash,
-          };
-          persistConfigState();
-        }
+        adoptConfiguredConfig(configuredConfig);
         const parsedConfig = parseMockConfig(configState.raw, configuredConfig.config);
         const parsedSource =
           parsedConfig.parsed &&
@@ -2006,9 +1951,9 @@ function installControlUiMockGateway(
             ? { resolved: parsedSource }
             : {}),
           config: parsedConfig.value,
-          hash: mockConfigHash(),
-          configRevisionHash: mockConfigHash(),
-          appliedConfigHash: mockAppliedConfigHash(),
+          hash: configState.hash,
+          configRevisionHash: configState.hash,
+          appliedConfigHash: configState.appliedHash,
           raw: configState.raw,
         };
       }
@@ -2016,7 +1961,7 @@ function installControlUiMockGateway(
         // Enforce the production CAS contract: stale base hashes are rejected
         // (same code/message as the gateway) so conflict recovery is testable.
         const baseHash = isRecord(params) ? params.baseHash : undefined;
-        if (baseHash !== mockConfigHash()) {
+        if (baseHash !== configState.hash) {
           return {
             __mockError: {
               code: "INVALID_REQUEST",
@@ -2046,7 +1991,7 @@ function installControlUiMockGateway(
           ...configuredAck,
           ok: true,
           path: baseConfigResponse.path,
-          hash: mockConfigHash(),
+          hash: configState.hash,
           config: parseMockConfig(configState.raw, baseConfigResponse.config).value,
         };
       }
@@ -2913,6 +2858,9 @@ function installControlUiMockGateway(
       scenario.methodResponses[method] = payload;
       responseFixtures.resetSequence(method);
       methodResponseOverrides[method] = payload;
+      if (method === "config.get" && isRecord(payload)) {
+        adoptConfiguredConfig(payload);
+      }
       try {
         window.sessionStorage.setItem(
           methodResponseOverridesStorageKey,

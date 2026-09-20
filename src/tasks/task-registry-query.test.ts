@@ -1,24 +1,27 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
 import {
   getTaskById,
+  listFreshTasksForOwnerKey,
   listTaskRecordsForOwnerTree,
   listTaskRecordPage,
   listTasksForAgentId,
   deleteTaskRecordById,
   resetTaskRegistryForTests,
 } from "./task-registry-query.js";
-import { markTaskTerminalById } from "./task-registry-record-api.js";
+import { markTaskTerminalById, updateTaskNotifyPolicyById } from "./task-registry-record-api.js";
 import {
+  invalidateTaskRegistryProjection,
   readTaskRegistryRevision,
   reloadTaskRegistryFromStoreAsync,
   tasks as authoritativeTasks,
 } from "./task-registry-state.js";
-import { configureTaskRegistryRuntime } from "./task-registry.store.js";
+import { configureTaskRegistryRuntime, type TaskRegistryStore } from "./task-registry.store.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
 afterEach(() => {
@@ -647,4 +650,109 @@ describe("listTaskRecordPage", () => {
 
     expect(getTaskById(task.taskId)?.detail).toEqual({ nested: { value: "original" } });
   });
+});
+
+describe("listFreshTasksForOwnerKey", () => {
+  function createStoredTask(): TaskRecord {
+    return {
+      taskId: "task-restored",
+      runtime: "acp",
+      sourceId: "run-restored",
+      requesterSessionKey: "agent:main:main",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      childSessionKey: "agent:codex:acp:restored",
+      runId: "run-restored",
+      task: "Restored task",
+      status: "running",
+      deliveryStatus: "pending",
+      notifyPolicy: "done_only",
+      createdAt: 100,
+      lastEventAt: 100,
+    };
+  }
+
+  it("uses canonical owner rows despite projection changes during lookup", async () => {
+    const storedTask = createStoredTask();
+    const loadSnapshot = vi.fn(() => ({
+      tasks: new Map(),
+      deliveryStates: new Map(),
+    }));
+    const lookup = createDeferred<TaskRecord[]>();
+    const entered = createDeferred();
+    const listTasksForOwnerKey = vi.fn<NonNullable<TaskRegistryStore["listTasksForOwnerKey"]>>(
+      () => {
+        entered.resolve();
+        return lookup.promise;
+      },
+    );
+    configureTaskRegistryRuntime({
+      store: {
+        ...createInMemoryTaskRegistryStore(),
+        loadSnapshot,
+        listTasksForOwnerKey,
+      },
+    });
+
+    const pending = listFreshTasksForOwnerKey("agent:main:main");
+    await entered.promise;
+    invalidateTaskRegistryProjection();
+    lookup.resolve([storedTask]);
+    const tasks = await pending;
+
+    expect(tasks.map((task) => task.taskId)).toEqual(["task-restored"]);
+    const [context, ownerKey, assertCurrent] = expectDefined(
+      listTasksForOwnerKey.mock.calls[0],
+      "captured owner lookup",
+    );
+    expect(ownerKey).toBe("agent:main:main");
+    expect(() => context.admission.assertCurrent()).not.toThrow();
+    expect(assertCurrent).not.toThrow();
+    expect(loadSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the current memory snapshot when a delayed owner lookup fails", async () => {
+    const storedTask = createStoredTask();
+    const lookup = createDeferred<TaskRecord[]>();
+    configureTaskRegistryRuntime({
+      store: {
+        ...createInMemoryTaskRegistryStore({
+          tasks: new Map([[storedTask.taskId, storedTask]]),
+          deliveryStates: new Map(),
+        }),
+        listTasksForOwnerKey: () => lookup.promise,
+      },
+    });
+    const pending = listFreshTasksForOwnerKey(storedTask.ownerKey);
+    updateTaskNotifyPolicyById({ taskId: storedTask.taskId, notifyPolicy: "silent" });
+    lookup.reject(new Error("owner lookup unavailable"));
+    expect(await pending).toMatchObject([{ taskId: storedTask.taskId, notifyPolicy: "silent" }]);
+  });
+
+  it.each(["resolved", "rejected"])(
+    "rejects a %s owner lookup after its registry is replaced",
+    async (outcome) => {
+      const storedTask = createStoredTask();
+      const entered = createDeferred();
+      const lookup = createDeferred<TaskRecord[]>();
+      configureTaskRegistryRuntime({
+        store: {
+          ...createInMemoryTaskRegistryStore(),
+          listTasksForOwnerKey: () => {
+            entered.resolve();
+            return lookup.promise;
+          },
+        },
+      });
+      const pending = listFreshTasksForOwnerKey(storedTask.ownerKey);
+      await entered.promise;
+      configureTaskRegistryRuntime({ store: createInMemoryTaskRegistryStore() });
+      if (outcome === "resolved") {
+        lookup.resolve([storedTask]);
+      } else {
+        lookup.reject(new Error("owner lookup unavailable"));
+      }
+      await expect(pending).rejects.toThrow("owner is no longer current");
+    },
+  );
 });

@@ -13,6 +13,12 @@ web UI's typography and light/dark palettes. They follow system appearance chang
 while open, preserving connection drafts, credential visibility, and Quick Chat
 replies. The connected dashboard retains its own web UI appearance setting.
 
+Quick Chat places the latest reply above a single bottom composer. Its disclosure
+button collapses the reply while retaining streamed text, widget contents, and
+the next draft. Return sends; Shift-Return adds a newline. The next draft remains
+editable while a reply streams, and sending becomes available when that turn
+finishes. **Open dashboard** opens the Primary Gateway's full interface.
+
 During remote setup or in Connection Settings, choose token or password under
 **Authentication**. **Show credential** reveals only what you entered; changing
 authentication types clears that draft and masks the new field. Press Enter or
@@ -324,6 +330,33 @@ package-managed installs still link to the existing release page. The
 `linux-stable` publication channel does not change those client defaults.
 Changing them requires separate release-owner approval and signed
 installed-client migration proof.
+
+## Keep computer awake
+
+Enable **Keep computer awake** beside **Start at Login** in the native tray menu
+to prevent idle sleep while this companion is running. It starts off and remembers
+your choice across restarts using the companion's existing system credential
+store. The checkmark shows the saved preference. If a saved request cannot be
+restored, the menu says **Keep computer awake (inactive)** and reports an error;
+you can still uncheck it without retrying the unavailable power service. A new
+enable request is saved only after the native request succeeds.
+Turning it off or quitting releases the request. Closing the dashboard to the
+tray does not release it.
+
+Linux uses GNOME’s native session inhibitor when available, or another desktop’s
+xdg-desktop-portal idle inhibitor, such as KDE’s backend. A working session or
+portal backend that supports idle inhibition is required; a
+logind sleep-delay inhibitor alone is not a keep-awake implementation. Desktop
+idle inhibition may also keep the display from dimming and delay automatic
+locking. Windows and the macOS Tauri build inhibit system idle sleep without
+requesting that the display stay on. Manual locking, manual sleep, and lid-close
+behavior remain under the operating system's control. This option does not wake
+or unlock a computer and does not replace the Gateway's sleep preparation.
+
+If turning the option off cannot save the preference, idle sleep is still allowed
+for this run, but the error warns that the saved choice may enable it again after
+a restart. The checked menu item is marked **inactive**; restore access to the
+credential store and uncheck it again to save the off preference.
 
 ## Quick Chat widgets
 

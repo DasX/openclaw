@@ -14,6 +14,7 @@ import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   createManagedServiceIdentityFixture,
+  registerServiceInstallationConvergenceTests,
   finishSuccessfulPackageSwitch,
   managedServiceState,
   programArguments,
@@ -118,6 +119,10 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
 }));
 
 import * as postCoreModule from "./update-command-post-core.js";
+import {
+  expectUpdateFailure,
+  registerBoundaryFinalizationControls,
+} from "./update-command-post-update-boundary.test-support.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import * as rollbackModule from "./update-command-rollback.js";
 import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
@@ -132,15 +137,6 @@ function expectFailureReport(reason: string, options: unknown = expect.any(Objec
     expect.any(Object),
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
-}
-
-function expectUpdateFailure(promise: Promise<unknown>, reason: string, details: object = {}) {
-  return expect(promise).rejects.toMatchObject({
-    name: "UpdateCommandFailure",
-    exitCode: 1,
-    result: { status: "error", reason },
-    ...details,
-  });
 }
 
 afterEach(() => {
@@ -183,6 +179,8 @@ describe("successful update finalization ordering", () => {
     vi.spyOn(defaultRuntime, "log").mockImplementation(() => undefined);
   });
 
+  registerServiceInstallationConvergenceTests(() => tempDirs.make("update-install-drift-"), mocks);
+
   it("does not finalize or clean an active durable run without its live executor", async () => {
     const home = tempDirs.make("finalizer-pending-recovery-");
     const env = { HOME: home, OPENCLAW_STATE_DIR: home };
@@ -210,6 +208,8 @@ describe("successful update finalization ordering", () => {
     expect(mocks.printResult).not.toHaveBeenCalled();
     expect(loadUpdateRecovery(run.runId, { env })).toEqual(record);
   });
+
+  registerBoundaryFinalizationControls({ makeTempDir: (prefix) => tempDirs.make(prefix), mocks });
 
   it("retains pending staged service load without legacy rollback or completion", async () => {
     const refusal = new UpdateServiceLoadBoundaryError("checkpoint seal refused");
@@ -346,6 +346,7 @@ describe("successful update finalization ordering", () => {
   });
 
   it("restarts when shell completion cache generation returns false", async () => {
+    vi.stubEnv("OPENCLAW_PROFILE", undefined);
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     mocks.checkCompletionStatus.mockResolvedValueOnce({
       shell: "zsh",
@@ -412,7 +413,7 @@ describe("successful update finalization ordering", () => {
   );
 
   it("reports elapsed time through restart and shell completion refresh", async () => {
-    let now = 1_000;
+    let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     mocks.restartService.mockImplementationOnce(async () => {
@@ -701,8 +702,8 @@ describe("successful update finalization ordering", () => {
           runId: createUpdateRun({ trigger: "cli" }, { env: serviceEnv }).runId,
           env: serviceEnv,
         };
-        let now = 1_000;
-        vi.spyOn(Date, "now").mockImplementation(() => now);
+        const clock = { origin: Date.now(), elapsed: 1_000 };
+        vi.spyOn(Date, "now").mockImplementation(() => clock.origin + clock.elapsed);
         const events: string[] = [];
         const windowsEvents: string[] = [];
         const oldRecovery = taskRecovery((phase) => {
@@ -729,19 +730,19 @@ describe("successful update finalization ordering", () => {
         };
         mocks.restartService.mockImplementation(async (params) => {
           events.push("start");
-          now += events.length === 1 ? 500 : 200;
+          clock.elapsed += events.length === 1 ? 500 : 200;
           if (restartFailed && events.length > 1) {
             recordUpdateRunVerification(run.runId, { serviceRunning: false }, { env: serviceEnv });
             return "restart-health-failed";
           }
           recordVerified();
-          params.onVerified?.(now);
+          params.onVerified?.(Date.now());
           return "ok";
         });
         const plugins = { ...successfulPluginUpdate, changed };
         mocks.updatePlugins.mockImplementationOnce(async () => {
           events.push("plugins");
-          now = 11_000;
+          clock.elapsed = 11_000;
           return plugins;
         });
         mocks.completePluginUpdate.mockImplementationOnce(
@@ -750,7 +751,7 @@ describe("successful update finalization ordering", () => {
               await params.beforeDoctor?.();
               events.push("doctor");
               expect(windowsEvents).toEqual([]);
-              now += 300;
+              clock.elapsed += 300;
             }
             return { pluginUpdate: plugins, configSnapshot: validConfigSnapshot };
           },
@@ -759,7 +760,7 @@ describe("successful update finalization ordering", () => {
           async ({ result }): ReturnType<typeof rollbackModule.rollbackFailedUpdate> => {
             events.push("rollback");
             expect(getUpdateRun(run.runId, { env: serviceEnv })?.confirmedAtMs).toBeNull();
-            now = 12_000;
+            clock.elapsed = 12_000;
             if (outcome === "rolled-back") {
               recordVerified();
             }
@@ -782,7 +783,7 @@ describe("successful update finalization ordering", () => {
                       },
               },
               rolledBack: outcome === "rolled-back",
-              ...(outcome === "rolled-back" ? { verifiedAtMs: now } : {}),
+              ...(outcome === "rolled-back" ? { verifiedAtMs: Date.now() } : {}),
             };
           },
         );
@@ -790,7 +791,7 @@ describe("successful update finalization ordering", () => {
           {
             restartEnvironment: serviceEnv,
             sealed: true,
-            stoppedAtMs,
+            stoppedAtMs: stoppedAtMs === 0 ? 0 : clock.origin + stoppedAtMs,
             run,
             windowsTaskAutoStartRecovery: oldRecovery,
           },
@@ -827,7 +828,8 @@ describe("successful update finalization ordering", () => {
         expect(getUpdateRun(run.runId, { env: serviceEnv })).toMatchObject({
           status:
             outcome === "rolled-back" ? "rolled-back" : restartFailed ? "failed" : "succeeded",
-          downtimeMs,
+          downtimeMs:
+            stoppedAtMs === 0 && downtimeMs !== null ? clock.origin + downtimeMs : downtimeMs,
         });
       },
     );
@@ -909,7 +911,7 @@ describe("successful update finalization ordering", () => {
     it.each(["inspection", "revalidation"] as const)(
       "does not restart a stopped sealed service when fresh %s fails",
       async (failure) => {
-        let now = 1_000;
+        let now = Date.now();
         vi.spyOn(Date, "now").mockImplementation(() => now);
         mocks.writeSentinel.mockImplementationOnce(async () => {
           now += 100;

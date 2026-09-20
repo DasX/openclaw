@@ -1,5 +1,6 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { buildActiveNodeContextText } from "../../infra/active-node-context.js";
 import { emitAgentRunOutputTokens } from "../../infra/agent-events.js";
 import { getActiveDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
 import {
@@ -64,7 +65,9 @@ import {
   resolveAgentQuestionAnswerAuthority,
   withAgentQuestionAnswerAuthority,
 } from "./host-private-capabilities.js";
+import { formatHarnessApprovalPresentation } from "./native-hook-relay-approval-presentation.js";
 import { createSessionNodeAuthorities } from "./node-execution-authority.js";
+import { bindHarnessReplyMedia } from "./reply-media.js";
 
 type AgentHarnessHostAttempt = Partial<EmbeddedRunAttemptParams> &
   Pick<EmbeddedRunAttemptParams, "admittedRunContext" | "runId">;
@@ -271,6 +274,12 @@ export function createAgentHarnessHostCapabilities(params: {
   const config = attempt.config ? cloneSnapshot(attempt.config) : undefined;
   const hostSandboxEnabled = attempt.sandbox?.enabled === true;
   const prepareContextMedia = bindHarnessContextMedia({ attempt, config, assertActive });
+  const prepareReplyMedia = bindHarnessReplyMedia({
+    attempt,
+    config,
+    assertActive,
+    signal: capabilityAbortController.signal,
+  });
   const recorder = attempt.userTurnTranscriptRecorder;
   const sessionTarget = attempt.sessionTarget ? cloneSnapshot(attempt.sessionTarget) : undefined;
   const annotateCurrentUserTurn =
@@ -479,6 +488,7 @@ export function createAgentHarnessHostCapabilities(params: {
     },
     ...(annotateCurrentUserTurn ? { annotateCurrentUserTurn } : {}),
     ...(prepareContextMedia ? { prepareContextMedia } : {}),
+    ...(prepareReplyMedia ? { prepareReplyMedia } : {}),
     ...(trajectoryRecorder
       ? {
           trajectory: Object.freeze({
@@ -502,6 +512,10 @@ export function createAgentHarnessHostCapabilities(params: {
         managedLocalIdentity: preparedRunEnvironment.managedLocalIdentity,
         ...(localProcessEnv ? { localProcessEnv } : {}),
       });
+    },
+    activeComputerContext: () => {
+      assertActive();
+      return buildActiveNodeContextText();
     },
     bindToolSurface,
     createToolSurface: (options, bindingOptions) => {
@@ -588,8 +602,8 @@ export function createAgentHarnessHostCapabilities(params: {
                   "plugin.approval.request",
                   { timeoutMs: request.transportTimeoutMs ?? request.timeoutMs },
                   {
-                    title: request.title,
-                    description: request.description,
+                    ...formatHarnessApprovalPresentation(request),
+                    ...(request.detail !== undefined ? { detail: request.detail } : {}),
                     severity: request.severity,
                     toolName: request.toolName,
                     toolCallId: request.toolCallId,

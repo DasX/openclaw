@@ -37,7 +37,6 @@ import {
   mergeAdoptedSessionPullRequestRows,
 } from "./app-sidebar-session-lookup.ts";
 import {
-  applySidebarSessionOwnerFilter,
   buildReconciledSidebarZone,
   buildSidebarSessionNavigationState,
   createSidebarSessionRowsComparator,
@@ -47,13 +46,13 @@ import {
   findSidebarMainSessionRow,
   findProjectedSidebarSession,
   resolveActiveSidebarAgent,
-  resolveSidebarHomeAttention,
   resolveLatestSidebarAgentSession,
   resolveSidebarAgentResumeKey,
   resolveSidebarMainSessionKey,
   toggleSidebarSessionSelection,
   type SidebarSessionNavigationState,
 } from "./app-sidebar-session-navigation-logic.ts";
+import { applySidebarSessionOwnerFilter } from "./app-sidebar-session-ownership.ts";
 import { SessionPullRequestIndicatorsController } from "./app-sidebar-session-pr-indicators.ts";
 import {
   SidebarSessionProjection,
@@ -166,7 +165,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   get sessionOwnerFilterActive() {
     return this.sessionOwnerFilter.ownerId !== null;
   }
-  sessionOwnershipVisible = false;
+  sessionOwnershipVisibility = { filters: false, avatars: false };
 
   @state() selectedSessionKeys: ReadonlySet<string> = new Set();
   @state() sessionsGrouping: SidebarSessionsGrouping = loadStoredSidebarSessionsGrouping();
@@ -251,6 +250,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   }
 
   protected override willUpdate(changedProperties: PropertyValues<this>) {
+    this.resolveSessionAttention = this.attention.createResolver();
     if (this.emptyGroups.reconcile() && this.sidebarMenus.sessionSortMenuPosition) {
       this.sidebarMenus.closeSessionSortMenu();
     }
@@ -279,7 +279,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       }
       pending.push(...session.children);
       if (
-        session.childSessionKeys.length > 0 &&
+        (session.childLoadParentKeys?.length ?? 0) > 0 &&
         (session.visuallyActive || this.isSessionChildrenExpanded(session))
       ) {
         for (const key of session.childLoadParentKeys ?? [session.key]) {
@@ -317,7 +317,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     });
     this.sessionOwnerFilter.observeOwnerFacet(ownerFacet !== undefined, result.ownerOptions);
     this.sessionOwnerOptions = result.ownerOptions;
-    this.sessionOwnershipVisible = result.ownershipVisible;
+    this.sessionOwnershipVisibility = result.ownershipVisibility;
     this.activeSessionOwnerId = result.activeOwnerId;
     return result.rows;
   }
@@ -343,7 +343,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       loadingChildSessionKeys: this.sessionData.loadingChildSessionKeys,
       outboxAttentionCountForSessionKey: this.outboxAttentionCountForSession,
       hasSessionDraft: (sessionKey) => this.hasSessionDraft(sessionKey),
-      resolveAttention: (row) => this.attention.resolveSessionAttention(row),
+      resolveAttention: this.resolveSessionAttention,
       resolveAgentStatusNote: (row) => this.attention.resolveSessionAgentStatus(row)?.note,
     });
     if (this.groupedSessionSource) {
@@ -699,7 +699,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       agentIds: roster?.agentIds ?? [selected],
       result: roster?.result,
       compareSessions: createSidebarSessionRowsComparator(this.readSidebarSessionSortOptions),
-      knownSessionAttention: this.attention.knownSessionAttention(),
+      resolveAttention: this.resolveSessionAttention,
     });
     return this.applySessionOwnerFilter(projected, this.selectedAgentSessionResult()?.owners);
   }
@@ -723,9 +723,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     });
   }
 
-  resolveHomeSessionAttention(sessionKey: string, row: GatewaySessionRow | null) {
-    return resolveSidebarHomeAttention(this.attention, sessionKey, row);
-  }
+  resolveSessionAttention = this.attention.createResolver();
 
   projectHomeSession(row: GatewaySessionRow, agentId: string): SidebarRecentSession {
     return projectSidebarHomeSession({
@@ -734,7 +732,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       agentId,
       result: this.groupedSessionSource?.result,
       navigationState: this.getSessionNavigationState(),
-      knownSessionAttention: this.attention.knownSessionAttention(),
+      resolveAttention: this.resolveSessionAttention,
     });
   }
 

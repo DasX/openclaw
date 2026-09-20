@@ -31,12 +31,17 @@ import type { PluginToolIcons } from "../chat-tool-icon-controller.ts";
 import "./chat-clawhub-card.ts";
 import type { LinkFaviconFetcher } from "../link-favicon-loader.ts";
 import { workspaceResultConflictFromTranscript } from "../workspace-conflict.ts";
-import { readAsyncQuestions, type AsyncQuestionPresentation } from "./chat-async-question.ts";
+import {
+  readAsyncQuestions,
+  renderAsyncQuestionSummary,
+  type AsyncQuestionPresentation,
+} from "./chat-async-question.ts";
 import {
   renderAssistantAttachments,
   renderMessageAttachment,
   renderOmittedMedia,
 } from "./chat-message-attachments.ts";
+import { renderMessageWorkContext } from "./chat-message-context.ts";
 import { renderMessageImages } from "./chat-message-images.ts";
 import type {
   ChatMessageRenderPreparation,
@@ -191,6 +196,7 @@ export function renderGroupedMessage(
     fetchLinkFavicon?: LinkFaviconFetcher;
     pluginToolIcons?: PluginToolIcons;
     githubRepo?: MarkdownRenderOptions["githubRepo"];
+    githubRepositories?: MarkdownRenderOptions["githubRepositories"];
     onOpenWorkspaceFile?: (target: { path: string; line?: number | null }) => void;
     avatar?: TemplateResult | typeof nothing;
     entryId?: string;
@@ -284,6 +290,9 @@ export function renderGroupedMessage(
     fileLinks: true,
     githubRepo: role === "assistant" ? (opts.githubRepo ?? null) : null,
     humanMentions: markdown === displayMarkdown ? humanMentions : undefined,
+    ...(role === "assistant" && opts.githubRepositories
+      ? { githubRepositories: opts.githubRepositories }
+      : {}),
     interactiveImages: opts.onOpenImage !== undefined,
     sessionLinks: true,
     tableInteractions: "enabled",
@@ -453,10 +462,7 @@ export function renderGroupedMessage(
   const toolRenderOptions = { ...opts, messageKey, onOpenSidebar };
   const renderText = () =>
     asyncQuestions
-      ? html`<openclaw-chat-async-question
-          .questions=${asyncQuestions}
-          .presentation=${opts.asyncQuestions}
-        ></openclaw-chat-async-question>`
+      ? renderAsyncQuestionSummary(asyncQuestions, opts.asyncQuestions!)
       : jsonResult
         ? renderMessageJson(
             jsonResult,
@@ -662,5 +668,6 @@ export function renderGroupedMessage(
           : nothing
       }
     </div>
+    ${renderMessageWorkContext(message)}
   `;
 }

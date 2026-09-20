@@ -63,6 +63,33 @@ export function listTasksFromIndex(
     .map(({ insertionIndex: _insertionIndex, ...task }) => task);
 }
 
+export function selectTaskRecordsForOwnerTree(
+  tasks: ReadonlyMap<string, TaskRecord>,
+  taskIdsByOwnerKey: ReadonlyMap<string, ReadonlySet<string>>,
+  rootOwnerKeys: ReadonlySet<string>,
+): TaskRecord[] {
+  const owners = new Set(rootOwnerKeys);
+  const selected = new Set<string>();
+  for (const owner of owners) {
+    const key = normalizeOptionalString(owner);
+    if (!key) {
+      continue;
+    }
+    for (const taskId of taskIdsByOwnerKey.get(key) ?? []) {
+      const task = tasks.get(taskId);
+      if (!task || task.scopeKind !== "session") {
+        continue;
+      }
+      selected.add(taskId);
+      if (task.childSessionKey) {
+        owners.add(task.childSessionKey);
+      }
+    }
+  }
+  // Preserve registry insertion order, including descendants inserted before their parents.
+  return [...tasks.values()].filter((task) => selected.has(task.taskId));
+}
+
 /** Build the derived flow index in snapshot order to retain the latest-task tie break. */
 export function findLatestTaskForFlowInSnapshot(
   tasks: ReadonlyMap<string, TaskRecord>,
@@ -93,10 +120,10 @@ function taskRunScopeKey(
   ].join("\u0000");
 }
 
-export function filterTasksByRunScope(
-  records: TaskRecord[],
+export function filterTasksByRunScope<T extends TaskRunScope>(
+  records: T[],
   params: { runtime?: TaskRuntime; sessionKey?: string },
-): TaskRecord[] {
+): T[] {
   const matches = records.filter((task) => !params.runtime || task.runtime === params.runtime);
   const sessionKey = normalizeOptionalString(params.sessionKey);
   if (sessionKey) {
@@ -131,7 +158,9 @@ export function sameTaskRunScope(left: TaskRunScope, right: TaskRunScope): boole
   );
 }
 
-export function captureTaskPersistenceReceipt(task: TaskRecord): TaskPersistenceReceipt {
+export function captureTaskPersistenceReceipt(
+  task: Pick<TaskRecord, keyof TaskPersistenceReceipt>,
+): TaskPersistenceReceipt {
   if (!task.runId) {
     throw new Error("Task persistence selection requires a run identity");
   }
@@ -148,7 +177,7 @@ export function captureTaskPersistenceReceipt(task: TaskRecord): TaskPersistence
 }
 
 export function matchesTaskPersistenceReceipt(
-  task: TaskRecord,
+  task: Pick<TaskRecord, keyof TaskPersistenceReceipt>,
   receipt: TaskPersistenceReceipt,
 ): boolean {
   return (
@@ -183,9 +212,14 @@ export function cloneTaskRecordForObserver(record: TaskRecord): Omit<TaskRecord,
   return snapshot;
 }
 
-export function normalizeTaskTimestamps<
-  T extends Pick<TaskRecord, "status" | "createdAt" | "startedAt" | "endedAt" | "lastEventAt">,
+export function normalizeTaskRecord<
+  T extends Pick<
+    TaskRecord,
+    "status" | "createdAt" | "startedAt" | "endedAt" | "lastEventAt" | "runId" | "childSessionKey"
+  >,
 >(task: T): T {
+  const runId = normalizeOptionalString(task.runId);
+  const childSessionKey = normalizeOptionalString(task.childSessionKey);
   // Detached runtimes can report lifecycle times captured before the registry
   // inserted or restored the row; keep createdAt as the visible lifecycle floor.
   let createdAt = task.createdAt;
@@ -211,7 +245,9 @@ export function normalizeTaskTimestamps<
     createdAt === task.createdAt &&
     startedAt === task.startedAt &&
     lastEventAt === task.lastEventAt &&
-    endedAt === task.endedAt
+    endedAt === task.endedAt &&
+    runId === task.runId &&
+    childSessionKey === task.childSessionKey
   ) {
     return task;
   }
@@ -220,6 +256,16 @@ export function normalizeTaskTimestamps<
     ...task,
     createdAt,
   };
+  if (runId !== undefined) {
+    normalized.runId = runId;
+  } else {
+    delete normalized.runId;
+  }
+  if (childSessionKey !== undefined) {
+    normalized.childSessionKey = childSessionKey;
+  } else {
+    delete normalized.childSessionKey;
+  }
   if (typeof startedAt === "number") {
     normalized.startedAt = startedAt;
   }
@@ -337,7 +383,7 @@ export function buildTaskRecordForCreate(
     scopeKind,
   });
   const lastEventAt = params.lastEventAt ?? params.startedAt ?? now;
-  const record: TaskRecord = normalizeTaskTimestamps({
+  const record: TaskRecord = normalizeTaskRecord({
     taskId,
     ...(params.executionOwner ? { executionOwner: { ...params.executionOwner } } : {}),
     runtime: params.runtime,
@@ -351,7 +397,7 @@ export function buildTaskRecordForCreate(
     parentTaskId: normalizeOptionalString(params.parentTaskId),
     agentId,
     requesterAgentId,
-    runId: normalizeOptionalString(params.runId),
+    runId: params.runId,
     label: normalizeOptionalString(params.label),
     task: params.task,
     status,
@@ -398,7 +444,17 @@ export function applyTaskRecordPatch(
   if (becomesTerminal && patch.endedAt === undefined) {
     updated.endedAt = patch.lastEventAt ?? now ?? Date.now();
   }
-  const next = normalizeTaskTimestamps(updated);
+  // Terminal freshness cannot regress behind an active snapshot; execution end
+  // and nonterminal backdating retain their original meanings.
+  if (
+    isTerminalTaskStatus(updated.status) &&
+    typeof current.lastEventAt === "number" &&
+    typeof updated.lastEventAt === "number" &&
+    updated.lastEventAt < current.lastEventAt
+  ) {
+    updated.lastEventAt = current.lastEventAt;
+  }
+  const next = normalizeTaskRecord(updated);
   if (Object.hasOwn(patch, "error") && patch.error === undefined) {
     delete next.error;
   }

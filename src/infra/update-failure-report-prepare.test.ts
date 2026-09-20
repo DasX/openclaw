@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { preparePublicUpdateFailureIdentifiers } from "./update-failure-public-identifiers.js";
 import { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
+
+// Prepare the real catalog/worker prerequisites before individual test deadlines.
+await preparePublicUpdateFailureIdentifiers();
 
 const context = { env: {}, stateDir: "/report-test-state" };
 
@@ -14,6 +18,43 @@ function prepareDiagnosticReport(reason: string) {
 }
 
 describe("update report diagnostic command boundary", () => {
+  it("includes every named lint finding using the existing public diagnostic redaction", async () => {
+    const findings = Array.from({ length: 40 }, (_, index) => ({
+      checkId: "core/doctor/security",
+      severity: index === 0 ? "error" : "warning",
+      message: "EACCES: permission denied",
+      requirement: `private-customer-requirement-${index}`,
+    }));
+    const report = await prepareUpdateFailureReport(
+      {
+        attemptId: "complete-lint-inventory",
+        result: {
+          status: "error",
+          mode: "npm",
+          reason: "doctor-failed",
+          durationMs: 1,
+          steps: [
+            {
+              name: "candidate doctor lint",
+              command: "doctor --lint --json",
+              cwd: "/candidate",
+              durationMs: 1,
+              exitCode: 1,
+              doctorLintFindings: findings,
+            },
+          ],
+        },
+      },
+      context,
+    );
+    expect(
+      report.body.match(/Doctor lint (?:error|warning) \[core\/doctor\/security\]/gu),
+    ).toHaveLength(40);
+    expect(report.body).toContain("EACCES");
+    expect(report.body).toContain("Permission denied");
+    expect(report.body).not.toContain("private-customer-requirement");
+  });
+
   it.each([
     { source: "stderr", diagnostic: true },
     { source: "stderr", diagnostic: false },
@@ -200,12 +241,13 @@ describe("update report diagnostic command boundary", () => {
   });
 
   it.each(
-    (["check", "code", "pluginId", "affectedKey"] as const).flatMap((field) =>
+    (["check", "code", "pluginId", "affectedKey", "errorName"] as const).flatMap((field) =>
       [
         "private-host.example",
         "private-host.example:8123",
         "10.20.30.40",
         "mcp.servers.private-host.example",
+        "PrivateTenantError",
       ].map((host) => ({
         field,
         host,
@@ -226,7 +268,13 @@ describe("update report diagnostic command boundary", () => {
               cwd: "",
               durationMs: 0,
               exitCode: 1,
-              failureFacts: [{ check: "readyz", code: "readyz-unhealthy", [field]: host }],
+              failureFacts: [
+                {
+                  check: "readyz",
+                  code: field === "errorName" ? "private-code" : "readyz-unhealthy",
+                  [field]: host,
+                },
+              ],
             },
           ],
         },
@@ -494,7 +542,7 @@ describe("update report diagnostic command boundary", () => {
     expect(report.body).toContain("- Update target: [redacted-command]\n");
   });
 
-  it("uses the failure code when a phase label is executable text", async () => {
+  it("withholds an executable phase label without substituting the failure code", async () => {
     const report = await prepareUpdateFailureReport(
       {
         attemptId: "structured-phase",
@@ -516,7 +564,8 @@ describe("update report diagnostic command boundary", () => {
       },
       context,
     );
-    expect(report.body).toContain("- Failed phase: doctor-failed\n");
+    expect(report.body).toContain("- Failed phase: [redacted-command]\n");
+    expect(report.body).toContain("- Reason code: doctor-failed\n");
     expect(report.body).not.toContain("openclaw doctor");
   });
 

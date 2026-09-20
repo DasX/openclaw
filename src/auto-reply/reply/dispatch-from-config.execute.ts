@@ -76,7 +76,6 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     params.configOverride ? undefined : state.preparedReplyDispatchRuntime,
     state.replyResolver,
   );
-  let deliberateSilentTerminalReply = false;
   let pendingContinuation = false;
   let pendingContinuationSettlement: PendingContinuationSettlement | undefined;
   const releasePendingContinuation = async () => {
@@ -85,7 +84,11 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     await settlement?.settle(false);
   };
   let didDeliverVisiblePartialReply = false;
-  const { onBlockReply, flush: flushBlockTtsText } = createDispatchBlockReplyHandler(state);
+  const {
+    onBlockReply,
+    onPreparedBlockReply,
+    flush: flushBlockTtsText,
+  } = createDispatchBlockReplyHandler(state);
   const flushDeferredFinalText = async () => {
     const delivered = await flushDispatchDeferredFinalText({
       deferFinalTtsText,
@@ -130,9 +133,6 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                 ...state.sourceReplyDeliveryRuntimeOptions,
                 ...({
                   mediaNormalizationOwner: state.isInternalWebchatTurn ? "gateway" : undefined,
-                  onDeliberateSilentTerminalReply: () => {
-                    deliberateSilentTerminalReply = true;
-                  },
                   onPendingContinuation: (settlement) => {
                     pendingContinuation = true;
                     pendingContinuationSettlement ??= settlement;
@@ -437,6 +437,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                 onPatchSummary: (payload) =>
                   forwardToolProgress(() => state.onPatchSummaryFromReplyOptions?.(payload)),
                 onBlockReply,
+                onPreparedBlockReply,
               },
               state.preparedReplyDispatchRuntime && !params.configOverride
                 ? undefined
@@ -485,16 +486,16 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
       // Adoption retires ingress replay before the model starts. A progress ACK
       // cannot settle a later failure; use normal final delivery and its policy.
       return adopted &&
-        state.noVisibleReplyFallbackDirected &&
+        state.replyOperationRunState.replyCompletion?.expectation === "required" &&
+        state.replyOperationRunState.replyCompletion.outcome !== "blocked" &&
         !state.suppressDelivery &&
         !state.getObservedReplyDelivery()
         ? { text: GENERIC_EXTERNAL_RUN_FAILURE_TEXT, isError: true }
         : undefined;
     }
     return buildTerminalAgentRunFailureReplyPayload({
+      replyExpectation: state.replyOperationRunState.replyCompletion?.expectation ?? "required",
       visibleReplyDelivered: true,
-      sessionCtx: ctx,
-      cfg: replyConfig,
     });
   });
   try {
@@ -527,7 +528,6 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
       return acpTailResult;
     }
     const nextState = extendPreparedDispatchState(state, {
-      deliberateSilentTerminalReply,
       pendingContinuation,
       pendingContinuationSettlement,
       replyResult,

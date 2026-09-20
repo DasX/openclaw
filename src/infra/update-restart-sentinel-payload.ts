@@ -24,13 +24,23 @@ export type UpdateRestartSentinelMeta = {
   continuationMessage?: string | null;
 };
 
-export function normalizeControlPlaneUpdateResult(result: UpdateRunResult): UpdateRunResult {
+export function normalizeControlPlaneUpdateResult(input: UpdateRunResult): UpdateRunResult {
+  const lint = input.postUpdate?.plugins?.doctorLint;
+  const result =
+    lint && !input.steps.some((step) => step.name === lint.name)
+      ? { ...input, steps: [...input.steps, lint] }
+      : input;
   if (
     (result.status === "ok" ||
       (result.status === "skipped" && result.reason === "already-current")) &&
     isUpdateGatewayReadinessPending(result)
   ) {
-    return { ...result, status: "skipped", reason: "gateway-readiness-unverified" };
+    return {
+      ...result,
+      status: "skipped",
+      reason:
+        result.reason === "still-starting" ? "still-starting" : "gateway-readiness-unverified",
+    };
   }
   const beforeSha = result.before?.sha?.trim();
   const afterSha = result.after?.sha?.trim();
