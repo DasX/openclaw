@@ -13,7 +13,9 @@ and requires xdotool for real pointer input.
 --window-chrome checks dragging, resizing, and window controls with xdotool and Openbox.
 --gateway-switch checks saved connections, native windows and the private credential vault.
 --gateway-onboarding checks native authority after local model setup under a Gateway base path.
---quick-chat checks real Quick Chat streaming, disclosure, drafts and agent selection.
+--quick-chat checks real Quick Chat streaming, disclosure, drafts and agent selection
+and requires a private gnome-keyring-daemon.
+--desktop-sharing checks the real native settings bridge and an owned synthetic CLI process tree.
 """
 
 import argparse
@@ -165,6 +167,9 @@ def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixtu
         calls = Path("cli-calls.log").read_text().splitlines()
         if calls.count("gateway install --json") != 2:
             raise RuntimeError(f"Expected two failed Gateway installs, observed {calls!r}")
+        setup = "browser extension setup --action install --json --wait-ms 1000"
+        if calls.count(setup) != 1:
+            raise RuntimeError(f"Expected one automatic local Chrome setup, observed {calls!r}")
         print("PASS: failed local startup reports its error and stays retryable", flush=True)
         return
     click("Get started")
@@ -205,7 +210,7 @@ def interrupted(signum, _frame):
     raise RuntimeError(f"Native first-run smoke interrupted by signal {signum}")
 
 
-def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, quick_chat, artifacts_dir):
+def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, quick_chat, desktop_sharing, artifacts_dir):
     try:
         import gi
 
@@ -222,7 +227,7 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
     def capture(outcome):
         if artifacts_dir is None:
             return
-        if window_chrome or gateway_switch or gateway_onboarding or quick_chat:
+        if window_chrome or gateway_switch or gateway_onboarding or quick_chat or desktop_sharing:
             if outcome == "failed" and inline_fixture is not None:
                 inline_fixture.capture("failed")
             return
@@ -280,6 +285,11 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
         inline_fixture = GatewayOnboardingFixture(artifacts_dir)
         inline_fixture.start()
         binary = inline_fixture.stage_binary(binary)
+    elif desktop_sharing:
+        from desktop_sharing import DesktopSharingFixture
+
+        inline_fixture = DesktopSharingFixture(artifacts_dir)
+        inline_fixture.start()
 
     with Path("app.log").open("wb") as log:
         app = subprocess.Popen(
@@ -295,7 +305,7 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
                 local_start_failure=local_start_failure,
                 inline_fixture=inline_fixture,
                 binary=binary,
-                gateway_switch=gateway_switch or gateway_onboarding,
+                gateway_switch=gateway_switch or gateway_onboarding or desktop_sharing,
             )
         except BaseException:
             try:
@@ -359,6 +369,10 @@ def main():
         "--quick-chat", action="store_true",
         help="Verify native Quick Chat streaming, disclosure, drafts and agent selection",
     )
+    scenarios.add_argument(
+        "--desktop-sharing", action="store_true",
+        help="Verify native desktop-sharing settings, persistence, selected auth, and child cleanup",
+    )
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() == 0:
         parser.error("Run on Linux as a non-root user; do not disable the WebKit sandbox")
@@ -372,12 +386,12 @@ def main():
         parser.error("The minimal system PATH must not contain an OpenClaw CLI")
     if args.inline_browser and not os.access("/usr/bin/xdotool", os.X_OK):
         parser.error("Inline browser pointer proof requires xdotool")
-    if args.window_chrome or args.gateway_switch or args.gateway_onboarding or args.quick_chat:
+    if args.window_chrome or args.gateway_switch or args.gateway_onboarding or args.quick_chat or args.desktop_sharing:
         for tool in ("xdotool", "wmctrl", "xprop", "xwininfo", "openbox"):
             if shutil.which(tool) is None:
                 parser.error(f"Window chrome proof requires {tool}")
-    if (args.gateway_switch or args.gateway_onboarding) and shutil.which("gnome-keyring-daemon") is None:
-        parser.error("Gateway switching proof requires a private gnome-keyring-daemon")
+    if (args.gateway_switch or args.gateway_onboarding or args.quick_chat or args.desktop_sharing) and shutil.which("gnome-keyring-daemon") is None:
+        parser.error("Native Gateway proof requires a private gnome-keyring-daemon")
     if args.artifacts_dir:
         args.artifacts_dir = args.artifacts_dir.resolve()
         args.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +408,7 @@ def main():
             gateway_switch=args.gateway_switch,
             gateway_onboarding=args.gateway_onboarding,
             quick_chat=args.quick_chat,
+            desktop_sharing=args.desktop_sharing,
             artifacts_dir=args.artifacts_dir,
         )
         return
@@ -441,6 +456,8 @@ def main():
                 "with Path('cli-calls.log').open('a') as log: log.write(command + '\\n')\n"
                 "if command == '--version':\n"
                 "    print('OpenClaw fixture')\n"
+                "elif command == 'browser extension setup --action install --json --wait-ms 1000':\n"
+                "    print(json.dumps({'action': 'install', 'target': {'kind': 'local-host', 'platform': 'linux', 'hostname': 'fixture', 'profile': 'chrome', 'relayPort': 18799}, 'phase': 'needs_browser_action', 'reason': 'extension_missing', 'installation': {'nativeHostRegistered': True, 'installRequested': False, 'installedProfiles': 0, 'discoveredProfiles': 0, 'awaitingApproval': False, 'automaticBootstrapSupported': True}, 'connection': {'state': 'not_checked'}, 'nextAction': 'install_from_store'}))\n"
                 "elif command == 'gateway status --json':\n"
                 "    print(json.dumps({'service': {'loaded': False}, 'rpc': {'ok': False}}))\n"
                 "elif command == 'gateway install --json':\n"
@@ -467,6 +484,8 @@ def main():
             command.append("--gateway-onboarding")
         if args.quick_chat:
             command.append("--quick-chat")
+        if args.desktop_sharing:
+            command.append("--desktop-sharing")
         if args.artifacts_dir:
             command.extend(["--artifacts-dir", str(args.artifacts_dir)])
         command.append(str(binary))
@@ -480,9 +499,11 @@ def main():
         passed = False
         try:
             try:
-                code = worker.wait(timeout=120)
+                # Desktop sharing observes five complete app lifecycles, including native Quit.
+                timeout = 240 if args.desktop_sharing else 120
+                code = worker.wait(timeout=timeout)
             except subprocess.TimeoutExpired as error:
-                raise RuntimeError("Native first-run driver exceeded 120 seconds") from error
+                raise RuntimeError(f"Native first-run driver exceeded {timeout} seconds") from error
             if code:
                 raise RuntimeError(f"Native first-run driver exited with {code}")
             passed = True

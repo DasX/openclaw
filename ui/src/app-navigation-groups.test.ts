@@ -17,9 +17,11 @@ import type { NativeDeviceSettingsCapability } from "./app/native-device-setting
 import { readGatewayOperatorAccess } from "./app/operator-access.ts";
 import { getStaticCommandPaletteCatalogItems } from "./components/command-palette-catalog-search.ts";
 import { findSettingsSearchBlocks } from "./pages/config/settings-search.ts";
+import { createChromeExtensionSetupResult } from "./test-helpers/chrome-extension-setup.ts";
 import {
   createIosNativeDeviceSettingsSnapshot,
   createNativeDeviceSettingsSnapshot,
+  createTauriDeviceSettingsSnapshot,
 } from "./test-helpers/native-device-settings.ts";
 
 const settingsGroups = visibleSettingsNavigationGroups(true);
@@ -35,18 +37,7 @@ describe("sidebar entries", () => {
       openSystemSettings: () => undefined,
       openPanel: () => undefined,
       checkForUpdates: () => undefined,
-      chromeExtensionStatus: async () => ({
-        nativeHostRegistered: false,
-        installRequested: false,
-        installedProfiles: 0,
-        discoveredProfiles: 0,
-      }),
-      installChromeExtension: async () => ({
-        nativeHostRegistered: false,
-        installRequested: false,
-        installedProfiles: 0,
-        discoveredProfiles: 0,
-      }),
+      setupChromeExtension: async (action) => createChromeExtensionSetupResult({ action }),
       refresh: () => undefined,
       dispose: () => undefined,
     };
@@ -86,6 +77,20 @@ describe("sidebar entries", () => {
       labelKey: "nav.settingsGroupDevice",
       routes: ["device", "device-permissions"],
     });
+    for (const platform of ["linux", "windows"] as const) {
+      const desktopCapability = {
+        ...capability,
+        snapshot: createTauriDeviceSettingsSnapshot(platform),
+      };
+      expect(visibleSettingsNavigationGroups(canAdmin, desktopCapability)[1]).toEqual({
+        labelKey: "nav.settingsGroupThisComputer",
+        routes: ["device"],
+      });
+      expect(search("Desktop sharing", desktopCapability)).toContainEqual(
+        expect.objectContaining({ routeId: "device" }),
+      );
+      expect(search("Precise location", desktopCapability)).toEqual([]);
+    }
     expect(
       visibleSettingsNavigationGroups(canAdmin, { ...capability, snapshot: null })[1]?.labelKey,
     ).toBe("nav.settingsGroupThisDevice");

@@ -1,11 +1,8 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import { resolveEffectiveCompactionReserveTokens } from "../../agents/agent-compaction-constants.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
@@ -61,7 +58,6 @@ import { logVerbose } from "../../globals.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
-import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveMemoryFlushPlan, type MemoryFlushPlan } from "../../plugins/memory-state.js";
 import { CommandLane } from "../../process/lanes.js";
@@ -79,6 +75,12 @@ import {
 } from "./agent-runner-utils.js";
 import type { CompactionNoticePhase } from "./compaction-notice.js";
 import {
+  buildMemoryFlushErrorPayload,
+  buildVisibleMemoryFlushFailure,
+  resolveVisibleMemoryFlushErrorPayloads,
+  truncateMemoryFlushErrorMessage,
+} from "./memory-flush-errors.js";
+import {
   hasAlreadyFlushedForCurrentCompaction,
   resolveMaxActiveTranscriptBytes,
   resolveCompactionThreshold,
@@ -88,16 +90,14 @@ import {
   shouldRunPreflightCompaction,
 } from "./memory-flush.js";
 import { resolveContextTokens } from "./model-selection-context.js";
-import { readPostCompactionContext } from "./post-compaction-context.js";
+import { appendPostCompactionRefreshPrompt } from "./post-compaction-context.js";
 import { refreshQueuedFollowupSession, type FollowupRun } from "./queue.js";
 import { startFollowupRunPreAdoptionHeartbeat } from "./queue/lifecycle.js";
-import { isRenderablePayload } from "./reply-payloads-base.js";
+import { resolveFollowupAbortSignal } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
-const MAX_VISIBLE_MEMORY_FLUSH_ERROR_CHARS = 600;
 const MAX_FLUSH_FAILURES = 3;
-const MAX_FLUSH_ERROR_LENGTH = 200;
 const preflightCompactionLog = createSubsystemLogger("auto-reply/preflight-compaction");
 const memoryFlushLog = createSubsystemLogger("auto-reply/memory-flush");
 
@@ -121,30 +121,6 @@ async function compactEmbeddedAgentSession(
 async function runEmbeddedAgent(params: RunEmbeddedAgentInternalParams) {
   const runtime = await embeddedAgentRuntimeLoader.load();
   return await runtime.runEmbeddedAgent(params);
-}
-
-async function ensureMemoryFlushTargetFile(params: {
-  workspaceDir: string;
-  relativePath: string;
-}): Promise<void> {
-  const workspaceDir = normalizeOptionalString(params.workspaceDir);
-  const relativePath = normalizeOptionalString(params.relativePath);
-  if (!workspaceDir || !relativePath || path.isAbsolute(relativePath)) {
-    throw new Error("Invalid memory flush target path");
-  }
-  const workspaceRoot = path.resolve(workspaceDir);
-  const targetPath = path.resolve(workspaceRoot, relativePath);
-  const targetRelativePath = path.relative(workspaceRoot, targetPath);
-  if (
-    !targetRelativePath ||
-    targetRelativePath.startsWith("..") ||
-    path.isAbsolute(targetRelativePath)
-  ) {
-    throw new Error("Memory flush target path must stay inside the workspace");
-  }
-  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
-  const handle = await fs.promises.open(targetPath, "a");
-  await handle.close();
 }
 
 function hasMatchingTranscriptByteCompactionLatch(
@@ -283,45 +259,6 @@ function resolveFollowupContextTokens(
     modelContextWindow: catalogModel?.contextWindow,
     modelContextTokens: catalogModel?.contextTokens,
   });
-}
-
-function resolveVisibleMemoryFlushErrorPayloads(payloads?: ReplyPayload[]): ReplyPayload[] {
-  return (payloads ?? []).filter(
-    (payload) => payload.isError === true && isRenderablePayload(payload),
-  );
-}
-
-function buildVisibleMemoryFlushFailure(payloads: ReplyPayload[]): Error {
-  const message = payloads
-    .map((payload) => normalizeOptionalString(payload.text))
-    .filter((text): text is string => Boolean(text))
-    .join("\n");
-  return new Error(message || "Memory flush returned an error response");
-}
-
-function buildMemoryFlushErrorPayload(err: unknown): ReplyPayload | undefined {
-  if (isAbortError(err)) {
-    return undefined;
-  }
-  const message = normalizeOptionalString(formatErrorMessage(err));
-  if (!message) {
-    return undefined;
-  }
-  const visibleText = message.startsWith("⚠️") ? message : `⚠️ ${message}`;
-  return {
-    text:
-      visibleText.length > MAX_VISIBLE_MEMORY_FLUSH_ERROR_CHARS
-        ? `${truncateUtf16Safe(visibleText, MAX_VISIBLE_MEMORY_FLUSH_ERROR_CHARS - 1)}…`
-        : visibleText,
-    isError: true,
-  };
-}
-
-function truncateMemoryFlushErrorMessage(err: unknown): string {
-  const message = normalizeOptionalString(formatErrorMessage(err)) || String(err);
-  return message.length > MAX_FLUSH_ERROR_LENGTH
-    ? `${truncateUtf16Safe(message, MAX_FLUSH_ERROR_LENGTH - 1)}…`
-    : message;
 }
 
 type SessionTranscriptUsageSnapshot = {
@@ -530,28 +467,6 @@ type SessionLogSnapshot = {
   usage?: SessionTranscriptUsageSnapshot;
 };
 
-async function appendPostCompactionRefreshPrompt(params: {
-  cfg: OpenClawConfig;
-  followupRun: FollowupRun;
-}): Promise<void> {
-  const refreshPrompt = await readPostCompactionContext(params.followupRun.run.workspaceDir, {
-    cfg: params.cfg,
-    agentId: params.followupRun.run.agentId,
-  });
-  if (!refreshPrompt) {
-    return;
-  }
-
-  const existingPrompt = normalizeOptionalString(params.followupRun.run.extraSystemPrompt);
-  if (existingPrompt?.includes(refreshPrompt)) {
-    return;
-  }
-
-  params.followupRun.run.extraSystemPrompt = [existingPrompt, refreshPrompt]
-    .filter(Boolean)
-    .join("\n\n");
-}
-
 type TranscriptTokenEstimate = {
   promptTokens: number;
   promptTokenSource:
@@ -702,8 +617,10 @@ export async function runSessionCompactionIfNeeded(params: {
   onSessionIdChanged?: (sessionId: string) => void;
   onCompactionNotice?: (phase: CompactionNoticePhase, text?: string) => Promise<void> | void;
 }): Promise<SessionEntry | undefined> {
+  const operatorAuthority = params.followupRun.operatorAuthority;
   const assertActive = () => {
     params.abortSignal?.throwIfAborted();
+    operatorAuthority?.assertCurrent();
     if (params.authorize?.() === false) {
       throw new Error("Session compaction maintenance is no longer active");
     }
@@ -1074,6 +991,7 @@ export async function runSessionCompactionIfNeeded(params: {
       },
       {
         assertActive,
+        sourceAuthority: { assertActive, operatorAuthority },
         requestBudget: params.compactionRequestBudget,
         pendingUserEntryId: params.pendingUserEntryId,
         ...(compactionTrigger === "transcript_bytes" && isCodexRuntime
@@ -1233,7 +1151,10 @@ export async function runMemoryFlushIfNeeded(params: {
   abortSignal?: AbortSignal;
   onVisibleErrorPayloads?: (payloads: ReplyPayload[]) => void;
 }): Promise<MemoryFlushResult> {
-  const abortSignal = params.replyOperation?.abortSignal ?? params.abortSignal;
+  const abortSignal = resolveFollowupAbortSignal({
+    abortSignal: params.replyOperation?.abortSignal ?? params.abortSignal,
+    operatorAuthority: params.followupRun.operatorAuthority,
+  });
   const memoryFlushWritable = (() => {
     if (!params.sessionKey) {
       return true;
@@ -1451,7 +1372,12 @@ export async function runMemoryFlushIfNeeded(params: {
         ? params.sessionStore?.[params.sessionKey]?.systemPromptReport
         : undefined),
   );
+  const assertMemoryFlushCurrent = () => {
+    abortSignal?.throwIfAborted();
+    params.followupRun.operatorAuthority?.assertCurrent();
+  };
   const prepareMemoryFlushAttempt = async () => {
+    assertMemoryFlushCurrent();
     const plan = resolveMemoryFlushPlan({
       cfg: params.cfg,
       nowMs: Date.now(),
@@ -1466,6 +1392,7 @@ export async function runMemoryFlushIfNeeded(params: {
     }
     const agentId = params.followupRun.run.agentId ?? resolveDefaultAgentId(params.cfg);
     const runtime = await memoryFlushSessionRuntimeLoader.load();
+    assertMemoryFlushCurrent();
     const memorySession = await runtime.prepareMemoryFlushSession({
       admission: params.preflightAdmission,
       source: {
@@ -1481,9 +1408,10 @@ export async function runMemoryFlushIfNeeded(params: {
       workspaceDir: params.followupRun.run.workspaceDir,
       signal: abortSignal,
     });
-    await ensureMemoryFlushTargetFile({
+    await runtime.ensureMemoryFlushTargetFile({
       workspaceDir: params.followupRun.run.workspaceDir,
       relativePath: writePath,
+      assertCurrent: assertMemoryFlushCurrent,
     });
     const systemPrompt = [params.followupRun.run.extraSystemPrompt, plan.systemPrompt]
       .filter(Boolean)
@@ -1499,6 +1427,8 @@ export async function runMemoryFlushIfNeeded(params: {
       flushRunId,
       params.followupRun.run.agentId,
       "auto-reply.memory-flush",
+      undefined,
+      params.followupRun.operatorAuthority,
     );
     return {
       plan,

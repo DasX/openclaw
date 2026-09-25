@@ -31,19 +31,14 @@ import {
 import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
 import { GatewayRestartPreparationError } from "./restart-intent-error.js";
 import { spawnPsSync } from "./spawn-ps.js";
+import { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
 import { tryAcquireGatewayLifecycleCleanupCoordinator } from "./state-database-coordinator.js";
 
 const GATEWAY_RESTART_INTENT_KEY = "gateway-restart";
 const GATEWAY_RESTART_INTENT_TTL_MS = 60_000;
-const schemaStart = OPENCLAW_STATE_SCHEMA_SQL.indexOf(
-  "CREATE TABLE IF NOT EXISTS gateway_restart_intent (",
-);
-const schemaEndMarker = ") STRICT;";
-const schemaEnd = OPENCLAW_STATE_SCHEMA_SQL.indexOf(schemaEndMarker, schemaStart);
-if (schemaStart < 0 || schemaEnd < 0) {
-  throw new Error("Gateway restart intent schema markers are missing");
-}
-const schema = OPENCLAW_STATE_SCHEMA_SQL.slice(schemaStart, schemaEnd + schemaEndMarker.length);
+const schema = extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, "gateway_restart_intent", {
+  errorMessage: "Gateway restart intent schema markers are missing",
+});
 
 const restartLog = createSubsystemLogger("restart");
 type GatewayRestartIntentDatabase = Pick<OpenClawStateKyselyDatabase, "gateway_restart_intent">;
@@ -57,10 +52,22 @@ type GatewayRestartIntentPayload = {
   waitMs?: number;
 };
 
+type GatewayRestartIntentWriteReceipt = {
+  kind: string;
+  pid: number;
+  created_at: number;
+  reason: string | null;
+  force: number | null;
+  wait_ms: number | null;
+  updated_at_ms: number;
+};
+
 export type GatewayRestartIntent = {
   reason?: string;
   force?: boolean;
   waitMs?: number;
+  // Only the in-process deferral owner can attest that the drain budget was spent.
+  drainBudgetExhausted?: true;
   // Process-local only: persisted restart requests cannot delegate successor ownership.
   successorOwner?: {
     kind: "managed-update-handoff";
@@ -79,6 +86,7 @@ export function writeGatewayRestartIntentSync(opts: {
   targetPid?: number;
   intent?: GatewayRestartIntent;
   reason?: string;
+  onRecorded?: (clear: () => void) => void;
 }): boolean {
   const targetPid = asPositiveSafeInteger(opts.targetPid) ?? null;
   if (targetPid === null) {
@@ -259,10 +267,12 @@ export function writeGatewayServiceRestartIntentSync(opts: {
   env?: NodeJS.ProcessEnv;
   service: GatewayRestartIntentService;
   nativeStopped: boolean;
+  nativePid?: number;
   legacyProcess?: GatewayRestartIntentLegacyProcess;
   intent?: GatewayRestartIntent;
   reason?: string;
   assertCurrent: () => void;
+  onRecorded?: (clear: () => void) => void;
 }): boolean {
   if (opts.nativeStopped) {
     try {
@@ -303,6 +313,7 @@ export function writeGatewayServiceRestartIntentSync(opts: {
         const supervisor = owner?.supervisor;
         if (
           owner?.state === "live" &&
+          (opts.nativePid === undefined || isLegacyProcessInService(owner.pid, opts.nativePid)) &&
           owner.mode === "supervised" &&
           supervisor?.kind === opts.service.kind &&
           supervisor.name !== null &&
@@ -327,7 +338,12 @@ export function writeGatewayServiceRestartIntentSync(opts: {
 }
 
 function writeGatewayRestartIntentForTargetSync(
-  opts: { env?: NodeJS.ProcessEnv; intent?: GatewayRestartIntent; reason?: string },
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    intent?: GatewayRestartIntent;
+    reason?: string;
+    onRecorded?: (clear: () => void) => void;
+  },
   resolveTargetPid: (db: DatabaseSync) => number | undefined,
   assertCurrent?: () => void,
 ): boolean {
@@ -345,7 +361,8 @@ function writeGatewayRestartIntentForTargetSync(
         ? Math.floor(opts.intent.waitMs)
         : null;
     // The old Gateway still owns the schema until the restart hands off.
-    return runExistingOpenClawStateWriteTransaction(
+    let owned: GatewayRestartIntentWriteReceipt | undefined;
+    const written = runExistingOpenClawStateWriteTransaction(
       ({ db }) => {
         // Coordinator/BEGIN admission can block while the supervised owner changes.
         assertCurrent?.();
@@ -356,37 +373,42 @@ function writeGatewayRestartIntentForTargetSync(
         }
         const createdAt = Date.now();
         const stateDb = getNodeSqliteKysely<GatewayRestartIntentDatabase>(db);
+        const previous = executeSqliteQueryTakeFirstSync(
+          db,
+          stateDb
+            .selectFrom("gateway_restart_intent")
+            .select("updated_at_ms")
+            .where("intent_key", "=", GATEWAY_RESTART_INTENT_KEY),
+        );
+        // Two writes in the same millisecond must still have distinct cleanup ownership.
+        const generation = Math.max(createdAt, (previous?.updated_at_ms ?? 0) + 1);
+        const row = {
+          kind: "gateway-restart",
+          pid: targetPid,
+          created_at: createdAt,
+          reason: reason ?? null,
+          force: opts.intent?.force ? 1 : null,
+          wait_ms: waitMs,
+          updated_at_ms: generation,
+        };
         executeSqliteQuerySync(
           db,
           stateDb
             .insertInto("gateway_restart_intent")
-            .values({
-              intent_key: GATEWAY_RESTART_INTENT_KEY,
-              kind: "gateway-restart",
-              pid: targetPid,
-              created_at: createdAt,
-              reason: reason ?? null,
-              force: opts.intent?.force ? 1 : null,
-              wait_ms: waitMs,
-              updated_at_ms: createdAt,
-            })
-            .onConflict((conflict) =>
-              conflict.column("intent_key").doUpdateSet({
-                kind: (eb) => eb.ref("excluded.kind"),
-                pid: (eb) => eb.ref("excluded.pid"),
-                created_at: (eb) => eb.ref("excluded.created_at"),
-                reason: (eb) => eb.ref("excluded.reason"),
-                force: (eb) => eb.ref("excluded.force"),
-                wait_ms: (eb) => eb.ref("excluded.wait_ms"),
-                updated_at_ms: (eb) => eb.ref("excluded.updated_at_ms"),
-              }),
-            ),
+            .values({ intent_key: GATEWAY_RESTART_INTENT_KEY, ...row })
+            .onConflict((conflict) => conflict.column("intent_key").doUpdateSet(row)),
         );
+        owned = row;
         return true;
       },
       { env },
       { schemaSql: schema, operationLabel: "gateway.restart-intent.write" },
     );
+    if (written && owned) {
+      const receipt = owned;
+      opts.onRecorded?.(() => clearGatewayRestartIntentSync(env, receipt));
+    }
+    return written;
   } catch (err) {
     // Revoked native control authority must not become a best-effort storage warning.
     assertCurrent?.();
@@ -398,17 +420,30 @@ function writeGatewayRestartIntentForTargetSync(
   }
 }
 
-export function clearGatewayRestartIntentSync(env: NodeJS.ProcessEnv = process.env): void {
+export function clearGatewayRestartIntentSync(
+  env: NodeJS.ProcessEnv = process.env,
+  owned?: GatewayRestartIntentWriteReceipt,
+): void {
   try {
     runExistingOpenClawStateWriteTransaction(
       ({ db }) => {
         const stateDb = getNodeSqliteKysely<GatewayRestartIntentDatabase>(db);
-        executeSqliteQuerySync(
-          db,
-          stateDb
-            .deleteFrom("gateway_restart_intent")
-            .where("intent_key", "=", GATEWAY_RESTART_INTENT_KEY),
-        );
+        let removal = stateDb
+          .deleteFrom("gateway_restart_intent")
+          .where("intent_key", "=", GATEWAY_RESTART_INTENT_KEY);
+        if (owned) {
+          // Published writers do not increment same-millisecond timestamps. Compare
+          // their complete payload too, so their successor request remains theirs.
+          removal = removal
+            .where("kind", "=", owned.kind)
+            .where("pid", "=", owned.pid)
+            .where("created_at", "=", owned.created_at)
+            .where("reason", owned.reason === null ? "is" : "=", owned.reason)
+            .where("force", owned.force === null ? "is" : "=", owned.force)
+            .where("wait_ms", owned.wait_ms === null ? "is" : "=", owned.wait_ms)
+            .where("updated_at_ms", "=", owned.updated_at_ms);
+        }
+        executeSqliteQuerySync(db, removal);
       },
       { env },
       { schemaSql: schema, operationLabel: "gateway.restart-intent.clear" },

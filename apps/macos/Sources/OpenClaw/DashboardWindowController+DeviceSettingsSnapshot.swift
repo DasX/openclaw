@@ -63,6 +63,8 @@ extension DashboardWindowController {
             capabilities: .init(
                 canvasEnabled: state.canvasEnabled,
                 cameraEnabled: defaults.bool(forKey: cameraEnabledKey),
+                desktopSharingEnabled: defaults.object(forKey: desktopSharingEnabledKey) as? Bool ??
+                    MacNodeModeCoordinator.shared.desktopSharingEnabled,
                 computerControlEnabled: isComputerControlEnabled(),
                 computerControlProvider: ComputerControlProvider.current().rawValue,
                 cuaDriverBundled: CuaDriverArtifact.bundledExecutableURL != nil,
@@ -72,7 +74,8 @@ extension DashboardWindowController {
             desktopAvailability: .init(state: MacDesktopAvailabilityCoordinator.shared.refresh()),
             browser: .init(
                 importAvailable: state.connectionMode == .local && BrowserProfileImportModel.shared.importAvailable,
-                cookieSync: Self.deviceCookieSyncSnapshot(state: state)),
+                cookieSync: Self.deviceCookieSyncSnapshot(state: state),
+                chromeSetupActions: ChromeExtensionSetupAction.allCases),
             permissions: .init(
                 entries: permissions,
                 location: .init(

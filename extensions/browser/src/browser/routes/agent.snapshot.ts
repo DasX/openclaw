@@ -1,12 +1,10 @@
-/**
- * Browser snapshot, navigation, and screenshot routes.
- *
- * Handles profile-aware snapshot generation across Playwright and Chrome MCP,
- * navigation policy checks, media storage, and screenshot normalization.
- */
+// Browser snapshot, navigation, and screenshot routes.
 import path from "node:path";
-import { getImageMetadata } from "../../media/media-services.js";
-import { ensureMediaDir, saveMediaBuffer } from "../../media/store.js";
+import {
+  ensureMediaDir,
+  getImageMetadata,
+  saveMediaBuffer,
+} from "openclaw/plugin-sdk/media-runtime";
 import { resolveBrowserNavigationTimeoutMs } from "../act-policy.js";
 import type { CdpDocumentIdentities } from "../cdp-page-session.js";
 import {
@@ -15,28 +13,26 @@ import {
   snapshotAria,
   snapshotRoleViaCdp,
 } from "../cdp.js";
+import type { ChromeMcpTargetOperation } from "../chrome-mcp-contracts.js";
 import {
   navigateChromeMcpPage,
   takeChromeMcpScreenshot,
   takeChromeMcpSnapshot,
 } from "../chrome-mcp.js";
-import {
-  clearChromeMcpOverlay,
-  collectChromeMcpSnapshotUrls,
-  renderChromeMcpLabels,
-  type ChromeMcpSnapshotOperation,
-} from "../chrome-mcp.snapshot-page.js";
-import {
-  buildChromeMcpRouteSnapshot,
-  flattenChromeMcpRouteSnapshot,
-} from "../chrome-mcp.snapshot-result.js";
+import { collectChromeMcpSnapshotUrls, withChromeMcpLabels } from "../chrome-mcp.snapshot-page.js";
+import { buildChromeMcpRouteSnapshot } from "../chrome-mcp.snapshot-result.js";
+import { flattenChromeMcpSnapshotToAriaResult } from "../chrome-mcp.snapshot.js";
 import { DEFAULT_BROWSER_SCREENSHOT_TIMEOUT_MS } from "../constants.js";
 import {
   assertBrowserNavigationAllowed,
   assertBrowserNavigationResultAllowed,
 } from "../navigation-guard.js";
-import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
-import { getLoadedPwAiModule } from "../pw-ai-module.js";
+import {
+  getBrowserProfileCapabilities,
+  shouldUsePlaywrightForAriaSnapshot,
+  shouldUsePlaywrightForScreenshot,
+} from "../profile-capabilities.js";
+import { getLoadedPwAiModule, getPwAiModule } from "../pw-ai-module.js";
 import { finalizeRoleSnapshot, type RoleRefMap } from "../pw-role-snapshot.js";
 import type { BrowserObservedState } from "../pw-session-contracts.js";
 import type { AnnotationItem } from "../screenshot-annotate.js";
@@ -56,7 +52,6 @@ import { appendSnapshotUrls } from "../snapshot-urls.js";
 import { normalizeBrowserTimerDelayMs } from "../timer-delay.js";
 import {
   browserNavigationPolicyForProfile,
-  getPwAiModule,
   handleRouteError,
   readBody,
   requirePwAi,
@@ -68,11 +63,7 @@ import {
   captureBrowserOperationTarget,
   resolveOperationTargetOutcome,
 } from "./agent.snapshot-target.js";
-import {
-  resolveSnapshotPlan,
-  shouldUsePlaywrightForAriaSnapshot,
-  shouldUsePlaywrightForScreenshot,
-} from "./agent.snapshot.plan.js";
+import { resolveSnapshotPlan } from "./agent.snapshot.plan.js";
 import { EXISTING_SESSION_LIMITS } from "./existing-session-limits.js";
 import { readRoutePositiveInteger, readRouteTimerTimeoutMs } from "./route-numeric.js";
 import type { BrowserRouteRegistrar } from "./types.js";
@@ -117,13 +108,7 @@ async function saveBrowserScreenshot(capture: ScreenshotCapture, type: "png" | "
   };
 }
 
-/**
- * Keep annotation coordinates aligned with the saved media after
- * normalizeBrowserScreenshot. Returns the original annotations unchanged
- * when normalization did not change the image dimensions, or when image
- * metadata is unavailable (best-effort: better to ship pre-resize coords
- * than to drop the field entirely).
- */
+// Preserve original coordinates when image dimensions cannot be recovered.
 async function rescaleAnnotationsForNormalization(params: {
   annotations?: AnnotationItem[];
   originalBuffer: Buffer;
@@ -294,16 +279,12 @@ export function registerBrowserAgentSnapshotRoutes(
       targetId,
       enforceCurrentUrlAllowed: true,
       run: async ({ profileCtx, tab, cdpUrl, signal }) => {
-        const jsonScreenshot = async (capture: ScreenshotCapture) => {
-          const {
-            imagePath,
-            imageType: _imageType,
-            ...details
-          } = await saveBrowserScreenshot(capture, type);
+        const jsonScreenshot = (image: Awaited<ReturnType<typeof saveBrowserScreenshot>>) => {
+          const { imagePath, imageType: _imageType, ...details } = image;
           res.json({ ok: true, path: imagePath, targetId: tab.targetId, url: tab.url, ...details });
         };
         if (getBrowserProfileCapabilities(profileCtx.profile).usesChromeMcp) {
-          const operation: ChromeMcpSnapshotOperation = {
+          const operation: ChromeMcpTargetOperation = {
             profileName: profileCtx.profile.name,
             profile: profileCtx.profile,
             targetId: tab.targetId,
@@ -320,34 +301,33 @@ export function registerBrowserAgentSnapshotRoutes(
           if (element) {
             return jsonError(res, 400, EXISTING_SESSION_LIMITS.snapshot.screenshotElement);
           }
-          let labelResult: { labels: number; skipped: number } | undefined;
-          let truncated: boolean | undefined;
-          try {
-            if (labels) {
-              const built = ref
-                ? undefined
-                : buildChromeMcpRouteSnapshot({
-                    root: await takeChromeMcpSnapshot(operation),
-                  });
-              labelResult = await renderChromeMcpLabels({
+          if (labels) {
+            const built = ref
+              ? undefined
+              : buildChromeMcpRouteSnapshot({ root: await takeChromeMcpSnapshot(operation) });
+            const image = await withChromeMcpLabels(
+              {
                 ...operation,
                 refs: ref ? [ref] : Object.keys(built?.refs ?? {}),
                 clipToRef: Boolean(ref),
-              });
-              truncated = built?.truncated;
-            }
-            const buffer = await takeChromeMcpScreenshot({
-              ...operation,
-              uid: ref,
-              fullPage,
-              format: type,
-            });
-            await jsonScreenshot({ buffer, ...labelResult, truncated });
-          } finally {
-            if (labels) {
-              await clearChromeMcpOverlay(operation);
-            }
+              },
+              async (labelResult, capture) => {
+                const buffer = await capture({ uid: ref, fullPage, format: type });
+                return await saveBrowserScreenshot(
+                  { buffer, ...labelResult, truncated: built?.truncated },
+                  type,
+                );
+              },
+            );
+            return jsonScreenshot(image);
           }
+          const buffer = await takeChromeMcpScreenshot({
+            ...operation,
+            uid: ref,
+            fullPage,
+            format: type,
+          });
+          jsonScreenshot(await saveBrowserScreenshot({ buffer }, type));
           return;
         }
 
@@ -366,38 +346,29 @@ export function registerBrowserAgentSnapshotRoutes(
           if (!pw) {
             return;
           }
-          if (labels) {
-            const snap = ref
-              ? undefined
-              : await pw.snapshotRoleViaPlaywright({
+          const snap =
+            labels && !ref
+              ? await pw.snapshotRoleViaPlaywright({
                   cdpUrl,
                   targetId: tab.targetId,
                   ssrfPolicy: ctx.state().resolved.ssrfPolicy,
                   timeoutMs,
-                });
-            capture = await pw.screenshotWithLabelsViaPlaywright({
-              cdpUrl,
-              targetId: tab.targetId,
-              refs: snap?.refs,
-              type,
-              timeoutMs,
-              fullPage,
-              ref,
-              element,
-              signal,
-            });
-          } else {
-            capture = await pw.takeScreenshotViaPlaywright({
-              cdpUrl,
-              targetId: tab.targetId,
-              ref,
-              element,
-              fullPage,
-              type,
-              timeoutMs,
-              signal,
-            });
-          }
+                  signal,
+                })
+              : undefined;
+          const screenshotOptions: Parameters<typeof pw.takeScreenshotViaPlaywright>[0] = {
+            cdpUrl,
+            targetId: tab.targetId,
+            ref,
+            element,
+            fullPage,
+            type,
+            timeoutMs,
+            signal,
+          };
+          capture = labels
+            ? await pw.screenshotWithLabelsViaPlaywright({ ...screenshotOptions, refs: snap?.refs })
+            : await pw.takeScreenshotViaPlaywright(screenshotOptions);
         } else {
           const profileRuntime = ctx.state().profiles.get(profileCtx.profile.name);
           capture = {
@@ -415,7 +386,7 @@ export function registerBrowserAgentSnapshotRoutes(
           };
         }
 
-        await jsonScreenshot(capture);
+        jsonScreenshot(await saveBrowserScreenshot(capture, type));
       },
     });
   });
@@ -426,7 +397,7 @@ export function registerBrowserAgentSnapshotRoutes(
       return;
     }
     const targetId = typeof req.query.targetId === "string" ? req.query.targetId.trim() : "";
-    const pwModule = await getPwAiModule();
+    const pwModule = await getPwAiModule({ mode: "soft" });
     const hasPlaywright = Boolean(pwModule);
     const plan = resolveSnapshotPlan({
       profile: profileCtx.profile,
@@ -519,7 +490,7 @@ export function registerBrowserAgentSnapshotRoutes(
             };
           };
           if (usesChromeMcp) {
-            const operation: ChromeMcpSnapshotOperation = {
+            const operation: ChromeMcpTargetOperation = {
               profileName: profileCtx.profile.name,
               profile: profileCtx.profile,
               targetId: tab.targetId,
@@ -528,7 +499,7 @@ export function registerBrowserAgentSnapshotRoutes(
             };
             const snapshot = await takeChromeMcpSnapshot(operation);
             if (plan.format === "aria") {
-              return jsonSnapshot(flattenChromeMcpRouteSnapshot(snapshot, plan.limit));
+              return jsonSnapshot(flattenChromeMcpSnapshotToAriaResult(snapshot, plan.limit));
             }
             const built = buildChromeMcpRouteSnapshot({
               root: snapshot,
@@ -556,21 +527,14 @@ export function registerBrowserAgentSnapshotRoutes(
                 ? { ...finalizedBase, truncated: true }
                 : finalizedBase;
             if (plan.labels) {
-              const refs = Object.keys(finalized.refs);
-              try {
-                const labelResult = await renderChromeMcpLabels({
-                  ...operation,
-                  refs,
-                });
-                const buffer = await takeChromeMcpScreenshot({
-                  ...operation,
-                  format: "png",
-                });
-                const image = await saveBrowserScreenshot({ buffer, ...labelResult }, "png");
-                return jsonSnapshot({ ...image, ...finalized });
-              } finally {
-                await clearChromeMcpOverlay(operation);
-              }
+              const image = await withChromeMcpLabels(
+                { ...operation, refs: Object.keys(finalized.refs) },
+                async (labelResult, capture) => {
+                  const buffer = await capture({ format: "png" });
+                  return await saveBrowserScreenshot({ buffer, ...labelResult }, "png");
+                },
+              );
+              return jsonSnapshot({ ...image, ...finalized });
             }
             return jsonSnapshot(finalized);
           }
@@ -653,6 +617,7 @@ export function registerBrowserAgentSnapshotRoutes(
               urls: plan.urls,
               timeoutMs: plan.timeoutMs,
               maxChars: plan.resolvedMaxChars,
+              signal,
               options: {
                 interactive: plan.interactive ?? undefined,
                 compact: plan.compact ?? undefined,
@@ -666,10 +631,12 @@ export function registerBrowserAgentSnapshotRoutes(
                 ? tab.wsUrl
                 : null;
             let usedCdpRoleSnapshot = false;
+            let cdpCaptureDeadlineMs: number | undefined;
             const cdpRoleSnapshot = async (recurseIframes = true) => {
               if (!cdpRoleWsUrl) {
                 return null;
               }
+              cdpCaptureDeadlineMs = performance.now() + (plan.timeoutMs ?? 5_000);
               const snapshot = await snapshotRoleViaCdp({
                 wsUrl: cdpRoleWsUrl,
                 ...(tab.wsLookup ? { lookup: tab.wsLookup } : {}),
@@ -700,12 +667,14 @@ export function registerBrowserAgentSnapshotRoutes(
                   ? await pw.snapshotRoleViaPlaywright(roleSnapshotArgs)
                   : await cdpRoleSnapshot()
               : pw
-                ? await pw.snapshotAiViaPlaywright({
+                ? await pw.snapshotRoleViaPlaywright({
                     cdpUrl: profileCtx.profile.cdpUrl,
                     targetId: tab.targetId,
+                    refsMode: "aria",
                     ssrfPolicy: ctx.state().resolved.ssrfPolicy,
                     urls: plan.urls,
                     timeoutMs: plan.timeoutMs,
+                    signal,
                     ...(typeof plan.resolvedMaxChars === "number"
                       ? { maxChars: plan.resolvedMaxChars }
                       : {}),
@@ -722,6 +691,8 @@ export function registerBrowserAgentSnapshotRoutes(
                 cdpUrl: profileCtx.profile.cdpUrl,
                 targetId: tab.targetId,
                 refs: snap.refs,
+                signal,
+                deadlineMs: cdpCaptureDeadlineMs,
                 ...(initialDocumentIdentity
                   ? { expectedDocumentIdentity: initialDocumentIdentity }
                   : {}),
@@ -768,8 +739,10 @@ export function registerBrowserAgentSnapshotRoutes(
               limit: plan.limit,
               timeoutMs: plan.timeoutMs,
               ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+              signal,
             });
           } else {
+            const captureDeadlineMs = performance.now() + (plan.timeoutMs ?? 5_000);
             resolved = await snapshotAria({
               wsUrl: tab.wsUrl ?? "",
               ...(tab.wsLookup ? { lookup: tab.wsLookup } : {}),
@@ -781,6 +754,8 @@ export function registerBrowserAgentSnapshotRoutes(
               cdpUrl: profileCtx.profile.cdpUrl,
               targetId: tab.targetId,
               nodes: resolved.nodes,
+              signal,
+              deadlineMs: captureDeadlineMs,
               ...(initialDocumentIdentity
                 ? { expectedDocumentIdentity: initialDocumentIdentity }
                 : {}),

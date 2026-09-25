@@ -10,8 +10,8 @@ export {
   respawnGatewayProcessForUpdate,
   restartGatewayProcessWithFreshPid,
 } from "../../infra/process-respawn.js";
+export { resolveGatewayRestartDrainTimeoutMs } from "../../infra/restart-budget.js";
 export {
-  resolveGatewayRestartDeferralTimeoutMs,
   consumeGatewayRestartIntent,
   consumeGatewayRestartAuthorization,
   isGatewayRestartExternallyAllowed,
@@ -31,7 +31,11 @@ export {
   cancelManagedServiceUpdateHandoff,
   claimManagedServiceUpdateHandoff,
   commitManagedServiceUpdateHandoff,
+  isForegroundUpdateHandoff,
+  completeForegroundUpdateHandoffAfterClose,
+  captureForegroundUpdateHandoffStop,
   requestManagedServiceUpdateHandoffPark,
+  waitForSystemServiceUpdateHandoffs,
 } from "../../infra/update-managed-service-handoff.js";
 export { resetGatewaySuspendCoordinatorForLifecycleRestart } from "../../infra/gateway-suspend-coordinator.js";
 export { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";

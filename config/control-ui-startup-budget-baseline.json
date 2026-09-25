@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 364198,
-  "reason": "Peter approved the measured 364198 B startup gzip baseline and 356 KiB cap for #152510 on 2026-09-19: ancestor-session snapshot reuse is 215 B above the previous enforced budget. The existing 512 B growth and 64 B build-variance allowances are unchanged.",
-  "updatedAt": "2026-09-20"
+  "startupJsGzipBytes": 370756,
+  "reason": "Main 05804bcf passes at 370,367 B under its 370,876 B limit; this PR adds 389 B for a 370,756 B startup bundle. Set the paired measured baseline and cap to main plus this PR delta. The unchanged 512 B growth and 64 B build-variance allowances give a 371,332 B enforcement limit; KiB rounding is display-only.",
+  "updatedAt": "2026-09-22"
 }

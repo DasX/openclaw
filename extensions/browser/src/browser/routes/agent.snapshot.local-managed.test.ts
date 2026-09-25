@@ -48,6 +48,11 @@ const navigationGuardMocks = vi.hoisted(() => ({
   withBrowserNavigationPolicy: vi.fn((ssrfPolicy?: unknown) => (ssrfPolicy ? { ssrfPolicy } : {})),
 }));
 
+vi.mock("../pw-ai-module.js", () => ({
+  getPwAiModule: vi.fn(async () => pwState.module),
+  getLoadedPwAiModule: () => null,
+}));
+
 vi.mock("../cdp.js", () => ({
   captureScreenshot: vi.fn(),
   getDocumentIdentitiesViaCdp: cdpMocks.getDocumentIdentitiesViaCdp,
@@ -78,7 +83,8 @@ vi.mock("../screenshot.js", () => ({
   })),
 }));
 
-vi.mock("../../media/store.js", () => ({
+vi.mock("openclaw/plugin-sdk/media-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/media-runtime")>()),
   ensureMediaDir: vi.fn(async () => {}),
   saveMediaBuffer: vi.fn(async () => ({ path: "/tmp/fake.png" })),
 }));
@@ -87,7 +93,6 @@ vi.mock("./agent.shared.js", () => ({
   browserNavigationPolicyForProfile: vi.fn(() => ({
     ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
   })),
-  getPwAiModule: vi.fn(async () => pwState.module),
   handleRouteError: vi.fn(
     (
       _ctx: unknown,
@@ -133,7 +138,6 @@ function createPwModule(overrides: Record<string, ReturnType<typeof vi.fn>> = {}
     getObservedBrowserStateViaPlaywright: vi.fn(async () => ({
       dialogs: { pending: [], recent: [] },
     })),
-    snapshotAiViaPlaywright: vi.fn(async () => ({ snapshot: "Playwright" })),
     snapshotRoleViaPlaywright: vi.fn(async () => ({
       snapshot: '- button "Playwright" [ref=e1]',
       refs: { e1: { role: "button", name: "Playwright" } },
@@ -241,6 +245,8 @@ describe("local-managed browser snapshot routes", () => {
       targetId: "7",
       expectedDocumentIdentity: "pw:test-document",
       refs: { e1: { role: "link", name: "private" } },
+      signal: expect.any(AbortSignal),
+      deadlineMs: expect.any(Number),
     });
   });
 
@@ -312,6 +318,8 @@ describe("local-managed browser snapshot routes", () => {
       targetId: "7",
       nodes: [{ ref: "1", role: "link", name: "private", depth: 0 }],
       expectedDocumentIdentity: "pw:test-document",
+      signal: expect.any(AbortSignal),
+      deadlineMs: expect.any(Number),
     });
   });
 
@@ -351,17 +359,19 @@ describe("local-managed browser snapshot routes", () => {
     ["an explicit zero cap", { maxChars: "0" }, {}],
   ])("forwards %s to Playwright AI snapshots", async (_name, query, expected) => {
     navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
-    const snapshotAiViaPlaywright = vi.fn(async () => ({ snapshot: "Playwright" }));
-    pwState.module = createPwModule({ snapshotAiViaPlaywright });
+    const snapshotRoleViaPlaywright = vi.fn(async () => ({ snapshot: "Playwright" }));
+    pwState.module = createPwModule({ snapshotRoleViaPlaywright });
     const handler = getSnapshotGetHandler();
     const response = createBrowserRouteResponse();
 
     await handler?.({ params: {}, query: { format: "ai", ...query } }, response.res);
 
     expect(response.statusCode).toBe(200);
-    expect(snapshotAiViaPlaywright).toHaveBeenCalledWith({
+    expect(snapshotRoleViaPlaywright).toHaveBeenCalledWith({
       cdpUrl: "http://127.0.0.1:18800",
       targetId: "7",
+      refsMode: "aria",
+      signal: expect.any(AbortSignal),
       ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
       timeoutMs: undefined,
       urls: undefined,
@@ -372,7 +382,7 @@ describe("local-managed browser snapshot routes", () => {
 
   it("surfaces pending dialog state without reading the blocked page", async () => {
     navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
-    const snapshotAiViaPlaywright = vi.fn(async () => ({ snapshot: "Playwright" }));
+    const snapshotRoleViaPlaywright = vi.fn(async () => ({ snapshot: "Playwright" }));
     pwState.module = createPwModule({
       getObservedBrowserStateViaPlaywright: vi.fn(async () => ({
         dialogs: {
@@ -387,7 +397,7 @@ describe("local-managed browser snapshot routes", () => {
           recent: [],
         },
       })),
-      snapshotAiViaPlaywright,
+      snapshotRoleViaPlaywright,
     });
     const handler = getSnapshotGetHandler();
     const response = createBrowserRouteResponse();
@@ -402,7 +412,7 @@ describe("local-managed browser snapshot routes", () => {
         dialogs: { pending: [expect.objectContaining({ id: "d1", message: "Continue?" })] },
       },
     });
-    expect(snapshotAiViaPlaywright).not.toHaveBeenCalled();
+    expect(snapshotRoleViaPlaywright).not.toHaveBeenCalled();
   });
 
   it.each(["ai", "aria"])(
