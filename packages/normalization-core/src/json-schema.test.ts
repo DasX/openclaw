@@ -1,6 +1,46 @@
 import { Compile } from "typebox/schema";
 import { describe, expect, it } from "vitest";
-import { normalizeTypeBoxValidationErrors } from "./json-schema.js";
+import { normalizeJsonSchemaForTypeBox, normalizeTypeBoxValidationErrors } from "./json-schema.js";
+
+describe("normalizeJsonSchemaForTypeBox", () => {
+  it("removes only schema format keywords when annotations are requested", () => {
+    const createSchema = (formatted: { type: string; format?: string }) => ({
+      $defs: { format: formatted },
+      definitions: { format: formatted },
+      properties: { format: formatted },
+      patternProperties: { format: formatted },
+      dependentSchemas: { format: { properties: { value: formatted } } },
+      dependencies: { format: ["format"], value: { properties: { format: formatted } } },
+      allOf: [{ properties: { nested: formatted } }],
+      anyOf: [formatted],
+      oneOf: [formatted],
+      prefixItems: [formatted],
+      items: formatted,
+      additionalItems: formatted,
+      contains: formatted,
+      additionalProperties: formatted,
+      propertyNames: formatted,
+      unevaluatedProperties: formatted,
+      unevaluatedItems: formatted,
+      if: formatted,
+      // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema conditional keyword, not a Promise method.
+      then: formatted,
+      else: formatted,
+      not: formatted,
+      const: { format: "literal" },
+      enum: [{ format: "literal" }],
+      default: { format: "literal" },
+      examples: [{ format: "literal" }],
+    });
+    const schema = createSchema({ type: "string", format: "uri" });
+    const original = structuredClone(schema);
+    expect(normalizeJsonSchemaForTypeBox(schema)).toEqual(original);
+    expect(normalizeJsonSchemaForTypeBox(schema, { format: "annotation" })).toEqual(
+      createSchema({ type: "string" }),
+    );
+    expect(schema).toEqual(original);
+  });
+});
 
 describe("normalizeTypeBoxValidationErrors", () => {
   it("keeps actionable nested property errors and unrelated false schemas", () => {

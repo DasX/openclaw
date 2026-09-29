@@ -108,18 +108,6 @@ export function adoptedCatalogSessionKeys(catalogs: readonly SessionCatalog[]): 
   return keys;
 }
 
-/** Catalogs the sidebar actually renders. Adopted-key exclusion must read this
-    same projection: excluding a key whose catalog is hidden (or whose section
-    the archived filter suppresses) deletes the session from the entire sidebar
-    with no row anywhere. */
-export function visibleSessionCatalogProjection(
-  catalogs: readonly SessionCatalog[],
-  hiddenCatalogIds: ReadonlySet<string>,
-  archivedFilter: boolean,
-): SessionCatalog[] {
-  return archivedFilter ? [] : catalogs.filter((catalog) => !hiddenCatalogIds.has(catalog.id));
-}
-
 export function catalogErrorMessages(catalog: SessionCatalog): string[] {
   const messages = new Set<string>();
   const add = (error: SessionCatalog["error"]) => {
@@ -140,7 +128,7 @@ export function catalogErrorMessages(catalog: SessionCatalog): string[] {
 
 export type SidebarSessionCatalog = SessionCatalog & { visibleHosts: SessionCatalogHost[] };
 
-/** Section peers and rendering share owner-filtered rows; paging and failures remain visible. */
+/** Section peers and rendering share the same nonempty, owner-filtered catalogs. */
 export function projectSidebarSessionCatalogs(
   catalogs: readonly SessionCatalog[],
   ownerId: string | null,
@@ -150,11 +138,7 @@ export function projectSidebarSessionCatalogs(
   const liveOwners = new Map(liveRows.toReversed().map(({ key, owner }) => [key, owner?.actor.id]));
   return catalogs.flatMap((catalog) => {
     const visibleHosts = visibleCatalogHosts(catalog.hosts, ownerId, liveOwners);
-    return visibleHosts.length > 0 ||
-      catalog.hosts.some((host) => Boolean(host.nextCursor)) ||
-      catalogErrorMessages(catalog).length > 0
-      ? [{ ...catalog, visibleHosts }]
-      : [];
+    return visibleHosts.length > 0 ? [{ ...catalog, visibleHosts }] : [];
   });
 }
 
@@ -184,10 +168,8 @@ function visibleCatalogHosts(
 
 export type CatalogBackingSessionDisplay = {
   catalogIdentityKey: string;
-  catalogMenuOpen: boolean;
   catalogMenu: CatalogSessionMenuRequest;
   rowRef?: (element: Element | undefined) => void;
-  subtitle?: string;
   pullRequest?: SessionCatalogSession["pullRequest"];
 };
 

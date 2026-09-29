@@ -3,12 +3,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { nativeGatewaysCapability } from "../app/native-gateways.runtime.ts";
-import {
-  createGatewayHarness,
-  createSessions,
-  mountSidebar,
-  setupSidebarTest,
-} from "../test-helpers/app-sidebar.ts";
+import { setupSidebarTest } from "../test-helpers/app-sidebar-setup.ts";
+import { createGatewayHarness, createSessions, mountSidebar } from "../test-helpers/app-sidebar.ts";
 import {
   clearNativeGatewayTestState,
   setNativeGatewayTestState,
@@ -77,6 +73,14 @@ describe("AppSidebar native Gateway menu", () => {
     expect(
       rows.map((row) => row.querySelector(".sidebar-gateway-health")?.getAttribute("aria-label")),
     ).toEqual(["Connected", "Unreachable", "Unknown status"]);
+    expect(
+      rows.map((row) =>
+        row.querySelector('[slot="details"] kbd')?.textContent?.replace(/\s+/gu, "").trim(),
+      ),
+    ).toEqual(["⌘1", undefined, "⌘3"]);
+    for (const shortcut of menu.querySelectorAll("kbd")) {
+      expect(shortcut.getAttribute("aria-hidden")).toBe("true");
+    }
     expect(rows[0]!.querySelector(".sidebar-gateway-primary")?.textContent).toBe("primary");
     expect(rows[1]!.querySelector(".sidebar-gateway-primary")).toBeNull();
     expect(rows[1]!.querySelector(".sidebar-gateway-check")).not.toBeNull();
@@ -112,5 +116,20 @@ describe("AppSidebar native Gateway menu", () => {
     expect(
       singleMenu.querySelector('wa-dropdown-item[value="command:gateway-settings"]'),
     ).not.toBeNull();
+
+    snapshot.gateways = Array.from({ length: 10 }, (_, index) => ({
+      ...snapshot.gateways[0]!,
+      id: `gateway-${index + 1}`,
+      name: `Gateway ${index + 1}`,
+    }));
+    snapshot.currentId = "gateway-1";
+    publish();
+    await sidebar.updateComplete;
+    const manyRows = sidebar.querySelectorAll('wa-dropdown-item[value^="gateway:"]');
+    expect(manyRows).toHaveLength(10);
+    expect(
+      manyRows[8]!.querySelector('[slot="details"] kbd')?.textContent?.replace(/\s+/gu, "").trim(),
+    ).toBe("⌘9");
+    expect(manyRows[9]!.querySelector("kbd")).toBeNull();
   });
 });

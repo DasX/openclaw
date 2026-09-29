@@ -25,11 +25,7 @@ export function trackDropdownKeyboardDismissal(
 
 export function consumeDropdownKeyboardDismissal(event: Event): boolean {
   const dropdown = event.currentTarget;
-  if (!dropdown || !keyboardDismissedDropdowns.has(dropdown)) {
-    return false;
-  }
-  keyboardDismissedDropdowns.delete(dropdown);
-  return true;
+  return dropdown !== null && keyboardDismissedDropdowns.delete(dropdown);
 }
 
 /** Web Awesome exposes checkbox items only. Preserve its roving-focus item
@@ -55,16 +51,12 @@ function labelDropdownMenu(dropdown: HTMLElement) {
   if (!menu) {
     return;
   }
-  const label = dropdown.getAttribute("aria-label");
+  const trigger = dropdown.querySelector<HTMLElement>('[slot="trigger"]');
+  const label =
+    dropdown.getAttribute("aria-label") ||
+    (trigger?.getAttribute("aria-label") ?? trigger?.textContent?.trim());
   if (label) {
     menu.setAttribute("aria-label", label);
-    menu.removeAttribute("aria-labelledby");
-    return;
-  }
-  const trigger = dropdown.querySelector<HTMLElement>('[slot="trigger"]');
-  const triggerLabel = trigger?.getAttribute("aria-label") ?? trigger?.textContent?.trim();
-  if (triggerLabel) {
-    menu.setAttribute("aria-label", triggerLabel);
     menu.removeAttribute("aria-labelledby");
   }
 }
@@ -118,7 +110,20 @@ function startDropdownLabelSync(event: Event) {
   queueMicrotask(() => {
     // SAFETY: The registered wa-dropdown host exposes its boolean open property.
     if (!event.defaultPrevented && (dropdown as HTMLElement & { open: boolean }).open) {
-      occludeNativeBrowserSurface(dropdown, "wa-after-hide");
+      occludeNativeBrowserSurface(dropdown, "wa-after-hide", function* () {
+        const menu = dropdown.shadowRoot?.querySelector('[part="menu"]');
+        if (menu) {
+          yield menu;
+        }
+        // The host bounds belong to the trigger. Submenus have their own
+        // top-layer rectangles, including while their hide animation runs.
+        for (const item of dropdown.querySelectorAll("wa-dropdown-item")) {
+          const submenu = item.shadowRoot?.querySelector('[part="submenu"]');
+          if (submenu) {
+            yield submenu;
+          }
+        }
+      });
     }
   });
   // Reopening must restore the menu before Web Awesome moves focus into it.

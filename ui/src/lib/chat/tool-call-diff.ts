@@ -104,7 +104,7 @@ export function parseDiffDetailsString(diff: string): LineDiffResult | null {
     : { kind: "complete", lines, stat: diffStat(lines) };
 }
 
-function splitDiffLines(text: string): string[] {
+export function splitDiffLines(text: string): string[] {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   // Empty snippets are zero lines: deletions (`newText: ""`) and insertions
   // from an empty old side must not produce a phantom blank row in the diff.
@@ -194,8 +194,18 @@ export function computeLineDiff(
     allOldLines.length === allNewLines.length &&
     allOldLines.every((line, index) => line === allNewLines[index]);
   const comparisonTruncated = inputTruncated && !inputsEqual;
-  const oldLines = allOldLines.slice(0, MAX_DIFF_INPUT_LINES);
-  const newLines = allNewLines.slice(0, MAX_DIFF_INPUT_LINES);
+  const lines: DiffLine[] = [];
+  // Reconstruction consumes equal leading lines before consulting the LCS table.
+  let prefix = 0;
+  while (
+    prefix < Math.min(allOldLines.length, allNewLines.length, MAX_DIFF_INPUT_LINES) &&
+    allOldLines[prefix] === allNewLines[prefix]
+  ) {
+    lines.push({ kind: "ctx", text: allOldLines[prefix]! });
+    prefix++;
+  }
+  const oldLines = allOldLines.slice(prefix, MAX_DIFF_INPUT_LINES);
+  const newLines = allNewLines.slice(prefix, MAX_DIFF_INPUT_LINES);
   const stride = newLines.length + 1;
   // The extra row/column are zero sentinels; bounded LCS lengths fit in Uint16.
   const lcs = new Uint16Array((oldLines.length + 1) * stride);
@@ -208,7 +218,6 @@ export function computeLineDiff(
           : Math.max(lcs[offset + stride] ?? 0, lcs[offset + 1] ?? 0);
     }
   }
-  const lines: DiffLine[] = [];
   for (let i = 0, j = 0; i < oldLines.length || j < newLines.length;) {
     const oldLine = oldLines[i];
     const newLine = newLines[j];
@@ -244,10 +253,6 @@ export function buildWriteDiffLines(content: string, maxLines = 80): DiffLine[] 
     lines.push({ kind: "skip", text: "" });
   }
   return lines;
-}
-
-export function countTextLines(content: string): number {
-  return splitDiffLines(content).length;
 }
 
 /**
