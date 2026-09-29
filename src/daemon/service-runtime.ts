@@ -2,8 +2,9 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
+import { isPidAlive } from "../shared/pid-alive.js";
 import {
-  findServiceOwnershipRefusal,
+  assertServiceInspectionFallbackAllowed,
   ServiceInspectionError,
   type ServiceInspectionReason,
 } from "./service-inspection-error.js";
@@ -18,6 +19,7 @@ type GatewayServiceSystemdRuntime = {
   unit?: string;
   /** Native D-Bus credential of the observed manager, not the service account or CLI UID. */
   managerUid?: number;
+  controlGroup?: string;
   killMode?: string;
   tasksCurrent?: number;
   memoryCurrent?: number;
@@ -59,6 +61,28 @@ export type GatewayServiceRuntime = {
   systemd?: GatewayServiceSystemdRuntime;
 };
 
+/** Positive process observations protect serving files, but grant no service-control authority. */
+export function isGatewayServiceStateLive(state: {
+  running: boolean;
+  runtime?: GatewayServiceRuntime;
+}): boolean {
+  if (state.running || (state.runtime?.systemd?.tasksCurrent ?? 0) > 0) {
+    return true;
+  }
+  const pid = state.runtime?.pid;
+  if (typeof pid === "number" && Number.isSafeInteger(pid) && pid > 1 && isPidAlive(pid)) {
+    return true;
+  }
+  const serviceState = state.runtime?.state?.toLowerCase() ?? "";
+  const subState = state.runtime?.subState?.toLowerCase() ?? "";
+  return (
+    serviceState === "deactivating" ||
+    subState === "stop-sigterm" ||
+    subState === "stop-sigkill" ||
+    subState === "final-sigterm"
+  );
+}
+
 const SERVICE_RUNTIME_INSPECTION_ERROR_MAX_CHARS = 500;
 const SERVICE_RUNTIME_INSPECTION_FAILED_DETAIL = "service runtime inspection failed";
 
@@ -66,11 +90,10 @@ const SERVICE_RUNTIME_INSPECTION_FAILED_DETAIL = "service runtime inspection fai
 export function createServiceRuntimeInspectionFailure(
   error: unknown,
   timeoutMs?: number,
-): GatewayServiceRuntime {
-  const refusal = findServiceOwnershipRefusal(error);
-  if (refusal) {
-    throw refusal;
-  }
+): GatewayServiceRuntime & {
+  inspectionFailure: NonNullable<GatewayServiceRuntime["inspectionFailure"]>;
+} {
+  assertServiceInspectionFallbackAllowed(error);
   const rawDetail = error instanceof Error ? error.message : String(error);
   return {
     status: "unknown",

@@ -1,4 +1,3 @@
-// Openshell plugin module implements backend behavior.
 import { createHash } from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -20,6 +19,9 @@ import type {
   SandboxFsBridge,
 } from "openclaw/plugin-sdk/sandbox";
 import {
+  buildRemoteCommand,
+  buildRemoteWorkdirValidationCommand,
+  buildValidatedExecRemoteCommand,
   createRemoteShellSandboxFsBridge,
   disposeSshSandboxSession,
   prepareSshSandboxExec,
@@ -32,14 +34,7 @@ import {
 import { canonicalPathFromExistingAncestor } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { OpenShellFsBridgeContext, OpenShellSandboxBackend } from "./backend.types.js";
-import {
-  buildValidatedExecRemoteCommand,
-  buildRemoteWorkdirValidationCommand,
-  buildRemoteCommand,
-  createOpenShellSshSession,
-  runOpenShellCli,
-  type OpenShellExecContext,
-} from "./cli.js";
+import { createOpenShellSshSession, runOpenShellCli, type OpenShellExecContext } from "./cli.js";
 import { resolveOpenShellPluginConfig, type ResolvedOpenShellPluginConfig } from "./config.js";
 import { createOpenShellFsBridge } from "./fs-bridge.js";
 import {
@@ -162,18 +157,26 @@ const ENSURE_OPEN_SHELL_REMOTE_REAL_DIRECTORY_SCRIPT = [
   "done",
 ].join("\n");
 
-function buildOpenShellSshExecEnv(): NodeJS.ProcessEnv {
-  return sanitizeEnvVars(process.env).allowed;
-}
-
 export function createOpenShellSandboxBackendFactory(
   params: CreateOpenShellSandboxBackendFactoryParams,
 ): SandboxBackendFactory {
-  return async (createParams) =>
-    await createOpenShellSandboxBackend({
-      ...params,
-      createParams,
+  return async (createParams) => {
+    if ((createParams.cfg.docker.binds?.length ?? 0) > 0) {
+      throw new Error("OpenShell sandbox backend does not support sandbox.docker.binds.");
+    }
+    const { sandboxName, legacyRuntimeAdopted } = resolveOpenShellSandboxName({
+      scopeKey: createParams.scopeKey,
+      registeredRuntimeIds: createParams.registeredRuntimeIds,
     });
+    const impl = new OpenShellSandboxBackendImpl({
+      createParams,
+      execContext: { config: params.pluginConfig, sandboxName },
+      legacyRuntimeAdopted,
+      remoteWorkspaceDir: params.pluginConfig.remoteWorkspaceDir,
+      remoteAgentWorkspaceDir: params.pluginConfig.remoteAgentWorkspaceDir,
+    });
+    return impl.asHandle();
+  };
 }
 
 export function createOpenShellSandboxBackendManager(params: {
@@ -210,33 +213,6 @@ export function createOpenShellSandboxBackendManager(params: {
       }
     },
   };
-}
-
-async function createOpenShellSandboxBackend(params: {
-  pluginConfig: ResolvedOpenShellPluginConfig;
-  createParams: CreateSandboxBackendParams;
-}): Promise<OpenShellSandboxBackend> {
-  if ((params.createParams.cfg.docker.binds?.length ?? 0) > 0) {
-    throw new Error("OpenShell sandbox backend does not support sandbox.docker.binds.");
-  }
-
-  const resolvedSandboxName = resolveOpenShellSandboxName({
-    scopeKey: params.createParams.scopeKey,
-    registeredRuntimeIds: params.createParams.registeredRuntimeIds,
-  });
-  const sandboxName = resolvedSandboxName.sandboxName;
-  const execContext: OpenShellExecContext = {
-    config: params.pluginConfig,
-    sandboxName,
-  };
-  const impl = new OpenShellSandboxBackendImpl({
-    createParams: params.createParams,
-    execContext,
-    legacyRuntimeAdopted: resolvedSandboxName.legacyRuntimeAdopted,
-    remoteWorkspaceDir: params.pluginConfig.remoteWorkspaceDir,
-    remoteAgentWorkspaceDir: params.pluginConfig.remoteAgentWorkspaceDir,
-  });
-  return impl.asHandle();
 }
 
 class OpenShellSandboxBackendImpl {
@@ -281,7 +257,7 @@ class OpenShellSandboxBackendImpl {
         const pending = await this.prepareExec({ command, workdir, env, usePty });
         return {
           argv: pending.argv,
-          env: buildOpenShellSshExecEnv(),
+          env: sanitizeEnvVars(process.env).allowed,
           stdinMode: "pipe-open",
           finalizeToken: pending.token,
         };
@@ -459,24 +435,7 @@ class OpenShellSandboxBackendImpl {
 
   private resolveWorkdirValidationRoot(workdir: string): string {
     try {
-      const normalized = normalizeRemotePath(workdir);
-      return (
-        resolveOpenShellWorkspaceRoot(
-          [
-            {
-              remote: normalizeRemotePath(this.params.remoteWorkspaceDir),
-              owner: "workspace",
-              value: undefined,
-            },
-            {
-              remote: normalizeRemotePath(this.params.remoteAgentWorkspaceDir),
-              owner: "agent",
-              value: undefined,
-            },
-          ],
-          normalized,
-        )?.remote ?? this.params.remoteWorkspaceDir
-      );
+      return this.resolveRemoteTarget(workdir).root;
     } catch {
       return this.params.remoteWorkspaceDir;
     }
@@ -1023,14 +982,12 @@ class OpenShellSandboxBackendImpl {
                 relativeSkillsPath.split("/").filter(Boolean),
               );
             }
-            if (root.owner === "workspace") {
-              await moveLocalShadowAside({
-                workspaceDir: root.local,
-                tmpDir,
-                relativeParts: MATERIALIZED_SKILLS_REMOTE_PARTS,
-                preservedShadows,
-              });
-            }
+            await moveLocalShadowAside({
+              workspaceDir: root.local,
+              tmpDir,
+              relativeParts: MATERIALIZED_SKILLS_REMOTE_PARTS,
+              preservedShadows,
+            });
             await replaceDirectoryContents({
               sourceDir: tmpDir,
               targetDir: root.local,
@@ -1246,11 +1203,7 @@ async function removeDownloadedWorkspacePath(
     if (!stats) {
       return;
     }
-    if (index === parts.length - 1) {
-      await fs.rm(next, { recursive: true, force: true });
-      return;
-    }
-    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    if (index === parts.length - 1 || stats.isSymbolicLink() || !stats.isDirectory()) {
       await fs.rm(next, { recursive: true, force: true });
       return;
     }

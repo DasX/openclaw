@@ -1,3 +1,4 @@
+import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import type { WorkerExecutionMode, WorkerProfile } from "../../plugins/types.js";
 import type { WorkerEnvironmentNodeTunnel } from "./environment-access.js";
 import type { WorkerInferenceStore } from "./inference-store.js";
@@ -54,8 +55,9 @@ export type WorkerEnvironmentServiceOptions = WorkerProviderLifecycleInputOption
     closeWorkerPortals?: (environmentId: string, ownerEpoch?: number) => Promise<void>;
     stopNodeEnrollmentWaits?: () => void;
     closeNodeBootstrapArtifacts?: () => Promise<void>;
-    stopNodeWorkerBundleTransfers?: () => void;
+    stopNodeWorkerBundleTransfers?: () => void | Promise<void>;
     maintainProviders?: (signal: AbortSignal) => Promise<void>;
+    scheduler: GatewayScheduler;
     reconcileIntervalMs?: number;
     bootstrapCallTimeoutMs?: number;
     workerCredentialTtlMs?: number;

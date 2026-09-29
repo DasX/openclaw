@@ -48,13 +48,7 @@ export function filterMessagingToolMediaDuplicates(params: {
   if (sentMediaUrls.length === 0) {
     return payloads;
   }
-  const sentSet = new Set<string>();
-  for (const sentMediaUrl of sentMediaUrls) {
-    const normalized = normalizeMediaReferenceForComparison(sentMediaUrl);
-    if (normalized) {
-      sentSet.add(normalized);
-    }
-  }
+  const sentSet = new Set(sentMediaUrls.map(normalizeMediaReferenceForComparison).filter(Boolean));
   if (sentSet.size === 0) {
     return payloads;
   }
@@ -74,11 +68,9 @@ export function filterMessagingToolMediaDuplicates(params: {
     const stripSingle = mediaUrl && sentSet.has(normalizeMediaReferenceForComparison(mediaUrl));
 
     let filteredUrls: string[] | undefined;
-    let strippedMediaUrls = false;
     if (mediaUrls?.length) {
       for (const [mediaIndex, url] of mediaUrls.entries()) {
         if (sentSet.has(normalizeMediaReferenceForComparison(url))) {
-          strippedMediaUrls = true;
           if (!filteredUrls) {
             filteredUrls = mediaUrls.slice(0, mediaIndex);
           }
@@ -90,7 +82,7 @@ export function filterMessagingToolMediaDuplicates(params: {
       }
     }
 
-    if (!stripSingle && !strippedMediaUrls) {
+    if (!stripSingle && !filteredUrls) {
       if (nextPayloads) {
         nextPayloads.push(payload);
       }
@@ -98,7 +90,7 @@ export function filterMessagingToolMediaDuplicates(params: {
     }
 
     const nextMediaUrl = stripSingle ? undefined : mediaUrl;
-    const nextMediaUrls = strippedMediaUrls ? filteredUrls : mediaUrls;
+    const nextMediaUrls = filteredUrls ?? mediaUrls;
     const nextPayload = copyReplyPayloadMetadata(payload, {
       ...payload,
       mediaUrl: nextMediaUrl,
@@ -172,23 +164,6 @@ function normalizeRouteTargetForDedupe(params: {
   };
 }
 
-function targetsMatchForDedupe(params: {
-  provider: string;
-  originTarget: string;
-  targetKey: string;
-  targetThreadId?: string;
-}): boolean {
-  const pluginMatch = getChannelPlugin(params.provider)?.outbound?.targetsMatchForReplySuppression;
-  if (pluginMatch) {
-    return pluginMatch({
-      originTarget: params.originTarget,
-      targetKey: params.targetKey,
-      targetThreadId: stringifyRouteThreadId(params.targetThreadId),
-    });
-  }
-  return params.targetKey === params.originTarget;
-}
-
 function resolveOriginThreadIdForPayload(params: {
   provider: string;
   config?: OpenClawConfig;
@@ -224,13 +199,6 @@ function resolveOriginThreadIdForPayload(params: {
     return stringifyRouteThreadId(transport.replyToId);
   }
   return originThreadId;
-}
-
-/** Returns true when message-tool route evidence says source replies should be deduped. */
-export function shouldDedupeMessagingToolRepliesForRoute(
-  params: MessagingToolDedupeRouteParams,
-): boolean {
-  return getMatchingMessagingToolReplyTargets(params).length > 0;
 }
 
 /** Finds message-tool sends that target the same channel/account/thread as the source reply. */
@@ -298,18 +266,17 @@ function getMatchingMessagingToolReplyTargets(
     // collapse distinct threads together and suppress a real reply). Providers
     // that encode the thread/topic inside the target string carry their own
     // matcher and must still run it.
-    const hasPluginThreadMatcher = Boolean(
-      getChannelPlugin(provider)?.outbound?.targetsMatchForReplySuppression,
-    );
-    if (!hasPluginThreadMatcher && (originRoute.threadId != null || targetRoute.threadId != null)) {
+    const match = getChannelPlugin(provider)?.outbound?.targetsMatchForReplySuppression;
+    if (!match && (originRoute.threadId != null || targetRoute.threadId != null)) {
       return false;
     }
-    return targetsMatchForDedupe({
-      provider,
-      originTarget: originRoute.to,
-      targetKey: targetRoute.to,
-      targetThreadId: target.threadId,
-    });
+    return match
+      ? match({
+          originTarget: originRoute.to,
+          targetKey: targetRoute.to,
+          targetThreadId: stringifyRouteThreadId(target.threadId),
+        })
+      : targetRoute.to === originRoute.to;
   });
 }
 

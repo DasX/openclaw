@@ -37,17 +37,16 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToInt
 
-/**
- * CameraX-backed capture service used by gateway camera commands.
- */
 internal class CameraClipSession(
   private val unbind: () -> Unit,
   private val deleteTemporaryFile: (File) -> Unit,
@@ -106,11 +105,6 @@ class CameraCaptureManager(
   private val cameraEnabled: () -> Boolean = { true },
   private val defaultFacing: () -> String = { "front" },
 ) {
-  /** Base64 JSON response for camera.snap after resize and JPEG budget enforcement. */
-  data class Payload(
-    val payloadJson: String,
-  )
-
   /** Temporary MP4 response for camera.clip before CameraHandler validates invoke size. */
   data class FilePayload(
     val file: File,
@@ -119,6 +113,7 @@ class CameraCaptureManager(
   )
 
   /** Camera device metadata exposed through camera.list. */
+  @Serializable
   data class CameraDeviceInfo(
     val id: String,
     val name: String,
@@ -128,9 +123,19 @@ class CameraCaptureManager(
 
   @Volatile private var lifecycleOwner: LifecycleOwner? = null
 
-  private companion object {
+  companion object {
     // ProcessCameraProvider is process-wide, including during runtime replacement.
-    val captureMutex = Mutex()
+    private val captureMutex = Mutex()
+
+    /** Interactive camera screens share exclusion without inheriting remote-node admission. */
+    internal fun tryAcquireCamera(): AutoCloseable? {
+      val owner = Any()
+      if (!captureMutex.tryLock(owner)) return null
+      val released = AtomicBoolean(false)
+      return AutoCloseable {
+        if (released.compareAndSet(false, true)) captureMutex.unlock(owner)
+      }
+    }
   }
 
   /** Supplies the foreground Activity lifecycle required by CameraX use-case binding. */
@@ -218,12 +223,12 @@ class CameraCaptureManager(
   }
 
   /** Captures one still image and returns a gateway-sized JPEG payload. */
-  suspend fun snap(paramsJson: String?): Payload =
+  suspend fun snap(paramsJson: String?): String =
     withCapture { owner, ensureCurrent ->
       val params = parseJsonParamsObject(paramsJson)
       val facing = resolveCameraFacing(parseFacing(params), defaultFacing())
-      val quality = (parseQuality(params) ?: 0.95).coerceIn(0.1, 1.0)
-      val maxWidth = parseMaxWidth(params) ?: 1600
+      val quality = (parseJsonDouble(params, "quality") ?: 0.95).coerceIn(0.1, 1.0)
+      val maxWidth = parseJsonInt(params, "maxWidth")?.takeIf { it > 0 } ?: 1600
       val deviceId = parseDeviceId(params)
 
       val provider = context.cameraProvider()
@@ -237,7 +242,7 @@ class CameraCaptureManager(
           // A failed bind can still attach a use case; release only this request's capture.
           provider.bindToLifecycle(owner, selector, capture)
           ensureCurrent()
-          capture.takeJpegWithExif(context.mainExecutor(), context.cacheDir)
+          capture.takeJpegWithExif(ContextCompat.getMainExecutor(context), context.cacheDir)
         } finally {
           // The JPEG bytes are self-contained; release CameraX before decoding and recompressing them.
           provider.unbind(capture)
@@ -293,9 +298,7 @@ class CameraCaptureManager(
                 },
               )
             val base64 = Base64.encodeToString(result.bytes, Base64.NO_WRAP)
-            Payload(
-              """{"format":"jpg","base64":"$base64","width":${result.width},"height":${result.height}}""",
-            )
+            """{"format":"jpg","base64":"$base64","width":${result.width},"height":${result.height}}"""
           } finally {
             scaled.recycle()
           }
@@ -310,11 +313,11 @@ class CameraCaptureManager(
     paramsJson: String?,
     onFileReady: (File) -> Unit,
   ): FilePayload =
-    withCapture(includeAudio = parseIncludeAudio(parseJsonParamsObject(paramsJson)) ?: true) { owner, ensureCurrent ->
+    withCapture(includeAudio = parseJsonBooleanFlag(parseJsonParamsObject(paramsJson), "includeAudio") ?: true) { owner, ensureCurrent ->
       val params = parseJsonParamsObject(paramsJson)
       val facing = resolveCameraFacing(parseFacing(params), defaultFacing())
-      val durationMs = (parseDurationMs(params) ?: 3_000).coerceIn(200, 60_000)
-      val includeAudio = parseIncludeAudio(params) ?: true
+      val durationMs = (parseJsonInt(params, "durationMs") ?: 3_000).coerceIn(200, 60_000)
+      val includeAudio = parseJsonBooleanFlag(params, "includeAudio") ?: true
       val deviceId = parseDeviceId(params)
 
       val provider = context.cameraProvider()
@@ -341,7 +344,7 @@ class CameraCaptureManager(
         val surfaceTexture = android.graphics.SurfaceTexture(0)
         surfaceTexture.setDefaultBufferSize(640, 480)
         val surface = android.view.Surface(surfaceTexture)
-        request.provideSurface(surface, context.mainExecutor()) {
+        request.provideSurface(surface, ContextCompat.getMainExecutor(context)) {
           surface.release()
           surfaceTexture.release()
         }
@@ -368,7 +371,7 @@ class CameraCaptureManager(
             .prepareRecording(context, outputOptions)
             .apply {
               if (includeAudio) withAudioEnabled()
-            }.start(context.mainExecutor()) { event ->
+            }.start(ContextCompat.getMainExecutor(context)) { event ->
               if (event is VideoRecordEvent.Finalize) {
                 finalized.complete(event)
               }
@@ -405,22 +408,10 @@ class CameraCaptureManager(
     }
   }
 
-  private fun parseQuality(params: JsonObject?): Double? = parseJsonDouble(params, "quality")
-
-  private fun parseMaxWidth(params: JsonObject?): Int? =
-    parseJsonInt(params, "maxWidth")
-      ?.takeIf { it > 0 }
-
-  private fun parseDurationMs(params: JsonObject?): Int? = parseJsonInt(params, "durationMs")
-
   private fun parseDeviceId(params: JsonObject?): String? =
     parseJsonString(params, "deviceId")
       ?.trim()
       ?.takeIf { it.isNotEmpty() }
-
-  private fun parseIncludeAudio(params: JsonObject?): Boolean? = parseJsonBooleanFlag(params, "includeAudio")
-
-  private fun Context.mainExecutor(): Executor = ContextCompat.getMainExecutor(this)
 
   private fun resolveCameraSelector(
     provider: ProcessCameraProvider,

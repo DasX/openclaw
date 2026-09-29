@@ -18,7 +18,7 @@ import {
 } from "../../infra/channel-approval-auth.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveChannelAccountId } from "./channel-context.js";
-import { requireGatewayClientScope } from "./command-gates.js";
+import { commandReply, requireGatewayClientScope } from "./command-gates.js";
 import type { CommandHandler } from "./commands-types.js";
 
 const COMMAND_REGEX = /^\/?approve(?:\s|$)/i;
@@ -116,7 +116,7 @@ export async function handleApproveCommandFromContext(
     return null;
   }
   if (!parsed.ok) {
-    return { shouldContinue: false, reply: { text: parsed.error } };
+    return commandReply(parsed.error);
   }
 
   const effectiveAccountId = resolveChannelAccountId({
@@ -124,6 +124,16 @@ export async function handleApproveCommandFromContext(
     ctx: params.ctx,
     command: params.command,
   });
+  const approvalCapability = resolveChannelApprovalCapability(
+    getChannelPlugin(params.command.channel),
+  );
+  const pluginReviewerSenderId =
+    approvalCapability?.resolveReviewerSenderId?.({
+      cfg: params.cfg,
+      accountId: effectiveAccountId,
+      senderId: params.command.senderId,
+      spaceId: params.ctx.GroupSpace,
+    }) ?? params.command.senderId;
   // Probe order: legacy exec/plugin resolution reports not-found for other
   // owners; system-agent resolution reads the owner first (see below).
   const approvalKinds = ["exec", "plugin", "system-agent"] as const;
@@ -132,7 +142,7 @@ export async function handleApproveCommandFromContext(
       cfg: params.cfg,
       channel: params.command.channel,
       accountId: effectiveAccountId,
-      senderId: params.command.senderId,
+      senderId: kind === "plugin" ? pluginReviewerSenderId : params.command.senderId,
       kind,
     });
   const authorizations: Record<(typeof approvalKinds)[number], ApprovalCommandAuthorization> = {
@@ -159,9 +169,6 @@ export async function handleApproveCommandFromContext(
     return missingScope;
   }
 
-  const approvalCapability = resolveChannelApprovalCapability(
-    getChannelPlugin(params.command.channel),
-  );
   // Channels with reviewer custody let the Gateway judge the actor; elsewhere an
   // OpenClaw change needs the current configured owner, like the tool that proposed it.
   const systemAgentNeedsOwner = !approvalCapability?.authorizeActorAction;
@@ -182,7 +189,7 @@ export async function handleApproveCommandFromContext(
       (behavior) => behavior?.kind === "reply",
     );
     if (replyBehavior?.kind === "reply") {
-      return { shouldContinue: false, reply: { text: replyBehavior.text } };
+      return commandReply(replyBehavior.text);
     }
     if (Array.from(commandBehaviors.values()).some((behavior) => behavior?.kind === "ignore")) {
       return { shouldContinue: false };
@@ -201,7 +208,7 @@ export async function handleApproveCommandFromContext(
         ? {
             channel: params.command.channel,
             accountId: effectiveAccountId,
-            senderId: params.command.senderId,
+            senderId: approvalKind === "plugin" ? pluginReviewerSenderId : params.command.senderId,
           }
         : {};
     const clientDisplayName = `Chat approval (${resolvedBy})`;
@@ -247,10 +254,9 @@ export async function handleApproveCommandFromContext(
     systemAgentNeedsOwner &&
     !params.command.senderIsOwner &&
     authorizations["system-agent"].authorized;
-  const ownerOnlyResult = {
-    shouldContinue: false,
-    reply: { text: "❌ Only the owner can approve OpenClaw changes in this chat." },
-  };
+  const ownerOnlyResult = commandReply(
+    "❌ Only the owner can approve OpenClaw changes in this chat.",
+  );
   const methods = approvalKinds.filter((approvalKind) => {
     if (approvalKind === "system-agent" && systemAgentRefusedForOwner) {
       return false;
@@ -266,14 +272,10 @@ export async function handleApproveCommandFromContext(
     if (systemAgentRefusedForOwner) {
       return ownerOnlyResult;
     }
-    return {
-      shouldContinue: false,
-      reply: {
-        text:
-          Object.values(authorizations).find((authorization) => authorization.reason)?.reason ??
-          "❌ You are not authorized to approve this request.",
-      },
-    };
+    return commandReply(
+      Object.values(authorizations).find((authorization) => authorization.reason)?.reason ??
+        "❌ You are not authorized to approve this request.",
+    );
   }
 
   for (const [index, method] of methods.entries()) {
@@ -281,14 +283,10 @@ export async function handleApproveCommandFromContext(
       await callApprovalMethod(method);
       break;
     } catch (error) {
-      const isLastMethod = index === methods.length - 1;
-      if (!isApprovalNotFoundError(error)) {
-        return {
-          shouldContinue: false,
-          reply: { text: `❌ Failed to submit approval: ${formatErrorMessage(error)}` },
-        };
-      }
-      if (isLastMethod) {
+      if (isApprovalNotFoundError(error)) {
+        if (index < methods.length - 1) {
+          continue;
+        }
         const blocked = blockedCommandResult();
         if (blocked) {
           return blocked;
@@ -297,19 +295,12 @@ export async function handleApproveCommandFromContext(
         if (systemAgentRefusedForOwner) {
           return ownerOnlyResult;
         }
-        return {
-          shouldContinue: false,
-          reply: { text: `❌ Failed to submit approval: ${formatErrorMessage(error)}` },
-        };
       }
+      return commandReply(`❌ Failed to submit approval: ${formatErrorMessage(error)}`);
     }
   }
 
-  return {
-    shouldContinue: false,
-    reply: { text: `✅ Approval ${parsed.decision} submitted for ${parsed.id}.` },
-  };
+  return commandReply(`✅ Approval ${parsed.decision} submitted for ${parsed.id}.`);
 }
 
-export const handleApproveCommand: CommandHandler = async (params, allowTextCommands) =>
-  await handleApproveCommandFromContext(params, allowTextCommands);
+export const handleApproveCommand: CommandHandler = handleApproveCommandFromContext;

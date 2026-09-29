@@ -30,7 +30,6 @@ import {
   patchSessionEntryCore as patchAccessorSessionEntry,
   readSessionUpdatedAtCore as readAccessorSessionUpdatedAt,
   readTranscriptStatsSync as readAccessorTranscriptStatsSync,
-  resolveTranscriptSessionKeyBySessionId as resolveAccessorTranscriptSessionKeyBySessionId,
   updateSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
@@ -451,14 +450,7 @@ export const readTranscriptStatsSync: (params: {
 }) => { eventCount: number; maxSeq: number; sizeBytes: number } = readAccessorTranscriptStatsSync;
 
 /** Resolves the persisted session key for one SQLite transcript identity. */
-export function resolveTranscriptSessionKeyBySessionId(params: {
-  agentId?: string;
-  env?: NodeJS.ProcessEnv;
-  sessionId: string;
-  storePath?: string;
-}): string | undefined {
-  return resolveAccessorTranscriptSessionKeyBySessionId(params);
-}
+export { resolveTranscriptSessionKeyBySessionId } from "../config/sessions/session-accessor.js";
 
 /** Patches one session entry by agent/session identity. */
 export async function patchSessionEntry(
@@ -557,6 +549,7 @@ export async function deleteSessionEntry(params: DeleteSessionEntryParams): Prom
     });
   const result = await deleteAccessorSessionEntryLifecycle({
     ...(agentId !== undefined ? { agentId } : {}),
+    ...(params.env !== undefined ? { env: params.env } : {}),
     archiveTranscript: params.archiveTranscript ?? false,
     ...(params.expectedSessionId !== undefined
       ? { expectedSessionId: params.expectedSessionId }

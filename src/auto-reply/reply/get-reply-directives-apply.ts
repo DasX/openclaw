@@ -22,7 +22,7 @@ import { isDirectiveOnly } from "./directive-handling.directive-only.js";
 import { resolveModelRuntimeDirective } from "./directive-handling.model-runtime.js";
 import { resolveModelSelectionFromDirective } from "./directive-handling.model-selection.js";
 import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
-import type { InlineDirectives } from "./directive-handling.parse.js";
+import { hasSessionDirectives, type InlineDirectives } from "./directive-handling.parse.js";
 import { formatModelSelectionScopeAck } from "./directive-handling.shared.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { resolveContextTokens } from "./model-selection-context.js";
@@ -45,14 +45,7 @@ const directivePersistLoader = createLazyImportLoader(
 function hasOnlyModelDirective(directives: InlineDirectives): boolean {
   return (
     directives.hasModelDirective &&
-    !directives.hasThinkDirective &&
-    !directives.hasFastDirective &&
-    !directives.hasVerboseDirective &&
-    !directives.hasTraceDirective &&
-    !directives.hasReasoningDirective &&
-    !directives.hasElevatedDirective &&
-    !directives.hasExecDirective &&
-    !directives.hasQueueDirective &&
+    !hasSessionDirectives(directives, "model") &&
     !directives.hasStatusDirective
   );
 }
@@ -99,11 +92,7 @@ type ApplyDirectiveResult =
       contextTokens: number;
       directiveAck?: ReplyPayload;
       perMessageQueueMode?: InlineDirectives["queueMode"];
-      perMessageQueueOptions?: {
-        debounceMs?: number;
-        cap?: number;
-        dropPolicy?: InlineDirectives["dropPolicy"];
-      };
+      perMessageQueueOptions?: Pick<InlineDirectives, "debounceMs" | "cap" | "dropPolicy">;
     };
 
 const directiveRejection = (
@@ -132,7 +121,6 @@ export async function applyInlineDirectiveOverrides(params: {
   allowTextCommands: boolean;
   command: CommandContext;
   directives: InlineDirectives;
-  messageProviderKey: string;
   elevatedEnabled: boolean;
   elevatedAllowed: boolean;
   elevatedFailures: Array<{ gate: string; key: string }>;
@@ -166,7 +154,6 @@ export async function applyInlineDirectiveOverrides(params: {
     isGroup,
     allowTextCommands,
     command,
-    messageProviderKey,
     elevatedEnabled,
     elevatedAllowed,
     elevatedFailures,
@@ -190,7 +177,6 @@ export async function applyInlineDirectiveOverrides(params: {
     operatorAuthority: modelState.operatorAuthority,
     allowedModelKeys: modelState.allowedModelKeys,
     allowedModelCatalog: modelState.allowedModelCatalog,
-    policyAliasIndex: modelState.policyAliasIndex,
     resetModelOverride: modelState.resetModelOverride,
   };
   const createDirectiveHandlingBase = () => ({
@@ -204,7 +190,6 @@ export async function applyInlineDirectiveOverrides(params: {
     elevatedEnabled,
     elevatedAllowed,
     elevatedFailures,
-    messageProviderKey,
     defaultProvider,
     defaultModel,
     aliasIndex,
@@ -291,8 +276,6 @@ export async function applyInlineDirectiveOverrides(params: {
       modelPolicy: modelState.modelPolicy,
       operatorAuthority: modelState.operatorAuthority,
       allowedModelKeys: modelState.allowedModelKeys,
-      allowedModelCatalog: modelState.allowedModelCatalog,
-      provider,
       agentId,
       requesterProfileId,
     });
@@ -308,17 +291,7 @@ export async function applyInlineDirectiveOverrides(params: {
     }
   }
 
-  const hasAnyDirective =
-    directives.hasThinkDirective ||
-    directives.hasFastDirective ||
-    directives.hasVerboseDirective ||
-    directives.hasTraceDirective ||
-    directives.hasReasoningDirective ||
-    directives.hasElevatedDirective ||
-    directives.hasExecDirective ||
-    directives.hasModelDirective ||
-    directives.hasQueueDirective ||
-    directives.hasStatusDirective;
+  const hasAnyDirective = hasSessionDirectives(directives) || directives.hasStatusDirective;
 
   if (!hasAnyDirective && !modelState.resetModelOverride && !modelState.resetModelOverrideReason) {
     return {

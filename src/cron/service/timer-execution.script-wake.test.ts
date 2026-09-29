@@ -13,6 +13,7 @@ import {
   enqueueSystemEvent as queueSystemEvent,
   peekSystemEventEntries,
 } from "../../infra/system-events.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { CronJob } from "../types.js";
 import { createCronServiceState } from "./state.js";
 import { executeJobCore } from "./timer-execution.js";
@@ -71,7 +72,6 @@ describe("cron script immediate wake", () => {
             reason: options.reason,
           }),
           canRelayToUser: true,
-          startedAt: now,
           scheduledTasks: [],
           useHeartbeatResponseTool: false,
         });
@@ -87,6 +87,7 @@ describe("cron script immediate wake", () => {
 
       try {
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/cron-script-wake-state.sqlite",
           cronEnabled: true,
           cronConfig: { triggers: { enabled: true } },

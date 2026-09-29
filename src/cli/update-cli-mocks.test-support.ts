@@ -65,6 +65,10 @@ const sourceRuntimeCompletion = vi.hoisted(() =>
   vi.fn<typeof import("./update-cli/update-command-runtime.js").completeSourceUpdateRuntime>(),
 );
 const pluginAvailabilityPreflight = vi.hoisted(() => vi.fn());
+vi.mock("../daemon/service-process-membership.js", () => ({
+  inspectServiceProcessMembershipSync: vi.fn(() => "outside"),
+}));
+
 vi.mock("./update-cli/update-command-plugin-preflight.js", () => ({
   preflightConfiguredNpmPluginTargets: pluginAvailabilityPreflight,
 }));
@@ -77,7 +81,7 @@ const mockedRunDaemonInstall = vi.fn();
 const serviceReadCommand = vi.fn();
 const serviceReadRuntime = vi.fn();
 const serviceFixtureState = { absentServicePort: 0 };
-const mockGetSelfAndAncestorPidsSync = vi.fn(() => new Set<number>([process.pid]));
+const mockGetSelfAndAncestorPidsSync = vi.fn(() => new Set<number>([process.pid, 1]));
 const terminateStaleGatewayPids = vi.fn();
 const inspectPortUsage = vi.fn();
 const probePortUsage = vi.fn();
@@ -160,7 +164,8 @@ vi.mock("../infra/update-candidate-canary.js", () => ({
 }));
 // Runtime retention and publication have real owner/process coverage; CLI
 // orchestration must not copy or rebuild the checkout behind its simulated updater.
-vi.mock("./update-cli/update-command-runtime.js", () => ({
+vi.mock("./update-cli/update-command-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-cli/update-command-runtime.js")>()),
   completeSourceUpdateRuntime: sourceRuntimeCompletion,
 }));
 vi.mock("../infra/update-retained-runtime.js", async (importOriginal) => {
@@ -216,10 +221,15 @@ vi.mock("../state/openclaw-state-ownership.js", async (importOriginal) => ({
   assertOpenClawStateWriteAllowedAtPath: vi.fn(async () => undefined),
 }));
 
-vi.mock("../infra/openclaw-root.js", () => ({
-  resolveOpenClawPackageRoot: vi.fn(),
-  resolveOpenClawPackageRootSync: vi.fn(() => process.cwd()),
-}));
+vi.mock("../infra/openclaw-root.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/openclaw-root.js")>();
+  return {
+    resolveOpenClawPackageRoot: vi.fn(),
+    resolveOpenClawPackageRootSync: vi.fn((options) =>
+      options.moduleUrl ? actual.resolveOpenClawPackageRootSync(options) : process.cwd(),
+    ),
+  };
+});
 
 vi.mock("../daemon/gateway-entrypoint.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../daemon/gateway-entrypoint.js")>();
@@ -280,6 +290,18 @@ vi.mock("../config/config.js", () => {
     mutateConfigFileWithRetry: vi.fn(),
     replaceConfigFile: vi.fn(),
     resolveGatewayPort: vi.fn(() => 18789),
+  };
+});
+
+vi.mock("../config/io.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/io.js")>();
+  const mocked = await import("../config/config.js");
+  return {
+    ...actual,
+    createConfigIO: (options: Parameters<typeof actual.createConfigIO>[0] = {}) => ({
+      ...actual.createConfigIO(options),
+      readConfigFileSnapshotForWrite: mocked.createConfigIO(options).readConfigFileSnapshotForWrite,
+    }),
   };
 });
 
@@ -354,6 +376,10 @@ vi.mock("../infra/runtime-guard.js", async (importOriginal) => ({
 
 vi.mock("../infra/restart-stale-pids.js", () => ({
   getSelfAndAncestorPidsSync: () => mockGetSelfAndAncestorPidsSync(),
+  inspectSelfAndAncestorPidsSync: () => {
+    const pids = mockGetSelfAndAncestorPidsSync();
+    return { pids, complete: pids.has(1) };
+  },
   terminateStaleGatewayPids: (...args: unknown[]) => terminateStaleGatewayPids(...args),
 }));
 
@@ -364,10 +390,31 @@ vi.mock("../infra/update-managed-service-handoff-cleanup.js", async (importOrigi
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const { SQLITE_READONLY_CHILD_ARG } = await import("../infra/runtime-process-entrypoints.js");
+  const { resolveRuntimeProcessEntrypointUrl } = await import("../infra/runtime-process-url.js");
+  const { resolveRuntimeWorkerArgv } = await import("../infra/runtime-worker-url.js");
   return {
     ...actual,
-    execFile,
-    spawn,
+    // SQLite snapshots and their native broker need real IPC; updater/service children stay simulated.
+    execFile: (...args: Parameters<typeof actual.execFile>) =>
+      args[0] === process.execPath &&
+      Array.isArray(args[1]) &&
+      args[1].includes(SQLITE_READONLY_CHILD_ARG)
+        ? actual.execFile(...args)
+        : execFile(...args),
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      const brokerArgv = resolveRuntimeWorkerArgv(
+        resolveRuntimeProcessEntrypointUrl("spawnBroker"),
+      );
+      const childArgs = args[1];
+      return args[0] === process.execPath &&
+        Array.isArray(childArgs) &&
+        (childArgs.includes(SQLITE_READONLY_CHILD_ARG) ||
+          (childArgs.length === brokerArgv.length &&
+            childArgs.every((arg, index) => arg === brokerArgv[index])))
+        ? actual.spawn(...args)
+        : spawn(...args);
+    },
   };
 });
 
@@ -375,8 +422,6 @@ vi.mock("../process/exec.js", async (importOriginal) => {
   const { createUpdateCommandTransportFixture, createUpdateUtf8CommandTransportFixture } =
     await import("./update-cli/update-command-transport.test-support.js");
   const actual = await importOriginal<typeof import("../process/exec.js")>();
-  // A process start time stays fixed while post-core work awaits I/O.
-  const parentStartedAt = new Date(Date.now() - 1000).toString();
   return {
     isPlainCommandExitFailure: actual.isPlainCommandExitFailure,
     // The real snapshot worker has separate WAL/source-inode boundary coverage.
@@ -414,7 +459,7 @@ vi.mock("../process/exec.js", async (importOriginal) => {
         actual.runUtf8CommandWithTimeout,
       ),
     ),
-    runExec: vi.fn(async () => ({ stdout: parentStartedAt, stderr: "" })),
+    runExec: vi.fn(async () => ({ stdout: "", stderr: "" })),
   };
 });
 

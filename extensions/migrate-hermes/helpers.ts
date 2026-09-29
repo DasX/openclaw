@@ -1,4 +1,3 @@
-// Migrate Hermes helper module supports helpers behavior.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -44,21 +43,6 @@ export function parseEnv(content: string | undefined): Record<string, string> {
 
 export function parseHermesConfig(content: string | undefined): Record<string, unknown> {
   return content ? asNonArrayRecord(parseYaml(content)) : {};
-}
-
-export function childRecord(
-  root: Record<string, unknown> | undefined,
-  key: string,
-): Record<string, unknown> {
-  const value = root?.[key];
-  return asNonArrayRecord(value);
-}
-
-export function readStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
 }
 
 export async function appendItem(item: MigrationItem): Promise<MigrationItem> {

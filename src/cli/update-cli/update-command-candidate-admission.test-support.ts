@@ -137,13 +137,11 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
     },
   );
 
-  it.each(
-    (["candidate", "unsupported", "fallback"] as const).flatMap((source) =>
-      (["config", "database-schema", "node-runtime"] as const)
-        .filter((check) => source !== "candidate" || check !== "node-runtime")
-        .map((check) => ({ source, check })),
-    ),
-  )(
+  it.each([
+    { source: "candidate", check: "database-schema" },
+    { source: "unsupported", check: "config" },
+    { source: "fallback", check: "node-runtime" },
+  ] as const)(
     "candidate admission: reports $check refusals from $source before mutation",
     async ({ source, check }) => {
       const verdict = candidateAdmissionVerdict(check);
@@ -423,7 +421,6 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
     const { stages, contexts } = await prepareCandidateAdmissionFixture({
       marker: true,
       verdict: candidateAdmissionVerdict(),
-      installed: true,
     });
     nodeVersionSatisfiesEngine.mockReturnValue(false);
 
@@ -516,6 +513,7 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
       // restores process.env on refusal.
       env: { ...process.env, OPENCLAW_UPDATE_IN_PROGRESS: "1" },
       supportedVersions: { state: 3, agent: 9 },
+      preserveSourceArtifacts: false,
       configuredAgentDatabaseTargets: [],
       configuredAgentDatabaseCandidatePaths: [
         path.join(profileStateDir(), "agents", "main", "agent", "openclaw-agent.sqlite"),

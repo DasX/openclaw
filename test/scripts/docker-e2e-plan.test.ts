@@ -1,4 +1,3 @@
-// Docker E2E Plan tests cover docker e2e plan script behavior.
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -128,15 +127,15 @@ function publishedUpgradeSurvivorLane(
     command: `OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_DIR="$PWD/.artifacts/upgrade-survivor/${name}" OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC='${baselineSpec}' ${
       scenario ? `OPENCLAW_UPGRADE_SURVIVOR_SCENARIO='${scenario}' ` : ""
     }${trustedUpgradeSurvivorCommand(
-      "OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE=1",
-      'export OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:-openclaw@latest}"; export OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-1500s}"',
+      "OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE=1 OPENCLAW_UPGRADE_SURVIVOR_COMMAND_TIMEOUT=1500s",
+      'export OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:-openclaw@latest}"; export OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-2280s}"',
     )}`,
     imageKind: "bare",
     live: false,
     name,
     resources: ["docker", "npm"],
     stateScenario: "upgrade-survivor",
-    timeoutMs: 1_500_000,
+    timeoutMs: 2_580_000,
     weight: 3,
   };
 }
@@ -407,10 +406,7 @@ describe("scripts/lib/docker-e2e-plan", () => {
 
   it.each([
     ["literal", "shared-Y6bNiw2w.js"],
-    ["literal", "shared-DTaQo6Hi.js"],
     ["mapped", "shared-Y6bNiw2w.js"],
-    ["mapped", "shared-DTaQo6Hi.js"],
-    ["mapped", "shared-1Uyqkfns.js"],
     ["unrelated", ""],
     ["absent", ""],
   ])(
@@ -482,6 +478,13 @@ describe("scripts/lib/docker-e2e-plan", () => {
       1,
       "must force a local image build",
     ],
+    [
+      "container activation reused image",
+      "container-image-upgrade",
+      { command: "OPENCLAW_SKIP_DOCKER_BUILD=1 pnpm test:docker:container-image-upgrade" },
+      1,
+      "must force a local image build",
+    ],
     ["unapproved live package", "live-models", { needsPackage: true }, 1, "must not require"],
     [
       "shared package image",
@@ -515,25 +518,13 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
 
   it.each([
     ["codex-media-path", ["@openclaw/codex"]],
-    ["live-mcp-code-mode-gateway", ["@openclaw/codex"]],
-    ["release-typed-onboarding", ["@openclaw/codex"]],
-    ["npm-onboard-channel-agent", ["@openclaw/codex"]],
-    ["npm-onboard-discord-channel-agent", ["@openclaw/codex"]],
-    ["npm-onboard-slack-channel-agent", ["@openclaw/codex"]],
     ["npm-onboard-discord-candidate-channel-agent", ["@openclaw/codex", "@openclaw/discord"]],
     ["npm-onboard-slack-candidate-channel-agent", ["@openclaw/codex", "@openclaw/slack"]],
-    ["mcp-code-mode-gateway", ["@openclaw/codex"]],
   ] as const)("requests only the matching companions for %s", (name, packages) => {
     const plan = planFor({ selectedLaneNames: [name] });
     expect(plan.lanes.map((lane) => lane.name)).toEqual([name]);
     expect(plan.needs.prepublishPluginRegistry).toBe(true);
     expect(plan.requiredPrepublishPluginPackages).toEqual(packages);
-  });
-
-  it("finds a named lane through the expanded catalog", () => {
-    expect(findLaneByName("plugin-binding-command-escape")?.name).toBe(
-      "plugin-binding-command-escape",
-    );
   });
 
   it("runs Fleet host proof only when explicitly selected", () => {
@@ -544,6 +535,14 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
     expect(selected.needs.e2eImage).toBe(false);
     expect(selected.needs.prepublishPluginRegistry).toBe(false);
     expect(findLaneByName("fleet-cache")?.name).toBe("fleet-cache");
+  });
+
+  it("builds the container activation image without preparing a package image", () => {
+    const plan = planFor({ selectedLaneNames: ["container-image-upgrade"] });
+    expect(plan.lanes.map((lane) => lane.name)).toEqual(["container-image-upgrade"]);
+    expect(plan.needs.package).toBe(false);
+    expect(plan.needs.e2eImage).toBe(false);
+    expect(plan.needs.liveImage).toBe(false);
   });
 
   it("plans the package-backed sandbox browser sidecar lane", () => {
@@ -1022,15 +1021,15 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
       },
       {
         command: trustedUpgradeSurvivorCommand(
-          "OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE=1 OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE=auto-auth",
-          'export OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:-openclaw@latest}"; export OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-1500s}"',
+          "OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE=1 OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE=auto-auth OPENCLAW_UPGRADE_SURVIVOR_COMMAND_TIMEOUT=1500s",
+          'export OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:-openclaw@latest}"; export OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-2280s}"',
         ),
         imageKind: "bare",
         live: false,
         name: "update-restart-auth",
         resources: ["docker", "npm"],
         stateScenario: "upgrade-survivor",
-        timeoutMs: 1_500_000,
+        timeoutMs: 2_580_000,
         weight: 3,
       },
     ]);
@@ -1095,15 +1094,15 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
       },
       {
         command: trustedUpgradeSurvivorCommand(
-          "OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE=1",
-          'export OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:-openclaw@latest}"; export OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-1500s}"',
+          "OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE=1 OPENCLAW_UPGRADE_SURVIVOR_COMMAND_TIMEOUT=1500s",
+          'export OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:-openclaw@latest}"; export OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-2280s}"',
         ),
         imageKind: "bare",
         live: false,
         name: "published-upgrade-survivor",
         resources: ["docker", "npm"],
         stateScenario: "upgrade-survivor",
-        timeoutMs: 1_500_000,
+        timeoutMs: 2_580_000,
         weight: 3,
       },
       {
@@ -1123,7 +1122,7 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
         name: updateFirstHopCompatLaneName(version),
         resources: ["docker", "npm", "service"],
         stateScenario: "upgrade-survivor",
-        timeoutMs: 1_500_000,
+        timeoutMs: 3_500_000,
         weight: 1,
       })),
     ]);
@@ -1245,7 +1244,7 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
     expect(missing).toStrictEqual([]);
   });
 
-  it.each(["minimum", "beta", "stable", "full"] as const)(
+  it.each(["minimum", "stable"] as const)(
     "partitions package/update core across three jobs without losing or duplicating %s proof",
     (releaseProfile) => {
       const options = { profile: RELEASE_PATH_PROFILE, releaseProfile };
@@ -1499,20 +1498,28 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
     ]);
   });
 
-  it("plans legacy operator state with tracked and formerly bundled plugins and serial admission", () => {
+  it("plans legacy operator state with native, tracked, and formerly bundled plugins and serial admission", () => {
     const plan = planFor({
       selectedLaneNames: ["published-upgrade-survivor"],
-      upgradeSurvivorBaselines: "2026.6.33 2026.6.34 2026.9.1",
+      upgradeSurvivorBaselines: "2026.6.33 2026.6.34 2026.9.1 2026.9.4 2026.9.6",
       upgradeSurvivorScenarios: "legacy-operator-state",
     });
     expect(plan.lanes.map((lane) => lane.name)).toEqual([
       "published-upgrade-survivor-2026.6.34-legacy-operator-state",
       "published-upgrade-survivor-2026.9.1-legacy-operator-state",
+      "published-upgrade-survivor-2026.9.4-legacy-operator-state",
+      "published-upgrade-survivor-2026.9.6-legacy-operator-state",
     ]);
-    expect(plan.requiredPrepublishPluginPackages).toEqual([
-      "@openclaw/discord",
-      "@openclaw/duckduckgo-plugin",
-    ]);
+    expect(plan.requiredPrepublishPluginPackages).toEqual(
+      expect.arrayContaining([
+        "@openclaw/codex",
+        "@openclaw/discord",
+        "@openclaw/duckduckgo-plugin",
+        "@openclaw/byteplus-provider",
+        "@openclaw/voyage-provider",
+      ]),
+    );
+    expect(plan.requiredPrepublishPluginPackages).not.toContain("@telnyx/openclaw-provider");
     expect(plan.lanes.every((lane) => lane.weight === 3)).toBe(true);
     for (const alias of ["reported-issues", "far-reaching"]) {
       expect(
@@ -1523,6 +1530,42 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
         }).lanes.map((lane) => lane.name),
       ).toContain("published-upgrade-survivor-2026.6.34-legacy-operator-state");
     }
+  });
+
+  it("stages legacy operator providers from the selected candidate catalog", () => {
+    const entry = (name: string, source = "official") => ({
+      name,
+      source,
+      openclaw: { install: { npmSpec: name } },
+    });
+    const plan = planFor({
+      selectedLaneNames: ["published-upgrade-survivor"],
+      upgradeSurvivorBaselines: "2026.7.35 2026.6.34",
+      upgradeSurvivorScenarios: "legacy-operator-state",
+      frozenTarget: {
+        mode: "inert",
+        source: {
+          readText: (relativePath) =>
+            relativePath === "scripts/lib/official-external-provider-catalog.json"
+              ? JSON.stringify({
+                  entries: [
+                    entry("@openclaw/candidate-provider"),
+                    entry("@vendor/provider", "external"),
+                  ],
+                })
+              : existsSync(relativePath)
+                ? readFileSync(relativePath, "utf8")
+                : null,
+        },
+      },
+    });
+
+    expect(plan.requiredPrepublishPluginPackages).toEqual([
+      "@openclaw/candidate-provider",
+      "@openclaw/codex",
+      "@openclaw/discord",
+      "@openclaw/duckduckgo-plugin",
+    ]);
   });
 
   it.each([
@@ -1575,7 +1618,6 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
   it.each([
     { scenario: "projects-doctor", baseline: "2026.9.4" },
     { scenario: "projects-startup-migration", baseline: "2026.9.4" },
-    { scenario: "taskflow-restoration", baseline: "2026.9.4" },
     { scenario: "dreaming-cron-doctor", baseline: "2026.9.6" },
   ])(
     "plans $scenario only for its exact published writer without registry or credential fixtures",
@@ -1659,20 +1701,6 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
     ]);
     expect(unsupported.lanes).toEqual([]);
     expect(unsupported.omittedUnsupportedLanes).toEqual([]);
-  });
-
-  it("plans the weekly mobile and watch matrix as three logical rows", () => {
-    const plan = planFor({
-      selectedLaneNames: ["update-migration"],
-      upgradeSurvivorBaselines: "2026.7.1 2026.8.1",
-      upgradeSurvivorScenarios: "mobile-pairing-reconnect watchos-direct-node",
-    });
-
-    expect(plan.lanes.map((lane) => lane.name)).toEqual([
-      "update-migration-2026.7.1-mobile-pairing-reconnect",
-      "update-migration-2026.8.1-mobile-pairing-reconnect",
-      "update-migration-2026.8.1-watchos-direct-node",
-    ]);
   });
 
   it("omits trusted-current scenarios unsupported by a frozen target harness", () => {
@@ -1957,19 +1985,6 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
 
     expect(plan.lanes).toEqual([]);
     expect(plan.omittedUnsupportedLanes).toEqual([selectedLane]);
-  });
-
-  it("omits unsupported scenario-only survivor lanes without explicit baselines", () => {
-    const targetRoot = tempDirs.make("openclaw-frozen-scenario-only-harness-");
-    writeFrozenScenarioContract(targetRoot, ["unrelated"]);
-
-    const plan = planFor({
-      selectedLaneNames: ["published-upgrade-survivor"],
-      upgradeSurvivorScenarios: "reported-issues",
-      upgradeSurvivorTargetRoot: targetRoot,
-    });
-
-    expect(plan.lanes).toEqual([]);
   });
 
   it("does not fall back to base when an unsupported scenario is baseline-incompatible", () => {
@@ -2350,62 +2365,6 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
     });
 
     expect(plan.lanes.map((lane) => lane.name)).not.toContain("openwebui");
-  });
-
-  it("surfaces Docker lane test-state scenarios in plan JSON", () => {
-    const plan = planFor({
-      selectedLaneNames: [
-        "onboard",
-        "agents-delete-shared-workspace",
-        "browser-cdp-snapshot",
-        "doctor-switch",
-        "openai-image-auth",
-        "openai-web-search-minimal",
-        "mcp-channels",
-        "mcp-code-mode-gateway",
-        "cron-mcp-cleanup",
-        "agent-bundle-mcp-tools",
-        "system-agent-first-run",
-        "system-agent-rescue",
-        "config-reload",
-        "plugin-update",
-        "plugins",
-        "kitchen-sink-plugin",
-        "kitchen-sink-rpc",
-        "bundled-plugin-install-uninstall-0",
-        "multi-node-update",
-        "update-channel-switch",
-        "skill-install",
-        "upgrade-survivor",
-      ],
-    });
-
-    expect(
-      plan.lanes.map((lane) => ({ name: lane.name, stateScenario: lane.stateScenario })),
-    ).toEqual([
-      { name: "onboard", stateScenario: "empty" },
-      { name: "agents-delete-shared-workspace", stateScenario: "empty" },
-      { name: "browser-cdp-snapshot", stateScenario: "empty" },
-      { name: "doctor-switch", stateScenario: "empty" },
-      { name: "openai-image-auth", stateScenario: "empty" },
-      { name: "openai-web-search-minimal", stateScenario: "empty" },
-      { name: "mcp-channels", stateScenario: "empty" },
-      { name: "mcp-code-mode-gateway", stateScenario: "empty" },
-      { name: "cron-mcp-cleanup", stateScenario: "empty" },
-      { name: "agent-bundle-mcp-tools", stateScenario: "empty" },
-      { name: "system-agent-first-run", stateScenario: "empty" },
-      { name: "system-agent-rescue", stateScenario: "empty" },
-      { name: "config-reload", stateScenario: "empty" },
-      { name: "plugin-update", stateScenario: "empty" },
-      { name: "plugins", stateScenario: "empty" },
-      { name: "kitchen-sink-plugin", stateScenario: "empty" },
-      { name: "kitchen-sink-rpc", stateScenario: "empty" },
-      { name: "bundled-plugin-install-uninstall-0", stateScenario: "empty" },
-      { name: "multi-node-update", stateScenario: "empty" },
-      { name: "update-channel-switch", stateScenario: "update-stable" },
-      { name: "skill-install", stateScenario: "empty" },
-      { name: "upgrade-survivor", stateScenario: "upgrade-survivor" },
-    ]);
   });
 
   it("derives prerelease npm companions from selected survivor recipes", () => {

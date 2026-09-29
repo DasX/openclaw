@@ -1,4 +1,3 @@
-import { asDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { EmbeddedFullAccessBlockedReason } from "../../agents/embedded-agent-runner/types.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
@@ -11,8 +10,6 @@ import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import type { ElevatedLevel } from "../thinking.js";
 import type { ReplyExecOverrides } from "./get-reply-exec-overrides.js";
-
-const EPOCH_MILLISECONDS_THRESHOLD = 1_000_000_000_000;
 
 export function buildPersistedMediaImageLayout(params: {
   ctx: MsgContext;
@@ -114,16 +111,6 @@ export function routeThreadIdsMatch(
   return String(activeThreadId) === String(currentThreadId);
 }
 
-export function normalizeMessageTimestampMs(value: unknown): number | undefined {
-  const timestamp = typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  if (timestamp === undefined || timestamp <= 0) {
-    return undefined;
-  }
-  const timestampMs =
-    timestamp < EPOCH_MILLISECONDS_THRESHOLD ? Math.trunc(timestamp * 1000) : timestamp;
-  return asDateTimestampMs(timestampMs);
-}
-
 export async function updateRoomEventAmbientTranscriptWatermark(params: {
   expectedSessionId: string;
   sessionCtx: TemplateContext;
@@ -221,17 +208,9 @@ export async function prewarmReplyRunRuntimes(): Promise<void> {
   ]);
 }
 
-export function loadEmbeddedAgentRuntime() {
-  return embeddedAgentRuntimeLoader.load();
-}
-
-export function loadAgentRunnerRuntime() {
-  return agentRunnerRuntimeLoader.load();
-}
-
-export function loadSessionUpdatesRuntime() {
-  return sessionUpdatesRuntimeLoader.load();
-}
+export const loadEmbeddedAgentRuntime = embeddedAgentRuntimeLoader.load;
+export const loadAgentRunnerRuntime = agentRunnerRuntimeLoader.load;
+export const loadSessionUpdatesRuntime = sessionUpdatesRuntimeLoader.load;
 
 export function hasInboundHistoryBody(ctx: TemplateContext): boolean {
   return (

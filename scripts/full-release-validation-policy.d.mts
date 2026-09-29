@@ -1,4 +1,20 @@
 export const MAX_RELEASE_ARTIFACT_BYTES: number;
+export const WINDOWS_NODE_CI_ADVISORY: {
+  readonly id: "windows-node-ci";
+  readonly child: "normalCi";
+  readonly jobNamePattern: RegExp;
+  readonly aggregateJob: "checks-windows";
+};
+export interface ReleaseAdvisoryJob {
+  class: "windows-node-ci";
+  child: "normalCi";
+  job: string;
+  conclusion: string;
+  runId: string;
+  url: string;
+}
+export function releaseAdvisoryJobs(children: ReleaseRecord[]): ReleaseAdvisoryJob[];
+export function validateReleaseManifestAdvisoryJobs(manifest: unknown): ReleaseAdvisoryJob[];
 export const SPLIT_CHANGELOG_EVIDENCE_REUSE_POLICY: "split-changelog-release-v1";
 export function isSplitChangelogEvidenceDelta(paths: unknown, version: unknown): boolean;
 export function classifyReleaseChangelogEvidenceComparison(
@@ -107,29 +123,7 @@ export function composeReleaseChildAttemptEvidence(input: {
   run: ReleaseRecord;
 }): ReleaseRecord;
 
-export function terminalPolicyPass(
-  child: ReleaseRecord,
-  releaseProfile: string,
-  workflowRef: string,
-  laneWaiver?: string,
-): boolean;
-export function normalizeReleaseLaneWaiver(value: unknown): string;
-export function validateReleaseLaneWaiverBinding(
-  plan: ReleaseRecord | undefined,
-  validationInputs?: ReleaseRecord,
-): void;
-export function releaseJobAdvisoryReason(input: {
-  childKey: string;
-  jobName: string;
-  releaseProfile: string;
-  workflowRef: string;
-  laneWaiver?: string;
-  jobs?: ReleaseRecord[];
-}): "" | "lane_waiver";
-export function releaseWaivedJobs(
-  children: ReleaseRecord[],
-  policy: { releaseProfile: string; workflowRef: string; laneWaiver?: string },
-): Array<{ child: string; job: string; conclusion: string }>;
+export function terminalPolicyPass(child: ReleaseRecord): boolean;
 
 export function classifyReleaseSnapshot(input: ReleaseRecord): ReleaseStateArtifact;
 export function releasePlanGateFailures(gates: ReleaseRecord[]): ReleaseRecord[];

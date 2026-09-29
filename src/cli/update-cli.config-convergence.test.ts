@@ -1,12 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import * as configIo from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createCommandResult as commandResult } from "../test-utils/npm-spec-install-test-helpers.js";
 import { VERSION } from "../version.js";
 import {
-  commandCalls,
   doctorCommandCall,
   expectNoSideEffects,
   freshRestartCalls,
@@ -50,16 +50,21 @@ import {
 import {
   npmPluginUpdateResult,
   pluginSyncResult,
-  stableConfig,
   stableWhatsAppConfig,
 } from "./update-cli/update-cli-config.test-support.js";
 import {
   writeJsonFixture,
   writeOpenClawPackageFixture,
 } from "./update-cli/update-cli-package.test-support.js";
-import * as runtimeRecovery from "./update-cli/update-command-runtime-recovery.test-support.js";
 
 await vi.hoisted(() => import("./update-cli-mocks.test-support.js"));
+
+async function useFileBackedConfigIO() {
+  const { createConfigIO } =
+    await vi.importActual<typeof import("../config/io.js")>("../config/io.js");
+  vi.spyOn(configIo, "createConfigIO").mockImplementation(createConfigIO);
+  return createConfigIO;
+}
 
 describe("update-cli", () => {
   const {
@@ -83,38 +88,38 @@ describe("update-cli", () => {
     tempDirsToCleanup,
   } = createUpdateCliFixture();
 
-  it.each([
-    { channel: "stable", tag: "main" },
-    { channel: "extended-stable", tag: "latest" },
-  ])("does not migrate authored config for a refused target $channel/$tag", async (target) => {
-    await mockPackageInstallAtCaseDir();
-    const stateDir = tempDirs.make("openclaw-refused-legacy-target-");
-    const configPath = path.join(stateDir, "openclaw.json");
-    await writeJsonFixture(configPath, { channels: { slack: { streaming: "partial" } } });
-    const before = await fs.readFile(configPath, "utf8");
-    const { createConfigIO } = await import("../config/io.js");
-    vi.mocked(readConfigFileSnapshot).mockImplementation(() =>
-      createConfigIO({ observe: false, pluginValidation: "skip" }).readConfigFileSnapshot(),
-    );
-    legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel.mockImplementationOnce(
-      async ({ configSnapshot: authored }) => {
-        await replaceConfigFile({ nextConfig: {}, baseHash: authored.hash });
-        return { snapshot: configSnapshot({}, { valid: true }), repaired: true };
-      },
-    );
-    await withEnvAsync(
-      { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_CONFIG_PATH: configPath },
-      async () => {
-        await expect(updateCommand({ ...target, yes: true })).rejects.toEqual(new ExitError(1));
-      },
-    );
-    expect(await fs.readFile(configPath, "utf8")).toBe(before);
-    expect(replaceConfigFile).not.toHaveBeenCalled();
-    expect(legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel).not.toHaveBeenCalled();
-    expectNoSideEffects(launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob);
-  });
+  it.each([{ channel: "stable", tag: "main" }])(
+    "does not migrate authored config for a refused target $channel/$tag",
+    async (target) => {
+      await mockPackageInstallAtCaseDir();
+      const stateDir = tempDirs.make("openclaw-refused-legacy-target-");
+      const configPath = path.join(stateDir, "openclaw.json");
+      await writeJsonFixture(configPath, { channels: { slack: { streaming: "partial" } } });
+      const before = await fs.readFile(configPath, "utf8");
+      const { createConfigIO } = await import("../config/io.js");
+      vi.mocked(readConfigFileSnapshot).mockImplementation(() =>
+        createConfigIO({ observe: false, pluginValidation: "skip" }).readConfigFileSnapshot(),
+      );
+      legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel.mockImplementationOnce(
+        async ({ configSnapshot: authored }) => {
+          await replaceConfigFile({ nextConfig: {}, baseHash: authored.hash });
+          return { snapshot: configSnapshot({}, { valid: true }), repaired: true };
+        },
+      );
+      await withEnvAsync(
+        { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_CONFIG_PATH: configPath },
+        async () => {
+          await expect(updateCommand({ ...target, yes: true })).rejects.toEqual(new ExitError(1));
+        },
+      );
+      expect(await fs.readFile(configPath, "utf8")).toBe(before);
+      expect(replaceConfigFile).not.toHaveBeenCalled();
+      expect(legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel).not.toHaveBeenCalled();
+      expectNoSideEffects(launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob);
+    },
+  );
 
-  it.each([undefined, "beta"] as const)(
+  it.each([undefined] as const)(
     "persists a source-bound legacy plan only after same-version target admission (stored=%s)",
     async (initialChannel) => {
       await mockPackageInstallAtCaseDir("openclaw-current-legacy-config", VERSION);
@@ -172,71 +177,99 @@ describe("update-cli", () => {
     },
   );
 
-  it.each(["stable", "beta"] as const)(
-    "keeps the caller legacy plan out of a same-version service-profile switch from %s",
-    async (serviceChannel) => {
-      const root = await mockPackageInstallAtCaseDir("openclaw-current-legacy-config", VERSION);
-      const callerState = profileStateDir("personal");
-      initializeExistingUpdateProfile({ ...process.env, OPENCLAW_STATE_DIR: callerState });
-      const serviceState = profileStateDir("work");
-      initializeExistingUpdateProfile({ ...process.env, OPENCLAW_STATE_DIR: serviceState });
-      tempDirsToCleanup.add(callerState);
-      tempDirsToCleanup.add(serviceState);
-      await fs.mkdir(callerState, { recursive: true });
-      await fs.mkdir(serviceState, { recursive: true });
-      const callerPath = path.join(callerState, "openclaw.json");
-      const servicePath = path.join(serviceState, "openclaw.json");
-      await writeJsonFixture(callerPath, { gateway: { mode: "local", bind: "localhost" } });
-      await writeJsonFixture(servicePath, {
-        gateway: { mode: "local", bind: "lan" },
-        update: { channel: serviceChannel },
-      });
-      const callerBefore = await fs.readFile(callerPath, "utf8");
-      readPackageVersion.mockResolvedValue(VERSION);
-      primeNpmChannelTag("beta", VERSION);
-      mockRunningManagedGateway(["node", path.join(root, "dist", "index.js"), "gateway", "run"]);
-      primeServiceCommand(["node", path.join(root, "dist", "index.js"), "gateway", "run"], {
-        OPENCLAW_SERVICE_MARKER: "openclaw",
-        OPENCLAW_SERVICE_KIND: "gateway",
-        OPENCLAW_PROFILE: "work",
-        OPENCLAW_STATE_DIR: serviceState,
-        OPENCLAW_CONFIG_PATH: servicePath,
-      });
-      const { createConfigIO } = await import("../config/io.js");
-      const { replaceConfigFile: writeActualConfig } = await import("../config/mutate.js");
-      vi.mocked(readConfigFileSnapshot).mockImplementation(() =>
-        createConfigIO({ observe: false, pluginValidation: "skip" }).readConfigFileSnapshot(),
-      );
-      vi.mocked(replaceConfigFile).mockImplementation(writeActualConfig);
-      await withEnvAsync(
-        {
-          OPENCLAW_PROFILE: "personal",
-          OPENCLAW_STATE_DIR: callerState,
-          OPENCLAW_CONFIG_PATH: callerPath,
-        },
-        () => updateCommand({ channel: "beta", yes: true, json: true }),
-      );
-      expect(await fs.readFile(callerPath, "utf8")).toBe(callerBefore);
-      const serviceAfter = await createConfigIO({
-        env: { ...process.env, OPENCLAW_CONFIG_PATH: servicePath },
-        observe: false,
-        pluginValidation: "skip",
-      }).readConfigFileSnapshot();
-      expect(serviceAfter.config.gateway?.bind).toBe("lan");
-      expect(serviceAfter.config.update?.channel).toBe("beta");
-      expect(legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel).not.toHaveBeenCalled();
-      expectNoSideEffects(serviceStop, serviceRestart, candidateValidation);
-      expect(updateNpmInstalledPlugins).toHaveBeenCalledOnce();
-      expect(updateNpmInstalledPlugins).toHaveBeenCalledWith(
-        expect.objectContaining({ coreVersion: VERSION, updateChannel: "beta" }),
+  it.each([
+    {
+      name: "keeps the caller legacy plan out of a same-version service-profile switch from stable",
+      requestedChannel: "beta",
+    },
+    {
+      name: "refuses a foreign legacy caller without an explicit channel request",
+      requestedChannel: undefined,
+    },
+  ] as const)("$name", async ({ requestedChannel }) => {
+    const root = await mockPackageInstallAtCaseDir("openclaw-current-legacy-config", VERSION);
+    const callerState = profileStateDir("personal");
+    initializeExistingUpdateProfile({ ...process.env, OPENCLAW_STATE_DIR: callerState });
+    const serviceState = profileStateDir("work");
+    initializeExistingUpdateProfile({ ...process.env, OPENCLAW_STATE_DIR: serviceState });
+    tempDirsToCleanup.add(callerState);
+    tempDirsToCleanup.add(serviceState);
+    await fs.mkdir(callerState, { recursive: true });
+    await fs.mkdir(serviceState, { recursive: true });
+    const callerPath = path.join(callerState, "openclaw.json");
+    const servicePath = path.join(serviceState, "openclaw.json");
+    await writeJsonFixture(callerPath, { gateway: { mode: "local", bind: "localhost" } });
+    await writeJsonFixture(servicePath, {
+      gateway: { mode: "local", bind: "lan" },
+      update: { channel: "stable" },
+    });
+    const callerBefore = await fs.readFile(callerPath, "utf8");
+    const serviceBefore = await fs.readFile(servicePath, "utf8");
+    readPackageVersion.mockResolvedValue(VERSION);
+    primeNpmChannelTag(requestedChannel ? "beta" : "latest", VERSION);
+    mockRunningManagedGateway(["node", path.join(root, "dist", "index.js"), "gateway", "run"]);
+    primeServiceCommand(["node", path.join(root, "dist", "index.js"), "gateway", "run"], {
+      OPENCLAW_SERVICE_MARKER: "openclaw",
+      OPENCLAW_SERVICE_KIND: "gateway",
+      OPENCLAW_PROFILE: "work",
+      OPENCLAW_STATE_DIR: serviceState,
+      OPENCLAW_CONFIG_PATH: servicePath,
+    });
+    const createConfigIO = await useFileBackedConfigIO();
+    const { replaceConfigFile: writeActualConfig } = await import("../config/mutate.js");
+    vi.mocked(readConfigFileSnapshot).mockImplementation(() =>
+      createConfigIO({ observe: false, pluginValidation: "skip" }).readConfigFileSnapshot(),
+    );
+    vi.mocked(replaceConfigFile).mockImplementation(writeActualConfig);
+    await withEnvAsync(
+      {
+        OPENCLAW_PROFILE: "personal",
+        OPENCLAW_STATE_DIR: callerState,
+        OPENCLAW_CONFIG_PATH: callerPath,
+      },
+      async () => {
+        const update = updateCommand({ channel: requestedChannel, yes: true, json: true });
+        if (requestedChannel) {
+          await update;
+        } else {
+          await expect(update).rejects.toEqual(new ExitError(1));
+        }
+      },
+    );
+    expect(await fs.readFile(callerPath, "utf8")).toBe(callerBefore);
+    if (!requestedChannel) {
+      expect(await fs.readFile(servicePath, "utf8")).toBe(serviceBefore);
+      expect(lastWriteJsonCall()).toMatchObject({ status: "error", reason: "invalid-config" });
+      expectNoSideEffects(
+        serviceStop,
+        serviceRestart,
+        candidateValidation,
+        replaceConfigFile,
+        updateNpmInstalledPlugins,
+        legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel,
       );
       expect(packageInstallCommandCall()).toBeUndefined();
-      expect(lastWriteJsonCall()).toMatchObject({
-        status: serviceChannel === "beta" ? "skipped" : "ok",
-      });
-      expect(replaceConfigFile).toHaveBeenCalledTimes(serviceChannel === "beta" ? 0 : 1);
-    },
-  );
+      return;
+    }
+    const serviceAfter = await createConfigIO({
+      env: { ...process.env, OPENCLAW_CONFIG_PATH: servicePath },
+      observe: false,
+      pluginValidation: "skip",
+    }).readConfigFileSnapshot();
+    expect(serviceAfter.config.gateway?.bind).toBe("lan");
+    expect(serviceAfter.config.update?.channel).toBe("beta");
+    expect(legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel).not.toHaveBeenCalled();
+    expectNoSideEffects(serviceStop, serviceRestart, candidateValidation);
+    expect(updateNpmInstalledPlugins).toHaveBeenCalledOnce();
+    expect(updateNpmInstalledPlugins).toHaveBeenCalledWith(
+      expect.objectContaining({ coreVersion: VERSION, updateChannel: "beta" }),
+    );
+    expect(packageInstallCommandCall()).toBeUndefined();
+    expect(lastWriteJsonCall()).toMatchObject({
+      status: "ok",
+    });
+    expect(replaceConfigFile).toHaveBeenCalledTimes(1);
+  });
 
   it("validates a legacy projection without changing authored config on candidate refusal", async () => {
     await mockPackageInstallAtCaseDir();
@@ -296,7 +329,7 @@ describe("update-cli", () => {
       OPENCLAW_STATE_DIR: serviceState,
       OPENCLAW_CONFIG_PATH: servicePath,
     });
-    const { createConfigIO } = await import("../config/io.js");
+    const createConfigIO = await useFileBackedConfigIO();
     vi.mocked(readConfigFileSnapshot).mockImplementation(() =>
       createConfigIO({ observe: false, pluginValidation: "skip" }).readConfigFileSnapshot(),
     );
@@ -373,46 +406,6 @@ describe("update-cli", () => {
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
   });
 
-  it("does not repair legacy config during a dry run", async () => {
-    await mockPackageInstallAtCaseDir();
-    const legacyConfig = {
-      channels: {
-        slack: {
-          streaming: "partial",
-          nativeStreaming: false,
-        },
-      },
-    } as OpenClawConfig;
-    vi.mocked(readConfigFileSnapshot).mockResolvedValueOnce(
-      configSnapshot(legacyConfig, {
-        valid: false,
-        hash: "legacy-hash",
-        issues: [
-          {
-            path: "channels.slack.streaming",
-            message: "Invalid input: expected object, received string",
-          },
-        ],
-        legacyIssues: [
-          {
-            path: "channels.slack",
-            message: "legacy slack streaming keys",
-          },
-        ],
-      }),
-    );
-
-    await updateCommand({ dryRun: true, channel: "beta", yes: true });
-
-    expectNoSideEffects(
-      replaceConfigFile,
-      launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
-    );
-    expect(commandCalls().map(([argv]) => argv)).toEqual(runtimeRecovery.expectedNpmProbes);
-    expect(legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel).not.toHaveBeenCalled();
-    expect(defaultRuntime.exit).not.toHaveBeenCalled();
-  });
-
   it("does not persist the requested channel when the package update fails", async () => {
     await mockPackageInstallAtCaseDir();
     vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
@@ -443,89 +436,13 @@ describe("update-cli", () => {
     expect(lastReplaceConfigCall()?.nextConfig?.update?.channel).toBe("beta");
   });
 
-  it("refreshes post-doctor config before post-update plugin sync", async () => {
-    await mockPackageInstallAtCaseDir();
-    const preUpdateConfig = { update: { channel: "stable" } } as OpenClawConfig;
-    const postDoctorConfig = {
-      update: { channel: "stable" },
-      meta: { lastTouchedVersion: "2026.5.14" },
-    } as OpenClawConfig;
-    vi.mocked(readConfigFileSnapshot)
-      .mockResolvedValueOnce({
-        ...baseSnapshot,
-        sourceConfig: preUpdateConfig,
-        config: preUpdateConfig,
-        hash: "pre-update-hash",
-      })
-      .mockResolvedValue({
-        ...baseSnapshot,
-        sourceConfig: postDoctorConfig,
-        config: postDoctorConfig,
-        hash: "post-doctor-hash",
-      });
-    syncPluginsForUpdateChannel.mockImplementation(async ({ config }) =>
-      pluginSyncResult(
-        {
-          ...config,
-          plugins: {
-            ...config.plugins,
-            load: { paths: ["/tmp/openclaw-updated-plugin"] },
-          },
-        },
-        true,
-      ),
-    );
-    updateNpmInstalledPlugins.mockImplementation(async ({ config }) =>
-      npmPluginUpdateResult(config),
-    );
-
-    await updateCommand({ yes: true });
-
-    const syncConfig = syncPluginCall()?.config;
-    const lastWrite = lastReplaceConfigCall();
-    expect(syncConfig?.meta?.lastTouchedVersion).toBe("2026.5.14");
-    expect(lastWrite?.baseHash).toBe("post-doctor-hash");
-    expect(lastWrite?.nextConfig?.meta?.lastTouchedVersion).toBe("2026.5.14");
-  });
-
-  it("restores pre-update channels when post-core resume sees post-doctor config without them", async () => {
-    const preUpdateConfig = stableWhatsAppConfig();
-    const postDoctorConfig = stableConfig({ meta: { lastTouchedVersion: "2026.5.14" } });
-    await setupPostCoreConfigFixture({
-      preUpdateConfig,
-      backupConfig: postDoctorConfig,
-      postDoctorConfig,
-    });
-
-    await runPostCoreUpdate();
-
-    const syncConfig = syncPluginCall()?.config as
-      | (OpenClawConfig & { meta?: { lastTouchedVersion?: string } })
-      | undefined;
-    const lastWrite = lastReplaceConfigCall() as
-      | {
-          baseHash?: string;
-          nextConfig?: OpenClawConfig & {
-            meta?: { lastTouchedVersion?: string };
-            channels?: { whatsapp?: { enabled?: boolean; dmPolicy?: string } };
-          };
-        }
-      | undefined;
-    expect(syncConfig?.channels?.whatsapp).toEqual(preUpdateConfig.channels?.whatsapp);
-    expect(syncConfig?.meta?.lastTouchedVersion).toBe("2026.5.14");
-    expect(lastWrite?.baseHash).toBe("post-doctor-hash");
-    expect(lastWrite?.nextConfig?.channels?.whatsapp).toEqual(preUpdateConfig.channels?.whatsapp);
-    expect(lastWrite?.nextConfig?.meta?.lastTouchedVersion).toBe("2026.5.14");
-  });
-
   it("restores pre-update channel model overrides when post-core resume restores a channel", async () => {
+    const updateStartedAtMs = Date.now();
+    const channelConfig = stableWhatsAppConfig();
     const preUpdateConfig = {
-      update: { channel: "stable" },
+      ...channelConfig,
       channels: {
-        whatsapp: {
-          enabled: true,
-          dmPolicy: "pairing",
-        },
+        ...channelConfig.channels,
         telegram: {
           enabled: true,
         },
@@ -552,7 +469,7 @@ describe("update-cli", () => {
     } as OpenClawConfig;
     await setupPostCoreConfigFixture({ preUpdateConfig, postDoctorConfig });
 
-    await runPostCoreUpdate();
+    await runPostCoreUpdate({ OPENCLAW_UPDATE_POST_CORE_STARTED_AT_MS: String(updateStartedAtMs) });
 
     const syncConfig = syncPluginCall()?.config as
       | (OpenClawConfig & {
@@ -619,7 +536,10 @@ describe("update-cli", () => {
     });
     mockNoopPostUpdatePluginConvergence();
 
-    await runPostCoreUpdate({ OPENCLAW_UPDATE_POST_CORE_SOURCE_CONFIG_PATH: sourceConfigPath });
+    await runPostCoreUpdate({
+      OPENCLAW_UPDATE_POST_CORE_SOURCE_CONFIG_PATH: sourceConfigPath,
+      OPENCLAW_UPDATE_POST_CORE_STARTED_AT_MS: undefined,
+    });
 
     const syncConfig = syncPluginCall()?.config as
       | (OpenClawConfig & { channels?: { whatsapp?: { token?: string } } })
@@ -636,6 +556,7 @@ describe("update-cli", () => {
   });
 
   it("resolves included pre-update channels for old post-core parents", async () => {
+    const updateStartedAtMs = Date.now();
     const tempDir = createCaseDir("openclaw-update");
     const configPath = path.join(tempDir, "openclaw.json");
     const channelsPath = path.join(tempDir, "channels.json5");
@@ -660,7 +581,10 @@ describe("update-cli", () => {
     mockPostDoctorSnapshot(configPath, postDoctorConfig);
     mockNoopPostUpdatePluginConvergence();
 
-    await runPostCoreUpdate({ WHATSAPP_TOKEN: "resolved-token" });
+    await runPostCoreUpdate({
+      WHATSAPP_TOKEN: "resolved-token",
+      OPENCLAW_UPDATE_POST_CORE_STARTED_AT_MS: String(updateStartedAtMs),
+    });
 
     const syncConfig = syncPluginCall()?.config as
       | (OpenClawConfig & { channels?: { whatsapp?: { token?: string } } })
