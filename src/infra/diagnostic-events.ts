@@ -33,6 +33,7 @@ import {
   consumeCoreSemanticRunProgressDiagnosticEvent,
   CORE_SEMANTIC_RUN_PROGRESS_METADATA_KEY,
 } from "./diagnostic-semantic-run-progress-provenance.js";
+import type { DiagnosticSessionRecoveryStatus } from "./diagnostic-session-recovery-types.js";
 import {
   consumeToolExecutionLivenessDiagnosticEvent,
   TOOL_EXECUTION_LIVENESS_METADATA_KEY,
@@ -51,6 +52,7 @@ import {
 import { isBlockedObjectKey } from "./prototype-keys.js";
 
 export type { DiagnosticMemoryUsage } from "./diagnostic-process-types.js";
+export type { DiagnosticSessionRecoveryStatus } from "./diagnostic-session-recovery-types.js";
 
 export type DiagnosticSessionState = "idle" | "processing" | "waiting";
 
@@ -349,14 +351,6 @@ export type DiagnosticSessionStuckEvent = DiagnosticSessionAttentionBaseEvent & 
   type: "session.stuck";
   classification: "stale_session_state";
 };
-
-export type DiagnosticSessionRecoveryStatus =
-  | "aborted"
-  | "force_cleared"
-  | "released"
-  | "skipped"
-  | "noop"
-  | "failed";
 
 type DiagnosticSessionRecoveryBaseEvent = DiagnosticSessionEvent & {
   state: DiagnosticSessionState;
