@@ -240,6 +240,7 @@ describe("stuck session recovery", () => {
     mocks.forceClearEmbeddedAgentRun.mockReturnValue(true);
     mocks.resetCommandLane.mockReturnValue(1);
 
+    const logged = observeRecoveryContextLog("session-1");
     const outcome = await recoverStuckDiagnosticSession({
       sessionId: "session-1",
       sessionKey: "agent:main:main",
@@ -262,6 +263,7 @@ describe("stuck session recovery", () => {
       drained: false,
       forceCleared: true,
     });
+    await logged;
     expect(warnLogMessages()).toContain(
       "stuck session recovery: sessionId=session-1 sessionKey=agent:main:main age=240s action=force_clear_embedded_run aborted=true drained=false released=1",
     );
