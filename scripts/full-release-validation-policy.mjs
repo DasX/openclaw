@@ -22,44 +22,15 @@ import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version
 
 export { MAX_RELEASE_ARTIFACT_BYTES, serializeReleaseArtifact };
 
-// CI's dependency-free shell gate is pinned to this class by its workflow tests.
-export const WINDOWS_NODE_CI_ADVISORY = Object.freeze({
-  id: "windows-node-ci",
-  child: "normalCi",
-  jobNamePattern: /^checks-windows-node-.+$/u,
-  aggregateJob: "checks-windows",
-});
-
-function isAdvisoryJob(child, job) {
-  return (
-    child.key === WINDOWS_NODE_CI_ADVISORY.child &&
-    typeof job.name === "string" &&
-    WINDOWS_NODE_CI_ADVISORY.jobNamePattern.test(job.name) &&
-    job.status === "completed" &&
-    ["failure", "timed_out"].includes(job.conclusion)
-  );
+export function releaseAdvisoryJobs() {
+  return [];
 }
 
-export function releaseAdvisoryJobs(children) {
-  return children.flatMap((child) =>
-    child.jobs
-      .filter((job) => isAdvisoryJob(child, job))
-      .map((job) => ({
-        class: WINDOWS_NODE_CI_ADVISORY.id,
-        child: child.key,
-        job: job.name,
-        conclusion: job.conclusion,
-        runId: child.runId,
-        url: job.html_url ?? job.url ?? "",
-      })),
-  );
-}
-
-function validateReleaseAdvisoryJobs(value, children) {
-  const expected = releaseAdvisoryJobs(children);
+function validateReleaseAdvisoryJobs(value) {
+  const expected = [];
   const recorded = value === undefined ? [] : value;
   if (!Array.isArray(recorded) || jsonSha256(recorded) !== jsonSha256(expected)) {
-    throw new Error("Release advisory jobs differ from the windows-node-ci policy evidence");
+    throw new Error("Release advisory jobs differ from the release policy evidence");
   }
   return expected;
 }
@@ -76,21 +47,16 @@ export function validateReleaseManifestAdvisoryJobs(manifest) {
   ) {
     throw new Error("Release advisory child evidence is invalid");
   }
-  const children = Object.entries(manifest.childEvidence ?? {}).map(([key, child]) => {
-    if (!child || !Array.isArray(child.jobs)) {
+  const normalCi = manifest.childEvidence?.normalCi;
+  if (normalCi !== undefined) {
+    if (!normalCi || !Array.isArray(normalCi.jobs)) {
       throw new Error("Release advisory child evidence is invalid");
     }
-    if (
-      key === WINDOWS_NODE_CI_ADVISORY.child &&
-      (typeof child.runId !== "string" ||
-        !/^[1-9][0-9]*$/u.test(child.runId) ||
-        child.runId !== manifest.childRuns?.normalCi)
-    ) {
-      throw new Error("Release advisory child run differs from the manifest");
+    if (normalCi.jobs.some(isFailedJob)) {
+      throw new Error("Release manifest contains failed selected job evidence");
     }
-    return { key, runId: child.runId, jobs: child.jobs };
-  });
-  return validateReleaseAdvisoryJobs(manifest.advisoryJobs, children);
+  }
+  return validateReleaseAdvisoryJobs(manifest.advisoryJobs);
 }
 
 export function buildReleaseValidationManifest({ plan, drain, context }) {
@@ -134,11 +100,7 @@ export function buildReleaseValidationManifest({ plan, drain, context }) {
     publicationArtifacts: context.publicationArtifacts ?? { npmPreflight: null, docker: null },
     publishInputs: context.publishInputs,
     advisoryJobs: releaseAdvisoryJobs(
-      Object.entries(childEvidence).map(([key, child]) => ({
-        key,
-        runId: child.runId,
-        jobs: child.jobs,
-      })),
+      Object.entries(childEvidence).map(([key, child]) => Object.assign({}, child, { key })),
     ),
     childEvidence,
     executionPlanSha256: plan.sha256,
@@ -341,6 +303,9 @@ const REVIEWED_TELEGRAM_WAIVERS = new Map([
   // 01d71319 (FRV 36534008742, jobs 109299525565 and rerun 109316259401) and Telegram
   // QA 4/25 on 56fb8872 and e61efb6c (job 109279074202).
   ["2026.9.7-owner-approved", ["telegram", "matrix"]],
+  // The release owner approved the same Telegram and Matrix QA-live scope for 2026.9.8
+  // on 2026-10-02. Every other stable-release gate remains blocking.
+  ["2026.9.8-owner-approved", ["telegram", "matrix"]],
 ]);
 const HARD_GH_TRANSPORT_PATTERN =
   /HTTP (?:400|401|403|404|410|422)\b|Bad credentials|authentication required|not authenticated|gh auth login|unknown (?:command|flag)|Usage: gh\b|ENOENT|EACCES/iu;
@@ -744,8 +709,12 @@ export function validateReleaseTelegramWaiverBinding(plan, validationInputs = {}
   }
 }
 
+export function releaseChildSpecs() {
+  return [...CHILD_SPECS, ...LEGACY_CHILD_SPECS];
+}
+
 export function releaseChildSpec(key) {
-  const spec = [...CHILD_SPECS, ...LEGACY_CHILD_SPECS].find((entry) => entry.key === key);
+  const spec = releaseChildSpecs().find((entry) => entry.key === key);
   if (!spec) {
     throw new Error(`release child key is invalid: `);
   }
@@ -806,20 +775,13 @@ export function validateReleaseChildRunProvenance(run, expected = {}) {
   };
 }
 
-function compositeJobsDigestPayload(value) {
-  return {
-    effectiveRunAttempt: value.effectiveRunAttempt,
-    jobs: value.jobs,
-    plannedRunAttempt: value.plannedRunAttempt,
-  };
-}
-
 function jsonSha256(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 export function releaseCompositeJobsSha256(value) {
-  return jsonSha256(canonicalValue(compositeJobsDigestPayload(value)));
+  const { effectiveRunAttempt, jobs, plannedRunAttempt } = value;
+  return jsonSha256(canonicalValue({ effectiveRunAttempt, jobs, plannedRunAttempt }));
 }
 
 export function composeReleaseAttemptJobs(attempts, expected = {}) {
@@ -852,11 +814,19 @@ export function composeReleaseAttemptJobs(attempts, expected = {}) {
       throw new Error("release child attempt evidence is gapped");
     }
     const names = new Set();
+    const completedNames = new Set(
+      expectedAttempt < effectiveRunAttempt
+        ? attempt.jobs.filter((job) => job?.status === "completed").map((job) => job.name)
+        : [],
+    );
     for (const rawJob of attempt.jobs) {
       const job = normalizedAttemptJob(rawJob, expectedAttempt);
-      // Completed skipped jobs never executed, so they cannot contribute attempt
-      // evidence. Drop them before identity checks because placeholders may collide.
-      if (job.status === "completed" && job.conclusion === "skipped") {
+      // Skipped jobs and GitHub's runnerless, stepless queued rerun copies (beside a
+      // completed sibling in a superseded attempt) never executed, so they carry no
+      // evidence. Drop them before identity checks because such copies may collide.
+      const ghost = job.status === "queued" && !rawJob.runner_name && rawJob.steps?.length === 0;
+      const skipped = job.status === "completed" && job.conclusion === "skipped";
+      if (skipped || (ghost && completedNames.has(job.name))) {
         continue;
       }
       if (names.has(job.name)) {
@@ -1600,16 +1570,41 @@ function isFailedJob(job) {
 
 export function terminalPolicyPass(child) {
   const failures = child.jobs.filter(isFailedJob);
-  const advisoryOnly = failures.length > 0 && failures.every((job) => isAdvisoryJob(child, job));
-  const gates = child.jobs.filter((job) => job.name === "openclaw/ci-gate");
-  return (
-    child.status === "completed" &&
-    (child.conclusion === "success" || (child.conclusion === "failure" && advisoryOnly)) &&
-    failures.every((job) => isAdvisoryJob(child, job)) &&
-    // The gate owns selected-vs-skipped coverage, which the jobs API cannot prove.
-    (!advisoryOnly ||
-      (gates.length === 1 && gates[0].status === "completed" && gates[0].conclusion === "success"))
-  );
+  return child.status === "completed" && child.conclusion === "success" && failures.length === 0;
+}
+
+// These consumers bind their producer's artifact to the current run attempt, so a
+// failed-jobs rerun that leaves the green producer behind stays red (#161317).
+const ATTEMPT_BOUND_RELEASE_PRODUCERS = Object.freeze([
+  Object.freeze({
+    producer: "install_smoke_release_checks / installer_smoke_candidate_payload",
+    consumers: Object.freeze([
+      "install_smoke_release_checks / installer_smoke_nonroot_image",
+      "install_smoke_release_checks / installer_smoke_nonroot",
+    ]),
+  }),
+]);
+
+/** Choose the single GitHub rerun request that can repair a terminal child's blocking jobs. */
+export function planReleaseChildRerun({ childKey, jobs }) {
+  const failed = jobs
+    .filter(isFailedJob)
+    .map((job) => job.name)
+    .toSorted();
+  if (failed.length === 0) {
+    throw new Error(`${childKey} has no blocking failed job to rerun`);
+  }
+  for (const { producer, consumers } of ATTEMPT_BOUND_RELEASE_PRODUCERS) {
+    const producerJob = jobs.find((job) => job.name === producer);
+    if (
+      producerJob?.status === "completed" &&
+      producerJob.conclusion === "success" &&
+      consumers.some((name) => failed.includes(name))
+    ) {
+      return { failed, mode: "producer", producer };
+    }
+  }
+  return { failed, mode: "failed-jobs" };
 }
 
 function dispatchBlockers(children) {
@@ -1665,20 +1660,18 @@ export function classifyReleaseSnapshot({
     (child.errors ?? []).filter((error) => error.kind !== "dispatch_missing"),
   );
   const childJobBlockers = selected.flatMap((child) =>
-    child.jobs
-      .filter((job) => isFailedJob(job) && !isAdvisoryJob(child, job))
-      .map((job) => ({
-        child: child.key,
-        conclusion: job.conclusion,
-        job: job.name,
-        kind: "job_failure",
-        message: `${child.key} job failed policy`,
-        primaryAt: stringValue(
-          job.completed_at ?? job.completedAt ?? job.started_at ?? job.startedAt,
-        ),
-        runId: child.runId,
-        url: job.html_url ?? job.url ?? child.url,
-      })),
+    child.jobs.filter(isFailedJob).map((job) => ({
+      child: child.key,
+      conclusion: job.conclusion,
+      job: job.name,
+      kind: "job_failure",
+      message: `${child.key} job failed policy`,
+      primaryAt: stringValue(
+        job.completed_at ?? job.completedAt ?? job.started_at ?? job.startedAt,
+      ),
+      runId: child.runId,
+      url: job.html_url ?? job.url ?? child.url,
+    })),
   );
   const childJobBlockerKeys = new Set(
     childJobBlockers.map((blocker) => `${blocker.child}:${blocker.runId}`),
@@ -2218,11 +2211,12 @@ export function validateReleaseStateArtifact(payload, expected, expectedMode) {
     activeRunIds,
     advisoryJobs: validateReleaseAdvisoryJobs(
       payload.advisoryJobs,
-      Object.entries(children).map(([key, child]) => ({
-        key,
-        runId: child.runId,
-        jobs: child.timing.jobs,
-      })),
+      Object.entries(children).map(([key, child]) =>
+        Object.assign({}, child, {
+          key,
+          jobs: child.timing.jobs,
+        }),
+      ),
     ),
     blockerCount: machineEvidence ? payload.blockerCount : null,
     blockerIndex: completeBlockerIndex,
@@ -2248,7 +2242,7 @@ export function releasePlanGateFailures(gates) {
     }));
 }
 
-export function releaseStateChildEvidence(child) {
+function releaseStateChildEvidence(child) {
   return canonicalValue({
     compositeJobsSha256: child.compositeJobsSha256,
     conclusion: child.conclusion,
@@ -2345,6 +2339,7 @@ function verifyStateStructure(state, executionPlan, label) {
     }
     return Object.assign({}, child, snapshot, {
       jobs: snapshot.timing.jobs.map((job) => ({
+        acceptedRunAttempt: job.acceptedRunAttempt,
         conclusion: job.conclusion,
         html_url: job.url,
         name: job.name,

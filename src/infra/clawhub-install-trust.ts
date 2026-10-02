@@ -114,7 +114,7 @@ function isBlockingClawHubTrust(trust: ClawHubPackageSecurityTrust): boolean {
   });
 }
 
-function assessClawHubTrust(trust: ClawHubPackageSecurityTrust): ClawHubTrustDisposition {
+export function assessClawHubTrust(trust: ClawHubPackageSecurityTrust): ClawHubTrustDisposition {
   const hasRiskReasons = hasClawHubRiskReasons(trust);
   if (!hasRiskReasons && !trust.pending && !trust.stale) {
     return "clean";
@@ -442,9 +442,6 @@ function resolveSkillSecurityLinks(
 ): ClawHubFetchedSubjectSecurity["links"] {
   const subject = normalizeOptionalString(item.skillUrl);
   const security = normalizeOptionalString(item.securityAuditUrl);
-  if (!subject && !security) {
-    return undefined;
-  }
   return {
     ...(subject ? { subject } : {}),
     ...(security ? { security } : {}),

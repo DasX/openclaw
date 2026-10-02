@@ -1,18 +1,12 @@
 export const MAX_RELEASE_ARTIFACT_BYTES: number;
-export const WINDOWS_NODE_CI_ADVISORY: {
-  readonly id: "windows-node-ci";
-  readonly child: "normalCi";
-  readonly jobNamePattern: RegExp;
-  readonly aggregateJob: "checks-windows";
-};
-export interface ReleaseAdvisoryJob {
-  class: "windows-node-ci";
+interface ReleaseAdvisoryJobBase {
   child: "normalCi";
   job: string;
   conclusion: string;
   runId: string;
   url: string;
 }
+export type ReleaseAdvisoryJob = ReleaseAdvisoryJobBase & { class: string };
 export function releaseAdvisoryJobs(children: ReleaseRecord[]): ReleaseAdvisoryJob[];
 export function validateReleaseManifestAdvisoryJobs(manifest: unknown): ReleaseAdvisoryJob[];
 export const SPLIT_CHANGELOG_EVIDENCE_REUSE_POLICY: "split-changelog-release-v1";
@@ -86,6 +80,13 @@ export type ReleaseGhTransportErrorClass = "ambiguous" | "hard" | "transient";
 export function classifyReleaseGhTransportError(error: unknown): ReleaseGhTransportErrorClass;
 export function isReleaseGhArtifactMissingError(error: unknown): boolean;
 export function releaseChildSpec(key: string): ReleaseChildSpec;
+export function releaseChildSpecs(): ReleaseChildSpec[];
+export function planReleaseChildRerun(input: {
+  childKey: string;
+  jobs: ReleaseRecord[];
+}):
+  | { failed: string[]; mode: "failed-jobs" }
+  | { failed: string[]; mode: "producer"; producer: string };
 export function validateReleaseChildRunProvenance(
   run: ReleaseRecord,
   expected?: ReleaseRecord,
@@ -165,7 +166,6 @@ export function selectReleaseStateArtifacts(
   };
 };
 export function formatReleaseStateOutcome(payload: ReleaseRecord): string;
-export function releaseStateChildEvidence(child: ReleaseRecord): ReleaseRecord;
 export function affectedActiveRunIds(
   children: ReleaseRecord[],
   blockers: ReleaseRecord[],
