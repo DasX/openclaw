@@ -1,4 +1,5 @@
 // Gateway restart sentinel recovery resumes pending continuations and outbound delivery.
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   resolveCorrelatedSubagentDelivery,
   settleCorrelatedSubagentDelivery,
@@ -14,7 +15,6 @@ import { appendAssistantMessageToSessionTranscript } from "../config/sessions/tr
 import { removeCronRunContinuationSessionIfIdle } from "../cron/run-continuation-cleanup.js";
 import {
   captureDeliveryQueueStateContext,
-  resolveDeliveryQueueStateEnv,
   type DeliveryQueueStateContext,
 } from "../infra/delivery-queue-state-context.js";
 import { formatErrorMessage, toErrorObject } from "../infra/errors.js";
@@ -48,11 +48,8 @@ import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { isPendingControlPlaneUpdateRestartSentinel } from "../infra/update-control-plane-sentinel.js";
 import { recordUpdateRunVerification } from "../infra/update-run-ledger.js";
-import { readUpdateRunReportHealth } from "../infra/update-run-report-health.js";
-import {
-  renderUpdateRunReport,
-  updateRunReportInputFromSentinel,
-} from "../infra/update-run-report.js";
+import { renderUpdateRunSummary } from "../infra/update-run-notice.js";
+import { updateRunReportInputFromSentinel } from "../infra/update-run-report.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
@@ -326,9 +323,7 @@ async function drainRestartContinuationQueue(params: {
     params.log.info(
       `restart continuation: entry ${params.entryId} still waiting for the previous run to clear; retrying in ${RESTART_CONTINUATION_BUSY_RETRY_DELAY_MS}ms`,
     );
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, RESTART_CONTINUATION_BUSY_RETRY_DELAY_MS).unref();
-    });
+    await sleep(RESTART_CONTINUATION_BUSY_RETRY_DELAY_MS, undefined, { ref: false });
   }
 }
 
@@ -386,16 +381,7 @@ async function loadRestartSentinelStartupTask(params: {
   const updateRunId = updateRun?.runId;
   let noticeMessage =
     payload.kind === "update"
-      ? renderUpdateRunReport(
-          updateRun ?? updateRunReportInputFromSentinel(payload),
-          updateRun?.status === "failed"
-            ? {
-                currentHealth: await readUpdateRunReportHealth(updateRun.verification, {
-                  env: resolveDeliveryQueueStateEnv(undefined, noticeContext),
-                }),
-              }
-            : {},
-        ).markdown
+      ? renderUpdateRunSummary(updateRun ?? updateRunReportInputFromSentinel(payload))
       : message;
   const summary = summarizeRestartSentinel(payload);
   const wakeDeliveryContext = mergeDeliveryContext(
@@ -455,16 +441,7 @@ async function loadRestartSentinelStartupTask(params: {
         // runs finish here; first-terminal-wins preserves completed CLI results.
         updateRun = await finalizeRestartUpdateRun(payload, true, noticeContext);
         if (updateRun) {
-          noticeMessage = renderUpdateRunReport(
-            updateRun,
-            updateRun.status === "failed"
-              ? {
-                  currentHealth: await readUpdateRunReportHealth(updateRun.verification, {
-                    env: resolveDeliveryQueueStateEnv(undefined, noticeContext),
-                  }),
-                }
-              : {},
-          ).markdown;
+          noticeMessage = renderUpdateRunSummary(updateRun);
         }
       }
     }
@@ -632,6 +609,9 @@ async function loadRestartSentinelStartupTask(params: {
     // Every downstream intent is durable before consuming the singleton. A
     // failed or stale compare-delete cannot lose work or remove a newer row.
     const consumed = await clearRestartSentinelIfRevision(sentinelRevision, env);
+    if (params.signal.aborted || params.shouldRun?.() === false) {
+      return { status: "skipped" as const, reason: "gateway-stopped" };
+    }
     if (!consumed) {
       log.info(`${summary}: newer restart sentinel preserved while draining durable work`, {
         sessionKey: canonicalKey,
