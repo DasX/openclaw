@@ -1020,11 +1020,13 @@ abort from a forced removal of its recovery ownership:
 
 | Outcome                                                                    | `status`        | `action`                   |
 | -------------------------------------------------------------------------- | --------------- | -------------------------- |
-| Abort acknowledged and cleanup drained                                     | `aborted`       | `abort_embedded_run`       |
+| Abort acknowledged; drainage reported separately                           | `aborted`       | `abort_embedded_run`       |
 | Ownership force-cleared, including cleanup timeout after an accepted abort | `force_cleared` | `force_clear_embedded_run` |
 
 A force-clear releases recovery ownership; it does not prove the original work
 stopped. The diagnostic log retains the separate `aborted` and `drained` flags.
+An `aborted` outcome can still have `drained=false`; only the `drained` flag
+reports whether cleanup drained.
 
 The OpenTelemetry `openclaw.session.recovery.completed` counter exports these
 values as `openclaw.status` and `openclaw.action`. After upgrading, queries that

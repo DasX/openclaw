@@ -269,6 +269,33 @@ describe("stuck session recovery", () => {
     );
   });
 
+  it("reports an acknowledged abort separately from drainage when force-clear does not occur", async () => {
+    mocks.resolveActiveEmbeddedRunHandleSessionId.mockReturnValue("session-1");
+    mocks.abortEmbeddedAgentRun.mockReturnValue(true);
+    mocks.waitForEmbeddedAgentRunEnd.mockResolvedValue(false);
+    mocks.forceClearEmbeddedAgentRun.mockReturnValue(false);
+    mocks.resetCommandLane.mockReturnValue(1);
+
+    const outcome = await recoverStuckDiagnosticSession({
+      sessionId: "session-1",
+      sessionKey: "agent:main:main",
+      ageMs: 240_000,
+      allowActiveAbort: true,
+    });
+
+    expect(outcome).toMatchObject({
+      status: "aborted",
+      action: "abort_embedded_run",
+      aborted: true,
+      drained: false,
+      forceCleared: false,
+      released: 1,
+    });
+    expect(warnLogMessages()).toContain(
+      "stuck session recovery outcome: status=aborted action=abort_embedded_run sessionId=session-1 sessionKey=agent:main:main activeSessionId=session-1 activeWorkKind=embedded_run lane=session:agent:main:main aborted=true drained=false forceCleared=false released=1",
+    );
+  });
+
   it("force-clears and releases the session lane when an active run cannot be aborted", async () => {
     mocks.resolveActiveEmbeddedRunHandleSessionId.mockReturnValue("session-1");
     mocks.abortEmbeddedAgentRun.mockReturnValue(false);
