@@ -1,4 +1,5 @@
 import { formatErrorMessage } from "../infra/errors.js";
+import { OpenClawStateOwnershipError } from "../infra/sqlite-lifecycle-errors.js";
 import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import { findStartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { resolveGlobalSet } from "../shared/global-singleton.js";
@@ -8,7 +9,6 @@ import {
 } from "../state/openclaw-state-db-readonly.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import { OpenClawStateOwnershipError } from "../state/openclaw-state-ownership.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import {
@@ -35,17 +35,12 @@ const observations = resolveGlobalSet<HealthObservation>(
 const supersededObservation = new Error("Config health observation was superseded");
 
 function matchingObservations(next: HealthObservation): HealthObservation[] {
-  const matches: HealthObservation[] = [];
-  for (const current of observations) {
-    if (
+  return [...observations].filter(
+    (current) =>
       current.configPath === next.configPath &&
       (current.databasePath === next.databasePath ||
-        (next.identity() !== undefined && current.identity() === next.identity()))
-    ) {
-      matches.push(current);
-    }
-  }
-  return matches;
+        (next.identity() !== undefined && current.identity() === next.identity())),
+  );
 }
 
 function supersedeMatchingObservations(next: HealthObservation): void {
@@ -190,6 +185,7 @@ type ConfigHealthStateStore = Disposable & {
 export function captureConfigHealthStateStore(
   deps: ConfigHealthStateDeps,
   configPath: string,
+  assertAdmissionCurrent?: () => void,
 ): ConfigHealthStateStore {
   const env = resolveConfigHealthStateEnv(deps);
   const databasePath = resolveOpenClawStateSqlitePath(env);
@@ -203,6 +199,7 @@ export function captureConfigHealthStateStore(
     captured = { error };
   }
   const captureScope = (continuation = false): ConfigHealthStateStore => {
+    assertAdmissionCurrent?.();
     const observation: HealthObservation = {
       databasePath,
       configPath,
@@ -215,6 +212,7 @@ export function captureConfigHealthStateStore(
       observations.add(observation);
     }
     const isCurrent = () => {
+      assertAdmissionCurrent?.();
       if ("context" in captured) {
         captured.context.admission.assertCurrent();
       }

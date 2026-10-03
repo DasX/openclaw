@@ -149,6 +149,7 @@ suite.define(() => {
           sessionInfo: queued,
         };
         await gateway.setMethodResponse("chat.history", queuedHistory);
+        await gateway.setMethodResponse("chat.startup", queuedHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([queued]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",
@@ -191,6 +192,7 @@ suite.define(() => {
           thinkingLevel: null,
         };
         await gateway.setMethodResponse("chat.history", activeHistory);
+        await gateway.setMethodResponse("chat.startup", activeHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([active]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",
@@ -242,7 +244,9 @@ suite.define(() => {
 
         const failed = session("failed");
         expect(completedUpdatedAt).toBeLessThanOrEqual(failed.updatedAt);
-        await gateway.setMethodResponse("chat.history", { ...activeHistory, sessionInfo: failed });
+        const failedHistory = { ...activeHistory, sessionInfo: failed };
+        await gateway.setMethodResponse("chat.history", failedHistory);
+        await gateway.setMethodResponse("chat.startup", failedHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([failed]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",
@@ -250,9 +254,18 @@ suite.define(() => {
           sessionKey,
         });
         await page.getByText("Runner failed", { exact: true }).waitFor();
-        await page
-          .getByText("Workspace reconciliation failed: local worktree is locked.", { exact: false })
+        const failure = page.locator(".chat-error").filter({
+          hasText: "Workspace reconciliation failed: local worktree is locked.",
+        });
+        await failure
+          .locator("summary strong")
+          .getByText("Couldn't finish this reply. Check the conversation before trying again.")
           .waitFor();
+        await failure.locator("summary").click();
+        await failure.getByLabel("Error details", { exact: true }).waitFor();
+        expect(await failure.getByLabel("Error details", { exact: true }).textContent()).toContain(
+          "Workspace reconciliation failed: local worktree is locked.",
+        );
         if (captureUiProofEnabled) {
           await page.screenshot({
             fullPage: true,

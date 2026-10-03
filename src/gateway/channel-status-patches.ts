@@ -1,6 +1,9 @@
 // Channel status patch factories centralize timestamp fields that multiple
 // runtime paths send into the gateway status store.
+import { isChannelIngressUnavailableError } from "../channels/message/ingress-unavailable.js";
 import type { ChannelAccountSnapshot } from "../channels/plugins/types.core.js";
+import { extractErrorCode, formatErrorMessage } from "../infra/errors.js";
+import { isPluginTrustRefusalError } from "../plugins/plugin-trust.js";
 
 /** Patch emitted when a channel connection is established. */
 type ConnectedChannelStatusPatch = {
@@ -108,6 +111,24 @@ export function channelBlockedPatch(
   );
 }
 
+/** Classifies startup failures before transport cleanup or retry policy can hide their cause. */
+export function channelStartFailurePatch(error: unknown): Omit<
+  ChannelAccountSnapshot,
+  "accountId"
+> & {
+  lastError: string;
+} {
+  const lastError = formatErrorMessage(error);
+  const trustRefused = isPluginTrustRefusalError(error);
+  return {
+    lastError,
+    ...(extractErrorCode(error) === "AGENT_SELECTION_REQUIRED" || trustRefused
+      ? channelBlockedPatch(lastError, trustRefused ? { healthState: "plugin-trust-refused" } : {})
+      : {}),
+    ...(isChannelIngressUnavailableError(error) ? { ingressUnavailable: true } : {}),
+  };
+}
+
 /** Creates the shared patch emitted after a channel account has stopped. */
 export function channelStoppedPatch(): StoppedChannelStatusPatch;
 export function channelStoppedPatch<TExtras extends StoppedChannelStatusExtras>(
@@ -124,4 +145,36 @@ export function channelStoppedPatch(
     },
     extras,
   );
+}
+
+export function sanitizeAbortedTaskStatusPatch(
+  patch: ChannelAccountSnapshot,
+  current: ChannelAccountSnapshot,
+): ChannelAccountSnapshot {
+  const next = { ...patch };
+  delete next.running;
+  delete next.restartPending;
+  delete next.reconnectAttempts;
+  delete next.lastStartAt;
+  delete next.lastStopAt;
+  delete next.lifecycle;
+
+  // A stale task may still emit a late "connected" heartbeat after the gateway
+  // has already aborted it and marked restart recovery pending. Do not let that
+  // old task make the stopped runtime look connected again.
+  if (next.connected === true) {
+    delete next.connected;
+    delete next.lastConnectedAt;
+    delete next.lastEventAt;
+    delete next.lastTransportActivityAt;
+  }
+
+  // Preserve actionable lifecycle diagnostics (for example a stop-timeout
+  // recovery error) against late stale-task status patches that merely clear
+  // plugin transport errors.
+  if (next.lastError === null && current.lastError) {
+    delete next.lastError;
+  }
+
+  return next;
 }

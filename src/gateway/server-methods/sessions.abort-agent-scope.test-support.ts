@@ -13,7 +13,7 @@ export function createActiveRun(sessionKey: string, params: { agentId?: string }
   };
 }
 
-export type ActiveRun = ReturnType<typeof createActiveRun>;
+type ActiveRun = ReturnType<typeof createActiveRun>;
 type TestAgentConfig = { id: string; default?: boolean };
 
 function createDefaultAgents(): TestAgentConfig[] {
@@ -35,6 +35,7 @@ export function createContext(
   return {
     chatAbortControllers: new Map(options.activeRuns ?? []),
     getRuntimeConfig: () => cfg,
+    logGateway: { info: () => {}, warn: () => {} },
     ...options.extra,
   } as unknown as GatewayRequestContext;
 }

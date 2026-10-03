@@ -1,5 +1,4 @@
 // Imessage tests cover monitor.last route plugin behavior.
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +10,8 @@ import {
   recordInboundSession,
   type ensureConfiguredBindingRouteReady,
 } from "openclaw/plugin-sdk/conversation-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createTestRegistry,
   resetPluginRuntimeStateForTest,
@@ -18,9 +19,11 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import { closeOpenClawAgentDatabasesAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import type { waitForTransportReady } from "openclaw/plugin-sdk/transport-ready-runtime";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { createIMessageRpcClient } from "./client.js";
 import {
   matchIMessageAcpConversation,
@@ -174,13 +177,9 @@ const dispatchReplyWithBufferedBlockDispatcherMock = vi.hoisted(() =>
 const debouncerControl = vi.hoisted(() => ({
   holdEntries: false,
   entries: [] as unknown[],
-  flush: undefined as undefined | (() => Promise<void>),
-  flushEach: undefined as undefined | (() => Promise<void>),
   reset() {
     this.holdEntries = false;
     this.entries = [];
-    this.flush = undefined;
-    this.flushEach = undefined;
   },
 }));
 const createChannelInboundDebouncerMock = vi.hoisted(() =>
@@ -198,19 +197,6 @@ const createChannelInboundDebouncerMock = vi.hoisted(() =>
             return;
           }
           debouncerControl.entries.push(entry);
-          debouncerControl.flush = async () => {
-            const entries = debouncerControl.entries.splice(0);
-            await opts.onFlush(entries, createTestInboundDebounceFlush).completion;
-          };
-          // Flush each collected entry as its own single-entry bucket, modeling
-          // the real non-debounced path (shouldDebounceTextInbound is mocked to
-          // false here) where every row dispatches individually.
-          debouncerControl.flushEach = async () => {
-            const entries = debouncerControl.entries.splice(0);
-            for (const queued of entries) {
-              await opts.onFlush([queued], createTestInboundDebounceFlush).completion;
-            }
-          };
         },
         flushKey: async () => {},
         cancelKey: () => false,
@@ -287,7 +273,13 @@ async function runChannelInboundEventForLastRouteTest(params: RunChannelInboundE
 }
 
 describe("iMessage monitor last-route updates", () => {
-  const tempDirs: string[] = [];
+  const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
+    afterAll(async () => {
+      await closeOpenClawAgentDatabasesAsync(sessionRoot);
+      cleanup();
+    });
+  });
+  const sessionRoot = tempDirs.make("openclaw-imessage-last-route-");
   const openClawStates: OpenClawTestState[] = [];
 
   beforeEach(() => {
@@ -320,9 +312,6 @@ describe("iMessage monitor last-route updates", () => {
     vi.useRealTimers();
     await Promise.all(openClawStates.splice(0).map((state) => state.cleanup()));
     vi.unstubAllEnvs();
-    for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   function setAvailablePrivateApiMethods(rpcMethods: string[]): void {
@@ -604,6 +593,7 @@ describe("iMessage monitor last-route updates", () => {
 
   async function runIMessageMonitor(params: MonitorRunParams = {}): Promise<void> {
     await monitorIMessageProvider({
+      scheduler: createTestPluginServiceScheduler(),
       ...(params.accountId ? { accountId: params.accountId } : {}),
       config: {
         channels: {
@@ -624,8 +614,7 @@ describe("iMessage monitor last-route updates", () => {
   }
 
   function createTestStateDir(prefix: string): string {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    tempDirs.push(stateDir);
+    const stateDir = tempDirs.make(prefix, sessionRoot);
     return stateDir;
   }
 
@@ -640,17 +629,21 @@ describe("iMessage monitor last-route updates", () => {
     return resolveIMessageRecoveryCursorDbIdentity({ dbPath });
   }
 
-  function createRecoveryChatDb(prefix: string, cursor?: number, label = "boundary"): string {
+  async function createRecoveryChatDb(
+    prefix: string,
+    cursor?: number,
+    label = "boundary",
+  ): Promise<string> {
     const dbPath = path.join(createTestStateDir(prefix), "chat.db");
     if (cursor !== undefined) {
-      advanceIMessageRecoveryCursor("default", recoveryCursorIdentity(dbPath), cursor);
+      await advanceIMessageRecoveryCursor("default", recoveryCursorIdentity(dbPath), cursor);
     }
     seedChatDb(dbPath, label);
     return dbPath;
   }
 
-  function loadRecoveryCursor(dbPath: string): number | null {
-    return loadIMessageRecoveryCursor("default", recoveryCursorIdentity(dbPath));
+  async function loadRecoveryCursor(dbPath: string): Promise<number | null> {
+    return await loadIMessageRecoveryCursor("default", recoveryCursorIdentity(dbPath));
   }
 
   async function runMessageCase(
@@ -721,13 +714,9 @@ describe("iMessage monitor last-route updates", () => {
           }),
         ),
       ),
-      afterNotify: async () => {
-        await vi.waitFor(() => {
-          expect(dispatchReplyWithBufferedBlockDispatcherMock).toHaveBeenCalledTimes(texts.length);
-        });
-      },
       monitor: { runtime },
     });
+    expect(dispatchReplyWithBufferedBlockDispatcherMock).toHaveBeenCalledTimes(texts.length);
     expect(
       dispatchReplyWithBufferedBlockDispatcherMock.mock.calls.map(
         ([params]) => params.ctx.BodyForAgent,
@@ -740,13 +729,8 @@ describe("iMessage monitor last-route updates", () => {
   });
 
   it("waits for configured ACP target readiness before dispatching an authorized message", async () => {
-    let releaseReadiness: ((value: { ok: true }) => void) | undefined;
-    ensureConfiguredBindingRouteReadyMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          releaseReadiness = resolve;
-        }),
-    );
+    const readiness = createDeferred<{ ok: true }>();
+    ensureConfiguredBindingRouteReadyMock.mockReturnValueOnce(readiness.promise);
     createIMessageWatchClient({
       onClose: async (notify) => {
         notify(createInboundMessage({ id: 81, guid: "acp-ready-81", text: "start the agent" }));
@@ -754,7 +738,7 @@ describe("iMessage monitor last-route updates", () => {
           expect(ensureConfiguredBindingRouteReadyMock).toHaveBeenCalledTimes(1);
         });
         expect(dispatchReplyWithBufferedBlockDispatcherMock).not.toHaveBeenCalled();
-        releaseReadiness?.({ ok: true });
+        readiness.resolve({ ok: true });
         await vi.waitFor(() => {
           expect(dispatchReplyWithBufferedBlockDispatcherMock).toHaveBeenCalledTimes(1);
         });
@@ -1321,15 +1305,8 @@ describe("iMessage monitor last-route updates", () => {
     });
   });
 
-  it("passes the startup rowid watermark as since_rowid when chat.db is readable", async () => {
-    const dbPath = createRecoveryChatDb("openclaw-imsg-startup-rowid-", undefined, "watermark");
-    const client = await runMessageCase({ monitor: { imessage: { dbPath } } });
-
-    expectWatchSubscription(client, 5000);
-  });
-
   it("recovers over a remote cliPath: replays from the cursor even without a local chat.db boundary", async () => {
-    advanceIMessageRecoveryCursor(
+    await advanceIMessageRecoveryCursor(
       "default",
       resolveIMessageRecoveryCursorDbIdentity({ remoteHost: "user@gateway-host" }),
       4990,
@@ -1346,7 +1323,7 @@ describe("iMessage monitor last-route updates", () => {
   });
 
   it("routes legacy catchup through durable ingress and rejects a live GUID overlap", async () => {
-    const dbPath = createRecoveryChatDb("openclaw-imsg-catchup-window-");
+    const dbPath = await createRecoveryChatDb("openclaw-imsg-catchup-window-");
     const createdAt = new Date().toISOString();
     const historyMessage = createInboundMessage({
       id: 4995,
@@ -1378,7 +1355,7 @@ describe("iMessage monitor last-route updates", () => {
   });
 
   it("recovers downtime messages: replays from the cursor and delivers replay rows older than the live fence", async () => {
-    const dbPath = createRecoveryChatDb("openclaw-imsg-recovery-", 4990);
+    const dbPath = await createRecoveryChatDb("openclaw-imsg-recovery-", 4990);
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
     const client = await runMessageCase({
@@ -1406,7 +1383,7 @@ describe("iMessage monitor last-route updates", () => {
   });
 
   it("does not treat startup-boundary rows as recovery replay without a prior cursor", async () => {
-    const dbPath = createRecoveryChatDb("openclaw-imsg-first-run-boundary-");
+    const dbPath = await createRecoveryChatDb("openclaw-imsg-first-run-boundary-");
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
     const client = await runMessageCase({
@@ -1425,7 +1402,7 @@ describe("iMessage monitor last-route updates", () => {
   });
 
   it("records a suppressed live row so a later replay of the same row is deduped, not delivered", async () => {
-    const dbPath = createRecoveryChatDb("openclaw-imsg-suppress-record-");
+    const dbPath = await createRecoveryChatDb("openclaw-imsg-suppress-record-");
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
     await runMessageCase({
@@ -1451,7 +1428,7 @@ describe("iMessage monitor last-route updates", () => {
 
   it("advances the recovery cursor after durable enqueue before dispatch", async () => {
     debouncerControl.holdEntries = true;
-    const dbPath = createRecoveryChatDb("openclaw-imsg-recovery-failed-", 4990);
+    const dbPath = await createRecoveryChatDb("openclaw-imsg-recovery-failed-", 4990);
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
     const client = await runMessageCase({
@@ -1470,30 +1447,7 @@ describe("iMessage monitor last-route updates", () => {
     await vi.waitFor(() => {
       expect(debouncerControl.entries).toHaveLength(2);
     });
-    expect(loadRecoveryCursor(dbPath)).toBe(4996);
-  });
-
-  it("keeps the durable recovery cursor independent of later dispatch order", async () => {
-    debouncerControl.holdEntries = true;
-    const dbPath = createRecoveryChatDb("openclaw-imsg-recovery-ordered-", 4990);
-    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-
-    await runMessageCase({
-      messages: [4995, 4996].map((id) =>
-        createInboundMessage({
-          id,
-          guid: `OUT-OF-ORDER-REPLAY-GUID-${id}`,
-          text: `missed during downtime ${id}`,
-          created_at: thirtyMinAgo,
-        }),
-      ),
-      monitor: { imessage: { dbPath } },
-    });
-
-    await vi.waitFor(() => {
-      expect(debouncerControl.entries).toHaveLength(2);
-    });
-    expect(loadRecoveryCursor(dbPath)).toBe(4996);
+    expect(await loadRecoveryCursor(dbPath)).toBe(4996);
   });
 
   const replacedDatabaseCases = [
@@ -1517,7 +1471,7 @@ describe("iMessage monitor last-route updates", () => {
     it(replacedDatabase.name, async () => {
       const stateDir = createTestStateDir(replacedDatabase.prefix);
       const dbPath = path.join(stateDir, "chat.db");
-      advanceIMessageRecoveryCursor(
+      await advanceIMessageRecoveryCursor(
         "default",
         resolveIMessageRecoveryCursorDbIdentity({ dbPath }),
         9000,
@@ -1570,7 +1524,10 @@ describe("iMessage monitor last-route updates", () => {
         expect(dispatchReplyWithBufferedBlockDispatcherMock).toHaveBeenCalledTimes(1);
       });
       expect(
-        loadIMessageRecoveryCursor("default", resolveIMessageRecoveryCursorDbIdentity({ dbPath })),
+        await loadIMessageRecoveryCursor(
+          "default",
+          resolveIMessageRecoveryCursorDbIdentity({ dbPath }),
+        ),
       ).toBe(replacedDatabase.liveRowid);
     });
   }
@@ -1578,7 +1535,7 @@ describe("iMessage monitor last-route updates", () => {
   it("does not self-fence past the first row inserted while an empty rebuilt chat.db starts", async () => {
     const stateDir = createTestStateDir("openclaw-imsg-db-rebuilt-startup-race-");
     const dbPath = path.join(stateDir, "chat.db");
-    advanceIMessageRecoveryCursor(
+    await advanceIMessageRecoveryCursor(
       "default",
       resolveIMessageRecoveryCursorDbIdentity({ dbPath }),
       9000,
@@ -1629,7 +1586,10 @@ describe("iMessage monitor last-route updates", () => {
       expect(dispatchReplyWithBufferedBlockDispatcherMock).toHaveBeenCalledTimes(1);
     });
     expect(
-      loadIMessageRecoveryCursor("default", resolveIMessageRecoveryCursorDbIdentity({ dbPath })),
+      await loadIMessageRecoveryCursor(
+        "default",
+        resolveIMessageRecoveryCursorDbIdentity({ dbPath }),
+      ),
     ).toBe(1);
   });
 

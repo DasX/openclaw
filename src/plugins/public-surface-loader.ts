@@ -3,8 +3,10 @@ import {
   MissingPublicSurfaceError,
   loadFacadeModuleAtLocationSync,
   resolveBundledPublicSurfaceLocation,
+  type FacadeModuleLocation,
 } from "../plugin-sdk/facade-loader.js";
 import { shouldRejectHardlinkedPluginFiles } from "./hardlink-policy.js";
+import type { PluginManifestRecord } from "./manifest-registry.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
 import { resolvePluginRootPublicSurfacePath } from "./public-surface-runtime.js";
 
@@ -55,14 +57,14 @@ export function loadPluginPublicArtifactModuleSync<T extends object>(params: {
   pluginId?: string;
 }): T {
   const modulePath = resolvePluginRootPublicSurfacePath(params);
-  const location = modulePath ? { modulePath, boundaryRoot: params.pluginRoot } : null;
-  if (!location) {
+  if (!modulePath) {
     throw new MissingPublicSurfaceError(
       `Unable to resolve plugin public surface ${params.pluginRoot}/${params.artifactBasename}`,
     );
   }
   return loadValidatedPublicSurfaceModule({
-    ...location,
+    modulePath,
+    boundaryRoot: params.pluginRoot,
     surfaceLabel: `plugin public surface ${params.artifactBasename}`,
     origin: params.origin ?? "global",
     pluginId: params.pluginId,
@@ -75,14 +77,33 @@ export function loadBundledPluginPublicArtifactModuleFromCandidatesSync<T extend
   dirName: string;
   artifactCandidates: readonly string[];
   env?: NodeJS.ProcessEnv;
+  owner?: Pick<PluginManifestRecord, "id" | "rootDir" | "source" | "origin">;
 }): T | null {
   for (const artifactBasename of params.artifactCandidates) {
-    const location = resolveBundledPublicSurfaceLocation({
-      dirName: params.dirName,
-      artifactBasename,
-      env: params.env,
-      preferSource: false,
-    });
+    let location: FacadeModuleLocation | null;
+    if (params.owner) {
+      const modulePath = resolvePluginRootPublicSurfacePath({
+        pluginRoot: params.owner.rootDir,
+        pluginId: params.owner.id,
+        entrySource: params.owner.source,
+        artifactBasename,
+      });
+      location = modulePath
+        ? {
+            modulePath,
+            boundaryRoot: params.owner.rootDir,
+            pluginId: params.owner.id,
+            origin: params.owner.origin,
+          }
+        : null;
+    } else {
+      location = resolveBundledPublicSurfaceLocation({
+        dirName: params.dirName,
+        artifactBasename,
+        env: params.env,
+        preferSource: false,
+      });
+    }
     if (location) {
       return loadValidatedPublicSurfaceModule({
         ...location,

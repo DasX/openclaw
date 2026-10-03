@@ -88,6 +88,34 @@ class SwitchHandler(FixtureHandler):
         self.reply(200, b"{}", "application/json")
 
 
+def stop_private_vault(vault):
+    if vault is not None and vault.poll() is None:
+        vault.terminate()
+        vault.wait(timeout=5)
+
+
+def start_private_vault(chrome):
+    from gi.repository import Gio, GLib
+
+    vault = subprocess.Popen(
+        ["gnome-keyring-daemon", "--foreground", "--unlock", "--components=secrets"],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        vault.stdin.write(b"synthetic-private-vault\n")
+        vault.stdin.close()
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        chrome.until(lambda: bus.call_sync(
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+            "NameHasOwner", GLib.Variant("(s)", ("org.freedesktop.secrets",)), None,
+            Gio.DBusCallFlags.NONE, 1000, None,
+        ).unpack()[0], "the isolated credential vault")
+    except BaseException:
+        stop_private_vault(vault)
+        raise
+    return vault
+
+
 class GatewaySwitchFixture(GatewayFixture):
     def __init__(self, artifacts_dir):
         super().__init__(artifacts_dir)
@@ -101,21 +129,8 @@ class GatewaySwitchFixture(GatewayFixture):
         self.config_hash = None
 
     def start(self):
-        from gi.repository import Gio, GLib
-
         self.chrome.start()
-        self.vault = subprocess.Popen(
-            ["gnome-keyring-daemon", "--foreground", "--unlock", "--components=secrets"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        self.vault.stdin.write(b"synthetic-private-vault\n")
-        self.vault.stdin.close()
-        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        self.chrome.until(lambda: bus.call_sync(
-            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
-            "NameHasOwner", GLib.Variant("(s)", ("org.freedesktop.secrets",)), None,
-            Gio.DBusCallFlags.NONE, 1000, None,
-        ).unpack()[0], "the isolated credential vault")
+        self.vault = start_private_vault(self.chrome)
         super().start()
         self.config_hash = self.primary_hash()
 
@@ -165,11 +180,9 @@ class GatewaySwitchFixture(GatewayFixture):
             self.chrome.command("xdotool", "key", "ctrl+a")
             self.chrome.command("xdotool", "type", "--clearmodifiers", "--delay", "10", value)
 
-        def open_auth():
-            # WebKit does not expose <summary> consistently through AT-SPI.
-            # Exercise its keyboard path from the preceding URL input.
-            focus_input("Gateway URL")
-            self.chrome.command("xdotool", "key", "Tab", "space")
+        def select_auth(method):
+            click("Authentication", "combo box")
+            self.chrome.command("xdotool", "key", {"token": "Home", "password": "End"}[method], "Return")
 
         def select(name, window):
             self.chrome.command("wmctrl", "-ia", window)
@@ -190,14 +203,16 @@ class GatewaySwitchFixture(GatewayFixture):
         wait("Selected: Primary Gateway")
         self.open_native_menu(app, "Manage Gateways…")
         wait("Manage Gateways", "heading")
-        wait("No saved Gateways yet. Add a connection to get started.")
+        wait("Your Gateways, in one place", "heading")
         click("Add Gateway")
+        wait("Add Gateway", "heading")
         fill("Name", "Studio Gateway")
         fill("Gateway URL", f"http://127.0.0.1:{self.server_port}/secondary/")
-        open_auth()
-        fill("Gateway token", "synthetic-gateway-token")
+        select_auth("token")
+        fill("Gateway token (optional)", "synthetic-gateway-token")
         click("Save Gateway")
         wait("Saved Studio Gateway.")
+        wait("Manage Gateways", "heading")
         self.capture("after-saved")
         record("saved profile through local editor and system credential vault")
 
@@ -293,6 +308,7 @@ class GatewaySwitchFixture(GatewayFixture):
         wait("Manage Gateways", "heading")
         settings = next(window for window in self.windows(app) if window != main)
         click("Edit Studio Gateway")
+        wait("Edit Gateway", "heading")
         click("Connection type", "combo box")
         self.chrome.command("xdotool", "key", "End", "Return")
         fill("SSH target", f"fixture@127.0.0.1:{urlsplit(self.refused_url).port}")
@@ -307,8 +323,8 @@ class GatewaySwitchFixture(GatewayFixture):
         click("Connection type", "combo box")
         self.chrome.command("xdotool", "key", "Home", "Return")
         fill("Gateway URL", f"http://127.0.0.1:{self.server_port}/secondary/")
-        open_auth()
-        fill("Gateway token", "synthetic-gateway-token")
+        select_auth("token")
+        fill("Gateway token (optional)", "synthetic-gateway-token")
         click("Save Gateway")
         wait("Studio Gateway", "heading")
         wait("Selected: Studio Gateway")
@@ -321,6 +337,7 @@ class GatewaySwitchFixture(GatewayFixture):
         wait("Manage Gateways", "heading")
         settings = next(window for window in self.windows(app) if window != main)
         click("Edit Studio Gateway")
+        wait("Edit Gateway", "heading")
         fill("Gateway URL", self.refused_url)
         recovery_geometry = self.chrome.geometry(main)
         click("Save Gateway")
@@ -331,8 +348,8 @@ class GatewaySwitchFixture(GatewayFixture):
         wait("Edit Gateway", "heading")
         self.capture("failed-direct-edit-recovery")
         fill("Gateway URL", f"http://127.0.0.1:{self.server_port}/secondary/")
-        open_auth()
-        fill("Gateway token", "synthetic-gateway-token")
+        select_auth("token")
+        fill("Gateway token (optional)", "synthetic-gateway-token")
         click("Save Gateway")
         wait("Studio Gateway", "heading")
         wait("Selected: Studio Gateway")
@@ -345,6 +362,7 @@ class GatewaySwitchFixture(GatewayFixture):
         wait("Manage Gateways", "heading")
         settings = next(window for window in self.windows(app) if window != main)
         click("Add Gateway")
+        wait("Add Gateway", "heading")
         fill("Name", "Unavailable Gateway")
         fill("Gateway URL", self.refused_url)
         click("Save Gateway")
@@ -391,17 +409,25 @@ class GatewaySwitchFixture(GatewayFixture):
         self.open_native_menu(app, "Manage Gateways…")
         wait("Manage Gateways", "heading")
         click("Edit Studio Gateway")
-        open_auth()
-        entry = wait("Gateway token", ("entry", "text", "password text"), predicate=lambda node:
-                     node.get_state_set().contains(Atspi.StateType.EDITABLE))
-        if Atspi.Text.get_text(entry.get_text_iface(), 0, -1):
-            raise RuntimeError("The editor exposed a saved credential")
-        click("Cancel")
+        wait("Edit Gateway", "heading")
+        for method in ("token", "password"):
+            select_auth(method)
+            # WebKitGTK exposes password placeholders as text; reveal to read the actual value.
+            click("Show credential")
+            entry = wait(f"Gateway {method} (optional)", ("entry", "text"), predicate=lambda node:
+                         node.get_state_set().contains(Atspi.StateType.EDITABLE) and in_active_window(node))
+            if Atspi.Text.get_text(entry.get_text_iface(), 0, -1):
+                raise RuntimeError("The editor exposed a saved credential")
+            click("Hide credential")
+            wait(f"Gateway {method} (optional)", "password text", predicate=lambda node:
+                 node.get_state_set().contains(Atspi.StateType.EDITABLE) and in_active_window(node))
+        click("Back to Gateways")
+        wait("Manage Gateways", "heading")
         record("saved credential is not disclosed by the editor")
         click("Remove Studio Gateway")
         wait("Remove Gateway?", "heading")
         click("Remove Gateway")
-        wait("No saved Gateways yet. Add a connection to get started.")
+        wait("Your Gateways, in one place", "heading")
         self.chrome.until(lambda: len(self.windows(app)) == 2, "removed Gateway auxiliary windows to close")
         self.chrome.command("wmctrl", "-ia", main)
         wait("Primary Gateway", "heading")
@@ -423,9 +449,7 @@ class GatewaySwitchFixture(GatewayFixture):
         self.shutdown()
         self.server_close()
         self.server_thread.join(timeout=5)
-        if self.vault is not None and self.vault.poll() is None:
-            self.vault.terminate()
-            self.vault.wait(timeout=5)
+        stop_private_vault(self.vault)
         self.chrome.close()
         if self.artifacts_dir:
             (self.artifacts_dir / "gateway-switch-results.json").write_text(json.dumps({

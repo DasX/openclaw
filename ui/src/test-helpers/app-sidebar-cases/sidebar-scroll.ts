@@ -4,7 +4,7 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { createGateway, createSessions, mountSidebar } from "../app-sidebar.ts";
 import "../../components/app-sidebar.ts";
 
-describe("AppSidebar session scroll fade", () => {
+describe("AppSidebar scroll", () => {
   it("swaps only the lower content and restores each destination's scroll position", async () => {
     const gateway = createGateway({} as GatewayBrowserClient);
     const { sidebar } = await mountSidebar(gateway, createSessions("main", ["agent:main:main"]));
@@ -12,7 +12,6 @@ describe("AppSidebar session scroll fade", () => {
     const footer = sidebar.querySelector(".sidebar-shell__footer");
     const scroller = sidebar.querySelector<HTMLElement>(".sidebar-shell__body")!;
     const sessions = sidebar.querySelector<HTMLElement>(".sidebar-session-content")!;
-    expect(scroller.contains(nav)).toBe(false);
     scroller.scrollTop = 75;
     scroller.dispatchEvent(new Event("scroll"));
     sidebar.contextualSidebar = {
@@ -44,9 +43,16 @@ describe("AppSidebar session scroll fade", () => {
     expect(sidebar.querySelector(".sidebar-shell__footer")).toBe(footer);
   });
 
-  it("shows fades only toward additional session content", async () => {
+  it("shows fades only toward additional content", async () => {
     const gateway = createGateway({} as GatewayBrowserClient);
     const { sidebar } = await mountSidebar(gateway, createSessions("main", ["agent:main:main"]));
+    sidebar.contextualSidebar = {
+      key: "systems",
+      data: undefined,
+      loaderPending: false,
+      render: () => html`<p>Gateway machine</p>`,
+    };
+    await sidebar.updateComplete;
     const scroller = sidebar.querySelector<HTMLElement>(".sidebar-shell__body");
     if (!scroller) {
       throw new Error("Expected sidebar body scroller");

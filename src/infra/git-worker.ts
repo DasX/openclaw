@@ -8,12 +8,9 @@ import type {
   GitWorktreeEffectResult,
 } from "../agents/worktrees/git-worktree-operations.js";
 import { runGitBytes, runGitBuffered } from "../agents/worktrees/git.js";
+import { withGitProcessOperation, type GitProcessOperation } from "../process/spawn-diagnostics.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import {
-  ownedGitWorkerBytes,
-  restoreGitWorkerFailure,
-  serializeGitWorkerFailure,
-} from "./git-worker-context.js";
+import { restoreGitWorkerFailure, serializeGitWorkerFailure } from "./git-worker-context.js";
 import type {
   GitWorkerCommand,
   GitWorkerHostRequest,
@@ -25,6 +22,7 @@ import { GIT_WORKER_HOST_BATCH_LIMIT } from "./git-worker-contract.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { WorkerTaskError, WorkerTaskPool, type WorkerTaskResponse } from "./worker-task-pool.js";
+import { ownedWorkerBytes } from "./worker-transfer-bytes.js";
 
 type GitPool = WorkerTaskPool<GitWorkerCommand, GitWorkerReply<GitWorkerResult>>;
 type GitWorkerRuntime = {
@@ -38,6 +36,41 @@ type GitWorkerRuntime = {
 };
 const MAX_PENDING_OPERATIONS = 128;
 const WORKER_PHASE_TIMEOUT_MS = 30 * 60_000;
+const SPAWN_OPERATIONS = {
+  "repository.identities": "repository.identities",
+  "repository.branches": "repository.branches",
+  "checkout.revision": "checkout.revision",
+  "checkout.context": "checkout.context",
+  "checkout.diff": "checkout.diff",
+  "checkout.baseline": "checkout.baseline",
+  "pull-request.branch-facts": "pull-request.branch-facts",
+  "worktree.snapshot": "worktree.snapshot",
+  "worktree.snapshot-verify-exact": "worktree.snapshot",
+  "worktree.cleanup-inspection": "worktree.cleanup",
+  "worktree.provisioning-inspection": "worktree.provision",
+  "worktree.git-size": "worktree.inspect",
+  "worktree.checkout-transition-size": "worktree.inspect",
+  "worktree.directory-size": "worktree.inspect",
+  "workspace.artifacts": "workspace.inventory",
+  "workspace.inventory.select": "workspace.inventory",
+  "workspace.inventory.existing": "workspace.inventory",
+  "workspace.inventory.paths": "workspace.inventory",
+  "workspace.inventory.staged-directories": "workspace.inventory",
+  "workspace.manifest.capture": "workspace.manifest",
+  "workspace.manifest.snapshot": "workspace.manifest",
+  "workspace.manifest.parse": "workspace.manifest",
+  "workspace.manifest.serialize": "workspace.manifest",
+  "workspace.manifest.overlay": "workspace.manifest",
+  "workspace.manifest.pair": "workspace.manifest",
+  "workspace.manifest.staged": "workspace.manifest",
+  "workspace.manifest.entries": "workspace.manifest",
+  "workspace.manifest.file": "workspace.manifest",
+  "workspace.manifest.nodes": "workspace.manifest",
+  "workspace.manifest.stage-input": "workspace.manifest",
+  "workspace.manifest.tree-input": "workspace.manifest",
+  "workspace.manifest.remote-capture": "workspace.manifest",
+  "workspace.reconcile.preflight": "workspace.manifest",
+} satisfies Record<keyof GitWorkerOperations, GitProcessOperation>;
 
 function runtime(): GitWorkerRuntime {
   return resolveGlobalSingleton<GitWorkerRuntime>(
@@ -75,7 +108,10 @@ function poolFor(state: GitWorkerRuntime, command: GitWorkerCommand): GitPool {
         ? "worktrees"
         : command.type.startsWith("workspace.")
           ? "workspace"
-          : command.type === "repository.branches" || command.type === "checkout.context"
+          : command.type === "repository.branches" ||
+              command.type === "repository.identities" ||
+              command.type === "checkout.context" ||
+              command.type === "checkout.revision"
             ? "reads"
             : "content";
   // Preparation can hold the allocation lease; unrelated maintenance must not block it.
@@ -98,6 +134,11 @@ export type GitWorkerOperationOptions = {
   transferList?: (command: GitWorkerCommand) => readonly Transferable[];
   signal?: AbortSignal;
   assertCurrent?: () => void;
+  /** Host-owned Git policy; the broker still owns authority and process settlement. */
+  git?: {
+    text: typeof runGitBytes;
+    buffered: typeof runGitBuffered;
+  };
   onInventoryChunk?: (bytes: Uint8Array, context: { signal: AbortSignal }) => Promise<void>;
   onEffect?: (
     effect: GitWorktreeEffect,
@@ -125,7 +166,21 @@ export async function runGitWorkerOperation<Command extends GitWorkerCommand>(
     ? structuredClone(command, { transfer: [...new Set(transferList)] })
     : structuredClone(command);
   const baseEnv = { ...process.env };
-  const operation = executeOperation(poolFor(state, admitted), admitted, baseEnv, { ...options });
+  // Pooled workers do not inherit later environment changes. Git discovery
+  // overrides must disable direct metadata reads for this admission too.
+  admitted.filesystemRefs =
+    options.git === undefined &&
+    !Object.entries(baseEnv).some(
+      ([key, value]) =>
+        value !== undefined &&
+        /^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_CEILING_DIRECTORIES|GIT_DISCOVERY_ACROSS_FILESYSTEM|GIT_NAMESPACE|GIT_SHALLOW_FILE|GIT_GRAFT_FILE|GIT_REPLACE_REF_BASE|GIT_NO_REPLACE_OBJECTS|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES)$/i.test(
+          key,
+        ),
+    );
+  const operation = executeOperation(poolFor(state, admitted), admitted, baseEnv, {
+    ...options,
+    git: options.git ? { text: options.git.text, buffered: options.git.buffered } : undefined,
+  });
   state.pending.add(operation);
   void operation.then(
     () => state.pending.delete(operation),
@@ -155,28 +210,24 @@ async function executeOperation(
       const effect = value as GitWorkerHostRequest;
       let result: unknown;
       const transferList: Transferable[] = [];
-      if (effect.type === "git.text") {
-        const output = await runGitBytes(effect.input.cwd, effect.input.args, {
-          ...effect.input.options,
-          baseEnv,
-          signal,
-          beforeRun: options.assertCurrent,
-          killProcessTree: true,
-        });
-        const stdout = ownedGitWorkerBytes(output.stdout);
-        const stderr = ownedGitWorkerBytes(output.stderr);
-        result = { ...output, stdout, stderr };
-        transferList.push(stdout.buffer, stderr.buffer);
-      } else if (effect.type === "git.buffer") {
-        const output = await runGitBuffered(effect.input.cwd, effect.input.args, {
-          ...effect.input.options,
-          baseEnv,
-          signal,
-          beforeRun: options.assertCurrent,
-          killProcessTree: true,
-        });
-        const stdout = ownedGitWorkerBytes(output.stdout);
-        const stderr = ownedGitWorkerBytes(output.stderr);
+      if (effect.type === "git.text" || effect.type === "git.buffer") {
+        const run =
+          effect.type === "git.text"
+            ? (options.git?.text ?? runGitBytes)
+            : (options.git?.buffered ?? runGitBuffered);
+        // The parent owns the operation identity; worker batches cannot relabel their launches.
+        const output = await withGitProcessOperation(SPAWN_OPERATIONS[command.type], () =>
+          run(effect.input.cwd, effect.input.args, {
+            ...effect.input.options,
+            operation: SPAWN_OPERATIONS[command.type],
+            baseEnv,
+            signal,
+            beforeRun: options.assertCurrent,
+            killProcessTree: true,
+          }),
+        );
+        const stdout = ownedWorkerBytes(output.stdout);
+        const stderr = ownedWorkerBytes(output.stderr);
         result = { ...output, stdout, stderr };
         transferList.push(stdout.buffer, stderr.buffer);
       } else if (effect.type === "git.temporary-directory") {
