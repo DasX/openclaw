@@ -52,7 +52,7 @@ import {
 } from "./diagnostic-trace-propagation.js";
 import { isBlockedObjectKey } from "./prototype-keys.js";
 
-export type { DiagnosticMemoryUsage, DiagnosticSessionRecoveryStatus };
+export type { DiagnosticMemoryUsage } from "./diagnostic-process-types.js";
 
 export type DiagnosticSessionState = "idle" | "processing" | "waiting";
 
