@@ -388,6 +388,7 @@ export function createSessionActivitySummaries(deps: {
             assertRequestCurrent();
             const result = await (deps.completeModel ?? defaultCompleteModel)({
               ...prepared,
+              purpose: "session-activity-summary",
               config: deps.getConfig(),
               systemPrompt: SYSTEM_PROMPT,
               prompt: JSON.stringify({
