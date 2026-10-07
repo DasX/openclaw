@@ -28,7 +28,9 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
+import { listSessionStateEventsSince } from "../../../sessions/session-state-events.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { createTestRegistry } from "../../../test-utils/channel-plugins.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
@@ -47,7 +49,6 @@ import { markSubagentRunTerminated } from "../registry/subagent-registry.js";
 import { resetSubagentRegistryForTests } from "../registry/subagent-registry.test-helpers.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import { withParentExecutionIdentity } from "./execution-identity-spawn-context.js";
-import { buildSubagentExecutionSessionSpawnContext } from "./subagent-spawn-execution-identity.js";
 import "./subagent-spawn-model.mocks.shared.js";
 import { makeGatewayContext } from "./subagent-spawn.in-process-gateway.test-support.js";
 import { spawnSubagentDirect } from "./subagent-spawn.js";
@@ -97,21 +98,6 @@ async function waitForAssertion(assertion: () => void, timeoutMs = 2_000): Promi
 }
 
 describe("spawnSubagentDirect in-process Gateway collector launch", () => {
-  it("does not construct private lineage while identity collection is disabled", () => {
-    expect(
-      buildSubagentExecutionSessionSpawnContext({
-        enabled: false,
-        backend: "subagent",
-        parentAgentId: "main",
-        requesterRef: "agent:main:main",
-        controllerRef: "agent:main:main",
-        depth: 1,
-        targetAgentId: "main",
-        sandbox: "inherit",
-      }),
-    ).toBeUndefined();
-  });
-
   beforeEach(async () => {
     resetGatewayWorkAdmission();
     swarmSchedulerTesting.reset();
@@ -452,6 +438,23 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
 
       expect(result.error).toBeUndefined();
       expect(result.status).toBe("accepted");
+      const childSessionKey = expectDefined(result.childSessionKey, "accepted child session");
+      const events = (await listSessionStateEventsSince(childSessionKey, "main", 0)).events;
+      expect(events.map((event) => event.kind)).toEqual(["created", "child_spawned"]);
+      const spawned = expectDefined(events[1], "spawned signal");
+      expect(spawned).toMatchObject({ actorId: "agent:main:main", runId: result.runId });
+      expect(
+        openOpenClawStateDatabase()
+          .db.prepare(
+            `SELECT last_seen_sequence, notified_sequence, material_sequence
+           FROM session_watch_cursors WHERE watcher_session_key = ? AND target_session_key = ?`,
+          )
+          .get("agent:main:main", childSessionKey),
+      ).toEqual({
+        last_seen_sequence: spawned.sequence,
+        notified_sequence: spawned.sequence,
+        material_sequence: spawned.sequence,
+      });
       expect(childIdentity?.executionIdentity).toBe(parentToken);
       expect(readAgentRuntimeExecutionLineage(childIdentity?.sessionSpawnContext)).toMatchObject({
         relation: "sessions_spawn",

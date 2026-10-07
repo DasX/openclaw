@@ -3,6 +3,10 @@ import {
   normalizeOptionalString as readString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { QaParitySuiteSummary } from "./agentic-parity-report.js";
+import {
+  getQaNativeWorkspaceBehavior,
+  readQaNativeWorkspaceBehaviorId,
+} from "./native-workspace-behavior.js";
 import { escapeTableCell } from "./report.js";
 import type { RuntimeId } from "./runtime-id.js";
 import {
@@ -14,57 +18,15 @@ import {
 import {
   readRuntimeToolCoverageConfig,
   readScenarioRuntimeToolCoverageMetadata,
-  type QaRuntimeCapabilityLayer,
-  type QaRuntimeToolBucket,
-  type QaRuntimeToolExpectedLayer,
 } from "./runtime-tool-metadata.js";
 import type { QaSeedScenarioWithSource } from "./scenario-catalog.js";
 
 type QaToolCoverageStatus = "pass" | "fail" | "skip" | "missing" | "not-run";
 type QaToolCoverageDrift = RuntimeParityDrift | "not-run";
 
-type QaToolCoverageRow = {
-  tool: string;
-  runtimeToolName?: string;
-  bucket: QaRuntimeToolBucket;
-  expectedLayer: QaRuntimeToolExpectedLayer;
-  capabilityLayer: QaRuntimeCapabilityLayer;
-  required: boolean;
-  fixtureCount: number;
-  scenarios: string[];
-  sourcePaths: string[];
-  openclaw: QaToolCoverageStatus;
-  codex: QaToolCoverageStatus;
-  drift: QaToolCoverageDrift;
-  openclawToolCalls: number;
-  codexToolCalls: number;
-  openclawSuccessfulToolCalls: number;
-  codexSuccessfulToolCalls: number;
-  tracking?: string;
-  codexDefaultImpact?: string;
-  qaImpact?: string;
-  action?: string;
-  details?: string;
-};
+type QaToolCoverageRow = ReturnType<typeof buildRow>;
 
-type QaToolCoverageReport = {
-  runtimePair: [RuntimeId, RuntimeId];
-  generatedAt: string;
-  evaluated: boolean;
-  totalTools: number;
-  requiredTools: number;
-  reportOnlyTools: number;
-  trackedTools: number;
-  nativeWorkspaceTools: number;
-  dynamicIntegrationTools: number;
-  searchableDynamicTools: number;
-  optionalTools: number;
-  passingTools: number;
-  failingTools: number;
-  rows: QaToolCoverageRow[];
-  pass: boolean;
-  failures: string[];
-};
+type QaToolCoverageReport = ReturnType<typeof buildQaToolCoverageReport>;
 
 type ToolFixtureGroup = {
   tool: string;
@@ -135,6 +97,15 @@ function readScenarioRuntimeToolName(scenario: QaSeedScenarioWithSource): string
   return readString(toolCoverage?.actualTool) ?? readString(config?.toolName);
 }
 
+function readScenarioCodexRuntimeToolName(scenario: QaSeedScenarioWithSource): string | undefined {
+  const behaviorId = readQaNativeWorkspaceBehaviorId(
+    scenario.execution.config?.nativeWorkspaceBehavior,
+  );
+  return behaviorId
+    ? getQaNativeWorkspaceBehavior(behaviorId).nativeToolName
+    : readScenarioRuntimeToolName(scenario);
+}
+
 function mergeScenarioResults(
   scenarios: readonly QaSeedScenarioWithSource[],
   results: ReadonlyMap<string, RuntimeParityResult>,
@@ -163,17 +134,23 @@ function summarizeRuntimeToolCalls(
 function buildRow(params: {
   group: ToolFixtureGroup;
   results: ReadonlyMap<string, RuntimeParityResult>;
-}): QaToolCoverageRow {
+}) {
   const result = mergeScenarioResults(params.group.scenarios, params.results);
   const tracking = params.group.scenarios.map(readScenarioTracking).find(Boolean);
   const metadata = params.group.scenarios.map(readScenarioRuntimeToolCoverageMetadata);
   const rowMetadata = metadata.find((entry) => entry.required) ?? metadata[0]!;
   const runtimeToolName = params.group.scenarios.map(readScenarioRuntimeToolName).find(Boolean);
+  const codexRuntimeToolName = params.group.scenarios
+    .map(readScenarioCodexRuntimeToolName)
+    .find(Boolean);
   const openclawCalls = summarizeRuntimeToolCalls(result, "openclaw", runtimeToolName);
-  const codexCalls = summarizeRuntimeToolCalls(result, "codex", runtimeToolName);
+  const codexCalls = summarizeRuntimeToolCalls(result, "codex", codexRuntimeToolName);
   return {
     tool: params.group.tool,
     ...(runtimeToolName ? { runtimeToolName } : {}),
+    ...(codexRuntimeToolName && codexRuntimeToolName !== runtimeToolName
+      ? { codexRuntimeToolName }
+      : {}),
     bucket: rowMetadata.bucket,
     expectedLayer: rowMetadata.expectedLayer,
     capabilityLayer: rowMetadata.capabilityLayer,
@@ -181,9 +158,9 @@ function buildRow(params: {
     fixtureCount: params.group.scenarios.length,
     scenarios: params.group.scenarios.map((scenario) => scenario.id),
     sourcePaths: params.group.scenarios.map((scenario) => scenario.sourcePath),
-    openclaw: result ? cellStatus(result.cells.openclaw) : "not-run",
-    codex: result ? cellStatus(result.cells.codex) : "not-run",
-    drift: result?.drift ?? "not-run",
+    openclaw: result ? cellStatus(result.cells.openclaw) : ("not-run" as const),
+    codex: result ? cellStatus(result.cells.codex) : ("not-run" as const),
+    drift: result?.drift ?? ("not-run" as const),
     openclawToolCalls: openclawCalls.total,
     codexToolCalls: codexCalls.total,
     openclawSuccessfulToolCalls: openclawCalls.successful,
@@ -214,8 +191,9 @@ function coverageFailureForRow(row: QaToolCoverageRow): string | undefined {
   if (row.runtimeToolName && row.openclawSuccessfulToolCalls === 0) {
     return `${row.tool} missing successful openclaw tool call/result ${row.runtimeToolName}`;
   }
-  if (row.runtimeToolName && row.codexSuccessfulToolCalls === 0) {
-    return `${row.tool} missing successful codex tool call/result ${row.runtimeToolName}`;
+  const codexRuntimeToolName = row.codexRuntimeToolName ?? row.runtimeToolName;
+  if (codexRuntimeToolName && row.codexSuccessfulToolCalls === 0) {
+    return `${row.tool} missing successful codex tool call/result ${codexRuntimeToolName}`;
   }
   return undefined;
 }
@@ -225,7 +203,7 @@ export function buildQaToolCoverageReport(params: {
   summary?: QaParitySuiteSummary;
   runtimePair?: [RuntimeId, RuntimeId];
   generatedAt?: string;
-}): QaToolCoverageReport {
+}) {
   const results = new Map(
     (params.summary?.scenarios ?? []).flatMap(({ runtimeParity }) =>
       runtimeParity ? [[runtimeParity.scenarioId, runtimeParity] as const] : [],

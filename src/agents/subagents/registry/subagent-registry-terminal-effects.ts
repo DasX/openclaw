@@ -20,8 +20,6 @@ import { SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
 
-type BrowserCleanup = typeof cleanupBrowserSessionsForLifecycleEnd;
-
 export async function completeTerminalEffects(
   context: SubagentLifecycleCompletionContext,
   args: {
@@ -34,7 +32,9 @@ export async function completeTerminalEffects(
     terminalGeneration: number;
     stateContext: OpenClawStateWorkerContext;
     assertCurrent: () => void;
-    loadCleanupBrowserSessionsForLifecycleEnd(): Promise<BrowserCleanup>;
+    loadCleanupBrowserSessionsForLifecycleEnd(): Promise<
+      typeof cleanupBrowserSessionsForLifecycleEnd
+    >;
   },
 ): Promise<void> {
   const params = context.options;
@@ -43,7 +43,7 @@ export async function completeTerminalEffects(
   let entry = args.entry;
   let { sessionSuperseded, suppressSessionEffects } = args;
   const isCurrentTerminalCallback = () => {
-    if (!context.isTerminalCallbackCurrent(completeParams.runId, entry, terminalGeneration)) {
+    if (!context.isTerminalCallbackCurrent(entry, terminalGeneration)) {
       return false;
     }
     args.assertCurrent();
@@ -91,6 +91,11 @@ export async function completeTerminalEffects(
       await params.retireSupersededRun(currentEntry.runId, currentEntry);
     }
   };
+  const warnMeta = (error: unknown) => ({
+    error: buildSafeLifecycleErrorMeta(error),
+    runId: maskLifecycleIdentifier(completeParams.runId, "run"),
+    childSessionKey: maskLifecycleIdentifier(entry.childSessionKey, "session"),
+  });
   sessionSuperseded ||= context.newerGenerationOwnsSession(entry);
   if (sessionSuperseded) {
     // This callback belongs to an older run that shared the session key.
@@ -243,11 +248,7 @@ export async function completeTerminalEffects(
     try {
       cleanupBrowserSessions ??= await args.loadCleanupBrowserSessionsForLifecycleEnd();
     } catch (error) {
-      params.warn("failed to load browser cleanup for completed subagent", {
-        error: buildSafeLifecycleErrorMeta(error),
-        runId: maskLifecycleIdentifier(completeParams.runId, "run"),
-        childSessionKey: maskLifecycleIdentifier(entry.childSessionKey, "session"),
-      });
+      params.warn("failed to load browser cleanup for completed subagent", warnMeta(error));
     }
     if (cleanupBrowserSessions) {
       if (!isCurrentTerminalCallback()) {
@@ -318,11 +319,10 @@ export async function completeTerminalEffects(
               onWarn: (msg) => params.warn(msg, { runId: entry.runId }),
             });
           } catch (error) {
-            params.warn("failed to cleanup browser sessions for completed subagent", {
-              error: buildSafeLifecycleErrorMeta(error),
-              runId: maskLifecycleIdentifier(completeParams.runId, "run"),
-              childSessionKey: maskLifecycleIdentifier(entry.childSessionKey, "session"),
-            });
+            params.warn(
+              "failed to cleanup browser sessions for completed subagent",
+              warnMeta(error),
+            );
           }
         }
       }
@@ -365,11 +365,7 @@ export async function completeTerminalEffects(
         });
       }
     } catch (error) {
-      params.warn("failed to retire subagent bundle MCP runtime after completion", {
-        error: buildSafeLifecycleErrorMeta(error),
-        runId: maskLifecycleIdentifier(completeParams.runId, "run"),
-        childSessionKey: maskLifecycleIdentifier(entry.childSessionKey, "session"),
-      });
+      params.warn("failed to retire subagent bundle MCP runtime after completion", warnMeta(error));
     }
     if (!isCurrentTerminalCallback()) {
       return;
@@ -389,6 +385,6 @@ export async function completeTerminalEffects(
 
   await refreshCleanupSuppression();
   if (isCurrentTerminalCallback()) {
-    context.startSubagentAnnounceCleanupFlow(entry.runId, entry);
+    context.startSubagentAnnounceCleanupFlow(entry);
   }
 }

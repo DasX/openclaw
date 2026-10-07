@@ -24,6 +24,7 @@ import {
   renderAssistantRequestFailureCopy,
   renderRuntimeCoordinationFailureCopy,
 } from "../../agents/failover/assistant-request-failure-copy.js";
+import { resolveExecutionApprovalFailureMessage } from "../../agents/failover/message-patterns.js";
 import { resolveReplyFailoverFacts } from "../../agents/failover/request-error-facts.js";
 import {
   GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
@@ -177,7 +178,6 @@ function buildCodexAppServerFailureText(message: string): string | null {
   return null;
 }
 
-/** Formats the reply shown when preflight compaction fails before a run. */
 export function buildPreflightCompactionFailureText(
   message: string,
   options?: { includeDetails?: boolean },
@@ -262,6 +262,10 @@ export function buildExternalRunFailureReply(
   const error = typeof input === "string" ? undefined : input.error;
   const normalizedMessage = collapseRepeatedFailureDetail(message);
   const useHeartbeatFailureCopy = options?.useHeartbeatFailureCopy ?? options?.isHeartbeat === true;
+  const approvalMessage = resolveExecutionApprovalFailureMessage(normalizedMessage);
+  if (approvalMessage) {
+    return { text: `⚠️ ${approvalMessage}`, isGenericRunnerFailure: false };
+  }
   if (
     collectErrorGraphCandidates(error, readErrorCauses).some(
       (candidate) => candidate instanceof SkillResourceDeliveryLimitError,
@@ -499,7 +503,6 @@ export function buildEmptyInteractiveReplyPayload(params: {
   });
 }
 
-/** Converts known agent-run failures into user-facing reply payloads. */
 export function buildKnownAgentRunFailureReplyPayload(params: {
   err: unknown;
   sessionCtx: TemplateContext;

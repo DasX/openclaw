@@ -9,6 +9,7 @@ import {
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
+import { extractSqliteTableSchema } from "../../infra/sqlite-schema-sql.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { ensureColumn, tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import type {
@@ -28,8 +29,6 @@ import type { PlacementStoreRuntime } from "./placement-runtime.js";
 import { publishPlacementTurnClaimState } from "./placement-turn-authority.js";
 import { boundedWorkerError } from "./worker-error.js";
 
-const MOVE_SCHEMA_START = "CREATE TABLE IF NOT EXISTS worker_session_placement_moves (";
-const MOVE_SCHEMA_END = "\n) STRICT;";
 const MOVE_OPERATION_PREFIX = "move:v1:";
 const MOVE_MACHINE_CLASS_MAX_LENGTH = 128;
 const MOVE_OS_MAX_LENGTH = 64;
@@ -66,15 +65,6 @@ export type WorkerPlacementMoveIntent = {
 
 const moveQuery = (db: DatabaseSync) => getNodeSqliteKysely<MoveDatabase>(db);
 
-function moveSchemaSql(): string {
-  const start = OPENCLAW_STATE_SCHEMA_SQL.indexOf(MOVE_SCHEMA_START);
-  const endMarkerStart = OPENCLAW_STATE_SCHEMA_SQL.indexOf(MOVE_SCHEMA_END, start);
-  if (start < 0 || endMarkerStart < start) {
-    throw new Error("Worker placement move schema marker is missing");
-  }
-  return OPENCLAW_STATE_SCHEMA_SQL.slice(start, endMarkerStart + MOVE_SCHEMA_END.length);
-}
-
 // Placement reads feed the resident session projection; do not repeat DDL/PRAGMA per row.
 const ensuredMoveSchemaHandles = new WeakSet<DatabaseSync>();
 
@@ -82,7 +72,12 @@ function ensureWorkerPlacementMoveSchema(db: DatabaseSync): void {
   if (ensuredMoveSchemaHandles.has(db)) {
     return;
   }
-  db.exec(moveSchemaSql()); // sqlite-allow-raw -- Canonical feature-owned additive DDL only.
+  // sqlite-allow-raw -- Canonical feature-owned additive DDL only.
+  db.exec(
+    extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, "worker_session_placement_moves", {
+      errorMessage: "Worker placement move schema marker is missing",
+    }),
+  );
   // Databases that created this table before the column shipped upgrade in place;
   // the column is bare and nullable, so old readers stay compatible.
   ensureColumn(db, "worker_session_placement_moves", "target_machine_class TEXT");
@@ -203,7 +198,7 @@ function normalizeAbandonSource(value: number | null): boolean {
   throw new Error("Invalid worker placement move source abandonment value");
 }
 
-function fromRow(row: MoveRow): WorkerPlacementMoveIntent {
+export function workerPlacementMoveFromRow(row: MoveRow): WorkerPlacementMoveIntent {
   const source = normalizeWorkerPlacementMoveSource({
     generation: row.source_generation,
     environmentId: row.source_environment_id,
@@ -280,7 +275,7 @@ export function readWorkerPlacementMovesReadOnly(
         .selectAll()
         .where("session_id", "in", sessionIds.slice(offset, offset + 250)),
     ).rows) {
-      const intent = fromRow({
+      const intent = workerPlacementMoveFromRow({
         ...row,
         target_machine_class: row.target_machine_class ?? null,
         target_os: row.target_os ?? null,
@@ -302,7 +297,7 @@ function requireExactMove(
   if (!row || row.session_id !== sessionId) {
     throw new Error(`Session ${sessionId} placement move changed before completion`);
   }
-  return fromRow(row);
+  return workerPlacementMoveFromRow(row);
 }
 
 function exactMoveValues(intent: WorkerPlacementMoveIntent) {
@@ -417,7 +412,7 @@ export function createPlacementMoveOps(runtime: PlacementStoreRuntime) {
   return {
     getPlacementMove(sessionId: string): WorkerPlacementMoveIntent | undefined {
       const row = findMoveRow(read(), "session_id", required(sessionId, "move session id"));
-      return row ? fromRow(row) : undefined;
+      return row ? workerPlacementMoveFromRow(row) : undefined;
     },
 
     beginPlacementMove(input: {
@@ -441,7 +436,7 @@ export function createPlacementMoveOps(runtime: PlacementStoreRuntime) {
       return write((db) => {
         const existingRow = findMoveRow(db, "session_id", sessionId);
         if (existingRow) {
-          const existing = fromRow(existingRow);
+          const existing = workerPlacementMoveFromRow(existingRow);
           if (
             !isDeepStrictEqual(existing.source, source) ||
             !isDeepStrictEqual(existing.target, target) ||
@@ -495,7 +490,7 @@ export function createPlacementMoveOps(runtime: PlacementStoreRuntime) {
                 },
                 timestamp,
               );
-        return { intent: fromRow(row), placement, joined: false };
+        return { intent: workerPlacementMoveFromRow(row), placement, joined: false };
       });
     },
 
@@ -509,7 +504,7 @@ export function createPlacementMoveOps(runtime: PlacementStoreRuntime) {
         if (!row || row.session_id !== required(input.sessionId, "move session id")) {
           return false;
         }
-        const intent = fromRow(row);
+        const intent = workerPlacementMoveFromRow(row);
         const statement = moveQuery(db)
           .updateTable("worker_session_placement_moves")
           .set({ last_error: boundedWorkerError(input.error), updated_at_ms: now() })

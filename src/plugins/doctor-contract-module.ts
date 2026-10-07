@@ -85,6 +85,11 @@ export type PluginDoctorStateMigrationContext = {
     namespace: string,
     entries: readonly PluginDoctorRawStateEntry[],
   ) => { deleted: number; changed: number };
+  /** Offline repair only: verified backup, exact row comparison, and one atomic update. */
+  repairPluginStateEntries?: (
+    namespace: string,
+    replacements: readonly { entry: PluginDoctorRawStateEntry; value: unknown }[],
+  ) => Promise<{ changes: string[]; warnings: string[] }>;
   /** Owner-bound ingress queue access, one entry per manifest-declared channel;
    *  the host fixes the channel identity and doctor state directory. Older test
    *  hosts may omit it. */
@@ -209,6 +214,8 @@ export type PluginDoctorStateMigrationEntry = {
 
 export type PluginDoctorContractModule = {
   historicalWebhookListener?: unknown;
+  /** Retained host artifacts can migrate listener settings while plugin repairs stay deferred. */
+  normalizeHistoricalWebhookConfig?: unknown;
   legacyConfigRules?: unknown;
   normalizeCompatibilityConfig?: unknown;
   resolveSessionStoreAgentIds?: unknown;
@@ -309,6 +316,9 @@ export function coercePluginDoctorContractModule(
   const normalizeCompatibilityConfig = coerceNormalizeCompatibilityConfig(
     mod.normalizeCompatibilityConfig ?? defaultExport?.normalizeCompatibilityConfig,
   );
+  const normalizeHistoricalWebhookConfig = coerceNormalizeCompatibilityConfig(
+    mod.normalizeHistoricalWebhookConfig ?? defaultExport?.normalizeHistoricalWebhookConfig,
+  );
   const resolveSessionStoreAgentIds = coerceSessionStoreAgentIdsResolver(
     mod.resolveSessionStoreAgentIds ?? defaultExport?.resolveSessionStoreAgentIds,
   );
@@ -326,6 +336,7 @@ export function coercePluginDoctorContractModule(
   };
   return {
     historicalWebhookListener,
+    normalizeHistoricalWebhookConfig,
     rules,
     normalizeCompatibilityConfig,
     resolveSessionStoreAgentIds,

@@ -99,7 +99,7 @@ describe("session observer model preparation", () => {
         expect.objectContaining({
           ...prepared,
           purpose: "session-observer",
-          timeoutMs: 10_000,
+          timeoutMs: 30_000,
           abortSignal: expect.any(AbortSignal),
         }),
       );
