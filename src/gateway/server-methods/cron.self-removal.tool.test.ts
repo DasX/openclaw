@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { createCronTool } from "../../agents/tools/cron-tool.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
@@ -55,6 +56,7 @@ describe("cron self-removal through the automations tool", () => {
         const clock = createGatewaySchedulerClock(Date.now());
         const scheduler = createTestGatewayScheduler(clock.clock);
         const events: CronEvent[] = [];
+        const finished = createDeferred<CronEvent>();
         const gatewayWork = new AsyncWorkScope();
         const registry = createGatewayMethodRegistry(
           createCoreGatewayMethodDescriptors(cronHandlers),
@@ -122,7 +124,12 @@ describe("cron self-removal through the automations tool", () => {
           log: createNoopLogger(),
           enqueueSystemEvent: vi.fn(),
           requestHeartbeat: vi.fn(),
-          onEvent: (event) => events.push(event),
+          onEvent: (event) => {
+            events.push(event);
+            if (event.action === "finished") {
+              finished.resolve(event);
+            }
+          },
           runIsolatedAgentJob: runJob,
         });
         const context = {
@@ -173,20 +180,18 @@ describe("cron self-removal through the automations tool", () => {
             await cron.start();
             await clock.advanceBy(1_000);
           }
-          await vi.waitFor(
-            () => {
-              expect(events.filter((event) => event.action === "finished")).toEqual([
-                expect.objectContaining({
-                  jobId: job.id,
-                  status: "ok",
-                  completionStatus: "succeeded",
-                  summary: "final reply after self-cleanup",
-                }),
-              ]);
-              expect(hasActiveCronJobs()).toBe(false);
-            },
-            { timeout: 15_000, interval: 50 },
-          );
+          // Both trigger paths join the run's finalization; the finished event is the
+          // run's own completion signal, so nothing here waits on wall time.
+          await finished.promise;
+          expect(events.filter((event) => event.action === "finished")).toEqual([
+            expect.objectContaining({
+              jobId: job.id,
+              status: "ok",
+              completionStatus: "succeeded",
+              summary: "final reply after self-cleanup",
+            }),
+          ]);
+          expect(hasActiveCronJobs()).toBe(false);
           expect(removeResult).toEqual({ ok: true, removed: true });
           expect(abortedAfterRemoval).toBe(false);
           expect(activeAfterRemoval).toBe(true);

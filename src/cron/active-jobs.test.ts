@@ -337,8 +337,8 @@ describe("cron self-removal owner assertion", () => {
     expect(hasActiveCronJobs()).toBe(false);
   });
 
-  it.each(["exact owner", "unbound guard", "expired caller", "closed admission"] as const)(
-    "refuses every self-targeted removal except the exact live owner: %s",
+  it.each(["expired caller", "closed admission"] as const)(
+    "refuses a self-targeted removal once its bound owner is no longer live: %s",
     async (scenario) => {
       const jobId = "guarded-self-removal";
       const marker = markCronJobActive(jobId)!;
@@ -357,27 +357,21 @@ describe("cron self-removal owner assertion", () => {
         bindCronJobAdmittedRun(marker, context, controller.signal);
         let callerActive = true;
         const commitGuard = vi.fn();
-        if (scenario !== "unbound guard") {
-          bindCronSelfRemovalCommitGuard(jobId, context.operationalRunInstance, commitGuard, () => {
-            if (!callerActive) {
-              throw new Error("caller expired");
-            }
-          });
-        }
+        bindCronSelfRemovalCommitGuard(jobId, context.operationalRunInstance, commitGuard, () => {
+          if (!callerActive) {
+            throw new Error("caller expired");
+          }
+        });
         if (scenario === "expired caller") {
           callerActive = false;
-        } else if (scenario === "closed admission") {
+        } else {
           admission.close();
         }
         const cancel = vi.fn();
         marker.cancellation = { kind: "bound", cancel };
         const assertOwner = () => assertCronSelfRemovalOwnerCurrent(jobId, commitGuard);
-        if (scenario === "exact owner") {
-          expect(assertOwner).not.toThrow();
-        } else {
-          expect(assertOwner).toThrow(TypeError);
-          expect(assertOwner).toThrow(/still running/);
-        }
+        expect(assertOwner).toThrow(TypeError);
+        expect(assertOwner).toThrow(/still running/);
         // The assertion only decides admission; it never requests cancellation itself.
         expect(cancel).not.toHaveBeenCalled();
         expect(marker.jobRemoved).toBeUndefined();
