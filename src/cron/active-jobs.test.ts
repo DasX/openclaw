@@ -10,6 +10,7 @@ import { resolveMessageActionTurnAuthorization } from "../gateway/message-action
 import { importFreshModule } from "../plugin-sdk/test-helpers/import-fresh.js";
 import {
   advanceCronActiveJobGeneration,
+  assertCronSelfRemovalOwnerCurrent,
   bindCronJobAdmittedRun,
   bindCronSelfRemovalCommitGuard,
   captureCronJobMessageActionAuthority,
@@ -329,6 +330,64 @@ describe.each(["same module", "reload before guard", "reload after guard"])(
     });
   },
 );
+
+describe("cron self-removal owner assertion", () => {
+  it("lets a self-targeted caller remove a job that has no active run", () => {
+    expect(() => assertCronSelfRemovalOwnerCurrent("idle-self-removal", vi.fn())).not.toThrow();
+    expect(hasActiveCronJobs()).toBe(false);
+  });
+
+  it.each(["exact owner", "unbound guard", "expired caller", "closed admission"] as const)(
+    "refuses every self-targeted removal except the exact live owner: %s",
+    async (scenario) => {
+      const jobId = "guarded-self-removal";
+      const marker = markCronJobActive(jobId)!;
+      const controller = new AbortController();
+      const admission = prepareAgentRunAdmission({
+        cfg: {},
+        operationalRunInstance: createOperationalRunInstanceRef("guarded-self-removal-run"),
+        facts: {
+          runId: "guarded-self-removal-run",
+          agentId: "main",
+          ingress: { kind: "schedule", boundary: "cron.isolated-agent", state: "present" },
+        },
+      });
+      try {
+        const context = await admission.admit("embedded");
+        bindCronJobAdmittedRun(marker, context, controller.signal);
+        let callerActive = true;
+        const commitGuard = vi.fn();
+        if (scenario !== "unbound guard") {
+          bindCronSelfRemovalCommitGuard(jobId, context.operationalRunInstance, commitGuard, () => {
+            if (!callerActive) {
+              throw new Error("caller expired");
+            }
+          });
+        }
+        if (scenario === "expired caller") {
+          callerActive = false;
+        } else if (scenario === "closed admission") {
+          admission.close();
+        }
+        const cancel = vi.fn();
+        marker.cancellation = { kind: "bound", cancel };
+        const assertOwner = () => assertCronSelfRemovalOwnerCurrent(jobId, commitGuard);
+        if (scenario === "exact owner") {
+          expect(assertOwner).not.toThrow();
+        } else {
+          expect(assertOwner).toThrow(TypeError);
+          expect(assertOwner).toThrow(/still running/);
+        }
+        // The assertion only decides admission; it never requests cancellation itself.
+        expect(cancel).not.toHaveBeenCalled();
+        expect(marker.jobRemoved).toBeUndefined();
+        expect(hasActiveCronJobs()).toBe(true);
+      } finally {
+        admission.close();
+      }
+    },
+  );
+});
 
 describe("active cron schedule ownership", () => {
   it("notifies only the removed marker when a same-id run replaces it", () => {
