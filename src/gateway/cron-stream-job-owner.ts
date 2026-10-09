@@ -40,6 +40,12 @@ type LifecycleStop =
 
 export type CronStreamStopReason = DisableStop | LifecycleStop;
 
+/**
+ * Shutdown stops a source the Gateway already admitted; its retirement and final state
+ * settle that source after the receipt authority sealed new effects.
+ */
+export type CronStreamSourceWriteOptions = { settlement?: boolean };
+
 export type CronStreamOwnerParams = {
   scheduler: GatewayScheduler;
   getDefaultAgentId?: () => string | undefined;
@@ -51,11 +57,13 @@ export type CronStreamOwnerParams = {
     patch: Partial<CronJobState>,
     streamScheduleKey: string,
     streamSourceIdentity: string,
+    options?: CronStreamSourceWriteOptions,
   ) => Promise<boolean | void>;
   retireSource: (
     jobId: string,
     streamScheduleKey: string,
     streamSourceIdentity: string,
+    options?: CronStreamSourceWriteOptions,
   ) => Promise<string | undefined>;
   updateCounters?: (
     jobId: string,
@@ -67,6 +75,7 @@ export type CronStreamOwnerParams = {
     patch: Partial<CronJobState>,
     streamScheduleKey: string,
     streamSourceIdentity: string,
+    options?: CronStreamSourceWriteOptions,
   ) => Promise<void>;
   fireBatch: (
     job: CronJob,
@@ -98,6 +107,11 @@ function stopRequiresSourceRetirement(reason: CronStreamStopReason): boolean {
     reason === "trust-disabled" ||
     reason === "cron-disabled"
   );
+}
+
+/** Only the Gateway's own shutdown writes after the receipt authority sealed new effects. */
+function stopWriteOptions(reason: CronStreamStopReason): CronStreamSourceWriteOptions | undefined {
+  return reason === "shutdown" ? { settlement: true } : undefined;
 }
 
 function boundedCounter(value: number | undefined, increment = 0): number {
@@ -505,6 +519,7 @@ export class CronStreamJobOwner {
     }
     this.state = "stopping";
     ++this.generation;
+    const writeOptions = stopWriteOptions(reason);
 
     let retirementError: unknown;
     if (stopRequiresSourceRetirement(reason)) {
@@ -516,11 +531,14 @@ export class CronStreamJobOwner {
         this.adoptJob(retiredJob, this.scheduleKey, identity);
       };
       try {
-        const retiredIdentity = await this.params.retireSource(
-          this.job.id,
-          this.scheduleKey,
-          this.sourceIdentity,
-        );
+        const retiredIdentity = await (writeOptions
+          ? this.params.retireSource(
+              this.job.id,
+              this.scheduleKey,
+              this.sourceIdentity,
+              writeOptions,
+            )
+          : this.params.retireSource(this.job.id, this.scheduleKey, this.sourceIdentity));
         if (retiredIdentity !== undefined) {
           adoptRetiredIdentity(retiredIdentity);
         }
@@ -564,11 +582,15 @@ export class CronStreamJobOwner {
       this.state = "stopping";
       this.restartExhausted = true;
       const message = `stream source failed to stop: ${formatErrorMessage(stopError)}`;
-      await this.persistFailure(message, {
-        streamStatus: "error",
-        streamError: message,
-        streamRestartExhausted: true,
-      });
+      await this.persistFailure(
+        message,
+        {
+          streamStatus: "error",
+          streamError: message,
+          streamRestartExhausted: true,
+        },
+        writeOptions,
+      );
       if (retirementError !== undefined) {
         throw new AggregateError(
           [retirementError, stopError],
@@ -590,6 +612,7 @@ export class CronStreamJobOwner {
           : reason === "restart-exhausted" || (reason === "shutdown" && this.restartExhausted)
             ? {}
             : { streamStatus: "stopped", streamError: undefined },
+      writeOptions,
     );
     if (retirementError !== undefined) {
       throw toErrorObject(retirementError, "stream source retirement failed");
@@ -663,14 +686,20 @@ export class CronStreamJobOwner {
     }
   }
 
-  private async persistState(patch: Partial<CronJobState>): Promise<boolean> {
+  private async persistState(
+    patch: Partial<CronJobState>,
+    options?: CronStreamSourceWriteOptions,
+  ): Promise<boolean> {
     try {
-      const result = await this.params.updateState(
-        this.job.id,
-        patch,
-        this.scheduleKey,
-        this.sourceIdentity,
-      );
+      const result = await (options
+        ? this.params.updateState(
+            this.job.id,
+            patch,
+            this.scheduleKey,
+            this.sourceIdentity,
+            options,
+          )
+        : this.params.updateState(this.job.id, patch, this.scheduleKey, this.sourceIdentity));
       if (result === false) {
         this.desiredRunning = false;
         return false;
@@ -686,15 +715,28 @@ export class CronStreamJobOwner {
     }
   }
 
-  private async persistFailure(error: string, patch: Partial<CronJobState>): Promise<void> {
+  private async persistFailure(
+    error: string,
+    patch: Partial<CronJobState>,
+    options?: CronStreamSourceWriteOptions,
+  ): Promise<void> {
     try {
-      await this.params.recordFailure(
-        this.job.id,
-        error,
-        patch,
-        this.scheduleKey,
-        this.sourceIdentity,
-      );
+      await (options
+        ? this.params.recordFailure(
+            this.job.id,
+            error,
+            patch,
+            this.scheduleKey,
+            this.sourceIdentity,
+            options,
+          )
+        : this.params.recordFailure(
+            this.job.id,
+            error,
+            patch,
+            this.scheduleKey,
+            this.sourceIdentity,
+          ));
     } catch (failureError) {
       this.params.logger.warn(
         { jobId: this.job.id, err: String(failureError) },

@@ -214,8 +214,9 @@ export class CronService implements CronServiceContract {
     error: string,
     statePatch: Partial<CronJob["state"]>,
     source?: { scheduleKey: string; identity: string },
+    options?: streamOps.CronExternalStateWriteOptions,
   ): Promise<void> {
-    await streamOps.recordExternalFailure(this.state, id, error, statePatch, source);
+    await streamOps.recordExternalFailure(this.state, id, error, statePatch, source, options);
   }
 
   async updateExternalState(
@@ -223,6 +224,7 @@ export class CronService implements CronServiceContract {
     streamScheduleKey: string,
     streamSourceIdentity: string,
     statePatch: Partial<CronJob["state"]>,
+    options?: streamOps.CronExternalStateWriteOptions,
   ): Promise<boolean> {
     return await streamOps.updateExternalState(
       this.state,
@@ -230,6 +232,7 @@ export class CronService implements CronServiceContract {
       streamScheduleKey,
       streamSourceIdentity,
       statePatch,
+      options,
     );
   }
 
@@ -237,12 +240,14 @@ export class CronService implements CronServiceContract {
     id: string,
     streamScheduleKey: string,
     streamSourceIdentity: string,
+    options?: streamOps.CronExternalStateWriteOptions,
   ): Promise<string | undefined> {
     return await streamOps.retireExternalStreamSource(
       this.state,
       id,
       streamScheduleKey,
       streamSourceIdentity,
+      options,
     );
   }
 

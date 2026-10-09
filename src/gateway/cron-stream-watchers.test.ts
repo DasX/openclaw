@@ -16,6 +16,7 @@ import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
+import type { CronStreamOwnerParams } from "./cron-stream-job-owner.js";
 import { resolveStreamStopReason } from "./cron-stream-watchers.js";
 import {
   createCronStreamWatcherFixture,
@@ -241,6 +242,62 @@ describe("cron stream watchers", () => {
     await watchers.stopAll("shutdown");
     expect(watchers.activeJobIds()).toEqual([]);
   });
+
+  it.each([
+    { reason: "shutdown", retires: true, settlement: true },
+    { reason: "removed", retires: true, settlement: false },
+    { reason: "trust-disabled", retires: true, settlement: false },
+    { reason: "cron-disabled", retires: true, settlement: false },
+    { reason: "disabled", retires: false, settlement: false },
+    { reason: "schedule-update", retires: false, settlement: false },
+    { reason: "restart-exhausted", retires: false, settlement: false },
+    { reason: "trigger-disabled", retires: false, settlement: false },
+  ] as const)(
+    "marks only the Gateway shutdown stop as a settlement write: $reason",
+    async ({ reason, retires, settlement }) => {
+      const retireSource = vi.fn<CronStreamOwnerParams["retireSource"]>(
+        async (_jobId, _scheduleKey, identity) => `${identity}:retired`,
+      );
+      const updateState = vi.fn<CronStreamOwnerParams["updateState"]>(async () => {});
+      const { watchers } = createCronStreamWatcherFixture({
+        minIntervalMs: 1,
+        retireSource,
+        updateState,
+      });
+      await watchers.reconcile([job()], true);
+      await settle();
+      updateState.mockClear();
+
+      await watchers.stop("stream-job", reason);
+
+      if (retires) {
+        expect(retireSource).toHaveBeenCalledTimes(1);
+        const [retirement] = retireSource.mock.calls;
+        expect(retirement?.slice(0, 3)).toEqual([
+          "stream-job",
+          expect.any(String),
+          "source:stream-job",
+        ]);
+        expect(retirement?.[3]).toEqual(settlement ? { settlement: true } : undefined);
+      } else {
+        expect(retireSource).not.toHaveBeenCalled();
+      }
+      expect(updateState).toHaveBeenCalled();
+      for (const call of updateState.mock.calls) {
+        expect(call[4]).toEqual(settlement ? { settlement: true } : undefined);
+      }
+      // A removed job disposes its owner; every other stop keeps a stopped owner.
+      if (reason === "removed") {
+        expect(watchers.inspect("stream-job")).toBeUndefined();
+      } else {
+        expect(watchers.inspect("stream-job")).toMatchObject({
+          state: "stopped",
+          processAlive: false,
+        });
+      }
+      await watchers.stopAll("shutdown");
+    },
+  );
 
   it("preserves historical stream ownership and settlement after the creating request closes", async () => {
     vi.useFakeTimers();
