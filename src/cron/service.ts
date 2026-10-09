@@ -214,9 +214,8 @@ export class CronService implements CronServiceContract {
     error: string,
     statePatch: Partial<CronJob["state"]>,
     source?: { scheduleKey: string; identity: string },
-    options?: streamOps.CronExternalStateWriteOptions,
   ): Promise<void> {
-    await streamOps.recordExternalFailure(this.state, id, error, statePatch, source, options);
+    await streamOps.recordExternalFailure(this.state, id, error, statePatch, source);
   }
 
   async updateExternalState(
@@ -254,8 +253,9 @@ export class CronService implements CronServiceContract {
   async updateExternalCounters(
     id: string,
     counters: Pick<CronJob["state"], "streamDroppedBatches" | "streamCoalescedBatches">,
+    options?: streamOps.CronExternalStateWriteOptions,
   ): Promise<void> {
-    await streamOps.updateExternalCounters(this.state, id, counters);
+    await streamOps.updateExternalCounters(this.state, id, counters, options);
   }
 
   getDefaultAgentId(): string | undefined {

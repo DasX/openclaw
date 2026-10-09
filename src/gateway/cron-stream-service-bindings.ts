@@ -34,24 +34,14 @@ export function createCronStreamServiceBindings(
         streamSourceIdentity,
         options,
       ),
-    updateCounters: async (jobId, counters) => {
-      await cron.updateExternalCounters(jobId, counters);
+    updateCounters: async (jobId, counters, options) => {
+      await cron.updateExternalCounters(jobId, counters, options);
     },
-    recordFailure: async (
-      jobId,
-      error,
-      patch,
-      streamScheduleKey,
-      streamSourceIdentity,
-      options,
-    ) => {
-      await cron.recordExternalFailure(
-        jobId,
-        error,
-        patch,
-        { scheduleKey: streamScheduleKey, identity: streamSourceIdentity },
-        options,
-      );
+    recordFailure: async (jobId, error, patch, streamScheduleKey, streamSourceIdentity) => {
+      await cron.recordExternalFailure(jobId, error, patch, {
+        scheduleKey: streamScheduleKey,
+        identity: streamSourceIdentity,
+      });
     },
   };
 }

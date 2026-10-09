@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { loseFirstCronMutationReply } from "../../test/helpers/cron/runtime-mutation.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { CronStreamSourceWriteOptions } from "../gateway/cron-stream-job-owner.js";
+import { createCronStreamServiceBindings } from "../gateway/cron-stream-service-bindings.js";
 import { createCronStreamWatchers } from "../gateway/cron-stream-watchers.js";
-import { fakeSupervisor } from "../gateway/cron-stream-watchers.test-helpers.js";
+import { fakeSupervisor, settle } from "../gateway/cron-stream-watchers.test-helpers.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
@@ -376,32 +377,19 @@ describe("cron stream worker service", () => {
       setDefaultAgent("alpha");
       const fake = fakeSupervisor();
       const scheduler = createTestGatewayScheduler();
-      const updateState = vi.fn(
-        (
-          id: string,
-          patch: Partial<CronJob["state"]>,
-          scheduleKey: string,
-          identity: string,
-          options?: CronStreamSourceWriteOptions,
-        ) => service.updateExternalState(id, scheduleKey, identity, patch, options),
-      );
-      const retireSource = vi.fn(
-        (
-          id: string,
-          scheduleKey: string,
-          identity: string,
-          options?: CronStreamSourceWriteOptions,
-        ) => service.retireExternalStreamSource(id, scheduleKey, identity, options),
-      );
+      // The Gateway binds its stream owner to the service through these bindings.
+      const bindings = createCronStreamServiceBindings(service);
+      const updateState = vi.fn(bindings.updateState);
+      const retireSource = vi.fn(bindings.retireSource);
+      const updateCounters = vi.fn(expectDefined(bindings.updateCounters, "counter binding"));
       const watchers = createCronStreamWatchers({
         getDefaultAgentId: () => service.getDefaultAgentId(),
         scheduler,
         getProcessSupervisor: () => fake.supervisor,
         updateState,
         retireSource,
-        updateCounters: (id, counters) => service.updateExternalCounters(id, counters),
-        recordFailure: (id, error, patch, scheduleKey, identity, options) =>
-          service.recordExternalFailure(id, error, patch, { scheduleKey, identity }, options),
+        updateCounters,
+        recordFailure: bindings.recordFailure,
         fireBatch: async () => "fired",
         logger: createNoopLogger(),
       });
@@ -414,6 +402,9 @@ describe("cron stream worker service", () => {
           sourceIdentity: source.identity,
           processAlive: true,
         });
+        // A line still inside its quiet window is lost by the stop; its counter settles too.
+        fake.inputs[0]?.onStdout?.("pending line\n");
+        await settle();
         // The Gateway close prelude seals new effects before cron tears its watchers down.
         beginCronReceiptAuthorityClose();
         sealed = true;
@@ -430,6 +421,11 @@ describe("cron stream worker service", () => {
           job.id,
           source.scheduleKey,
           source.identity,
+          { settlement: true },
+        );
+        expect(updateCounters).toHaveBeenCalledExactlyOnceWith(
+          job.id,
+          { streamDroppedBatches: 1, streamCoalescedBatches: 0 },
           { settlement: true },
         );
         // The sealed authority refuses the ordinary loader; read the durable rows read-only.
@@ -451,7 +447,11 @@ describe("cron stream worker service", () => {
           retiredIdentity,
           { settlement: true },
         );
-        const stoppedState = { streamStatus: "stopped", streamSourceIdentity: retiredIdentity };
+        const stoppedState = {
+          streamStatus: "stopped",
+          streamSourceIdentity: retiredIdentity,
+          streamDroppedBatches: 1,
+        };
         expect(stored.state).toMatchObject(stoppedState);
         expect(service.getJob(job.id)?.state).toMatchObject(stoppedState);
         expect(watchers.inspect(job.id)).toMatchObject({

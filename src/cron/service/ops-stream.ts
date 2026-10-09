@@ -174,9 +174,8 @@ export async function recordExternalFailure(
   error: string,
   statePatch: Partial<CronJob["state"]>,
   source?: { scheduleKey: string; identity: string },
-  options?: CronExternalStateWriteOptions,
 ): Promise<void> {
-  await mutateExternalState(state, id, { kind: "failure", error, statePatch, source }, options);
+  await mutateExternalState(state, id, { kind: "failure", error, statePatch, source });
 }
 
 /** Source-qualified state cannot overwrite the identity of its replacement. */
@@ -223,6 +222,7 @@ export async function updateExternalCounters(
   state: CronServiceState,
   id: string,
   counters: Pick<CronJob["state"], "streamDroppedBatches" | "streamCoalescedBatches">,
+  options?: CronExternalStateWriteOptions,
 ): Promise<void> {
-  await mutateExternalState(state, id, { kind: "counters", counters });
+  await mutateExternalState(state, id, { kind: "counters", counters }, options);
 }
