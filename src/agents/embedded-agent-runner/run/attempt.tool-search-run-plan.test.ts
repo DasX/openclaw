@@ -49,6 +49,19 @@ describe("buildToolSearchRunPlan", () => {
     expect(result.hasCallableTools).toBe(false);
   });
 
+  it("counts provider-native tools without exposing them as local functions", () => {
+    const result = plan({
+      visibleTools: [markCodeModeControlTool(tool("exec")), markCodeModeControlTool(tool("wait"))],
+      clientTools: [],
+      controlNames: ["exec", "wait"],
+      explicitAllowlistSources: [{ entries: ["web_search", "exec"] }],
+      hasProviderNativeTools: true,
+    });
+    expect(result.hasCallableTools).toBe(true);
+    expect([...result.liveAllowedToolNames]).toEqual(["exec", "wait"]);
+    expect(result.capabilityToolNames.has("web_search")).toBe(false);
+  });
+
   it("counts a real directly exposed shell exec", () => {
     const result = plan({
       visibleTools: [tool("exec")],

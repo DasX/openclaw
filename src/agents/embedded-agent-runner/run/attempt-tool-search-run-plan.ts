@@ -36,6 +36,8 @@ export function buildToolSearchRunPlan(params: {
   clientTools?: CollectAllowedToolNamesParams["clientTools"];
   clientToolsCataloged: boolean;
   catalogToolCount: number;
+  /** Policy-enabled hosted capabilities, not local function execution grants. */
+  hasProviderNativeTools?: boolean;
   controlsEnabled: boolean;
   deferredToolsCallable?: boolean;
   controlNames?: readonly string[];
@@ -103,6 +105,7 @@ export function buildToolSearchRunPlan(params: {
   // The guard needs presence, not catalog-sized synthetic names. Auto-added
   // controls alone must not conceal an explicit allowlist that matched nothing.
   const hasCallableTools =
+    params.hasProviderNativeTools === true ||
     params.catalogToolCount > 0 ||
     ((params.clientToolsCataloged || params.deferredToolsCallable === true) &&
       explicitlyAllowedClientTool) ||
