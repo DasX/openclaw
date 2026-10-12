@@ -11,7 +11,6 @@ import { hasOpenClawAgentDatabaseAsyncResources } from "../state/openclaw-agent-
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
-  getOpenClawAgentDatabaseIfOpen,
   runOpenClawAgentWriteTransaction,
 } from "../state/openclaw-agent-db.js";
 import {
@@ -25,6 +24,7 @@ import {
 import {
   deleteSessionEntry,
   getConversationSession,
+  getConversationSessionAsync,
   getSessionEntry,
   normalizeSessionDeliveryState,
   patchSessionEntry,
@@ -91,6 +91,24 @@ describe("current conversation session binding", () => {
       sessionId: "original",
     });
     expect(getSessionEntry(replacementScope)).toBeUndefined();
+    const hostSql = observeHostDataSql();
+    try {
+      expect(await getConversationSessionAsync(address)).toEqual({
+        sessionKey: scope.sessionKey,
+        sessionId: "original",
+      });
+      await upsertSessionEntry({
+        ...replacementScope,
+        entry: { sessionId: "replacement", updatedAt: 200, chatType: "group", delivery },
+      });
+      expect(await getConversationSessionAsync(address)).toEqual({
+        sessionKey: replacementScope.sessionKey,
+        sessionId: "replacement",
+      });
+    } finally {
+      hostSql.restore();
+    }
+    expect(hostSql.queries.filter(isSessionEntryDataSql)).toEqual([]);
   });
 
   it("keeps prepared guards on the canonical row selected by shorthand and normalized keys", async () => {
@@ -188,13 +206,13 @@ describe("current conversation session binding", () => {
     expect(getSessionEntry(scope)?.displayName).toBe("Accepted title");
   });
 
-  it("preserves native transaction visibility for composed opaque SDK commit guards", async () => {
+  it("runs composed opaque SDK guards before committing the title change", async () => {
     const scope = { agentId: "main", storePath, sessionKey: "agent:main:main" };
     await upsertSessionEntry({
       ...scope,
       entry: { sessionId: "original", updatedAt: 100, displayName: "Original title" },
     });
-    const observed: Array<{ inTransaction: boolean; displayName: string | undefined }> = [];
+    const observed: Array<string | undefined> = [];
     const refusal = new Error("Opaque SDK guard refused the title change");
     await expect(
       patchSessionEntry({
@@ -202,19 +220,14 @@ describe("current conversation session binding", () => {
         skipMaintenance: true,
         assertCommitAllowed: composeSessionEntryCommitGuards([
           () => {
-            observed.push({
-              inTransaction:
-                getOpenClawAgentDatabaseIfOpen({ agentId: "main", path: storePath })?.db
-                  .isTransaction === true,
-              displayName: getSessionEntry(scope)?.displayName,
-            });
+            observed.push(getSessionEntry(scope)?.displayName);
             throw refusal;
           },
         ]),
         update: () => ({ displayName: "Rejected title" }),
       }),
     ).rejects.toThrow(refusal);
-    expect(observed).toEqual([{ inTransaction: true, displayName: "Original title" }]);
+    expect(observed).toEqual(["Original title"]);
     expect(getSessionEntry(scope)?.displayName).toBe("Original title");
   });
 

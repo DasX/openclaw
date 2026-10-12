@@ -5,7 +5,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import { resolveSessionAgentIdsStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
-import { loadExecApprovals } from "openclaw/plugin-sdk/exec-approvals-runtime";
+import { loadExecApprovalsReadOnlyAsync } from "openclaw/plugin-sdk/exec-approvals-runtime";
 import { parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import {
   captureSessionEntryCurrentCheck,
@@ -192,7 +192,7 @@ export async function resolveConversationAppServerRuntime(params: {
     execOverrides: permissionMode
       ? { mode: CODEX_SESSION_PERMISSION_EXEC_MODES[permissionMode] }
       : undefined,
-    approvals: permissionMode === "full" ? undefined : loadExecApprovals(),
+    approvals: permissionMode === "full" ? undefined : await loadExecApprovalsReadOnlyAsync(),
   });
   const sandboxForPolicy =
     execPolicy.touched && execPolicy.security === "full" && execPolicy.ask !== "off"
@@ -271,20 +271,20 @@ type CodexThreadBindingRuntime = Awaited<ReturnType<typeof resolveThreadBindingR
 
 async function resolveThreadBindingRuntime(params: CodexThreadBindingParams) {
   const agentLookup = buildCodexConversationAgentLookup(params);
-  const modelProvider = resolveThreadRequestModelProvider({
+  const modelProvider = await resolveThreadRequestModelProvider({
     authProfileId: params.authProfileId,
     modelProvider: params.modelProvider,
     ...agentLookup,
   });
   const modelSelection = params.model?.trim()
-    ? resolveCodexAppServerRequestModelSelection({
+    ? await resolveCodexAppServerRequestModelSelection({
         model: params.model,
         modelProvider,
         authProfileId: params.authProfileId,
         ...agentLookup,
       })
     : undefined;
-  const reviewerModelProvider = resolveModelBackedReviewerPolicyProvider({
+  const reviewerModelProvider = await resolveModelBackedReviewerPolicyProvider({
     authProfileId: params.authProfileId,
     modelProvider: params.modelProvider,
     ...agentLookup,
@@ -396,7 +396,7 @@ async function writeThreadBindingFromResponse(
           ...(resolved.incognito ? { conversationIncognito: true } : {}),
           authProfileId: params.authProfileId,
           model: response.model ?? resolved.model ?? params.model,
-          modelProvider: normalizeCodexAppServerBindingModelProvider({
+          modelProvider: await normalizeCodexAppServerBindingModelProvider({
             authProfileId: params.authProfileId,
             modelProvider: response.modelProvider ?? resolved.modelProvider ?? params.modelProvider,
             ...resolved.agentLookup,
@@ -718,15 +718,15 @@ async function projectConversationSourceHistory(
   }
 }
 
-export function resolveModelBackedReviewerPolicyProvider(params: {
+export async function resolveModelBackedReviewerPolicyProvider(params: {
   authProfileId?: string;
   modelProvider?: string;
   agentDir?: string;
   config?: CodexAppServerAuthProfileLookup["config"];
-}): string | undefined {
+}): Promise<string | undefined> {
   const modelProvider = params.modelProvider?.trim();
   if (modelProvider && modelProvider.toLowerCase() !== "codex") {
     return modelProvider.toLowerCase() === "openai" ? "openai" : modelProvider;
   }
-  return isCodexAppServerNativeAuthProfile(params) ? "openai" : undefined;
+  return (await isCodexAppServerNativeAuthProfile(params)) ? "openai" : undefined;
 }

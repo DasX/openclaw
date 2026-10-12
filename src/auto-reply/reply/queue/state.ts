@@ -309,7 +309,7 @@ export function refreshQueuedFollowupSession(params: {
           catalog: params.nextThinking.catalog,
           agentRuntime: params.nextThinking.agentRuntime,
           level: explicitLevel,
-        }).level;
+        }).requestedLevel;
       }
     }
   };

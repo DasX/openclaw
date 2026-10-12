@@ -37,6 +37,7 @@ import {
   updateExecutorEntrypoints,
   stateDirGatewayFixtureEntrypoint,
   updateCandidateExitEntrypoints,
+  windowsProcessJobRetentionEntrypoint,
   windowsProcessOwnershipEntrypoint,
 } from "../../src/cli/cli-entrypoint.test-support.ts";
 import { updateExecutorNativeEntrypoints } from "../../src/cli/update-cli/update-command-executor-native-runtime.test-support.ts";
@@ -51,6 +52,7 @@ import { nativeBoundaryTestEntrypoints } from "../../src/infra/native-boundary-r
 import { nativeProcessTestEntrypoints } from "../../src/infra/native-process-runtime.test-support.ts";
 import { externalProxyTestEntrypoints } from "../../src/infra/net/proxy/external-proxy-runtime.test-support.ts";
 import { deliveryQueueProcessEntrypoints } from "../../src/infra/outbound/delivery-queue-process-runtime.test-support.ts";
+import { postgresLockTestEntrypoint } from "../../src/infra/postgres-sync/locks-runtime.test-support.ts";
 import { sqliteMaintenanceEntrypoints } from "../../src/infra/sqlite-maintenance-runtime.test-support.ts";
 import { sqliteReadOnlyCompileCacheParentEntrypoint } from "../../src/infra/sqlite-readonly-worker.compile-cache-runtime.test-support.ts";
 import { sqliteSnapshotStagingEntrypoints } from "../../src/infra/sqlite-snapshot-staging-runtime.test-support.ts";
@@ -315,6 +317,7 @@ export const vitestWorkerBuildEntries = {
     sqliteWorkerStoreCompileCacheParentEntrypoint,
     ...Object.values(nativeProcessTestEntrypoints),
     ...Object.values(storageProcessTestEntrypoints),
+    postgresLockTestEntrypoint,
     ...Object.values(workerTaskPoolEntrypoints),
     nativeWorkerLifecycleEntrypoint,
     nativeWorkerResourceEntrypoint,
@@ -345,6 +348,7 @@ export const vitestWorkerBuildEntries = {
     ...Object.values(cliRecoveryEntrypoints),
     ...Object.values(cliMessageExitEntrypoints),
     windowsProcessOwnershipEntrypoint,
+    windowsProcessJobRetentionEntrypoint,
     ...Object.values(updateCandidateExitEntrypoints),
     ...Object.values(updateExecutorNativeEntrypoints),
     ...Object.values(updateExecutorEntrypoints),

@@ -297,6 +297,11 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /**
+   * Producer-only cumulative argument JSON while the call streams. Producers remove it before
+   * `toolcall_end` or terminal cleanup; it never appears in final messages or transcripts.
+   */
+  partialJson?: string;
   thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
   executionMode?: "sequential" | "parallel";
 }
@@ -354,6 +359,8 @@ export const DEFAULT_MISSING_TOOL_RESULT_TEXT =
 
 export interface UserMessage {
   role: "user";
+  /** Host-generated context projected as a user message, not a human-authored turn. */
+  synthetic?: true;
   content: string | (TextContent | ImageContent)[];
   timestamp: number; // Unix timestamp in milliseconds
   /** Trusted runtime-context metadata; ordinary user messages omit it. */

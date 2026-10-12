@@ -62,6 +62,14 @@ OpenClaw classifies loaded plugins by their registration behavior:
 
 Use `openclaw plugins inspect <id>` to see a plugin's shape.
 
+Worker backends can use `stageOpenClawAgentDatabaseSchemaExtension` from
+`openclaw/plugin-sdk/sqlite-worker-runtime` before known derived-table DDL inside
+a managed transaction. Use it only when the operation preserves agent ownership
+metadata and canonical agent tables, indexes, and triggers. The committed receipt
+preserves those existing contracts; unclassified DDL and migrations still require
+their normal schema admission. Private databases without agent admission are
+unaffected.
+
 ## Related
 
 - [Plugin SDK overview](/plugins/sdk-overview) - registration API and subpath reference
@@ -326,6 +334,15 @@ for already prepared data. `session-transcript-runtime` provides
 synchronous and opaque transaction callback forms remain deprecated until the
 next Plugin SDK major. See [session entry migration](/plugins/sdk-migration/how-to-migrate#prepare-session-entry-changes)
 and [transcript migration](/plugins/sdk-migration/how-to-migrate#await-locked-transcript-preparation).
+
+For ordinary session preparation, await `getSessionEntryAsync`,
+`readSessionUpdatedAtAsync`, `getConversationSessionAsync`, or
+`readAmbientTranscriptWatermarkAsync` from `session-store-runtime`. Native command
+preparation uses `resolveStoredModelOverrideAsync` and
+`resolveCommandArgMenuAsync` from `command-auth-native`; the menu helper is also
+available from `native-command-registry`. Their synchronous compatibility APIs
+remain deprecated until the next Plugin SDK major. See
+[session and command preparation](/plugins/sdk-migration#session-and-command-preparation).
 
 ## Stateful CLI commands
 

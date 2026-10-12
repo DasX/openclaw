@@ -78,7 +78,7 @@ import type { RunAgentAttemptParams } from "./attempt-execution.types.js";
 
 const log = createSubsystemLogger("agents/agent-command");
 
-export function runAgentAttempt(params: RunAgentAttemptParams) {
+export async function runAgentAttempt(params: RunAgentAttemptParams) {
   const selectedAuthProfile = resolveCommandAuthProfileSelection(params);
   const isRawModelRun = params.opts.modelRun === true || params.opts.promptMode === "none";
   // A completion handoff relays frozen child output, so only a verified private
@@ -159,7 +159,7 @@ export function runAgentAttempt(params: RunAgentAttemptParams) {
     params.isFallbackRetry &&
     isClaudeCliProvider(params.originalProvider) &&
     !isClaudeCliProvider(params.providerOverride)
-      ? buildClaudeCliFallbackContextPrelude({
+      ? await buildClaudeCliFallbackContextPrelude({
           cliSessionId: getCliSessionBinding(params.sessionEntry, "claude-cli")?.sessionId,
         })
       : "";
@@ -273,7 +273,7 @@ export function runAgentAttempt(params: RunAgentAttemptParams) {
     providerAuthAliasesEnabled: params.pluginsEnabled,
     allowHarnessAuthProfileForwarding: !isCliExecutionProvider,
   };
-  const harnessAuthSelection = resolveHarnessAuthProfileSelection({
+  const harnessAuthSelection = await resolveHarnessAuthProfileSelection({
     ...harnessAuthContext,
     agentDir: params.agentDir,
     authProfileProvider: params.authProfileProvider,

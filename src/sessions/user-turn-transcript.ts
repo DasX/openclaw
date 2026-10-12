@@ -582,8 +582,6 @@ export function createUserTurnTranscriptRecorder(
         admission,
         message: admittedMessage,
         text,
-        // SAFETY: This is the host config already consumed by persistUserTurnTranscript.
-        config: resolvedPersistenceTarget?.config as SessionTranscriptTurnPersistOptions["config"],
         assertCurrent,
         assertWritable: () => {
           assertCurrent();
@@ -683,10 +681,4 @@ export function createUserTurnTranscriptRecorder(
   });
   inheritUserTurnPromptReactionSource(recorder, params.pendingInputSources);
   return recorder;
-}
-
-if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.userTurnTranscriptTestApi")] = {
-    persistUserTurnTranscript,
-  };
 }

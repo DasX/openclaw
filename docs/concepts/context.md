@@ -44,8 +44,10 @@ matches the selected model and effective context cap. This budget leaves room
 for the runtime's compaction reserve. Its label is **Prompt budget (last run)**:
 it is an estimate, and crossing it can trigger tool-result reduction or compaction.
 After a model or context-cap change, the meter shows **Context window** until a
-new run supplies a matching estimate. Stale token totals remain approximate and
-do not trigger the context warning.
+new run supplies a matching estimate. If the selected model's capacity is unknown,
+the meter omits context usage instead of borrowing the agent's default model
+capacity; available provider plan usage remains visible. Stale token totals remain
+approximate and do not trigger the context warning.
 
 ## Example output
 
@@ -219,7 +221,8 @@ another message.
 
 For embedded Responses requests, current request metadata stays after the user
 message or compaction checkpoint and before its tool calls. This lets supported transports reuse the
-previous response across tool rounds without dropping live context. A later user
+previous response across tool rounds without dropping live context, so OpenClaw
+sends it once per user turn rather than after every tool result. A later user
 turn in an OpenAI Responses-family session preserves hidden runtime-context
 carriers append-only, so the previous turn, including tool calls and results,
 remains an unchanged cached prefix. Retained carriers count toward the context

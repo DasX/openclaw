@@ -187,7 +187,7 @@ Selecting a **different theme** in Appearance applies its complete default look,
 
 The mounted UI keeps a live display-preference snapshot for its connected Gateway. Local changes and same-Gateway browser-tab edits update open composers without a reload. Sidebar width, personal rail shortcuts, and pinned agents also update across tabs; collapsing the sidebar stays local to each tab. Resizing the sidebar preserves shortcuts changed in another tab. Selecting a different Gateway in another tab does not retarget the current tab. Credentials remain owned by the connection, separate from this display snapshot.
 
-Personal rail shortcuts start empty and their order syncs across devices for an authenticated Gateway profile with write access. Add shortcuts by dragging sessions, pages, plugins, or people into the rail. Existing saved shortcuts remain unchanged; profiles without a saved list do not import shared navigation or pinned sessions. On read-only connections or connections without a durable profile, navigation changes stay browser-local and never write shared Gateway configuration. The Sessions owner filter is stored in the browser per Gateway and profile; its default is **My sessions** for an identified profile and **All owners** while identity is unresolved or absent. Sidebar width and scroll position remain browser-specific. Agent-switcher pins are a separate browser-profile preference. See [Navigation rail](/web/control-ui/sessions-and-sidebar#navigation-rail).
+Personal rail shortcuts start empty and their order syncs across devices for an authenticated Gateway profile with write access. Add shortcuts by dragging sessions, pages, plugins, or people into the rail. After upgrading, older sidebar order and pins are not carried over: the rail uses the new `ui.railShortcuts` preference and browser-local `railShortcuts` field. Old values remain stored but are ignored. Shortcuts saved under the new identity remain unchanged; profiles without a saved list do not import shared navigation or pinned sessions. On read-only connections or connections without a durable profile, navigation changes stay browser-local and never write shared Gateway configuration. The Sessions owner filter is stored in the browser per Gateway and profile; its default is **My sessions** for an identified profile and **All owners** while identity is unresolved or absent. Sidebar width and scroll position remain browser-specific. Agent-switcher pins are a separate browser-profile preference. See [Navigation rail](/web/control-ui/sessions-and-sidebar#navigation-rail).
 
 Choose an **Accent color** preset or custom color in Appearance to override the active theme's accent. For an authenticated Gateway profile, the accent precedence is the profile's `ui.accent` preference, the gateway-wide `ui.prefs.accent` setting, the operator-configured `ui.seamColor`, and finally the active theme's default. A theme selection stores the explicit `"theme"` accent preference, which uses the selected theme's complete palette in both light and dark modes instead of inheriting gateway accent or seam colors. **Restore default** clears only that profile's preference, leaving the gateway-wide settings unchanged. Connections without an authenticated profile keep the existing gateway-wide preference behavior.
 
@@ -552,6 +552,16 @@ including limited access to contacts or photos. Precise location is read-only
 on iOS; **Open Settings** opens the system setting. Talk shows the device's
 Voice Wake, Talk mode, Talk button, background Talk, and speakerphone controls.
 
+## Speech bubbles
+
+**Settings → Labs → Speech bubbles** controls
+`gateway.controlUi.experimental.chatBubbles` (off by default). Enabling it makes
+Home use bubbles by default and exposes the per-conversation View menu toggle.
+Browser-local on/off choices take precedence over the Home default. Turning the
+lab off hides the toggle and restores the standard view everywhere, without
+clearing those choices; turning it back on restores them. Changes apply in open
+Control UI pages without restarting the Gateway.
+
 ## Custom plugin UI
 
 Find **Labs** in the **System** section of the Settings sidebar, after **Infrastructure**.
@@ -659,7 +669,7 @@ To find an older archived conversation, choose **Sessions**, **All time**, and *
 
 **Active sessions** loads when you open Live activity and refreshes after reconnecting, so sessions already running or queued appear before new tool events arrive. It shows up to 100 sessions you are allowed to see, including work on other agents and agent-owned global sessions. A limit notice appears when more sessions match. Select a linked row to open that session. Reserved `unknown` sessions show status without a conversation link; raw `global` sessions do the same outside global session scope, where the Home URL addresses a different session. Changes update this snapshot while the view is open; disconnected or failed reads show a visible status instead of claiming that sessions are idle. **Clear** only clears the received-event list. It does not clear or stop active sessions.
 
-Live activity keeps up to 100 sanitized summaries with redacted, truncated output previews. Tool argument values are not stored in Activity state; the UI shows that arguments are hidden and records only the argument field count.
+Live activity keeps up to 100 bounded summaries with truncated output previews. Preview text is not secret-masked and can contain credentials. Tool argument values are not stored in Activity state; the UI shows that arguments are hidden and records only the argument field count.
 
 Live activity collects events only while this view is open and the browser tab is visible. It watches the bounded, authorized **Active sessions** roster and releases those subscriptions when you hide the tab or leave the view. Activity from before you opened the view is not shown. Use the search, tool, and status filters to narrow received entries. Leaving the Activity page, reloading, changing Gateway or authentication context, and **Clear** reset the list. Ordinary reconnects preserve received entries and expansion state, then resume subscriptions from the refreshed roster. This browser-local feed is not a durable record of work performed while the view was closed, hidden, or disconnected.
 

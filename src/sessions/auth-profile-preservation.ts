@@ -123,6 +123,7 @@ export function applyModelOverrideWithAuthProfileCompatibility(
         entry: params.entry,
         currentProvider: params.currentProvider,
         provider: params.selection.provider,
+        recordedProvider: params.recordedProvider,
         ...(params.metadataSnapshot ? { metadataSnapshot: params.metadataSnapshot } : {}),
       }),
   });

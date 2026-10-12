@@ -19,8 +19,11 @@ import {
   resolveExistingSqliteFileUri,
   requestSqliteWorkerOperationAdmission,
   readSqliteDatabasePendingWriteToken,
+  readSqliteDatabaseWriteTokenForPath,
   runSqliteImmediateTransactionSync,
+  runSqliteSingleStatementSync,
   setSqliteBusyTimeout,
+  stageOpenClawAgentDatabaseSchemaExtension,
   supportsNodeSqliteExtensionLoading,
   tableExists,
   type SqliteWorkerBackend,
@@ -198,14 +201,10 @@ function createPublicationBackend(
   admit: (stage: "transaction" | "commit") => void,
 ) {
   const assertPath = () => assertMemoryShadowIdentity(databasePath, input.fileIdentity);
-  // One source owns this staging buffer until settlement. Large sources cost
-  // additional worker memory, but never turn transfer fragments into SQLite I/O.
+  // Each agent run binds its own backend; shadow runs use the private writer queue.
+  // Large sources stay in worker memory without per-fragment SQLite I/O.
   let staged:
     | ({
-        operation: string;
-        rows: number;
-        row: number;
-        part: number;
         fragments: MemoryPublicationFragment[];
       } & (
         | { kind: "source"; header: MemorySourceIndexHeader }
@@ -294,6 +293,44 @@ function createPublicationBackend(
         { withCommit: hooks.withCommit },
       ),
     );
+  const writeSingleStatement = <T>(statement: () => T): MemoryPublicationResult<T> => {
+    let entered = false;
+    let committed = false;
+    let restoredBusyTimeout = true;
+    const restoreBusyTimeout = () => {
+      if (!restoredBusyTimeout) {
+        setSqliteBusyTimeout(db, input.pragmas.busy_timeout);
+        restoredBusyTimeout = true;
+      }
+    };
+    try {
+      entered = true;
+      admit("transaction");
+      // Autocommit makes the statement the effect boundary.
+      admit("commit");
+      setSqliteBusyTimeout(db, 0);
+      restoredBusyTimeout = false;
+      let value: T;
+      try {
+        value = runSqliteSingleStatementSync(db, statement);
+      } catch (error) {
+        const nativeCode = failure(error).errcode;
+        // Lock refusal leaves no durable write, so the preparing host may retry.
+        entered = nativeCode === undefined || ![5, 6].includes(nativeCode & 0xff);
+        throw error;
+      }
+      committed = true;
+      const writeToken = readSqliteDatabaseWriteTokenForPath(databasePath);
+      restoreBusyTimeout();
+      return { ok: true, value, writeToken };
+    } catch (error) {
+      return { ok: false, error: failure(error), entered, committed };
+    } finally {
+      if (db.isOpen) {
+        restoreBusyTimeout();
+      }
+    }
+  };
   const withFacts = <T>(result: MemoryPublicationResult<T>): MemoryPublicationResult<T> =>
     result.ok ? { ...result, facts: readMemoryDatabaseFacts(db) } : result;
   const writeMeta = (value: string) => {
@@ -367,13 +404,16 @@ function createPublicationBackend(
         return readMemorySourceChunks(db, command.input.source, command.input.path);
       }
       if (command.type === "index.writeMetadata") {
-        return withFacts(write(() => writeMeta(JSON.stringify(command.input))));
+        const serialized = JSON.stringify(command.input);
+        return withFacts(writeSingleStatement(() => writeMeta(serialized)));
       }
       if (command.type === "source.state") {
         return loadMemorySourceFileState({ db, ...command.input });
       }
       if (command.type === "source.refresh") {
-        return withFacts(write(() => refreshMemorySessionSourceState(db, command.input)));
+        return withFacts(
+          writeSingleStatement(() => refreshMemorySessionSourceState(db, command.input)),
+        );
       }
       if (command.type === "session.current") {
         return hasMemorySessionTombstone(db, command.input.agentId, command.input.sessionId)
@@ -384,41 +424,21 @@ function createPublicationBackend(
         return loadMemoryEmbeddingCache({ ...command.input, db });
       }
       if (command.type === "stage.start" || command.type === "cache.stage.start") {
-        if (staged) {
-          throw new Error("Memory publication input already belongs to another operation");
-        }
         staged =
           command.type === "stage.start"
-            ? { ...command.input, kind: "source", row: 0, part: 0, fragments: [] }
-            : { ...command.input, kind: "cache", row: 0, part: 0, fragments: [] };
+            ? { ...command.input, kind: "source", fragments: [] }
+            : { ...command.input, kind: "cache", fragments: [] };
         return undefined;
       }
       if (command.type === "stage.discard") {
-        if (staged?.operation === command.input.operation) {
-          discard();
-        }
+        discard();
         return undefined;
       }
       if (command.type === "stage.append") {
-        if (!staged || staged.operation !== command.input.operation) {
-          throw new Error("Memory publication input owner changed");
+        if (!staged) {
+          throw new Error("Memory publication input was not started");
         }
-        for (const fragment of command.input.fragments) {
-          if (
-            fragment.row !== staged.row ||
-            fragment.part !== staged.part ||
-            staged.row >= staged.rows
-          ) {
-            throw new Error("Memory publication input is incomplete or out of order");
-          }
-          staged.fragments.push(fragment);
-          if (fragment.last) {
-            staged.row++;
-            staged.part = 0;
-          } else {
-            staged.part++;
-          }
-        }
+        staged.fragments.push(...command.input.fragments);
         return undefined;
       }
       if (command.type === "cache.prune") {
@@ -447,14 +467,8 @@ function createPublicationBackend(
           const entries = command.input.entries;
           readEntries = () => entries;
         } else {
-          if (
-            !staged ||
-            staged.kind !== "cache" ||
-            staged.operation !== command.input.operation ||
-            staged.row !== staged.rows ||
-            staged.part !== 0
-          ) {
-            throw new Error("Memory cache input was not sealed");
+          if (staged?.kind !== "cache") {
+            throw new Error("Memory cache input was not started");
           }
           header = staged.header;
           const fragments = staged.fragments;
@@ -498,6 +512,7 @@ function createPublicationBackend(
         }
         return withFacts(
           write(() => {
+            stageOpenClawAgentDatabaseSchemaExtension(db);
             db.exec("DROP TABLE IF EXISTS chunks_vec");
             return { extensionPath: loadedPath, retiredLegacy: true };
           }),
@@ -516,6 +531,7 @@ function createPublicationBackend(
         loadExtension(command.input.state.extensionPath);
         return withFacts(
           write(() => {
+            stageOpenClawAgentDatabaseSchemaExtension(db);
             db.exec(`DROP TABLE IF EXISTS ${MEMORY_INDEX_VECTOR_TABLE}`);
             db.exec(
               `CREATE VIRTUAL TABLE ${MEMORY_INDEX_VECTOR_TABLE} USING vec0(\n` +
@@ -558,14 +574,8 @@ function createPublicationBackend(
         header = command.input.header;
         rows = readPublicationRows<MemorySourceIndexRow>(command.input.fragments);
       } else {
-        if (
-          !staged ||
-          staged.kind !== "source" ||
-          staged.operation !== command.input.operation ||
-          staged.row !== staged.rows ||
-          staged.part !== 0
-        ) {
-          throw new Error("Memory publication input was not sealed");
+        if (staged?.kind !== "source") {
+          throw new Error("Memory publication input was not started");
         }
         header = staged.header;
         rows = readPublicationRows<MemorySourceIndexRow>(staged.fragments);
@@ -607,14 +617,12 @@ function* readPublicationRows<Row extends MemorySourceIndexRow | MemoryEmbedding
   // SAFETY: Only the paired source/cache producer writes these sealed records.
   const parse = (parts: string[]) => JSON.parse(parts.join("")) as Row;
   let parts: string[] = [];
-  let row = 0;
   for (const fragment of fragments) {
-    if (fragment.row !== row) {
+    parts.push(fragment.json);
+    if (fragment.last) {
       yield parse(parts);
       parts = [];
-      row = fragment.row;
     }
-    parts.push(fragment.json);
   }
   if (parts.length) {
     yield parse(parts);
