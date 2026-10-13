@@ -1,6 +1,7 @@
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import {
   loadSessionEntryReadOnly,
   replaceSessionEntrySync,
@@ -46,6 +47,7 @@ test("sessions.list distinguishes selection sources for identical selected value
       agents: { entries: { main: {} }, defaults: { model: "fixture/selected" } },
       plugins: { enabled: false },
     };
+    setRuntimeConfigSnapshot(cfg);
     const configured = "agent:main:configured";
     const pinned = "agent:main:pinned";
     const inherited = "agent:main:inherited";
@@ -139,7 +141,7 @@ async function seedMetadataReads(prepareProjection = false) {
     },
   } satisfies Record<string, GatewayOperatorRoleDefinition>;
   let cfg: OpenClawConfig = {
-    agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+    agents: { defaults: { sessionStore: { agentId: "main" } }, entries: { main: {}, work: {} } },
     session: { store: storePath },
     gateway: {
       roles: {
@@ -148,6 +150,7 @@ async function seedMetadataReads(prepareProjection = false) {
       },
     },
   };
+  setRuntimeConfigSnapshot(cfg);
   for (const [agentId, name, visibility, incognito, content] of [
     ["main", "first", "shared", false, "needle alpha"],
     ["main", "second", "shared", false, `needle beta ${"context ".repeat(20)}`],

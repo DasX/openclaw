@@ -153,6 +153,7 @@ describe("sessions-list inventory projection", () => {
         {
           ...metadata,
           kind: "other",
+          sidebarRoot: false,
           group: "P1 issues",
           parentSessionKey: "agent:main:main",
           stateVersion: 4,

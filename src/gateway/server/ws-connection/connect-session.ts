@@ -57,6 +57,7 @@ import { prepareGatewayNodeConnect } from "./connect-node-session.js";
 import {
   bindGatewayConnectOperatorAccess,
   prepareGatewayConnectOperatorAccess,
+  prepareGatewayConnectOperatorDeviceSource,
   rejectGatewayConnectOperatorAccess,
 } from "./connect-operator-access.js";
 import {
@@ -225,6 +226,7 @@ export async function attachAuthenticatedGatewayConnect(
           authenticatedUserProfile?.profileId,
           preparedProfile?.authority.role ?? null,
           context.configSnapshot,
+          preparedProfile?.authority.githubLogin ?? null,
         )
       : undefined;
   const scopes = rolePolicy
@@ -284,10 +286,6 @@ export async function attachAuthenticatedGatewayConnect(
     pairingLocality !== "remote" &&
     connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT &&
     connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND;
-  const isTrustedApprovalRuntime =
-    isLocalBackendClient &&
-    scopes.includes(APPROVALS_SCOPE) &&
-    isOperatorApprovalRuntimeToken(connectParams.auth?.approvalRuntimeToken);
   const agentRuntimeIdentityProof = connectParams.auth?.agentRuntimeIdentityToken;
   let trustedAgentRuntimeIdentity:
     | Awaited<ReturnType<typeof verifyAgentRuntimeIdentityToken>>
@@ -356,15 +354,21 @@ export async function attachAuthenticatedGatewayConnect(
   const authenticatedControlUi =
     authenticatedOperator && connectParams.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
   const controlUiAdmin = authenticatedControlUi && scopes.includes(ADMIN_SCOPE);
-  const internal = {
+  const internal: NonNullable<GatewayWsClient["internal"]> = {
     ...(isLocalClient ? { isLocalClient: true as const } : {}),
     ...(authenticatedOperator ? { authenticatedOperator: true as const } : {}),
     ...(authenticatedControlUi ? { authenticatedControlUi: true as const } : {}),
     ...(controlUiAdmin ? { controlUiAdmin: true as const } : {}),
-    ...(isTrustedApprovalRuntime ? { approvalRuntime: true } : {}),
     ...(trustedAgentRuntimeIdentity ? { agentRuntimeIdentity: trustedAgentRuntimeIdentity } : {}),
     ...(sharedSecretOperatorOwner ? { operatorRoleActor: { kind: "system" as const } } : {}),
   };
+  if (authenticatedOperator) {
+    const source = await prepareGatewayConnectOperatorDeviceSource(context, state, deviceScopes);
+    if (source === undefined) {
+      return;
+    }
+    internal.operatorDeviceTokenIdentity = source;
+  }
   const prepareLocalUserIngress = (profile = authenticatedUserProfile) =>
     prepareGatewayLocalUserIngress({
       authMethod,
@@ -471,6 +475,14 @@ export async function attachAuthenticatedGatewayConnect(
       });
       return;
     }
+  }
+
+  if (
+    isLocalBackendClient &&
+    scopes.includes(APPROVALS_SCOPE) &&
+    (await isOperatorApprovalRuntimeToken(connectParams.auth?.approvalRuntimeToken))
+  ) {
+    nextClient.internal = { ...nextClient.internal, approvalRuntime: true };
   }
 
   const policyFailure = resolveGatewayConnectPolicyFailure(context, state);
@@ -631,7 +643,7 @@ export async function attachAuthenticatedGatewayConnect(
         });
       },
       (err) =>
-        logGateway.warn(`remote bin probe failed for ${nodeSession.nodeId}: ${formatForLog(err)}`),
+        logGateway.warn(`remote bin check failed for ${nodeSession.nodeId}: ${formatForLog(err)}`),
     );
     const sendConnectSnapshot = async (event: string, payload: unknown) => {
       if (pairingGeneration) {

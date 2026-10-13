@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { registerListener } from "../../../src/shared/listeners.js";
 import {
   nativeChromeExtensionSetupActionSchema,
   nativeChromeExtensionSetupResultSchema,
@@ -56,6 +57,7 @@ const nativeDeviceSettingsSnapshotSchema = z.object({
       canvasEnabled: z.boolean().optional(),
       cameraEnabled: z.boolean().optional(),
       keepAwakeEnabled: z.boolean().optional(),
+      aiSetupAvailable: z.boolean().optional(),
       healthSummaryAvailable: z.boolean().optional(),
       healthSummaryEnabled: z.boolean().optional(),
       computerControlEnabled: z.boolean().optional(),
@@ -196,6 +198,7 @@ export type SettingKey =
   | "updates.automatic";
 
 type NativePanel =
+  | "ai-setup"
   | "quick-chat-shortcut"
   | "microphone-test"
   | "browser-import"
@@ -364,10 +367,7 @@ export function createNativeDeviceSettingsCapability(): NativeDeviceSettingsCapa
     get snapshot() {
       return snapshot;
     },
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
+    subscribe: (listener) => registerListener(listeners, listener),
     set: (key, value, onSettled) => void send({ type: "set", key, value }, onSettled),
     requestPermission: (id) => void send({ type: "request-permission", id }),
     openSystemSettings: (id) => void send({ type: "open-system-settings", id }),

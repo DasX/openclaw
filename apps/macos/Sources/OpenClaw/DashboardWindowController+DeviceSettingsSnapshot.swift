@@ -26,7 +26,7 @@ extension DashboardWindowController {
 
     func canUseDeviceSettings(sourceID: String) -> Bool {
         !Task.isCancelled && self.notificationSourceID == sourceID && self.isWindowOpen &&
-            !self.isShowingFailurePage && self.hasCurrentBrowserSession &&
+            !self.isShowingFailurePage && self.documentHost.hasCurrentBrowserSession &&
             ControlUIDocumentHost.isTrustedLinkSource(self.webView.url, dashboardURL: self.currentURL)
     }
 
@@ -72,7 +72,8 @@ extension DashboardWindowController {
                 cuaDriverBundled: CuaDriverArtifact.bundledExecutableURL != nil,
                 peekabooBridgeEnabled: state.peekabooBridgeEnabled,
                 activeComputerPresenceEnabled: state.activeComputerPresenceEnabled,
-                unattendedDesktopEnabled: MacDesktopAvailabilityCoordinator.shared.unattendedEnabled),
+                unattendedDesktopEnabled: MacDesktopAvailabilityCoordinator.shared.unattendedEnabled,
+                aiSetupAvailable: true),
             desktopAvailability: .init(state: MacDesktopAvailabilityCoordinator.shared.refresh()),
             browser: .init(
                 importAvailable: state.connectionMode == .local && BrowserProfileImportModel.shared.importAvailable,
