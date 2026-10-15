@@ -146,13 +146,11 @@ export function bindCronSelfRemovalCommitGuard(
 ): () => void {
   const { admittedJobRuns, selfRemovalOwners } = getCronActiveJobState();
   const marker = getCurrentCronActiveJobMarker(jobId);
-  if (!marker) {
-    return commitGuard;
-  }
-  const owner = admittedJobRuns.get(marker);
+  const owner = marker && admittedJobRuns.get(marker);
   const assertOwner = () => {
     assertCallerActive();
     if (
+      !marker ||
       !owner ||
       owner.context.operationalRunInstance.instanceId !== instance.instanceId ||
       owner.context.operationalRunInstance.runId !== instance.runId ||

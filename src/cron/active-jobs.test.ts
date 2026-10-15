@@ -223,6 +223,16 @@ describe("cron message action authority", () => {
   );
 });
 
+it("refuses self-removal without an active run", () => {
+  const commitGuard = bindCronSelfRemovalCommitGuard(
+    "idle-job",
+    createOperationalRunInstanceRef("idle-run"),
+    vi.fn(),
+    vi.fn(),
+  );
+  expect(commitGuard).toThrow("Cron self-removal requires the exact live run");
+});
+
 describe.each(["same module", "reload before guard", "reload after guard"])(
   "active cron self-removal ownership: %s",
   (moduleBoundary) => {
