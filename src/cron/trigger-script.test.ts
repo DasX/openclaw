@@ -401,6 +401,59 @@ describe("cron trigger script evaluator", () => {
     ]);
   });
 
+  it.each(["policy change", "capacity eviction"] as const)(
+    "retains an active runtime through %s and disposes it after its last evaluation",
+    async (retirement) => {
+      const config: OpenClawConfig = {};
+      const entered = createDeferred();
+      const release = createDeferred();
+      const disposed: number[] = [];
+      let generation = 0;
+      const prepareRuntime = vi.fn(async () => {
+        const current = ++generation;
+        return {
+          ...createPreparedRuntime(config),
+          createTools: async () => [],
+          [Symbol.dispose]: () => disposed.push(current),
+        };
+      });
+      let first = true;
+      const evaluate = createCronTriggerEvaluator({
+        config,
+        prepareRuntime,
+        runHeadless: async () => {
+          if (first) {
+            first = false;
+            entered.resolve();
+            await release.promise;
+          }
+          return completed({ value: { fire: false } });
+        },
+      });
+      const request = { jobId: "active-cache", script: "return {}", state: null };
+      const active = evaluate(request);
+      try {
+        await entered.promise;
+        if (retirement === "policy change") {
+          await evaluate({ ...request, toolsAllow: [] });
+          await evaluate({ ...request, toolsAllow: [] });
+          expect(prepareRuntime).toHaveBeenCalledTimes(2);
+        } else {
+          for (let index = 0; index < 128; index++) {
+            await evaluate({ ...request, jobId: `cache-${index}` });
+          }
+        }
+        expect(disposed).toEqual([]);
+        release.resolve();
+        await expect(active).resolves.toMatchObject({ kind: "evaluated", fire: false });
+        expect(disposed).toEqual([1]);
+      } finally {
+        release.resolve();
+        await active;
+      }
+    },
+  );
+
   it.each([
     completed({ value: { fire: "yes" } }),
     completed({ value: { fire: true, message: 42 } }),
@@ -535,41 +588,6 @@ describe("cron script runtime elapsed-time budgets", () => {
 });
 
 describe("cron script payload evaluator", () => {
-  it("exposes a stream batch beside the script payload state", async () => {
-    const config = {} as OpenClawConfig;
-    const runHeadless = vi.fn(async (_params: HeadlessParams) => completed({ value: {} }));
-    const runtime = createCronScriptRuntime({
-      config,
-      runHeadless,
-      prepareRuntime: vi.fn(async () => createPreparedRuntime(config)),
-    });
-
-    await runtime.executePayload({
-      jobId: "payload-stream",
-      script: "return {}",
-      state: { cursor: 3 },
-      streamBatch: "line one\nline two",
-    });
-
-    expect(runHeadless).toHaveBeenCalledWith(
-      expect.objectContaining({
-        maxToolCalls: 50,
-        extraNamespaces: [
-          expect.objectContaining({
-            globalName: "trigger",
-            scope: {
-              kind: "object",
-              entries: [
-                ["state", { kind: "value", value: { cursor: 3 } }],
-                ["streamBatch", { kind: "value", value: "line one\nline two" }],
-              ],
-            },
-          }),
-        ],
-      }),
-    );
-  });
-
   it("uses payload-grade capped budgets and exposes frozen trigger state", async () => {
     const config = {} as OpenClawConfig;
     const runHeadless = vi.fn(async (_params: HeadlessParams) =>
@@ -593,6 +611,7 @@ describe("cron script payload evaluator", () => {
         jobId: "payload-job",
         script: "return result",
         state: { revision: 1 },
+        streamBatch: "line one\nline two",
         timeoutSeconds: 10_000,
         toolBudget: 10_000,
       }),
@@ -613,7 +632,10 @@ describe("cron script payload evaluator", () => {
             globalName: "trigger",
             scope: {
               kind: "object",
-              entries: [["state", { kind: "value", value: { revision: 1 } }]],
+              entries: [
+                ["state", { kind: "value", value: { revision: 1 } }],
+                ["streamBatch", { kind: "value", value: "line one\nline two" }],
+              ],
             },
           },
         ],
