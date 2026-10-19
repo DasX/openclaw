@@ -6,7 +6,7 @@ import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
 import { ensureAuthProfileStoreAsync } from "../auth-profiles/store-runtime.js";
 import { cliBackendAcceptsAuthProfileForwarding } from "../cli-execution-auth.js";
 import { buildAgentRuntimeAuthPlan } from "../runtime-plan/auth.js";
-import type { RunAgentAttemptParams } from "./attempt-execution.types.js";
+import type { AgentAttemptParams } from "./attempt-execution.types.js";
 
 type HarnessAuthProfileSelection = {
   authProfileId?: string;
@@ -103,7 +103,7 @@ export async function resolveHarnessAuthProfileSelection(params: {
 
 /** Command candidates forward auth only through a runtime that explicitly supports it. */
 export function allowsCommandCliAuthProfileForwarding(
-  params: Pick<RunAgentAttemptParams, "cfg" | "sessionAgentId">,
+  params: Pick<AgentAttemptParams, "cfg" | "sessionAgentId">,
   isCliExecutionProvider: boolean,
   cliExecutionProvider: string,
 ): boolean {

@@ -26,7 +26,7 @@ import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import { resolveRuntimePolicySessionKey } from "../auto-reply/reply/runtime-policy-session-key.js";
 import { normalizeChatType } from "../channels/chat-type.js";
 import { ExpectedCliError } from "../cli/failure-output.js";
-import { getRuntimeConfig } from "../config/config.js";
+import { captureRuntimeConfigAsyncReader } from "../config/config.js";
 import { resolveFreshSessionTotalTokens, resolveSessionTotalTokens } from "../config/sessions.js";
 import { resolveProjectedSessionContextTokens } from "../config/sessions/context-token-provenance.js";
 import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.js";
@@ -268,7 +268,7 @@ export async function sessionsCommand(
   runtime: RuntimeEnv,
 ) {
   const aggregateAgents = opts.allAgents === true;
-  const cfg = getRuntimeConfig();
+  const cfg = await captureRuntimeConfigAsyncReader()();
   const { resolveModelContextTokenProjection } = await import("../agents/context.js");
   const { loadPreparedModelCatalogSnapshot } = await import("../agents/prepared-model-catalog.js");
   const { callGateway, isImplicitLocalGatewayTarget } = await import("../gateway/call.js");
@@ -299,11 +299,7 @@ export async function sessionsCommand(
       storePath: target.storePath,
       projection: "list",
     })
-      .filter(
-        ({ entry }) =>
-          activeSince === undefined ||
-          (typeof entry.updatedAt === "number" && entry.updatedAt >= activeSince),
-      )
+      .filter(({ entry }) => activeSince === undefined || entry.updatedAt >= activeSince)
       .map(({ sessionKey, entry }) => ({ agentId: target.agentId, entry, sessionKey }));
   });
   const totalCount = allEntries.length;

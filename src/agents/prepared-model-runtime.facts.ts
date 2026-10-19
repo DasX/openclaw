@@ -2,13 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import type { ConfiguredModelRef } from "@openclaw/model-catalog-core/configured-model-refs";
+import {
+  collectConfiguredModelRefs,
+  type ConfiguredModelRef,
+} from "@openclaw/model-catalog-core/configured-model-refs";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
 import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
 import { prepareMediaCapabilityProviders } from "../plugins/capability-provider-runtime.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
-import { getPluginMetadataSnapshotCache, retainPluginCache } from "../plugins/plugin-cache.js";
 import { resolvePluginMetadataSnapshotAsync } from "../plugins/plugin-metadata-snapshot.js";
 import {
   getPreparedMessageToolCatalog,
@@ -17,7 +19,6 @@ import {
 import { resolvePreparedProviderStaticConfigs } from "../plugins/provider-discovery.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { getPluginRegistryInspectionResources } from "../plugins/registry-inspection-resources.js";
-import { capturePluginLifecycleAuthority } from "../plugins/registry-lifecycle.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { resolveRuntimeSyntheticAuthProviderRefs } from "../plugins/synthetic-auth.runtime.js";
 import { prepareAmbientAgentCredentialsForDiscovery } from "./agent-auth-discovery.js";
@@ -149,11 +150,6 @@ export async function prepareWorkspaceBuildGroup(
     }
   }
   const pluginMetadataSnapshot = selectedMetadataSnapshot;
-  // Raw preparation owns its facts across awaited auth/catalog work. Successful
-  // generations acquire their independent borrow before this build scope releases it.
-  using _ = {
-    [Symbol.dispose]: retainPluginCache(getPluginMetadataSnapshotCache(pluginMetadataSnapshot)),
-  };
   const pluginMetadataMs = reusablePluginGeneration
     ? 0
     : performance.now() - pluginMetadataStartedAt;
@@ -472,48 +468,14 @@ export async function prepareWorkspaceBuildGroup(
     };
   };
   try {
-    const run = () =>
-      withPluginRuntimeGenerationScope(
-        {
-          metadataSnapshot: pluginMetadataSnapshot,
-          pluginRegistry: runtimePluginRegistry,
-        },
-        prepare,
-      );
-    if (!mediaCapabilityProviderSource) {
-      return await run();
-    }
-    const isSourceCurrent = capturePluginLifecycleAuthority(
-      mediaCapabilityProviderSource.registry,
-      undefined,
-      { scopedRuntime: true },
+    // The build's registry resources already retain the source through preparation.
+    return await withPluginRuntimeGenerationScope(
+      {
+        metadataSnapshot: pluginMetadataSnapshot,
+        pluginRegistry: runtimePluginRegistry,
+      },
+      prepare,
     );
-    if (!isSourceCurrent?.()) {
-      throw new Error("Prepared media capability provider source is retired");
-    }
-    const claim = mediaCapabilityProviderSource.resources.retain();
-    let prepared: Awaited<ReturnType<typeof prepare>>;
-    try {
-      prepared = await run();
-    } catch (error) {
-      let failure = error;
-      try {
-        await claim.release();
-      } catch (cleanupError) {
-        failure = new AggregateError(
-          [error, cleanupError],
-          "Prepared construction and registration cleanup failed",
-          { cause: error },
-        );
-      }
-      throw failure;
-    }
-    // The caller still owns the original inspection; construction owns its actual awaited work.
-    await claim.release();
-    if (!isSourceCurrent()) {
-      throw new Error("Prepared media capability provider source is retired");
-    }
-    return prepared;
   } catch (error) {
     const cleanup = preparedGeneration ? [discardPreparedPluginGeneration(preparedGeneration)] : [];
     const results = await Promise.allSettled(cleanup);
@@ -549,6 +511,7 @@ export function preparedModelInventoryKey(input: PreparedModelRuntimeInput): str
   return fingerprintPreparedRuntimeFacts({
     ...input,
     config: { models, auth, env, plugins },
+    configuredModelRefs: collectConfiguredModelRefs(input.config),
     env: input.env ?? process.env,
     runtimePluginSelections: undefined,
     order:

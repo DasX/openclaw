@@ -1,5 +1,5 @@
 import type { SessionEntryCurrentPreparation } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { readRuntimeConfig as getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import {
   readBrowserDashboardDefinition,
   sameBrowserDashboardDefinition,
@@ -23,7 +23,6 @@ import {
   getBrowserStateRuntime,
   getOptionalBrowserStateRuntime,
   isBrowserStateRuntimeCurrent,
-  readCurrentBrowserState,
   type BrowserSessionTabAuthority,
   type BrowserStateRuntime,
 } from "./browser-runtime-state.js";
@@ -540,12 +539,8 @@ export async function reconcileBrowserDashboards(
   if (!isCurrent()) {
     return closed;
   }
-  const tabs = await readCurrentBrowserState(
-    runtime,
-    () => readBrowserDashboardTabs(undefined, { runtime }),
-    params.isCurrent,
-  );
-  if (!tabs || !isCurrent()) {
+  const tabs = await readBrowserDashboardTabs(undefined, { runtime });
+  if (!isCurrent()) {
     return closed;
   }
   for (const tab of tabs) {
@@ -588,12 +583,8 @@ export async function reconcileBrowserDashboards(
   if (!isCurrent()) {
     return closed;
   }
-  const intents = await readCurrentBrowserState(
-    runtime,
-    () => readBrowserDashboardStopIntents({ runtime }),
-    params.isCurrent,
-  );
-  if (!intents || !isCurrent()) {
+  const intents = await readBrowserDashboardStopIntents({ runtime });
+  if (!isCurrent()) {
     return closed;
   }
   for (const intent of intents) {

@@ -43,7 +43,11 @@ export const emptyLengthScenario = {
   }),
 } satisfies TransportDropScenario;
 
-export const outputLimitScenarios = [outputLimitScenario, emptyLengthScenario];
+export const outputLimitScenarios = [
+  outputLimitScenario,
+  emptyLengthScenario,
+  { ...emptyLengthScenario, trigger: "cron" as const, toolResultText: "NO_REPLY" },
+];
 
 export type TransportDropScenario = {
   config?: OpenClawConfig;
@@ -56,6 +60,8 @@ export type TransportDropScenario = {
   toolMediaUrls?: string[];
   sourceReplyDelivered?: EmbeddedRunAttemptWithReceiptEvidence["sourceReplyDelivered"];
   trigger?: "cron";
+  modelRun?: boolean;
+  promptMode?: "none";
   toolResultText?: string;
   preToolText?: string;
   resolveReplyDelivery?: ReplyDeliveryObserver;
@@ -233,6 +239,8 @@ export async function recoverAfterTransportDrop(scenario: TransportDropScenario 
           modelFallbackPolicy: scenario.modelFallbackPolicy,
           agentId: "main",
           trigger: scenario.trigger,
+          modelRun: scenario.modelRun,
+          promptMode: scenario.promptMode,
           resolveReplyDelivery: scenario.resolveReplyDelivery,
           sessionId: "session:transport-drop",
           // This fixture owns no durable session, including under a frozen retry clock.
@@ -253,6 +261,7 @@ export async function recoverAfterTransportDrop(scenario: TransportDropScenario 
         genericCompactionRecoveryAllowed: scenario.compactionEnabled ?? false,
         attemptedThinking: new Set(["off"]),
         maybeRefreshRuntimeAuthForAuthError: vi.fn(async () => false),
+        refreshTransportForConnectionError: vi.fn(async () => {}),
         snapshot: () => ({
           thinkLevel: "off",
           agentHarness: { id: "openclaw" },

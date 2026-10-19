@@ -141,8 +141,9 @@ export function buildFallbackCandidateTurnParams(params: AgentFallbackCandidateC
     currentInboundContext: turn.followupRun.currentInboundContext,
     extraSystemPrompt: turn.followupRun.run.extraSystemPrompt,
     sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
-    // Omit false so heartbeat routes require explicit recipients without changing subagent defaults.
-    ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true as const } : {}),
+    ...(turn.isHeartbeat
+      ? { requireExplicitMessageTarget: turn.opts?.requireExplicitMessageTarget ?? true }
+      : {}),
     cleanupBundleMcpOnRunEnd: turn.opts?.cleanupBundleMcpOnRunEnd,
     silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
     suppressNextUserMessagePersistence: params.suppressQueuedUserPersistenceForCandidate,
@@ -150,6 +151,8 @@ export function buildFallbackCandidateTurnParams(params: AgentFallbackCandidateC
     prepareAssistantTranscriptMessage: turn.opts?.prepareAssistantTranscriptMessage,
     toolsAllow: turn.opts?.toolsAllow,
     disableTools: turn.opts?.disableTools,
+    forceRestartSafeTools: turn.opts?.forceRestartSafeTools,
+    forceCodeModeTools: turn.opts?.forceCodeModeTools,
     continuesConversation: turn.opts?.continuesConversation,
     bootstrapContextMode: turn.opts?.bootstrapContextMode,
     bootstrapContextRunKind: params.bootstrapContextRunKind,
@@ -173,7 +176,11 @@ export function buildReplyRunStateParams(run: FollowupRun["run"]) {
     ownerNumbers: run.ownerNumbers,
     inputProvenance: run.inputProvenance,
     senderIsOwner: run.senderIsOwner,
+    gitContributorProfileId: run.gitContributorProfileId,
     conversationToolPolicy: run.conversationToolPolicy,
+    requesterOrigin: run.requesterOrigin,
+    operatorProfileId: run.operatorProfileId,
+    conversationId: run.conversationId,
     channelContext: run.channelContext,
     approvalReviewerDeviceId: run.approvalReviewerDeviceId,
     terminalReplyExpectation: run.terminalReplyExpectation,
@@ -181,28 +188,5 @@ export function buildReplyRunStateParams(run: FollowupRun["run"]) {
     bootstrapUserProfileId: run.bootstrapUserProfileId,
     gatewayUiCommandTarget: run.gatewayUiCommandTarget,
     taskSuggestionDeliveryMode: run.taskSuggestionDeliveryMode,
-  };
-}
-
-export function buildReplyMediaContextParams(
-  { run, originatingAccountId }: FollowupRun,
-  sessionKey: string | undefined,
-  cfg: FollowupRun["run"]["config"],
-) {
-  return {
-    cfg,
-    agentId: run.agentId,
-    sessionKey,
-    workspaceDir: run.workspaceDir,
-    mediaNormalizationOwner: run.mediaNormalizationOwner,
-    messageProvider: run.messageProvider,
-    accountId: originatingAccountId ?? run.agentAccountId,
-    groupId: run.groupId,
-    groupChannel: run.groupChannel,
-    groupSpace: run.groupSpace,
-    requesterSenderId: run.senderId,
-    requesterSenderName: run.senderName,
-    requesterSenderUsername: run.senderUsername,
-    requesterSenderE164: run.senderE164,
   };
 }

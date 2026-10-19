@@ -47,7 +47,7 @@ import {
 } from "./message-action-contracts.js";
 import { MessageActionDeniedError } from "./message-action-denial.js";
 import {
-  assertMessageDeliveryCurrent,
+  captureMessageDeliveryAuthority,
   beforeMessageDeliveryAttempt,
   executeMessagePlugin,
   executeMessagePoll,
@@ -445,7 +445,7 @@ async function handleInternalSourceReplySendAction(
           sessionId: input.sessionId,
           storePath: resolveSessionStorePathCore(input.cfg.session?.store, { agentId }),
         },
-        () => assertMessageDeliveryCurrent(input),
+        captureMessageDeliveryAuthority(input),
         persist,
       );
     } else {
@@ -688,7 +688,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
           const deliveryInput = context.input;
           context.input = {
             ...deliveryInput,
-            assertDirectAdapterHandoff: () => assertMessageDeliveryCurrent(deliveryInput),
+            assertDirectAdapterHandoff: captureMessageDeliveryAuthority(deliveryInput),
           };
         }
       }

@@ -1,12 +1,9 @@
 import { describe, expect, it, onTestFinished as registerTestCleanup, vi } from "vitest";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import type { TemplateContext } from "../templating.js";
 import {
-  createAgentTurnExecutionDefaults,
   setupAgentRunnerExecutionTestState,
   getExecuteAgentTurnForTest,
-  createMockTypingSignaler,
   createFollowupRun,
   expectMockCallArgFields,
   fallbackAttemptOptions,
@@ -18,6 +15,28 @@ import {
 import type { FallbackRunnerParams } from "./agent-runner-execution.test-support.js";
 
 const state = await setupAgentRunnerExecutionTestState();
+const executeAgentTurn = await getExecuteAgentTurnForTest();
+const success = (text: string, model: string) => ({
+  payloads: [{ text }],
+  meta: { agentMeta: { sessionId: "session", provider: "openai", model } },
+});
+async function runFallback(
+  params: FallbackRunnerParams,
+  provider: string,
+  model: string,
+  options = initialFallbackAttemptOptions(params),
+) {
+  return { result: await params.run(provider, model, options), provider, model, attempts: [] };
+}
+function failPrimaryThenFallback() {
+  state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+    await params
+      .run("anthropic", "claude-opus-4-7", initialFallbackAttemptOptions(params))
+      .catch(() => undefined);
+    return runFallback(params, "openai", "gpt-5.4", fallbackAttemptOptions(params, "unknown"));
+  });
+  state.runEmbeddedAgentMock.mockResolvedValueOnce({ payloads: [{ text: "ok" }], meta: {} });
+}
 
 describe("executeAgentTurn: session state", () => {
   const userPin = { hasSessionModelOverride: true, modelOverrideSource: "user" as const };
@@ -140,7 +159,6 @@ describe("executeAgentTurn: session state", () => {
       acceptedSessionSpawns,
       meta: {},
     });
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
     const result = await executeAgentTurn(createRunAgentTurnParams(followupRun));
 
     expect(result.kind).toBe("success");
@@ -161,12 +179,7 @@ describe("executeAgentTurn: session state", () => {
       const isInitialInvocation = fallbackInvocation++ === 0;
       const provider = isInitialInvocation ? "anthropic" : "openai";
       const model = isInitialInvocation ? "claude" : "gpt-5.6-luna";
-      return {
-        result: await params.run(provider, model, initialFallbackAttemptOptions(params)),
-        provider,
-        model,
-        attempts: [],
-      };
+      return runFallback(params, provider, model);
     });
     state.runEmbeddedAgentMock
       .mockImplementationOnce(async () => {
@@ -176,20 +189,8 @@ describe("executeAgentTurn: session state", () => {
           agentRuntimeOverride: "codex",
         });
       })
-      .mockImplementationOnce(async () => {
-        return {
-          payloads: [{ text: "switched" }],
-          meta: {
-            agentMeta: {
-              sessionId: "session",
-              provider: "openai",
-              model: "gpt-5.6-luna",
-            },
-          },
-        };
-      });
+      .mockResolvedValueOnce(success("switched", "gpt-5.6-luna"));
 
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
     const followupRun = createFollowupRun();
     followupRun.run.thinkLevel = "ultra";
     followupRun.run.thinkingCatalog?.push({
@@ -211,8 +212,7 @@ describe("executeAgentTurn: session state", () => {
 
     expect(result.kind).toBe("success");
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
-    expect(followupRun.run.provider).toBe("openai");
-    expect(followupRun.run.model).toBe("gpt-5.6-luna");
+    expect(followupRun.run).toMatchObject({ provider: "openai", model: "gpt-5.6-luna" });
     expect(state.runEmbeddedAgentMock.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({ agentHarnessRuntimeOverride: "codex", thinkLevel: "ultra" }),
     );
@@ -223,26 +223,16 @@ describe("executeAgentTurn: session state", () => {
     state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
       invocation++;
       if (invocation <= 2) {
-        return {
-          result: await params.run(
-            "anthropic",
-            "claude",
-            invocation === 1
-              ? initialFallbackAttemptOptions(params)
-              : fallbackAttemptOptions(params, "unknown"),
-          ),
-          provider: "anthropic",
-          model: "claude",
-          attempts: [],
-        };
+        return runFallback(
+          params,
+          "anthropic",
+          "claude",
+          invocation === 1
+            ? initialFallbackAttemptOptions(params)
+            : fallbackAttemptOptions(params, "unknown"),
+        );
       }
-      // Third invocation succeeds with the switched model
-      return {
-        result: await params.run("openai", "gpt-5.4", initialFallbackAttemptOptions(params)),
-        provider: "openai",
-        model: "gpt-5.4",
-        attempts: [],
-      };
+      return runFallback(params, "openai", "gpt-5.4");
     });
     state.runEmbeddedAgentMock
       .mockImplementationOnce(async () => {
@@ -261,30 +251,19 @@ describe("executeAgentTurn: session state", () => {
           authProfileIdSource: "auto",
         });
       })
-      .mockImplementationOnce(async () => {
-        return {
-          payloads: [{ text: "finally ok" }],
-          meta: {
-            agentMeta: {
-              sessionId: "session",
-              provider: "openai",
-              model: "gpt-5.4",
-            },
-          },
-        };
-      });
+      .mockResolvedValueOnce(success("finally ok", "gpt-5.4"));
 
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
     const followupRun = createFollowupRun();
     const result = await executeAgentTurn(createRunAgentTurnParams(followupRun));
 
-    // Two switches (within the limit of 2) then success on third attempt
     expect(result.kind).toBe("success");
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledTimes(3);
-    expect(followupRun.run.provider).toBe("openai");
-    expect(followupRun.run.model).toBe("gpt-5.4");
-    expect(followupRun.run.authProfileId).toBe("profile-c");
-    expect(followupRun.run.authProfileIdSource).toBe("auto");
+    expect(followupRun.run).toMatchObject({
+      provider: "openai",
+      model: "gpt-5.4",
+      authProfileId: "profile-c",
+      authProfileIdSource: "auto",
+    });
     expect(state.runEmbeddedAgentEntryMock).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -325,51 +304,28 @@ describe("executeAgentTurn: session state", () => {
       throw new Error("fallback failed");
     });
 
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
     const result = await executeAgentTurn({
+      ...createMinimalRunAgentTurnParams(),
       commandBody: "hello",
-      followupRun: createFollowupRun(),
-      sessionCtx: {
-        Provider: "whatsapp",
-        MessageSid: "msg",
-      } as unknown as TemplateContext,
-      opts: {},
-      typingSignals: createMockTypingSignaler(),
-      ...createAgentTurnExecutionDefaults(),
       getActiveSessionEntry: () => sessionEntry,
       activeSessionStore: sessionStore,
-      resolvedVerboseLevel: "off",
     });
 
     expect(result.kind).toBe("final");
-    expect(sessionEntry.providerOverride).toBe("zai");
-    expect(sessionEntry.modelOverride).toBe("glm-5");
-    expect(sessionEntry.authProfileOverride).toBe("zai:work");
-    expect(sessionEntry.authProfileOverrideSource).toBe("user");
-    expect(sessionStore.main.providerOverride).toBe("zai");
-    expect(sessionStore.main.modelOverride).toBe("glm-5");
+    expect(sessionEntry).toMatchObject({
+      providerOverride: "zai",
+      modelOverride: "glm-5",
+      authProfileOverride: "zai:work",
+      authProfileOverrideSource: "user",
+    });
+    expect(sessionStore.main).toMatchObject({ providerOverride: "zai", modelOverride: "glm-5" });
   });
 
   it("defers the first embedded assistant error after a CLI fallback failure", async () => {
     state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "anthropic");
-    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
-      await params
-        .run("anthropic", "claude-opus-4-7", initialFallbackAttemptOptions(params))
-        .catch(() => undefined);
-      return {
-        result: await params.run("openai", "gpt-5.4", fallbackAttemptOptions(params, "unknown")),
-        provider: "openai",
-        model: "gpt-5.4",
-        attempts: [],
-      };
-    });
+    failPrimaryThenFallback();
     state.runCliAgentMock.mockRejectedValueOnce(new Error("cli failed"));
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "ok" }],
-      meta: {},
-    });
 
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
     await executeAgentTurn(createMinimalRunAgentTurnParams());
 
     expect(state.runCliAgentMock).toHaveBeenCalledOnce();
@@ -383,17 +339,6 @@ describe("executeAgentTurn: session state", () => {
   });
 
   it("latches queued user message persistence across main reply fallback candidates", async () => {
-    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
-      await params
-        .run("anthropic", "claude-opus-4-7", initialFallbackAttemptOptions(params))
-        .catch(() => undefined);
-      return {
-        result: await params.run("openai", "gpt-5.4", fallbackAttemptOptions(params, "unknown")),
-        provider: "openai",
-        model: "gpt-5.4",
-        attempts: [],
-      };
-    });
     state.runEmbeddedAgentMock.mockImplementationOnce(
       async (args: {
         onUserMessagePersisted?: (m: {
@@ -408,12 +353,8 @@ describe("executeAgentTurn: session state", () => {
         throw new Error("upstream 500");
       },
     );
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "ok" }],
-      meta: {},
-    });
+    failPrimaryThenFallback();
 
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
     await executeAgentTurn(createMinimalRunAgentTurnParams());
 
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
