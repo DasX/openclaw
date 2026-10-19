@@ -202,6 +202,51 @@ describe("live model switch", () => {
     );
 
     it.each([
+      {
+        name: "a user pin",
+        entry: { providerOverride: "openai", modelOverride: "gpt-5.4", modelOverrideSource: "user" },
+        hasSessionModelOverride: true,
+        modelOverrideSource: "user",
+      },
+      {
+        name: "an automatic selection",
+        entry: { providerOverride: "openai", modelOverride: "gpt-5.4", modelOverrideSource: "auto" },
+        hasSessionModelOverride: true,
+        modelOverrideSource: "auto",
+      },
+      {
+        name: "an explicit return to the default",
+        entry: { modelOverrideSource: "default", modelProvider: "openai", model: "gpt-5.4" },
+        hasSessionModelOverride: false,
+        modelOverrideSource: undefined,
+      },
+      {
+        name: "the default",
+        entry: { modelProvider: "openai", model: "gpt-5.4" },
+        hasSessionModelOverride: false,
+        modelOverrideSource: undefined,
+      },
+    ])(
+      "carries the override status of $name through a live switch",
+      async ({ entry, hasSessionModelOverride, modelOverrideSource }) => {
+        // The retry owner rebuilds fallback eligibility from these fields, not the policy alone.
+        const selection = await resolvePendingSelection(entry);
+        expect(selection).toMatchObject({
+          provider: "openai",
+          model: "gpt-5.4",
+          hasSessionModelOverride,
+          modelOverrideSource,
+        });
+        if (!selection) {
+          throw new Error("Expected a pending live model selection");
+        }
+        const error = new mod.LiveSessionModelSwitchError(selection);
+        expect(error.hasSessionModelOverride).toBe(hasSessionModelOverride);
+        expect(error.modelOverrideSource).toBe(modelOverrideSource);
+      },
+    );
+
+    it.each([
       { current: "configured" as const, next: undefined },
       { current: undefined, next: "configured" as const },
     ])("switches when only fallback policy changes to $next", async ({ current, next }) => {

@@ -66,9 +66,18 @@ function resolveSelectionFromSessionEntry(params: {
     cfg,
   });
   const authProfileId = normalizeOptionalString(entry?.authProfileOverride);
+  // Mirror queue admission: only a stored override marks the selection explicit,
+  // and an explicit default selection carries no override source.
+  const hasSessionModelOverride = Boolean(normalizedSelection.modelOverride);
+  const modelOverrideSource =
+    hasSessionModelOverride && entry?.modelOverrideSource !== "default"
+      ? entry?.modelOverrideSource
+      : undefined;
   return {
     provider,
     model,
+    hasSessionModelOverride,
+    modelOverrideSource,
     modelFallbackPolicy: entry?.modelFallbackPolicy,
     ...(agentRuntimeOverride ? { agentRuntimeOverride } : {}),
     authProfileId,

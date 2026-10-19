@@ -20,10 +20,40 @@ import type { FallbackRunnerParams } from "./agent-runner-execution.test-support
 const state = await setupAgentRunnerExecutionTestState();
 
 describe("executeAgentTurn: session state", () => {
+  const userPin = { hasSessionModelOverride: true, modelOverrideSource: "user" as const };
+  const admittedDefault = { hasSessionModelOverride: false, modelOverrideSource: undefined };
   it.each([
-    { before: "configured" as const, after: undefined },
-    { before: undefined, after: "configured" as const },
-  ])("retries with the live selection's fallback policy $after", async ({ before, after }) => {
+    {
+      name: "withdraws the opt-in of a user pin",
+      admitted: { ...userPin, modelFallbackPolicy: "configured" as const },
+      live: { ...userPin, modelFallbackPolicy: undefined },
+      kind: "disabled_by_model_override",
+      fallbacksOverride: [],
+    },
+    {
+      name: "grants the opt-in to a user pin",
+      admitted: { ...userPin, modelFallbackPolicy: undefined },
+      live: { ...userPin, modelFallbackPolicy: "configured" as const },
+      kind: "active",
+      fallbacksOverride: ["openai/backup"],
+    },
+    {
+      // A turn admitted on the default has no override flag; a later live opt-in
+      // and withdrawal must not leave the default's configured chain eligible.
+      name: "withdraws the opt-in from a turn admitted on the default",
+      admitted: { ...admittedDefault, modelFallbackPolicy: "configured" as const },
+      live: { ...userPin, modelFallbackPolicy: undefined },
+      kind: "disabled_by_model_override",
+      fallbacksOverride: [],
+    },
+    {
+      name: "returns an opted-in user pin to the default",
+      admitted: { ...userPin, modelFallbackPolicy: "configured" as const },
+      live: { ...admittedDefault, modelFallbackPolicy: undefined },
+      kind: "active",
+      fallbacksOverride: undefined,
+    },
+  ])("retries with the live selection when it $name", async ({ admitted, live, kind, fallbacksOverride }) => {
     await useProductionEmbeddedRunExecutionParamsForTest();
     const { resolveModelFallbackOptions } = await import("./agent-runner-run-params.js");
     const { resolveModelFallbackOptions: mockedResolver } = await import("./agent-runner-utils.js");
@@ -40,14 +70,14 @@ describe("executeAgentTurn: session state", () => {
         new LiveSessionModelSwitchError({
           provider: "anthropic",
           model: "claude",
-          modelFallbackPolicy: after,
+          ...live,
         }),
       )
       .mockResolvedValueOnce({ payloads: [{ text: "switched" }], meta: {} });
     const followupRun = createFollowupRun();
-    followupRun.run.hasSessionModelOverride = true;
-    followupRun.run.modelOverrideSource = "user";
-    followupRun.run.modelFallbackPolicy = before;
+    followupRun.run.hasSessionModelOverride = admitted.hasSessionModelOverride;
+    followupRun.run.modelOverrideSource = admitted.modelOverrideSource;
+    followupRun.run.modelFallbackPolicy = admitted.modelFallbackPolicy;
     followupRun.run.config = {
       agents: {
         defaults: {
@@ -61,14 +91,14 @@ describe("executeAgentTurn: session state", () => {
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     const result = await executeAgentTurn(createRunAgentTurnParams(followupRun));
     expect(result.kind).toBe("success");
-    expect(followupRun.run.modelFallbackPolicy).toBe(after);
+    expect(followupRun.run.hasSessionModelOverride).toBe(live.hasSessionModelOverride);
+    expect(followupRun.run.modelOverrideSource).toBe(live.modelOverrideSource);
+    expect(followupRun.run.modelFallbackPolicy).toBe(live.modelFallbackPolicy);
     const retry = state.runEmbeddedAgentMock.mock.calls[1]?.[0];
-    expect(retry?.modelFallbackPolicy).toBe(after);
-    expect(retry?.modelFallbackAvailability.kind).toBe(
-      after === "configured" ? "active" : "disabled_by_model_override",
-    );
+    expect(retry?.modelFallbackPolicy).toBe(live.modelFallbackPolicy);
+    expect(retry?.modelFallbackAvailability.kind).toBe(kind);
     expect(state.runWithModelFallbackMock.mock.calls[1]?.[0].fallbacksOverride).toEqual(
-      after === "configured" ? ["openai/backup"] : [],
+      fallbacksOverride,
     );
   });
 

@@ -184,6 +184,12 @@ model selection cannot opt in, and an explicit caller fallback list (including
 `[]`, and a `before_model_resolve` hook's `fallbacksOverride`) continues to own
 that run's behavior. No model picker or `/model` default behavior changes.
 
+A selection change that restarts an output-free active turn applies the whole
+committed selection: the route, whether it is an explicit override or the default,
+its source, and the fallback opt-in. Withdrawing the opt-in mid-turn makes the
+remaining retries strict again even if the turn was admitted on the default, and
+returning to the default restores the default's configured fallbacks.
+
 ## Preferred fallback peers
 
 Set `fallbackPriority` on an exact `provider/model` metadata entry to prefer
