@@ -72,54 +72,57 @@ describe("executeAgentTurn: session state", () => {
       kind: "active",
       fallbacksOverride: undefined,
     },
-  ])("retries with the live selection when it $name", async ({ admitted, live, kind, fallbacksOverride }) => {
-    await useProductionEmbeddedRunExecutionParamsForTest();
-    const { resolveModelFallbackOptions } = await import("./agent-runner-run-params.js");
-    const { resolveModelFallbackOptions: mockedResolver } = await import("./agent-runner-utils.js");
-    const resolver = vi.mocked(mockedResolver);
-    const previousResolver = resolver.getMockImplementation();
-    resolver.mockImplementation(resolveModelFallbackOptions);
-    registerTestCleanup(() => {
-      if (previousResolver) {
-        resolver.mockImplementation(previousResolver);
-      }
-    });
-    state.runEmbeddedAgentMock
-      .mockRejectedValueOnce(
-        new LiveSessionModelSwitchError({
-          provider: "anthropic",
-          model: "claude",
-          ...live,
-        }),
-      )
-      .mockResolvedValueOnce({ payloads: [{ text: "switched" }], meta: {} });
-    const followupRun = createFollowupRun();
-    followupRun.run.hasSessionModelOverride = admitted.hasSessionModelOverride;
-    followupRun.run.modelOverrideSource = admitted.modelOverrideSource;
-    followupRun.run.modelFallbackPolicy = admitted.modelFallbackPolicy;
-    followupRun.run.config = {
-      agents: {
-        defaults: {
-          model: {
-            primary: "anthropic/claude",
-            fallbacks: ["openai/backup"],
+  ])(
+    "retries with the live selection when it $name",
+    async ({ admitted, live, kind, fallbacksOverride }) => {
+      await useProductionEmbeddedRunExecutionParamsForTest();
+      const { resolveModelFallbackOptions } = await import("./agent-runner-run-params.js");
+      const { resolveModelFallbackOptions: mockedResolver } =
+        await import("./agent-runner-utils.js");
+      const resolver = vi.mocked(mockedResolver);
+      const previousResolver = resolver.getMockImplementation();
+      resolver.mockImplementation(resolveModelFallbackOptions);
+      registerTestCleanup(() => {
+        if (previousResolver) {
+          resolver.mockImplementation(previousResolver);
+        }
+      });
+      state.runEmbeddedAgentMock
+        .mockRejectedValueOnce(
+          new LiveSessionModelSwitchError({
+            provider: "anthropic",
+            model: "claude",
+            ...live,
+          }),
+        )
+        .mockResolvedValueOnce({ payloads: [{ text: "switched" }], meta: {} });
+      const followupRun = createFollowupRun();
+      followupRun.run.hasSessionModelOverride = admitted.hasSessionModelOverride;
+      followupRun.run.modelOverrideSource = admitted.modelOverrideSource;
+      followupRun.run.modelFallbackPolicy = admitted.modelFallbackPolicy;
+      followupRun.run.config = {
+        agents: {
+          defaults: {
+            model: {
+              primary: "anthropic/claude",
+              fallbacks: ["openai/backup"],
+            },
           },
         },
-      },
-    };
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
-    const result = await executeAgentTurn(createRunAgentTurnParams(followupRun));
-    expect(result.kind).toBe("success");
-    expect(followupRun.run.hasSessionModelOverride).toBe(live.hasSessionModelOverride);
-    expect(followupRun.run.modelOverrideSource).toBe(live.modelOverrideSource);
-    expect(followupRun.run.modelFallbackPolicy).toBe(live.modelFallbackPolicy);
-    const retry = state.runEmbeddedAgentMock.mock.calls[1]?.[0];
-    expect(retry?.modelFallbackPolicy).toBe(live.modelFallbackPolicy);
-    expect(retry?.modelFallbackAvailability.kind).toBe(kind);
-    expect(state.runWithModelFallbackMock.mock.calls[1]?.[0].fallbacksOverride).toEqual(
-      fallbacksOverride,
-    );
-  });
+      };
+      const result = await executeAgentTurn(createRunAgentTurnParams(followupRun));
+      expect(result.kind).toBe("success");
+      expect(followupRun.run.hasSessionModelOverride).toBe(live.hasSessionModelOverride);
+      expect(followupRun.run.modelOverrideSource).toBe(live.modelOverrideSource);
+      expect(followupRun.run.modelFallbackPolicy).toBe(live.modelFallbackPolicy);
+      const retry = state.runEmbeddedAgentMock.mock.calls[1]?.[0];
+      expect(retry?.modelFallbackPolicy).toBe(live.modelFallbackPolicy);
+      expect(retry?.modelFallbackAvailability.kind).toBe(kind);
+      expect(state.runWithModelFallbackMock.mock.calls[1]?.[0].fallbacksOverride).toEqual(
+        fallbacksOverride,
+      );
+    },
+  );
 
   it("settles spawned children under the conversation identity while preserving peer policy", async ({
     onTestFinished,

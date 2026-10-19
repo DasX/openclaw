@@ -66,10 +66,7 @@ import {
   runCliAgent,
 } from "./run-execution.runtime.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
-import {
-  prepareCronModelResolveInput,
-  resolveCronFallbackOptions,
-} from "./run-fallback-policy.js";
+import { prepareCronModelResolveInput, resolveCronFallbackOptions } from "./run-fallback-policy.js";
 import { setCronSessionAgentHarnessId, setCronSessionRuntimeModel } from "./run-session-state.js";
 import { resolveThinkingSelection } from "./run.runtime.js";
 import type { CronCompletedPromptRun } from "./run.types.js";

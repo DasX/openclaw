@@ -233,6 +233,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
     try {
       liveSwitchMediaTaskIds = getGeneratedMediaTaskIdsForSessionKey(sessionKey, sessionAgentId);
       const spawnedBy = normalizedSpawned.spawnedBy ?? sessionEntry?.spawnedBy;
+      const storedModelFallbackPolicy = sessionEntry?.modelFallbackPolicy;
       const effectiveFallbacksOverride = isModelSelectionLocked(sessionEntry)
         ? []
         : (params.opts.modelFallbacksOverride ??
@@ -243,9 +244,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
             hasSessionModelOverride:
               hasExplicitRunOverride || Boolean(storedProviderOverride || storedModelOverride),
             modelOverrideSource: hasExplicitRunOverride ? "user" : storedModelOverrideSource,
-            modelFallbackPolicy: hasExplicitRunOverride
-              ? undefined
-              : sessionEntry?.modelFallbackPolicy,
+            modelFallbackPolicy: hasExplicitRunOverride ? undefined : storedModelFallbackPolicy,
             subagentSpawnLineage: (sessionEntry?.spawnDepth ?? 0) > 0,
             hasAutoFallbackProvenance: hasExplicitRunOverride
               ? false

@@ -234,12 +234,12 @@ describe("refreshQueuedFollowupSession", () => {
   it.each([
     {
       name: "a route rewrite without policy withdraws",
-      refresh: { nextProvider: "openai", nextModel: "gpt-4o", nextModelOverrideSource: "user" },
+      patch: { nextProvider: "openai", nextModel: "gpt-4o", nextModelOverrideSource: "user" },
       expected: undefined,
     },
     {
       name: "a route rewrite with policy keeps",
-      refresh: {
+      patch: {
         nextProvider: "openai",
         nextModel: "gpt-4o",
         nextModelOverrideSource: "user",
@@ -249,15 +249,15 @@ describe("refreshQueuedFollowupSession", () => {
     },
     {
       name: "a thinking-only refresh keeps",
-      refresh: { nextThinking: { level: "low" } },
+      patch: { nextThinking: { level: "low" } },
       expected: "configured",
     },
     {
       name: "a session rotation keeps",
-      refresh: { previousSessionId: "session-1", nextSessionId: "session-2" },
+      patch: { previousSessionId: "session-1", nextSessionId: "session-2" },
       expected: "configured",
     },
-  ] as const)("$name queued fallback consent", ({ refresh, expected }) => {
+  ] as const)("$name queued fallback consent", ({ patch, expected }) => {
     const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
     const run: FollowupRun["run"] = {
       ...makeRun(),
@@ -268,7 +268,7 @@ describe("refreshQueuedFollowupSession", () => {
     queue.lastRun = { ...run };
     queue.items.push({ prompt: "queued message", enqueuedAt: Date.now(), run });
 
-    refreshQueuedFollowupSession({ key: QUEUE_KEY, ...refresh });
+    refresh(patch);
 
     expect(run.modelFallbackPolicy).toBe(expected);
     expect(queue.lastRun?.modelFallbackPolicy).toBe(expected);

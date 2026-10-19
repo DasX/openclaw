@@ -121,6 +121,9 @@ it("strips duplicated provider prefixes from persisted overrides", async () => {
   ).toEqual({
     provider: "openai",
     model: "gpt-5.4",
+    hasSessionModelOverride: true,
+    modelOverrideSource: undefined,
+    modelFallbackPolicy: undefined,
     authProfileId: undefined,
     authProfileIdSource: undefined,
   });

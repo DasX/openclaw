@@ -39,7 +39,7 @@ import {
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 import {
   appendFailedCandidateAttempt,
-  hasDifferentLiveSessionRuntimeSelection,
+  liveSessionModelSwitchReturnsToOwner,
   isTranscriptNotContinuableError,
   type ModelFallbackAuthRuntime,
   type ModelFallbackClassifiedResult,
@@ -629,8 +629,7 @@ async function runWithModelFallbackInternal<T>(
       // The outer owner must apply runtime or fallback-consent changes before
       // selecting another model; this chain was built for the previous consent.
       if (
-        err.modelFallbackPolicyChanged ||
-        hasDifferentLiveSessionRuntimeSelection({
+        liveSessionModelSwitchReturnsToOwner({
           error: err,
           currentAgentHarnessRuntimeOverride: candidateHarnessAuth.agentHarnessRuntimeOverride,
         })
@@ -647,8 +646,7 @@ async function runWithModelFallbackInternal<T>(
         continue;
       }
 
-      const switchMsg = err.message;
-      const switchNormalized = new FailoverError(switchMsg, {
+      const switchNormalized = new FailoverError(err.message, {
         reason: "unknown",
         ...candidateRef,
         ...runAttribution,
