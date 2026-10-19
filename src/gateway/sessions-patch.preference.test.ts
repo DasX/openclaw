@@ -7,6 +7,7 @@ import { mergeSessionSnapshotChanges } from "../config/sessions/session-snapshot
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { applyModelOverrideToSessionEntry } from "../sessions/model-overrides.js";
+import { submitSessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import {
   persistSessionPatchModelSelection,
   refreshSessionPatchQueuedSelection,
@@ -277,25 +278,32 @@ describe("session preference API integration", () => {
 
   it("updates already queued runs and clears the preference when returning to default", async () => {
     const queue = getFollowupQueue(key, { mode: "followup" });
-    queue.items.push({
-      prompt: "queued",
-      enqueuedAt: 1,
-      run: {
-        config: cfg,
-        agentId: "main",
-        sessionId: "queued",
-        sessionKey: key,
-        provider: "backup",
-        model: "fixture-default",
-        agentDir: "/fixture/agent",
-        workspaceDir: "/fixture/workspace",
-        sessionFile: "/fixture/session.jsonl",
-        timeoutMs: 1000,
-        blockReplyBreak: "message_end",
-        thinkLevel: "off",
-        thinkLevelOverride: "off",
+    // The mailbox derives `items` from submitted inputs; a direct push would be dropped.
+    const input = submitSessionControllerInput(
+      queue.key,
+      {
+        prompt: "queued",
+        enqueuedAt: 1,
+        run: {
+          config: cfg,
+          agentId: "main",
+          sessionId: "queued",
+          sessionKey: key,
+          provider: "backup",
+          model: "fixture-default",
+          agentDir: "/fixture/agent",
+          workspaceDir: "/fixture/workspace",
+          sessionFile: "/fixture/session.jsonl",
+          timeoutMs: 1000,
+          blockReplyBreak: "message_end",
+          thinkLevel: "off",
+          thinkLevelOverride: "off",
+        },
       },
-    });
+      { mode: queue.mode },
+    );
+    input.payload = "ready";
+    input.phase = "waiting";
     const entry: SessionEntry = {
       sessionId: "queued",
       updatedAt: 2,

@@ -213,7 +213,17 @@ describe("accountFollowupTurn", () => {
         modelOverrideSource: "user" as const,
         modelFallbackPolicy: "configured" as const,
       };
-      queue.items.push({ prompt: "waiting prompt", enqueuedAt: 1, run: waiting });
+      // The mailbox derives `items` from submitted inputs; a direct push would be dropped.
+      const { submitSessionControllerInput } = await vi.importActual<
+        typeof import("../../sessions/session-controller.mailbox.js")
+      >("../../sessions/session-controller.mailbox.js");
+      const input = submitSessionControllerInput(
+        queue.key,
+        { prompt: "waiting prompt", enqueuedAt: 1, run: waiting },
+        { mode: queue.mode },
+      );
+      input.payload = "ready";
+      input.phase = "waiting";
 
       await accountFollowupTurn(params);
 

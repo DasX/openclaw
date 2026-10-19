@@ -266,7 +266,7 @@ describe("refreshQueuedFollowupSession", () => {
       modelFallbackPolicy: "configured",
     };
     queue.lastRun = { ...run };
-    queue.items.push({ prompt: "queued message", enqueuedAt: Date.now(), run });
+    addSources(queue, makeSource(run));
 
     refresh(patch);
 

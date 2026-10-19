@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveModelFallbackOptions } from "../../auto-reply/reply/agent-runner-run-params.js";
 import { buildEmbeddedRunExecutionParams } from "../../auto-reply/reply/agent-runner-utils.js";
 import type { FollowupRun } from "../../auto-reply/reply/queue.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { FailoverError } from "../failover-error.js";
@@ -21,7 +25,10 @@ vi.mock("../harness/selection.js", () => ({
   selectAgentHarness: vi.fn(() => ({ id: "fixture", contextEngineHostCapabilities: [] })),
 }));
 
-afterEach(() => resetPluginRuntimeStateForTest());
+afterEach(() => {
+  clearRuntimeConfigSnapshot();
+  resetPluginRuntimeStateForTest();
+});
 
 describe("preferred model through logical-turn entry", () => {
   it.each([
@@ -125,6 +132,7 @@ describe("preferred model through logical-turn entry", () => {
           },
         },
       };
+      setRuntimeConfigSnapshot(config);
       const run: FollowupRun["run"] = {
         config,
         agentId: "main",
@@ -230,6 +238,7 @@ describe("fallback consent changes during a running turn", () => {
   const runConsentSwitch = async (switchError: LiveSessionModelSwitchError) => {
     setActivePluginRegistry(createEmptyPluginRegistry());
     const run = consentRun();
+    setRuntimeConfigSnapshot(run.config);
     const transport: string[] = [];
     const outcome = await runEmbeddedAgentEntry({
       selection: { ...resolveModelFallbackOptions(run), manifestPlugins: [] },

@@ -12,6 +12,7 @@ import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { projectSessionsPatchEntry } from "../gateway/sessions-patch.js";
+import { submitSessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import {
   createModelSelectionInputs,
@@ -67,6 +68,11 @@ it("clears queued fallback policy when the model picker selects a strict route",
     timeoutMs: 1000,
     blockReplyBreak: "message_end",
   };
+  // The refresh only reaches a mailbox with queued work; the next-turn default alone is not enough.
+  const waiting = { prompt: "waiting", enqueuedAt: 1, run: { ...queue.lastRun } };
+  const input = submitSessionControllerInput(queue.key, waiting, { mode: queue.mode });
+  input.payload = "ready";
+  input.phase = "waiting";
   effects.refreshQueuedFollowupSession.mockImplementationOnce(refreshQueuedFollowupSession);
   const sessionEntry = createEntry({ modelFallbackPolicy: "configured" });
   const result = await applySessionModelSelection(createParams({ sessionKey, sessionEntry }));
@@ -74,6 +80,7 @@ it("clears queued fallback policy when the model picker selects a strict route",
   expect(sessionEntry.modelFallbackPolicy).toBeUndefined();
   expect(queue.lastRun.model).toBe("gpt-4o");
   expect(queue.lastRun.modelFallbackPolicy).toBeUndefined();
+  expect(waiting.run).toMatchObject({ model: "gpt-4o", modelFallbackPolicy: undefined });
 });
 
 it.each([false, true])("uses configured default only with reset intent=%s", async (reset) => {

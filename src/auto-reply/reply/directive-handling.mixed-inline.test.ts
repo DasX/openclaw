@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { triggerSessionPatchHook } from "../../gateway/session-patch-hooks.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
+import { submitSessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import {
   onSessionLifecycleEvent,
   type SessionLifecycleEvent,
@@ -148,6 +149,11 @@ describe("mixed inline directives", () => {
         timeoutMs: 1000,
         blockReplyBreak: "message_end",
       };
+      // The refresh only reaches a mailbox with queued work; the next-turn default alone is not enough.
+      const waiting = { prompt: "waiting", enqueuedAt: 1, run: { ...queue.lastRun } };
+      const input = submitSessionControllerInput(queue.key, waiting, { mode: queue.mode });
+      input.payload = "ready";
+      input.phase = "waiting";
       vi.mocked(refreshQueuedFollowupSession).mockImplementationOnce(refreshRealQueue);
       const { result, sessionEntry } = await applyMixedDirectives({
         body: `please reply ${directive}`,
@@ -158,6 +164,7 @@ describe("mixed inline directives", () => {
       expect(result.kind).toBe("continue");
       expect(sessionEntry.modelFallbackPolicy).toBe(policy);
       expect(queue.lastRun.modelFallbackPolicy).toBe(policy);
+      expect(waiting.run.modelFallbackPolicy).toBe(policy);
     },
   );
 
