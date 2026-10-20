@@ -95,7 +95,11 @@ export function createCliEventHandlers(params: {
     if (data.phase === "start") {
       emitAgentEvent(activity);
     }
-    emitAgentEvent({ runId: runParams.runId, stream: "tool", data });
+    emitAgentEvent({
+      runId: runParams.runId,
+      stream: "tool",
+      data: { ...data, name: stripOpenClawMcpToolPrefix(data.name) },
+    });
     if (data.phase !== "start") {
       emitAgentEvent(activity);
     }
@@ -155,6 +159,11 @@ export function createCliEventHandlers(params: {
     const loopbackOutcome = tracked
       ? params.toolTracking.resolveCliLoopbackTerminalOutcome(event.toolCallId)
       : undefined;
+    // Resolve presentation metadata before the result retires loopback correlation.
+    const browserTab =
+      tracked && !event.isError && stripOpenClawMcpToolPrefix(event.name) === "browser"
+        ? params.toolTracking.resolveCliLoopbackBrowserTab(event.toolCallId)
+        : undefined;
     const executedArgs = tracked ? params.toolTracking.handleCliToolResult(event) : undefined;
     const startedCall = toolArgsByCallId.get(event.toolCallId);
     toolArgsByCallId.delete(event.toolCallId);
@@ -215,7 +224,10 @@ export function createCliEventHandlers(params: {
           name: event.name,
           toolCallId: event.toolCallId,
           isError: event.isError,
-          result: readResult(),
+          result:
+            browserTab === undefined
+              ? readResult()
+              : { content: readResult(), details: { browserTab } },
           ...(tracked && startedArgs ? { args: startedArgs } : {}),
           ...(resultContentSource ? { resultContentSource } : {}),
         },
