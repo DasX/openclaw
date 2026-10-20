@@ -1,4 +1,3 @@
-/** Protects active auth profile metadata while doctor repairs broader config state. */
 import { collectConfiguredModelRefs } from "@openclaw/model-catalog-core/configured-model-refs";
 import {
   normalizeLowercaseStringOrEmpty as normalizeProviderId,
@@ -11,15 +10,9 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isRecord } from "../utils.js";
 
 function normalizeMode(value: unknown): AuthProfileConfig["mode"] | null {
-  switch (value) {
-    case "api_key":
-    case "aws-sdk":
-    case "oauth":
-    case "token":
-      return value;
-    default:
-      return null;
-  }
+  return value === "api_key" || value === "aws-sdk" || value === "oauth" || value === "token"
+    ? value
+    : null;
 }
 
 function extractProviderPrefix(value: string, separator: ":" | "/"): string | null {

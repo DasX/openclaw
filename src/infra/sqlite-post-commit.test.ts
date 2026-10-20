@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { requireNodeSqlite } from "./node-sqlite.js";
 import {
   deferSqlitePostCommitPublication,
+  publishSqliteCommittedState,
   stageSqliteCommittedPublication,
   stageSqliteTransactionState,
   withSqlitePostCommitPublications,
@@ -30,14 +31,48 @@ function fixture() {
   return { database, rows, write, transaction };
 }
 
+function fail(message: string): never {
+  throw new Error(message);
+}
+
+it.each(["waiting", "active"] as const)(
+  "installs a received commit independently of a %s native transaction's rollback",
+  (phase) => {
+    const { database, transaction, write, rows } = fixture();
+    const installed: string[] = [];
+    const observed: string[][] = [];
+    const publication = (key: string): SqliteCommittedPublication => ({
+      installFacts: () => installed.push(key),
+      invalidate() {},
+      notify: () => observed.push([...installed]),
+    });
+    const native = () => {
+      stageSqliteCommittedPublication(database, publication("tentative-native"));
+      publishSqliteCommittedState(publication("committed-worker"));
+      expect(observed).toEqual([["committed-worker"]]);
+      stageSqliteCommittedPublication(database, publication("later-native"));
+      throw new Error("native transaction refused");
+    };
+    expect(() =>
+      phase === "active"
+        ? transaction(() => {
+            write("rolled-back");
+            native();
+          })
+        : withSqlitePostCommitPublications(database, native),
+    ).toThrow("native transaction refused");
+    expect(installed).toEqual(["committed-worker"]);
+    expect(observed).toEqual([["committed-worker"]]);
+    expect(rows()).toEqual([]);
+  },
+);
+
 it("retains committed success and delivers later observers when a notification throws", () => {
   const { database, rows, write, transaction } = fixture();
   const seen: unknown[] = [];
   const result = transaction(() => {
     write("committed");
-    deferSqlitePostCommitPublication(database, () => {
-      throw new Error("notification unavailable");
-    });
+    deferSqlitePostCommitPublication(database, () => fail("notification unavailable"));
     deferSqlitePostCommitPublication(database, () => seen.push(rows()));
     return "saved";
   });
@@ -64,12 +99,8 @@ it.each(["facts", "projection"] as const)(
           throw new Error("projection unavailable");
         }
       },
-      invalidate() {
-        facts.set(key, "unknown");
-      },
-      notify() {
-        observed.push([...facts]);
-      },
+      invalidate: () => facts.set(key, "unknown"),
+      notify: () => observed.push([...facts]),
     });
     expect(
       transaction(() => {
@@ -81,16 +112,11 @@ it.each(["facts", "projection"] as const)(
       }),
     ).toBe("saved");
     expect(rows()).toEqual([{ id: "first" }, { id: "second" }]);
-    expect(observed).toEqual([
-      [
-        ["first", "unknown"],
-        ["second", "committed"],
-      ],
-      [
-        ["first", "unknown"],
-        ["second", "committed"],
-      ],
-    ]);
+    const expected = [
+      ["first", "unknown"],
+      ["second", "committed"],
+    ];
+    expect(observed).toEqual([expected, expected]);
   },
 );
 
@@ -101,22 +127,12 @@ it("installs every commit receipt even if a prior owner cannot fence its failed 
   transaction(() => {
     write("committed");
     stageSqliteTransactionState(database, {
-      stage() {},
-      rollback() {},
-      commit() {
-        throw new Error("legacy installer failed");
-      },
+      commit: () => fail("legacy installer failed"),
     });
     stageSqliteTransactionState(database, {
-      stage() {},
-      rollback() {},
-      commit() {
-        receipt = rows();
-      },
+      commit: () => (receipt = rows()),
     });
-    deferSqlitePostCommitPublication(database, () => {
-      notified = true;
-    });
+    deferSqlitePostCommitPublication(database, () => (notified = true));
   });
   expect(receipt).toEqual([{ id: "committed" }]);
   expect(notified).toBe(false);
@@ -130,18 +146,10 @@ it.each(["nested", "outer", "commit"] as const)(
     const publish = (key: string) => {
       write(key);
       stageSqliteCommittedPublication(database, {
-        installFacts() {
-          observed.push(`facts:${key}`);
-        },
-        installProjection() {
-          observed.push(`projection:${key}`);
-        },
-        invalidate() {
-          observed.push(`unknown:${key}`);
-        },
-        notify() {
-          observed.push(`notify:${key}`);
-        },
+        installFacts: () => observed.push(`facts:${key}`),
+        installProjection: () => observed.push(`projection:${key}`),
+        invalidate: () => observed.push(`unknown:${key}`),
+        notify: () => observed.push(`notify:${key}`),
       });
     };
     if (boundary === "commit") {

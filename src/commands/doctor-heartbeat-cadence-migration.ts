@@ -89,21 +89,6 @@ function noteWarnings(warnings: readonly string[], storePath: string): void {
   note(`${warnings.join("\n")}\nCron store: ${shortenHomePath(storePath)}`, "Doctor warnings");
 }
 
-function cadenceFinding(params: {
-  storePath: string;
-  change: HeartbeatMonitorChange;
-}): HealthFinding {
-  return {
-    checkId: HEARTBEAT_CADENCE_MIGRATION_CHECK_ID,
-    severity: "warning",
-    message: describePlannedChange(params.change),
-    path: params.storePath,
-    target: params.change.agentId,
-    requirement: `heartbeat-monitor-${params.change.kind}`,
-    fixHint: `Run ${formatCliCommand("openclaw doctor --fix")} to materialize heartbeat cadence in cron.`,
-  };
-}
-
 export async function collectHeartbeatCadenceMigrationFindings(
   cfg: OpenClawConfig,
   env: NodeJS.ProcessEnv = process.env,
@@ -111,7 +96,15 @@ export async function collectHeartbeatCadenceMigrationFindings(
   const storePath = resolveCronJobsStorePathFromConfig(cfg, env);
   try {
     const plan = await loadHeartbeatMonitorPlanReadOnly(cfg, storePath, env);
-    return plan.changes.map((change) => cadenceFinding({ storePath, change }));
+    return plan.changes.map((change) => ({
+      checkId: HEARTBEAT_CADENCE_MIGRATION_CHECK_ID,
+      severity: "warning",
+      message: describePlannedChange(change),
+      path: storePath,
+      target: change.agentId,
+      requirement: `heartbeat-monitor-${change.kind}`,
+      fixHint: `Run ${formatCliCommand("openclaw doctor --fix")} to materialize heartbeat cadence in cron.`,
+    }));
   } catch (error) {
     return [
       {
@@ -133,7 +126,7 @@ export async function ensureHeartbeatMonitorJobs(
 ): Promise<Map<string, CronJob>> {
   return await withDoctorCronService(storePath, cfg, async (cron) => {
     const jobs = await cron.list({ includeDisabled: true });
-    const schedulerSeed = resolveHeartbeatSchedulerSeed(undefined, { env });
+    const schedulerSeed = resolveHeartbeatSchedulerSeed(undefined, { env, readOnly: true });
     const { specs } = resolveHeartbeatMonitorPlan(cfg, jobs, { schedulerSeed });
     const monitors = new Map<string, CronJob>();
     for (const spec of specs) {
@@ -171,7 +164,7 @@ export async function maybeMigrateHeartbeatCadenceToCron(params: {
   }
 
   await withDoctorCronService(storePath, params.cfg, async (cron) => {
-    const schedulerSeed = resolveHeartbeatSchedulerSeed(undefined, { env });
+    const schedulerSeed = resolveHeartbeatSchedulerSeed(undefined, { env, readOnly: true });
     const result = await applyHeartbeatMonitorJobs({
       cron,
       cfg: params.cfg,

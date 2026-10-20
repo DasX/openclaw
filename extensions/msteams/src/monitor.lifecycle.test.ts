@@ -13,7 +13,6 @@ import {
 import {
   createConfig,
   createRuntime,
-  createStores,
   updateMSTeamsConfig,
 } from "./monitor-lifecycle.test-helpers.js";
 import {
@@ -31,7 +30,7 @@ import {
 } from "./monitor-lifecycle.test-support.js";
 import { createNativeSsoProcessor, createSigninEvent } from "./monitor-sso.test-helpers.js";
 import { monitorMSTeamsProvider } from "./monitor.js";
-import type { MSTeamsPollStore } from "./polls.js";
+import { createMSTeamsPollStoreState, type MSTeamsPollStore } from "./polls.js";
 
 async function waitForMSTeamsTestState(assertion: () => void | Promise<void>): Promise<void> {
   await routeState.ready.promise;
@@ -47,7 +46,6 @@ function runProvider(
     cfg,
     runtime: createRuntime(),
     abortSignal: abort.signal,
-    ...createStores(),
     ...overrides,
   });
 }
@@ -80,6 +78,114 @@ function requireRegisteredMSTeamsMediaMaxBytes(): number {
 
 describe("monitorMSTeamsProvider lifecycle", () => {
   afterEach(resetMSTeamsMonitorMocks);
+
+  it.each(["default", "support"])(
+    "keeps %s routing and durable ingress identity isolated",
+    async (accountId) => {
+      const abort = new AbortController();
+      const cfg = createConfig();
+      updateMSTeamsConfig(cfg, {
+        accounts: {
+          support: {
+            appId: "support-app",
+            appPassword: "support-secret",
+            webhook: { path: "/teams/support" },
+          },
+        },
+      });
+      const task = runProvider(abort, cfg, { accountId });
+      try {
+        await routeState.ready.promise;
+        expect(routeState.routes).toHaveLength(1);
+        expect(routeState.routes[0]).toMatchObject({
+          accountId,
+          path: accountId === "default" ? "/api/messages" : "/teams/support",
+        });
+        expect(getMSTeamsIngressMockState().instances.at(-1)?.options.accountId).toBe(
+          accountId === "default" ? "app-id" : "support-app",
+        );
+        expect(createMSTeamsActivityHandler.mock.calls[0]?.[0].accountId).toBe(accountId);
+      } finally {
+        abort.abort();
+        await task;
+      }
+    },
+  );
+
+  it("does not reopen a retired default bot inbox through a reused logical account id", async () => {
+    const abort = new AbortController();
+    const cfg = createConfig();
+    updateMSTeamsConfig(cfg, {
+      appId: undefined,
+      appPassword: undefined,
+      accounts: {
+        "retired-app": { appId: "new-bot-app", appPassword: "synthetic-secret" },
+      },
+    });
+    const task = runProvider(abort, cfg, { accountId: "retired-app" });
+    try {
+      await routeState.ready.promise;
+      expect(getMSTeamsIngressMockState().instances.at(-1)?.options.accountId).toBe("new-bot-app");
+      expect(createMSTeamsActivityHandler.mock.calls[0]?.[0].accountId).toBe("retired-app");
+    } finally {
+      abort.abort();
+      await task;
+    }
+  });
+
+  it("keeps default and two named routes independent through shutdown", async () => {
+    const cfg = createConfig();
+    updateMSTeamsConfig(cfg, {
+      accounts: {
+        support: { appId: "support-app", appPassword: "support-secret" },
+        sales: { appId: "sales-app", appPassword: "sales-secret" },
+      },
+    });
+    const controllers = [new AbortController(), new AbortController(), new AbortController()];
+    const tasks: Array<ReturnType<typeof runProvider>> = [];
+    const accountIds = ["default", "support", "sales"];
+    try {
+      for (const [index, accountId] of accountIds.entries()) {
+        routeState.ready = createDeferred<void>();
+        tasks.push(runProvider(controllers[index]!, cfg, { accountId }));
+        await routeState.ready.promise;
+      }
+      expect(routeState.routes.map(({ accountId, path }) => ({ accountId, path }))).toEqual([
+        { accountId: "default", path: "/api/messages" },
+        { accountId: "support", path: "/api/messages/support" },
+        { accountId: "sales", path: "/api/messages/sales" },
+      ]);
+      const ingresses = getMSTeamsIngressMockState().instances;
+      controllers[1]!.abort();
+      await tasks[1];
+      expect(routeState.unregister).toHaveBeenCalledTimes(1);
+      expect(routeState.routes.map(({ accountId }) => accountId)).toEqual(["default", "sales"]);
+      expect(ingresses[1]?.stop).toHaveBeenCalledTimes(1);
+      expect(ingresses[0]?.stop).not.toHaveBeenCalled();
+      expect(ingresses[2]?.stop).not.toHaveBeenCalled();
+    } finally {
+      controllers.forEach((controller) => controller.abort());
+      await Promise.all(tasks);
+    }
+  });
+
+  it("rejects sibling webhook aliases before creating a listener", async () => {
+    const cfg = createConfig();
+    updateMSTeamsConfig(cfg, {
+      accounts: {
+        support: {
+          appId: "support-app",
+          appPassword: "support-secret",
+          webhook: { path: "/api/messages/" },
+        },
+      },
+    });
+    await expect(runProvider(new AbortController(), cfg, { accountId: "support" })).rejects.toThrow(
+      "shared by accounts",
+    );
+    expect(loadMSTeamsSdkWithAuth).not.toHaveBeenCalled();
+    expect(routeState.routes).toHaveLength(0);
+  });
 
   it("prefers the Teams media limit over the agent default", async () => {
     const abort = new AbortController();
@@ -426,7 +532,8 @@ describe("monitorMSTeamsProvider lifecycle", () => {
     };
     isCardActionInvokeAuthorized.mockResolvedValueOnce(false);
 
-    const task = runProvider(abort, cfg, { pollStore });
+    vi.mocked(createMSTeamsPollStoreState).mockReturnValueOnce(pollStore);
+    const task = runProvider(abort, cfg);
 
     await waitForMSTeamsTestState(() => {
       expect(createMSTeamsActivityHandler).toHaveBeenCalled();
@@ -476,7 +583,8 @@ describe("monitorMSTeamsProvider lifecycle", () => {
       recordVote: vi.fn(async () => null),
     };
 
-    const task = runProvider(abort, cfg, { pollStore });
+    vi.mocked(createMSTeamsPollStoreState).mockReturnValueOnce(pollStore);
+    const task = runProvider(abort, cfg);
 
     await waitForMSTeamsTestState(() => {
       expect(createMSTeamsActivityHandler).toHaveBeenCalled();
@@ -548,6 +656,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
     expect(resolveAllowlistMocks.resolveMSTeamsUserAllowlist).not.toHaveBeenCalled();
     expect(resolveAllowlistMocks.resolveMSTeamsTeamsConfig).toHaveBeenCalledWith({
       cfg,
+      accountId: "default",
       teamIdMode: "bot-framework",
       teams: {
         Product: {
@@ -605,10 +714,12 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
     expect(resolveAllowlistMocks.resolveMSTeamsUserAllowlist).toHaveBeenNthCalledWith(1, {
       cfg,
+      accountId: "default",
       entries: ["Alice"],
     });
     expect(resolveAllowlistMocks.resolveMSTeamsUserAllowlist).toHaveBeenNthCalledWith(2, {
       cfg,
+      accountId: "default",
       entries: ["Bob"],
     });
 
@@ -696,6 +807,7 @@ describe("monitorMSTeamsProvider lifecycle", () => {
       ]);
       expect(resolveAllowlistMocks.resolveMSTeamsUserAllowlist).toHaveBeenCalledExactlyOnceWith({
         cfg,
+        accountId: "default",
         entries: ["Alice"],
       });
     } finally {
@@ -774,14 +886,36 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
     expect(routeState.unregister).toHaveBeenCalledOnce();
   });
 
-  it.each(["/api/:tenant/messages", "/healthz"])(
-    "fails visibly when %s cannot serve Gateway-only callbacks",
-    async (path) => {
+  it.each(
+    ["/api/:tenant/messages", "/healthz"].flatMap((path) => [
+      { path, accountId: "default", accountKey: undefined },
+      { path, accountId: "support-team", accountKey: "Support Team" },
+    ]),
+  )(
+    "directs $accountId recovery when $path cannot serve Gateway-only callbacks",
+    async ({ path, accountId, accountKey }) => {
       const cfg = createConfig();
-      updateMSTeamsConfig(cfg, { webhook: { path } });
+      updateMSTeamsConfig(
+        cfg,
+        accountKey
+          ? {
+              accounts: {
+                [accountKey]: {
+                  appId: "support-app",
+                  appPassword: "support-secret",
+                  webhook: { path },
+                },
+              },
+            }
+          : { webhook: { path } },
+      );
       await expect(
-        monitorMSTeamsProvider({ cfg, runtime: createRuntime(), ...createStores() }),
-      ).rejects.toThrow("Set channels.msteams.webhook.path to /api/messages");
+        monitorMSTeamsProvider({ cfg, accountId, runtime: createRuntime() }),
+      ).rejects.toThrow(
+        accountKey
+          ? `Set channels.msteams.accounts.${accountKey}.webhook.path to /api/messages/${accountId}`
+          : "Set channels.msteams.webhook.path to /api/messages",
+      );
       expect(routeState.routes).toEqual([]);
     },
   );
@@ -792,7 +926,6 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
       monitorMSTeamsProvider({
         cfg: createConfig(),
         runtime: createRuntime(),
-        ...createStores(),
       }),
     ).rejects.toThrow("route conflict");
     expect(getMSTeamsIngressMockState().instances[0]?.stop).toHaveBeenCalledOnce();
@@ -873,8 +1006,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
         await completedResponse.text();
         await activeResponseWork;
         expect(settled).toBe(true);
-        const result = await task;
-        expect(result.app).toBeTruthy();
+        await task;
         expect(taskSettled).toBe(true);
         expect(routeState.unregister).toHaveBeenCalledOnce();
         expect(getMSTeamsIngressMockState().instances[0]?.stop).toHaveBeenCalledOnce();

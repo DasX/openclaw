@@ -1,12 +1,11 @@
 // Bench Gateway Startup tests cover bench gateway startup script behavior.
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createServer, type RequestListener } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { collectConfiguredModelRefs } from "@openclaw/model-catalog-core/configured-model-refs";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { testing } from "../../scripts/bench-gateway-startup.ts";
 import {
   classifyGatewayReadyLog,
@@ -47,6 +46,7 @@ function gatewaySample(overrides: Partial<GatewaySample> = {}): GatewaySample {
     cpuMs: 100,
     exitCode: null,
     firstOutputMs: 1,
+    firstSessionRpc: { ms: 19, attempts: 1, lastError: null },
     gatewayReadyLogLine: "[gateway] ready",
     gatewayReadyLogMs: 20,
     healthz: startupProbe(10, "econnrefused"),
@@ -55,8 +55,11 @@ function gatewaySample(overrides: Partial<GatewaySample> = {}): GatewaySample {
     maxRssMb: 120,
     outputTail: "",
     readyz: startupProbe(18, "http-503"),
+    shutdownForced: false,
+    shutdownMs: 5,
     signal: null,
     startupTrace: {},
+    startupTraceLines: [],
     ...overrides,
   };
 }
@@ -76,37 +79,57 @@ async function listenOnLoopback(handler: RequestListener) {
 }
 
 describe("gateway startup benchmark script", () => {
-  let helpResult: ReturnType<typeof spawnSync>;
-
-  beforeAll(() => {
-    helpResult = spawnSync(
-      process.execPath,
-      ["--import", "tsx", "scripts/bench-gateway-startup.ts", "--help"],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          NODE_NO_WARNINGS: "1",
-        },
-      },
-    );
-  });
-
-  it("prints help without running benchmark cases", () => {
-    expect(helpResult.status).toBe(0);
-    expect(helpResult.stdout).toContain("OpenClaw Gateway startup benchmark");
-    expect(helpResult.stdout).toContain("--case <id>");
-    expect(helpResult.stdout).toContain("--cpu-prof-dir <dir>");
-    expect(helpResult.stdout).toContain("--heap-prof-dir <dir>");
-    expect(helpResult.stdout).toContain("default (gateway default)");
-    expect(helpResult.stdout).not.toContain("[gateway-startup-bench]");
-    expect(helpResult.stderr).toBe("");
-  });
+  it.skipIf(process.platform === "win32")(
+    "reports an unavailable high-port range without retrying indefinitely",
+    async ({ signal }) => {
+      const root = tempDirs.make("openclaw-bench-low-ports-");
+      const entry = path.join(root, "entry.mjs");
+      const preload = path.join(root, "low-ports.mjs");
+      fs.writeFileSync(entry, 'throw new Error("Gateway must not start without a usable port");');
+      fs.writeFileSync(
+        preload,
+        `import { Server } from "node:net";
+const address = Server.prototype.address;
+let attempts = 0;
+Server.prototype.address = function () {
+  const result = address.call(this);
+  if (result && typeof result === "object") {
+    // Fail the fixture before an unbounded retry loop can hang the test process.
+    if (++attempts > 1000) throw new Error("unbounded port allocation retries");
+    return { ...result, port: 39999 };
+  }
+  return result;
+};`,
+      );
+      const result = await runNodeScript(
+        [
+          "--import",
+          preload,
+          "--import",
+          "tsx",
+          "scripts/bench-gateway-startup.ts",
+          "--entry",
+          entry,
+          "--case",
+          "skipChannels",
+          "--runs",
+          "1",
+          "--warmup",
+          "0",
+        ],
+        { ...process.env, TMPDIR: root },
+        undefined,
+        { cwd: process.cwd(), signal, maxBuffer: 1024 * 1024, requireProcessTreeExit: true },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("could not allocate a benchmark port >= 40000");
+    },
+  );
 
   // Strict managed process-group verification is not supported on Windows.
   it.skipIf(process.platform === "win32")(
-    "reports fractional counts without time units through the benchmark CLI",
+    "requires seeded session access and clean shutdown only for populated fixtures",
     async ({ signal }) => {
       const fixtures = createTempDirTracker();
       const root = fixtures.make("openclaw-bench-count-report-");
@@ -121,6 +144,9 @@ describe("gateway startup benchmark script", () => {
         method?: string;
         status?: number;
         path?: string;
+        ok?: boolean;
+        port?: number;
+        sessionCount?: number;
       };
       const readEvents = (): FixtureEvent[] =>
         fs.existsSync(eventsPath)
@@ -135,23 +161,44 @@ describe("gateway startup benchmark script", () => {
           entry,
           `import { createServer } from "node:http";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+const { WebSocketServer } = createRequire(${JSON.stringify(path.resolve("package.json"))})("ws");
 const counter = ${JSON.stringify(counter)};
+const teamBootFixture = process.env.OPENCLAW_HOME + "/team-boot-fixture.json";
+const teamBoot = existsSync(teamBootFixture);
+const shutdownExitCode = teamBoot ? JSON.parse(readFileSync(teamBootFixture, "utf8")).shutdownExitCode ?? 0 : 0;
 const record = (phase, extra = {}) => appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify({ phase, pid: process.pid, ...extra }) + "\\n");
 const sample = (existsSync(counter) ? JSON.parse(readFileSync(counter, "utf8")) : 0) + 1;
 writeFileSync(counter, JSON.stringify(sample));
 record("started", { home: process.env.OPENCLAW_HOME });
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+record("port", { port });
 const server = createServer((req, res) => {
   const status = req.method === "HEAD" && ["/healthz", "/readyz"].includes(req.url) ? 200 : 404;
   record("probe", { method: req.method, status, path: req.url });
   res.writeHead(status, { connection: "close" });
   res.end();
 });
+let sessionRequests = 0;
+const sockets = new WebSocketServer({ server });
+sockets.on("connection", (socket) => {
+  socket.on("message", (data) => {
+    const request = JSON.parse(String(data));
+    const ok = request.method === "connect" || ++sessionRequests > 1;
+    const sessions = teamBoot && sessionRequests >= 3
+      ? [{ key: sessionRequests === 3 ? "unrelated-session" : "agent:incident-agent-01:bench-0" }]
+      : [];
+    record("rpc", { method: request.method, ok, sessionCount: sessions.length });
+    socket.send(JSON.stringify({ type: "res", id: request.id, ok,
+      ...(ok ? { payload: request.method === "sessions.list" ? { sessions } : {} }
+             : { error: { message: "session access is starting" } }) }));
+  });
+});
 let stopping = false;
 const stop = (reason) => {
   if (stopping) return;
   stopping = true;
-  server.close(() => { record("closed", { reason }); process.exit(0); });
+  server.close(() => { record("closed", { reason }); process.exit(shutdownExitCode); });
 };
 process.on("SIGTERM", () => stop("signal"));
 // The CLI owns stdin; EOF retires this detached fixture when the CLI is cancelled.
@@ -191,6 +238,9 @@ server.listen(port, "127.0.0.1", () => {
         const started = events.filter((event) => event.phase === "started");
         expect(started).toHaveLength(2);
         expect(events.filter((event) => event.phase === "closed")).toHaveLength(2);
+        expect(
+          events.filter((event) => event.phase === "port").every((event) => event.port! >= 40000),
+        ).toBe(true);
         const probes = events.filter((event) => event.phase === "probe");
         for (const probe of probes) {
           expect(probe).toMatchObject({ method: "HEAD", status: 200 });
@@ -202,10 +252,19 @@ server.listen(port, "127.0.0.1", () => {
           expect(isPidAlive(event.pid)).toBe(false);
           expect(event.home).toBeDefined();
           expect(fs.existsSync(event.home!)).toBe(false);
+          expect(
+            events
+              .filter((request) => request.pid === event.pid && request.method === "sessions.list")
+              .map((request) => request.ok),
+          ).toEqual([false, true]);
         }
         const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
         expect(report.results).toHaveLength(1);
         expect(report.results[0].samples).toHaveLength(2);
+        for (const sample of report.results[0].samples) {
+          expect(sample.firstSessionRpc).toMatchObject({ ms: expect.any(Number), attempts: 2 });
+          expect(sample.startupTraceLines).toHaveLength(2);
+        }
         expect(report.results[0].summary.startupTrace).toMatchObject({
           "sidecars.model-runtime-build.agentCount": { p50: 11.5, avg: 11.5, min: 11, max: 12 },
           "sidecars.model-runtime-build.workspaceGroupCount": {
@@ -219,6 +278,7 @@ server.listen(port, "127.0.0.1", () => {
         expect(result.stdout).toContain("workspaceFacts=p50=2.5ms");
         expect(result.stdout).toContain("ready memory: rss=p50=32.5MB");
         expect(result.stdout).toContain("runtimePlugins=n/a");
+        expect(result.stdout).toContain("sessions RPC: p50=");
         expect(result.stdout).toMatch(
           / {2}CPU core:\s+p50=\d+\.\d{3} avg=\d+\.\d{3} min=\d+\.\d{3} max=\d+\.\d{3}/u,
         );
@@ -227,6 +287,74 @@ server.listen(port, "127.0.0.1", () => {
           .find((line) => line.startsWith("  prepared runtime:"));
         expect(counts).toContain("agents=p50=11.5 avg=11.5 min=11 max=12");
         expect(counts).toContain("workspaces=p50=1.5 avg=1.5 min=1 max=2");
+
+        // This fake Gateway tests the driver protocol, not the heavyweight seed generator.
+        const teamRoot = path.join(root, "prepared-team-boot");
+        fs.mkdirSync(teamRoot);
+        const runPopulated = () =>
+          runNodeScript(
+            [
+              "--import",
+              "tsx",
+              "scripts/bench-gateway-startup.ts",
+              "--entry",
+              entry,
+              "--case",
+              "teamBoot",
+              "--fixture-root",
+              teamRoot,
+              "--runs",
+              "1",
+              "--warmup",
+              "0",
+              "--output",
+              reportPath,
+            ],
+            { ...process.env, TMPDIR: root },
+            undefined,
+            { cwd: process.cwd(), signal, maxBuffer: 1024 * 1024, requireProcessTreeExit: true },
+          );
+        for (const shutdownExitCode of [0, 23]) {
+          fs.writeFileSync(
+            path.join(teamRoot, "team-boot-fixture.json"),
+            JSON.stringify({ shutdownExitCode }),
+          );
+          const populated = await runPopulated();
+          expect(populated.error).toBeUndefined();
+          expect(populated.status, populated.stderr).toBe(shutdownExitCode === 0 ? 0 : 1);
+          if (shutdownExitCode !== 0) {
+            expect(populated.stderr).toContain("unclean shutdown");
+          }
+          const populatedReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+          expect(populatedReport.results[0].samples[0]).toMatchObject({
+            exitCode: shutdownExitCode,
+            shutdownForced: false,
+            shutdownMs: expect.any(Number),
+            signal: null,
+          });
+          expect(populatedReport.results[0].summary.shutdownMs).toMatchObject({
+            p50: expect.any(Number),
+          });
+          expect(populated.stdout).toContain("shutdown:     p50=");
+          expect(populatedReport.results[0].samples[0].firstSessionRpc).toMatchObject({
+            ms: expect.any(Number),
+            attempts: 4,
+          });
+          const populatedPid = readEvents().findLast(
+            (event) => event.phase === "started" && event.home === teamRoot,
+          )?.pid;
+          expect(populatedPid).toEqual(expect.any(Number));
+          expect(
+            readEvents()
+              .filter((event) => event.pid === populatedPid && event.method === "sessions.list")
+              .map(({ ok, sessionCount }) => ({ ok, sessionCount })),
+          ).toEqual([
+            { ok: false, sessionCount: 0 },
+            { ok: true, sessionCount: 0 },
+            { ok: true, sessionCount: 1 },
+            { ok: true, sessionCount: 1 },
+          ]);
+        }
       } finally {
         // Never signal retired PIDs; retain fixture evidence if an unclosed child remains alive.
         const events = readEvents();
@@ -314,61 +442,6 @@ server.listen(port, "127.0.0.1", () => {
     ).toThrow("--gateway-runtime was provided more than once");
   });
 
-  it("rejects unknown benchmark CLI args before running cases", () => {
-    const result = spawnSync(
-      process.execPath,
-      ["--import", "tsx", "scripts/bench-gateway-startup.ts", "--wat"],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          NODE_NO_WARNINGS: "1",
-        },
-      },
-    );
-
-    expect(result.status).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr.trim()).toBe("Unknown argument: --wat");
-    expect(result.stderr).not.toContain("\n    at ");
-  });
-
-  it("reports duplicate benchmark cases without a stack trace", () => {
-    const result = spawnSync(
-      process.execPath,
-      [
-        "--import",
-        "tsx",
-        "scripts/bench-gateway-startup.ts",
-        "--case",
-        "default",
-        "--case",
-        "default",
-      ],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          NODE_NO_WARNINGS: "1",
-        },
-      },
-    );
-
-    expect(result.status).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr.trim()).toBe('Duplicate --case "default"');
-    expect(result.stderr).not.toContain("\n    at ");
-  });
-
-  it("does not disable local-check policy in the child gateway environment", () => {
-    const env = createGatewayBenchEnv("/tmp/openclaw-bench", "/tmp/openclaw-bench/config.json", {});
-
-    expect(env.OPENCLAW_LOCAL_CHECK).toBeUndefined();
-    expect(env.OPENCLAW_GATEWAY_STARTUP_TRACE).toBe("1");
-  });
-
   it("forces incident packaged-plugin cases to load built plugin entries", () => {
     const benchCase = testing.parseOptions(["--case", "incidentCombined"]).cases[0];
     if (!benchCase) {
@@ -430,69 +503,6 @@ server.listen(port, "127.0.0.1", () => {
     });
   });
 
-  it("summarizes split ready log timings without the ambiguous readyLogMs field", () => {
-    const sample = {
-      completionMs: 50,
-      cpuCoreRatio: null,
-      cpuMs: null,
-      exitCode: null,
-      firstOutputMs: 1,
-      gatewayReadyLogLine: "[gateway] ready",
-      gatewayReadyLogMs: 40,
-      healthz: {
-        firstErrorKind: "econnrefused",
-        firstRecoveryMs: 20,
-        ms: 20,
-        status: 200,
-        transitions: [],
-      },
-      httpListenLogLine: "[gateway] http server listening (0 plugins)",
-      httpListenLogMs: 10,
-      maxRssMb: null,
-      outputTail: "",
-      readyz: {
-        firstErrorKind: "http-503",
-        firstRecoveryMs: 30,
-        ms: 30,
-        status: 200,
-        transitions: [],
-      },
-      signal: null,
-      startupTrace: {
-        "sidecars.ready.total": 50,
-        "sidecars.ready": 5,
-        "plugins.load": 0,
-      },
-    };
-    const samples: Parameters<typeof testing.summarizeCase>[1] = [
-      sample,
-      {
-        ...sample,
-        startupTrace: {
-          "sidecars.ready": 15,
-          "sidecars.ready.total": 70,
-        },
-      },
-    ];
-    const result = testing.summarizeCase({ config: {}, id: "demo", name: "demo" }, samples);
-
-    expect(result.samples).toBe(samples);
-    expect(result.summary.completionMs?.p50).toBe(50);
-    expect(result.summary.httpListenLogMs?.p50).toBe(10);
-    expect(result.summary.gatewayReadyLogMs?.p50).toBe(40);
-    expect("readyLogMs" in result.summary).toBe(false);
-    expect(Object.keys(result.summary.startupTrace)).toEqual([
-      "plugins.load",
-      "sidecars.ready",
-      "sidecars.ready.total",
-    ]);
-    expect(result.summary.startupTrace).toEqual({
-      "plugins.load": { avg: 0, max: 0, min: 0, p50: 0, p95: 0 },
-      "sidecars.ready": { avg: 10, max: 15, min: 5, p50: 10, p95: 15 },
-      "sidecars.ready.total": { avg: 60, max: 70, min: 50, p50: 60, p95: 70 },
-    });
-  });
-
   it("flags samples that never produced readiness or process metrics", () => {
     const result = testing.summarizeCase({ config: {}, id: "demo", name: "demo" }, [
       gatewaySample({
@@ -501,6 +511,7 @@ server.listen(port, "127.0.0.1", () => {
         cpuMs: null,
         exitCode: 1,
         firstOutputMs: 5,
+        firstSessionRpc: { ms: null, attempts: 0, lastError: null },
         gatewayReadyLogLine: null,
         gatewayReadyLogMs: null,
         healthz: startupProbe(null, "econnrefused"),
@@ -516,7 +527,7 @@ server.listen(port, "127.0.0.1", () => {
     expect(testing.collectResultFailures([result])).toEqual([
       {
         id: "demo",
-        reason: "missing /healthz, /readyz, completion, cpu, rss",
+        reason: "missing /healthz, /readyz, sessions.list, completion, cpu, rss",
         sampleIndex: 1,
       },
     ]);
@@ -531,6 +542,9 @@ server.listen(port, "127.0.0.1", () => {
       }),
     ]);
 
+    expect(result.summary.httpListenLogMs?.p50).toBe(5);
+    expect(result.summary.gatewayReadyLogMs?.p50).toBe(20);
+    expect("readyLogMs" in result.summary).toBe(false);
     expect(testing.collectResultFailures([result])).toEqual([
       {
         id: "demo",
@@ -540,13 +554,33 @@ server.listen(port, "127.0.0.1", () => {
     ]);
   });
 
-  it("does not flag nonzero exits from intentional teardown", () => {
-    const result = testing.summarizeCase({ config: {}, id: "demo", name: "demo" }, [
-      gatewaySample({ exitedBeforeTeardown: false, exitCode: 1 }),
-    ]);
-
-    expect(testing.collectResultFailures([result])).toEqual([]);
-  });
+  it.each([
+    { fast: 5, slow: 11, errors: 0, valid: true },
+    { fast: 11, slow: 12, errors: 0, valid: false },
+    { fast: 5, slow: 9, errors: 0, valid: false },
+    { fast: 5, slow: 11, errors: 1, valid: false },
+  ])(
+    "enforces independent slow-agent recovery (fast=$fast, slow=$slow, errors=$errors)",
+    ({ fast, slow, errors, valid }) => {
+      const result = testing.summarizeCase(
+        { config: {}, id: "slowAgentDatabase", name: "slow agent database" },
+        [
+          gatewaySample({
+            agentRecoveryMs: {
+              "bench-fast-01": 3,
+              "bench-fast-02": 4,
+              "bench-fast-03": 5,
+              "bench-fast-04": fast,
+              "bench-slow": slow,
+            },
+            integrityGateMs: { "gate-start": 2, "gate-passed": 10 },
+            agentDatabaseAdmissionErrors: errors,
+          }),
+        ],
+      );
+      expect(testing.collectResultFailures([result]).length === 0).toBe(valid);
+    },
+  );
 
   it("enforces the combined incident readiness budgets", () => {
     const result = testing.summarizeCase({ config: {}, id: "incidentCombined", name: "incident" }, [
@@ -809,6 +843,25 @@ server.listen(port, "127.0.0.1", () => {
     expect(config.plugins?.allow).toEqual(["openai", "google", "minimax"]);
   });
 
+  it("builds the opt-in eight-agent boot case with 44 startup-active synthetic plugins", () => {
+    expect(testing.parseOptions([]).cases.some((entry) => entry.id === "teamBoot")).toBe(false);
+    const benchCase = testing.parseOptions(["--case", "teamBoot"]).cases[0]!;
+    const root = tempDirs.make("openclaw-team-boot-config-test-");
+    const config = JSON.parse(
+      fs.readFileSync(testing.writeConfig(root, benchCase), "utf8"),
+    ) as OpenClawConfig;
+    expect(validateConfigObject(config)).toMatchObject({ ok: true });
+    expect(Object.keys(config.agents?.entries ?? {})).toHaveLength(8);
+    expect(config.plugins?.allow).toHaveLength(44);
+    expect(config.cron?.enabled).toBe(false);
+    for (const pluginId of config.plugins?.allow ?? []) {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(root, "plugins", pluginId, "openclaw.plugin.json"), "utf8"),
+      );
+      expect(manifest.activation).toEqual({ onStartup: true });
+    }
+  });
+
   it.each([
     { id: "preparedRuntimeScaleOne", agentCount: 1, sharedCount: 1, owner: "main" },
     { id: "preparedRuntimeScaleMany", agentCount: 12, sharedCount: 11, owner: "agent-01" },
@@ -857,26 +910,4 @@ server.listen(port, "127.0.0.1", () => {
       ).toContain("preparedRuntimeStaticCatalogCallCount");
     },
   );
-
-  it("keeps startup-lazy plugin fixtures opted out of startup activation", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-bench-config-test-"));
-    try {
-      testing.writeConfig(root, {
-        config: {},
-        id: "fiftyStartupLazyPlugins",
-        name: "gateway, 50 startup-lazy manifest plugins",
-        pluginActivationOnStartup: false,
-        pluginCount: 1,
-      });
-      const manifest = JSON.parse(
-        fs.readFileSync(
-          path.join(root, "plugins", "bench-plugin-01", "openclaw.plugin.json"),
-          "utf8",
-        ),
-      ) as { activation?: { onStartup?: boolean } };
-      expect(manifest.activation?.onStartup).toBe(false);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
 });

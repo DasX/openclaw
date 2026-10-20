@@ -22,7 +22,6 @@ interface FilterableSelectListTheme extends SelectListTheme {
 }
 
 /**
- * Combines text input filtering with a select list.
  * User types to filter, arrows or Ctrl+P/Ctrl+N navigate, and Escape clears or cancels.
  */
 export class FilterableSelectList extends SelectListInput implements Component, Focusable {
@@ -75,17 +74,12 @@ export class FilterableSelectList extends SelectListInput implements Component, 
   }
 
   render(width: number): string[] {
-    const lines: string[] = [];
     const safeWidth = Math.max(0, width);
-
-    lines.push(this.renderInput(safeWidth, this.theme.filterLabel("Filter: ")));
-
-    lines.push(chalk.dim("─".repeat(safeWidth)));
-
-    const listLines = this.selectList.render(safeWidth);
-    lines.push(...listLines.map((line) => truncateToWidth(line, safeWidth, "")));
-
-    return lines;
+    return [
+      this.renderInput(safeWidth, this.theme.filterLabel("Filter: ")),
+      chalk.dim("─".repeat(safeWidth)),
+      ...this.selectList.render(safeWidth).map((line) => truncateToWidth(line, safeWidth, "")),
+    ];
   }
 
   handleInput(keyData: string): void {

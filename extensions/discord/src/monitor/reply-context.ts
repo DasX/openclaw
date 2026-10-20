@@ -31,12 +31,9 @@ export function resolveReplyContext(
     channelId,
     sender: sender.tag ?? sender.label ?? "unknown",
     senderId: referenced.author.id,
-    senderName: referenced.author.username ?? undefined,
-    senderTag: sender.tag ?? undefined,
-    memberRoleIds: (() => {
-      const roles = (referenced as { member?: { roles?: string[] } }).member?.roles;
-      return Array.isArray(roles) ? roles.map((roleId) => roleId) : undefined;
-    })(),
+    senderName: referenced.author.username,
+    senderTag: sender.tag,
+    memberRoleIds: referenced.member?.roles,
     ...(referencedText ? { body: referencedText } : {}),
     timestamp: resolveTimestampMs(referenced.timestamp),
   };

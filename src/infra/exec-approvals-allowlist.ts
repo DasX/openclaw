@@ -32,6 +32,7 @@ import {
 import type { AllowAlwaysPattern, ExecAllowlistEntry } from "./exec-approvals.types.js";
 import {
   canUseReusableWrapperPayloadCandidates,
+  isPathScopedExecutableToken,
   planShellAuthorization,
   type ExecAuthorizationPlan,
 } from "./exec-authorization-plan.js";
@@ -159,10 +160,6 @@ function isSafeBinUsage(params: {
     return false;
   }
   return validateSafeBinArgv(argv, profile, { binName: execName });
-}
-
-function isPathScopedExecutableToken(token: string): boolean {
-  return token.includes("/") || token.includes("\\");
 }
 
 export type ExecAllowlistEvaluation = {
@@ -492,21 +489,27 @@ function resolveSegmentAllowlistMatch(params: {
           platform: params.context.platform,
         })
       : undefined;
+  const matchShellPath = (allowlist: ExecAllowlistEntry[], candidate: string, argv: string[]) =>
+    matchAllowlist(
+      allowlist,
+      {
+        kind: "executable",
+        rawExecutable: candidate,
+        resolvedPath: candidate,
+        resolvedRealPath: resolveCandidateTrustPath(candidate),
+        executableName: path.basename(candidate),
+      },
+      argv,
+      params.context.platform,
+      params.context.cwd,
+    );
   const shellPositionalArgvMatch = shellPositionalArgvCandidate
-    ? matchAllowlist(
+    ? matchShellPath(
         shellPositionalArgvCandidate.durable
           ? params.context.allowlist
           : params.context.allowlist.filter((entry) => entry.argPattern === undefined),
-        {
-          kind: "executable",
-          rawExecutable: shellPositionalArgvCandidate.path,
-          resolvedPath: shellPositionalArgvCandidate.path,
-          resolvedRealPath: resolveCandidateTrustPath(shellPositionalArgvCandidate.path),
-          executableName: path.basename(shellPositionalArgvCandidate.path),
-        },
+        shellPositionalArgvCandidate.path,
         shellPositionalArgvCandidate.argv,
-        params.context.platform,
-        params.context.cwd,
       )
     : null;
   const shellScriptCandidatePath =
@@ -527,19 +530,7 @@ function resolveSegmentAllowlistMatch(params: {
     : null;
   const shellScriptMatch =
     shellScriptCandidatePath && shellScriptArgv
-      ? matchAllowlist(
-          params.context.allowlist,
-          {
-            kind: "executable",
-            rawExecutable: shellScriptCandidatePath,
-            resolvedPath: shellScriptCandidatePath,
-            resolvedRealPath: resolveCandidateTrustPath(shellScriptCandidatePath),
-            executableName: path.basename(shellScriptCandidatePath),
-          },
-          shellScriptArgv,
-          params.context.platform,
-          params.context.cwd,
-        )
+      ? matchShellPath(params.context.allowlist, shellScriptCandidatePath, shellScriptArgv)
       : null;
   return {
     effectiveArgv,

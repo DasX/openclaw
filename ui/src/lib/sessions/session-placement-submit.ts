@@ -18,7 +18,6 @@ import {
   writeSessionPlacementRecoveryIfAvailable,
 } from "./session-placement-recovery.ts";
 import {
-  deleteRecoveredSessionPlacementDraft,
   deleteSessionPlacementDraft,
   startSessionPlacementInitialTurn,
 } from "./session-placement-startup.ts";
@@ -44,6 +43,7 @@ export async function advanceSessionPlacementDraft(params: {
   ownsRecovery: () => boolean;
   clearRecovery: (retirement: SessionPlacementRecoveryRetirement) => void;
   setRecoveryPhase: (phase: "sending", durable: boolean) => void;
+  signal?: AbortSignal;
 }): Promise<SessionPlacementDraftAdvanceResult> {
   const persistRecovery = params.persistRecovery !== false;
   const recovering = params.mode !== "dispatch";
@@ -57,8 +57,12 @@ export async function advanceSessionPlacementDraft(params: {
   // them separately so lifecycle interruption is not reported as takeover.
   const isCurrentOwner = () => params.isLifecycleCurrent() && params.ownsRecovery();
   const deleteDraft = async (recovered = recovering) => {
-    const cleanup = recovered ? deleteRecoveredSessionPlacementDraft : deleteSessionPlacementDraft;
-    const error = await cleanup(params, recovery.sessionKey, recovery.agentId);
+    const error = await deleteSessionPlacementDraft(
+      params,
+      recovery.sessionKey,
+      recovery.agentId,
+      recovered,
+    );
     if (!error) {
       params.clearRecovery("resolved");
     }
@@ -76,6 +80,7 @@ export async function advanceSessionPlacementDraft(params: {
     const history = await params.client
       .request<ChatHistoryResult>("chat.history", {
         sessionKey: recovery.sessionKey,
+        toolResultMaxChars: 2_000,
         ...(isUiGlobalSessionKey(recovery.sessionKey) ? { agentId: recovery.agentId } : {}),
         limit: 1000,
         ...(recovery.messageId.length <= CHAT_INPUT_RUN_ID_MAX_CHARS
@@ -163,6 +168,7 @@ export async function advanceSessionPlacementDraft(params: {
       messageId: recovery.messageId,
       mode: params.mode,
       cleanupOnCancellation: params.cleanupOnCancellation,
+      signal: params.signal,
     },
     isCurrentOwner,
     () => {

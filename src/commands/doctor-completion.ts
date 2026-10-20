@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { resolveOpenClawCliInvocation } from "../../cli-invocation.mjs";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { CLI_NAME } from "../cli/cli-name.js";
 import {
@@ -33,11 +34,10 @@ export type CompletionCacheGenerationOptions = ShellCompletionStatusOptions & {
 
 async function installCompletionForDoctor(
   { shell, cachePath }: ShellCompletionStatus,
-  cliName: string,
   action: "installed" | "upgraded",
 ): Promise<void> {
   try {
-    await installCompletion(shell, true, cliName);
+    await installCompletion(shell, true, CLI_NAME);
     const reloadCommand = formatCompletionReloadCommand(shell, resolveCompletionProfileHint(shell));
     note(
       `Shell completion ${action}. Restart your shell or run: ${reloadCommand}`,
@@ -71,7 +71,7 @@ async function generateCompletionCache(
   }
 
   const binPath = path.join(root, "openclaw.mjs");
-  const args = [...resolveRuntimeArgs(), binPath, "completion", "--write-state"];
+  const args = ["completion", "--write-state"];
   if (options.shell) {
     args.push("--shell", options.shell);
   }
@@ -82,7 +82,12 @@ async function generateCompletionCache(
   } else {
     delete env[COMPLETION_SKIP_PLUGIN_COMMANDS_ENV];
   }
-  const result = spawnSync(process.execPath, args, {
+  const invocation = resolveOpenClawCliInvocation({
+    entryPath: binPath,
+    execArgv: resolveRuntimeArgs(),
+    args,
+  });
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: root,
     env,
     encoding: "utf-8",
@@ -204,11 +209,7 @@ export async function doctorShellCompletion(
     note(`Completion cache regenerated at ${status.cachePath}`, "Shell completion");
     return;
   }
-  await installCompletionForDoctor(
-    status,
-    CLI_NAME,
-    status.usesSlowPattern ? "upgraded" : "installed",
-  );
+  await installCompletionForDoctor(status, status.usesSlowPattern ? "upgraded" : "installed");
 }
 
 /** Ensures the shell completion cache exists without prompting during setup/update flows. */
@@ -217,9 +218,7 @@ export async function ensureCompletionCacheExists(
   options: CompletionCacheGenerationOptions,
 ): Promise<boolean> {
   const shell = options.shell ?? resolveShellFromEnv();
-  const cacheExists = await completionCacheExists(shell, binName);
-
-  if (cacheExists) {
+  if (await completionCacheExists(shell, binName)) {
     return true;
   }
 

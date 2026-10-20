@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { raceWithTimeout } from "@openclaw/retry";
+import { asPositiveInteger } from "@openclaw/normalization-core/number-coercion";
+import { racePromiseWithAbortSignal } from "@openclaw/retry";
+import { codeModeGcAttribution } from "../logging/code-mode-diagnostic.js";
 import { clampNumber } from "../utils.js";
 import { createCodeModeCatalogProjection } from "./code-mode-catalog.js";
 import { CodeModeHeadlessAbortError, CodeModeHeadlessTimeoutError } from "./code-mode-errors.js";
@@ -23,7 +25,6 @@ import {
   codeModeFailureCode,
   codeModeFailureMessage,
   createCodeModeApiFilesForRun,
-  readPositiveInteger,
   resolveCodeModeHeadlessConfig,
   toToolSearchConfig,
   type CodeModeFailureCode,
@@ -74,19 +75,7 @@ export function createHeadlessDeadlineScope(
       if (controller.signal.aborted) {
         throw headlessAbortError(controller.signal);
       }
-      return await raceWithTimeout(
-        promise,
-        remainingMs,
-        () => {
-          throw timeoutError();
-        },
-        {
-          signal: controller.signal,
-          onAbort: (abortedSignal) => {
-            throw headlessAbortError(abortedSignal);
-          },
-        },
-      );
+      return await racePromiseWithAbortSignal(promise, controller.signal, headlessAbortError);
     },
     cleanup: () => {
       controller.abort(new CodeModeHeadlessAbortError());
@@ -103,20 +92,6 @@ function headlessAbortError(
     signal.reason instanceof CodeModeHeadlessAbortError
     ? signal.reason
     : new CodeModeHeadlessAbortError();
-}
-
-function headlessFailure(params: {
-  code: CodeModeFailureCode | "tool_budget_exceeded";
-  error: string;
-  output: CodeModeOutputState;
-  toolCallCount: number;
-}): CodeModeHeadlessResult {
-  return {
-    status: "failed",
-    code: params.code,
-    toolCallCount: params.toolCallCount,
-    ...params.output.take({ error: params.error }),
-  };
 }
 
 function remainingHeadlessMs(deadline: number): number {
@@ -196,12 +171,12 @@ export async function runCodeModeScriptHeadless(params: {
 }): Promise<CodeModeHeadlessResult> {
   const config = resolveCodeModeHeadlessConfig(params.ctx, params.overrides);
   const wallClockMs = clampNumber(
-    readPositiveInteger(params.wallClockMs, DEFAULT_HEADLESS_WALL_CLOCK_MS),
+    asPositiveInteger(params.wallClockMs) ?? DEFAULT_HEADLESS_WALL_CLOCK_MS,
     1,
     MAX_HEADLESS_WALL_CLOCK_MS,
   );
   const maxToolCalls = clampNumber(
-    readPositiveInteger(params.maxToolCalls, DEFAULT_HEADLESS_TOOL_CALLS),
+    asPositiveInteger(params.maxToolCalls) ?? DEFAULT_HEADLESS_TOOL_CALLS,
     1,
     MAX_HEADLESS_TOOL_CALLS,
   );
@@ -211,6 +186,8 @@ export async function runCodeModeScriptHeadless(params: {
   const output = new CodeModeOutputState(config.maxOutputBytes);
   let pending: PendingBridgeState[] = [];
   let toolCallCount = 0;
+  const fail = (code: CodeModeFailureCode | "tool_budget_exceeded", error: string) =>
+    output.takeResult({ status: "failed" as const, code, toolCallCount }, { error });
   let releaseReservation: (() => void) | undefined;
   try {
     // Headless runs publish no resumable snapshot/handle, so collector globals stay unavailable.
@@ -259,7 +236,6 @@ export async function runCodeModeScriptHeadless(params: {
       releaseReservation ??= reserveActiveRunSlot();
       pending.push(
         ...createPendingBridgeStates(newRequests, {
-          config,
           inbox: owner.inbox,
           results: owner.results,
           runtime,
@@ -276,6 +252,7 @@ export async function runCodeModeScriptHeadless(params: {
     };
     let boundaryFailure: Error | undefined;
     const inlineHost: CodeModeExecutorInlineHost = {
+      gcAttribution: codeModeGcAttribution(codeModeRunId, params.ctx.sessionKey),
       onNetworkContent: () => runtime.observeNetworkContent(parentToolCallId),
       onBoundary: async (boundary, context) => {
         output.append(boundary.output);
@@ -293,23 +270,16 @@ export async function runCodeModeScriptHeadless(params: {
         if (context.yieldSignal.aborted) {
           return { kind: "checkpoint" };
         }
-        let onPressure: (() => void) | undefined;
         const settlement = new AbortController();
         try {
-          const ready = await abortScope.wait(
-            Promise.race([
-              waitForPendingBridgeSettlement(
-                pending,
-                boundary.settlementMode,
-                settlement.signal,
-              ).then(() => true),
-              new Promise<false>((resolve) => {
-                onPressure = () => resolve(false);
-                context.yieldSignal.addEventListener("abort", onPressure, { once: true });
-              }),
-            ]),
+          await abortScope.wait(
+            waitForPendingBridgeSettlement(
+              pending,
+              boundary.settlementMode,
+              AbortSignal.any([context.yieldSignal, settlement.signal]),
+            ),
           );
-          if (!ready || context.yieldSignal.aborted) {
+          if (context.yieldSignal.aborted) {
             return { kind: "checkpoint" };
           }
           // Admission already charged worker queue/initialization time. Respect that
@@ -330,9 +300,6 @@ export async function runCodeModeScriptHeadless(params: {
           };
         } finally {
           settlement.abort();
-          if (onPressure) {
-            context.yieldSignal.removeEventListener("abort", onPressure);
-          }
         }
       },
     };
@@ -389,12 +356,7 @@ export async function runCodeModeScriptHeadless(params: {
         };
       }
       if (result.status === "failed") {
-        return headlessFailure({
-          code: result.code,
-          error: result.error,
-          output,
-          toolCallCount,
-        });
+        return fail(result.code, result.error);
       }
 
       dispatch(result);
@@ -403,12 +365,7 @@ export async function runCodeModeScriptHeadless(params: {
       const settlementMode = result.settlementMode;
       const frontierPending = pendingBridgeStatesForSettlement(pending, settlementMode);
       if (frontierPending.length === 0) {
-        return headlessFailure({
-          code: "internal_error",
-          error: "code mode is waiting without pending bridge requests",
-          output,
-          toolCallCount,
-        });
+        return fail("internal_error", "code mode is waiting without pending bridge requests");
       }
       await abortScope.wait(
         waitForPendingBridgeSettlement(pending, settlementMode, abortScope.signal),
@@ -434,19 +391,16 @@ export async function runCodeModeScriptHeadless(params: {
     const failure = abortScope.signal.aborted ? headlessAbortError(abortScope.signal) : error;
     const timedOut = failure instanceof CodeModeHeadlessTimeoutError;
     const aborted = failure instanceof CodeModeHeadlessAbortError;
-    return headlessFailure({
-      code:
-        failure instanceof HeadlessToolBudgetError
-          ? "tool_budget_exceeded"
-          : timedOut
-            ? "timeout"
-            : aborted
-              ? "aborted"
-              : codeModeFailureCode(failure),
-      error: timedOut || aborted ? failure.message : codeModeFailureMessage(failure),
-      output,
-      toolCallCount,
-    });
+    return fail(
+      failure instanceof HeadlessToolBudgetError
+        ? "tool_budget_exceeded"
+        : timedOut
+          ? "timeout"
+          : aborted
+            ? "aborted"
+            : codeModeFailureCode(failure),
+      timedOut || aborted ? failure.message : codeModeFailureMessage(failure),
+    );
   } finally {
     cancelPendingBridgeStates(pending);
     abortScope.cleanup();

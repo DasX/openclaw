@@ -33,7 +33,6 @@ import {
 
 type SocketReadResult<T extends PortListener> = {
   entries: T[];
-  detail?: string;
   errors: string[];
 };
 
@@ -216,14 +215,17 @@ async function readUnixSocketEntries<T extends PortListener>(
   argv: string[],
   parse: (output: string) => T[],
   signal?: AbortSignal,
+  fallbackErrors?: string[],
 ) {
   const result = await readUnixSocketOutput(argv, signal);
   const entries = result.stdout === undefined ? [] : parse(result.stdout);
   return {
     entries,
-    detail: result.stdout?.trim() || undefined,
-    errors: result.errors,
-    unavailable: result.unavailable,
+    errors:
+      fallbackErrors && entries.length === 0
+        ? [...fallbackErrors, ...result.errors]
+        : result.errors,
+    ...(fallbackErrors ? {} : { unavailable: result.unavailable }),
   };
 }
 
@@ -238,15 +240,12 @@ async function readUnixEstablishedConnections(
   if (!primary.unavailable) {
     return primary;
   }
-  const fallback = await readUnixSocketEntries(
+  return await readUnixSocketEntries(
     ["ss", "-H", "-tnp", "state", "established", `( sport = :${port} or dport = :${port} )`],
     (output) => parseSsConnections(output, port),
+    undefined,
+    primary.errors,
   );
-  return {
-    entries: fallback.entries,
-    detail: fallback.entries.length > 0 ? fallback.detail : undefined,
-    errors: fallback.entries.length > 0 ? fallback.errors : [...primary.errors, ...fallback.errors],
-  };
 }
 
 async function resolveUnixProcessInfo(
@@ -303,22 +302,15 @@ async function readUnixListeners(
 ): Promise<SocketReadResult<PortListener>> {
   const listenerSnapshot = snapshot ?? (await readUnixListenerSnapshot(port, signal));
   if (!listenerSnapshot.lsofUnavailable) {
-    const { listeners, detail } = readLsofListenersForPort(listenerSnapshot.recordsByPort, port);
-    return { entries: listeners, detail, errors: listenerSnapshot.errors };
+    const listeners = readLsofListenersForPort(listenerSnapshot.recordsByPort, port);
+    return { entries: listeners, errors: listenerSnapshot.errors };
   }
-  const fallback = await readUnixSocketEntries(
+  return await readUnixSocketEntries(
     ["ss", "-H", "-ltnp", `sport = :${port}`],
     (output) => parseSsListeners(output, port),
     signal,
+    listenerSnapshot.errors,
   );
-  return {
-    entries: fallback.entries,
-    detail: fallback.entries.length > 0 ? fallback.detail : undefined,
-    errors:
-      fallback.entries.length > 0
-        ? fallback.errors
-        : [...listenerSnapshot.errors, ...fallback.errors],
-  };
 }
 
 function parseNetstatConnections(output: string, port: number): PortConnection[] {
@@ -464,12 +456,12 @@ async function readWindowsNetstatEntries<T extends PortListener>(
     },
     { concurrency: PORT_PROCESS_ENRICHMENT_CONCURRENCY, signal },
   );
-  return { entries, detail: res.stdout.trim() || undefined, errors };
+  return { entries, errors };
 }
 
 export async function inspectPortUsage(
   port: number,
-  options?: { probeHosts?: readonly string[]; signal?: AbortSignal },
+  options?: { probeHosts?: readonly string[]; signal?: AbortSignal; deadlineMs?: number },
 ): Promise<PortUsage> {
   const signal = options?.signal;
   signal?.throwIfAborted();
@@ -480,7 +472,7 @@ export async function inspectPortUsage(
   if (process.platform !== "win32") {
     await enrichUnixListenerProcessInfo(result.entries, signal);
   }
-  return buildPortUsage(port, result, options?.probeHosts, signal);
+  return buildPortUsage(port, result, options?.probeHosts, signal, options?.deadlineMs);
 }
 
 async function buildPortUsage(
@@ -488,14 +480,15 @@ async function buildPortUsage(
   result: SocketReadResult<PortListener>,
   probeHosts?: readonly string[],
   signal?: AbortSignal,
+  deadlineMs?: number,
 ): Promise<PortUsage> {
   signal?.throwIfAborted();
   let listeners = result.entries;
   const status: PortUsageStatus = probeHosts
-    ? await probePortUsage(port, probeHosts, signal)
+    ? await probePortUsage(port, probeHosts, signal, deadlineMs)
     : listeners.length > 0
       ? "busy"
-      : await probePortUsage(port, undefined, signal);
+      : await probePortUsage(port, undefined, signal, deadlineMs);
   signal?.throwIfAborted();
   if (status !== "busy") {
     listeners = [];
@@ -516,7 +509,6 @@ async function buildPortUsage(
     status,
     listeners,
     hints,
-    detail: result.detail,
     errors: result.errors.length > 0 ? [...result.errors] : undefined,
   };
 }
@@ -596,7 +588,5 @@ export async function inspectPortConnections(port: number): Promise<PortConnecti
   return {
     port,
     connections: result.entries,
-    detail: result.detail,
-    errors: result.errors.length > 0 ? result.errors : undefined,
   };
 }

@@ -19,6 +19,7 @@ import { resolveIdentityPathViaExistingAncestorSync } from "../infra/boundary-pa
 import { formatErrorMessage, isMissingPathError } from "../infra/errors.js";
 import { movePathToTrash } from "../infra/fs-safe.js";
 import { acquireGatewayLock, GatewayLockError } from "../infra/gateway-lock.js";
+import { pathEntryExists as pathExists } from "../infra/path-existence.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { prepareOpenClawStateDatabaseRemoval } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -171,18 +172,6 @@ export async function removePath(
   return removePathPreserving(target, [], runtime, opts);
 }
 
-async function pathExists(target: string): Promise<boolean> {
-  try {
-    await fs.lstat(target);
-    return true;
-  } catch (error) {
-    if (hasNodeErrorCode(error, "ENOENT")) {
-      return false;
-    }
-    throw error;
-  }
-}
-
 async function existingPaths(paths: readonly string[]): Promise<string[]> {
   const existing: string[] = [];
   for (const target of paths) {
@@ -193,7 +182,10 @@ async function existingPaths(paths: readonly string[]): Promise<string[]> {
     try {
       await fs.lstat(resolved);
       existing.push(resolved);
-    } catch {
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
       // Missing workspaces do not need preservation during destructive cleanup.
     }
   }
@@ -351,10 +343,7 @@ async function removeEmptyStateAncestors(directories: readonly CleanupDirectoryI
       }
       await fs.rmdir(expected.path);
     } catch (error) {
-      if (hasNodeErrorCode(error, "ENOENT")) {
-        continue;
-      }
-      if (hasNodeErrorCode(error, "ENOTEMPTY") || hasNodeErrorCode(error, "EEXIST")) {
+      if (["ENOENT", "ENOTEMPTY", "EEXIST"].some((code) => hasNodeErrorCode(error, code))) {
         continue;
       }
       throw error;
@@ -418,13 +407,12 @@ export async function removeStateAndLinkedPaths(
       runtime,
       { dryRun: true, label: cleanup.stateDir },
     );
-    const configRemoval = cleanup.configInsideState
-      ? { ok: true }
-      : await removePath(cleanup.configPath, runtime, { dryRun: true, label: cleanup.configPath });
-    const oauthRemoval = cleanup.oauthInsideState
-      ? { ok: true }
-      : await removePath(cleanup.oauthDir, runtime, { dryRun: true, label: cleanup.oauthDir });
-    return stateRemoval.ok && configRemoval.ok && oauthRemoval.ok;
+    let removed = stateRemoval.ok;
+    for (const target of linkedCleanupPaths(cleanup)) {
+      const result = await removePath(target, runtime, { dryRun: true, label: target });
+      removed &&= result.ok;
+    }
+    return removed;
   }
   if (isUnsafeRemovalTarget(requestedStateDir)) {
     runtime.error(`Refusing to remove unsafe path: ${shortenHomeInString(cleanup.stateDir)}`);

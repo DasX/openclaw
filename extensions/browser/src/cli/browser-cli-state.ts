@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { parseStrictFiniteNumber } from "openclaw/plugin-sdk/number-runtime";
 import { danger, defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import {
+  filterStringRecord,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
   parseBooleanValue,
@@ -44,29 +45,37 @@ export function registerBrowserStateCommands(
     true,
   );
 
-  set
-    .command("offline")
-    .description("Toggle offline mode")
-    .argument("<on|off>", "on/off")
-    .option("--target-id <id>", BROWSER_TAB_REFERENCE_HELP)
-    .action(async (value: string, opts, cmd) => {
-      const parent = parentOpts(cmd);
-      const offline = parseBooleanValue(value);
-      if (offline === undefined) {
-        defaultRuntime.error(danger("Expected on|off"));
-        defaultRuntime.exit(1);
-        return;
-      }
-      await runBrowserCliRequest({
-        parent,
-        path: "/set/offline",
-        body: {
-          offline,
-          targetId: normalizeOptionalString(opts.targetId),
-        },
-        successMessage: `offline: ${offline}`,
+  const registerParsedSetting = (kind: "offline" | "media") => {
+    const offline = kind === "offline";
+    const choices = offline ? "on|off" : "dark|light|no-preference|none";
+    set
+      .command(kind)
+      .description(offline ? "Toggle offline mode" : "Emulate prefers-color-scheme")
+      .argument(`<${choices}>`, choices.replaceAll("|", "/"))
+      .option("--target-id <id>", BROWSER_TAB_REFERENCE_HELP)
+      .action(async (value: string, opts, cmd) => {
+        const parent = parentOpts(cmd);
+        const parsed = offline ? parseBooleanValue(value) : normalizeOptionalLowercaseString(value);
+        if (
+          parsed === undefined ||
+          (typeof parsed === "string" && !choices.split("|").includes(parsed))
+        ) {
+          defaultRuntime.error(danger(`Expected ${choices}`));
+          defaultRuntime.exit(1);
+          return;
+        }
+        await runBrowserCliRequest({
+          parent,
+          path: `/set/${kind}`,
+          body: {
+            [offline ? "offline" : "colorScheme"]: parsed,
+            targetId: normalizeOptionalString(opts.targetId),
+          },
+          successMessage: `${offline ? "offline" : "media colorScheme"}: ${parsed}`,
+        });
       });
-    });
+  };
+  registerParsedSetting("offline");
 
   set
     .command("headers")
@@ -86,12 +95,8 @@ export function registerBrowserStateCommands(
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
           throw new Error("Headers JSON must be a JSON object");
         }
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-          if (typeof v === "string") {
-            headers[k] = v;
-          }
-        }
+        const headers = filterStringRecord(parsed) ?? {};
+        Reflect.deleteProperty(headers, "__proto__");
         const profile = parent?.browserProfile;
         const result = await callBrowserRequest(parent, {
           method: "POST",
@@ -169,31 +174,7 @@ export function registerBrowserStateCommands(
       },
     );
 
-  set
-    .command("media")
-    .description("Emulate prefers-color-scheme")
-    .argument("<dark|light|no-preference|none>", "dark/light/no-preference/none")
-    .option("--target-id <id>", BROWSER_TAB_REFERENCE_HELP)
-    .action(async (value: string, opts, cmd) => {
-      const parent = parentOpts(cmd);
-      const v = normalizeOptionalLowercaseString(value);
-      const colorScheme =
-        v === "dark" || v === "light" || v === "no-preference" || v === "none" ? v : null;
-      if (!colorScheme) {
-        defaultRuntime.error(danger("Expected dark|light|no-preference|none"));
-        defaultRuntime.exit(1);
-        return;
-      }
-      await runBrowserCliRequest({
-        parent,
-        path: "/set/media",
-        body: {
-          colorScheme,
-          targetId: normalizeOptionalString(opts.targetId),
-        },
-        successMessage: `media colorScheme: ${colorScheme}`,
-      });
-    });
+  registerParsedSetting("media");
 
   for (const [command, description, parameter, argumentHelp] of [
     ["timezone", "Override timezone (CDP)", "timezoneId", "Timezone ID (e.g. America/New_York)"],

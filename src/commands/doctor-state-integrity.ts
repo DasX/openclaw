@@ -1,4 +1,3 @@
-/** Doctor checks and repairs for state dir durability, sessions, transcripts, and credentials. */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,9 +13,9 @@ import {
   tryResolveDefaultAgentId,
 } from "../agents/agent-scope.js";
 import {
-  resolveSharedAuthStoreOwnership,
-  resolveSharedAuthStorePath,
-} from "../agents/auth-profiles/path-resolve.js";
+  prepareSharedAuthStoreOwnershipForNative as resolveSharedAuthStoreOwnership,
+  resolveNativeSharedAuthStorePath as resolveSharedAuthStorePath,
+} from "../agents/auth-profiles/path-resolve.native.js";
 import { resolveAuthProfileDatabasePath } from "../agents/auth-profiles/sqlite.js";
 import {
   clearWedgedSubagentRecoveryAbort,
@@ -50,7 +49,7 @@ import type { HealthFinding, HealthRepairEffect } from "../flows/health-checks.j
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { preserveDeferredPluginSessionSource } from "../infra/deferred-plugin-session-sources.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
-import { existsDir, migrationFileExists as existsFile } from "../infra/state-migrations.fs.js";
+import { safeStatSync } from "../infra/path-guards.js";
 import {
   loadLegacySessionStore,
   updateLegacySessionStore,
@@ -93,6 +92,23 @@ type DoctorPrompterLike = Pick<DoctorPrompter, "confirmRuntimeRepair"> & {
 };
 
 type RuntimeDirLabel = "Sessions dir" | "Session store dir" | "OAuth dir";
+
+function resolveSessionRuntimeDirectories(
+  cfg: OpenClawConfig,
+  env: NodeJS.ProcessEnv,
+  homedir: () => string,
+): Map<string, RuntimeDirLabel> {
+  const directories = new Map<string, RuntimeDirLabel>();
+  const agentId = tryResolveDefaultAgentId(cfg);
+  if (agentId) {
+    directories.set(resolveSessionTranscriptsDirForAgent(agentId, env, homedir), "Sessions dir");
+    directories.set(
+      path.dirname(resolveSessionStorePathCore(cfg.session?.store, { agentId, env })),
+      "Session store dir",
+    );
+  }
+  return directories;
+}
 
 export type StateIntegrityHealthIssue = { path: string } & (
   | {
@@ -178,42 +194,29 @@ function listOrphanAgentDirs(cfg: OpenClawConfig, stateDir: string): OrphanAgent
   try {
     const entries = fs.readdirSync(agentsRoot, { withFileTypes: true });
     return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        dirName: entry.name,
-        agentId: normalizeAgentId(entry.name),
-      }))
-      .filter(({ dirName, agentId }) => {
+      .flatMap((entry) => {
+        if (!entry.isDirectory()) {
+          return [];
+        }
+        const dirName = entry.name;
+        const agentId = normalizeAgentId(dirName);
         const nestedAgentDir = path.join(agentsRoot, dirName, "agent");
-        const hasNestedAgentDir = existsDir(nestedAgentDir);
-        if (!hasNestedAgentDir) {
-          return false;
-        }
-        // Reserved system agent ids own a state dir but can never appear in
-        // agents.list, so their directories are never orphans.
-        if (isReservedSystemAgentId(agentId)) {
-          return false;
-        }
+        // Reserved system ids own state but cannot appear in the configured roster.
         if (
+          !safeStatSync(nestedAgentDir)?.isDirectory() ||
+          isReservedSystemAgentId(agentId) ||
           isSharedAuthStoreOwner({
             ownership: sharedAuthOwnership,
             agentAuthDbPath: resolveAuthProfileDatabasePath(nestedAgentDir),
             sharedAuthDbPath,
-          })
+          }) ||
+          (liveDefaultAgentDir && areComparablePathsEqual(nestedAgentDir, liveDefaultAgentDir)) ||
+          (configuredIds.has(agentId) &&
+            isReachableConfiguredAgentDir({ agentsRoot, dirName, agentId }))
         ) {
-          return false;
+          return [];
         }
-        if (liveDefaultAgentDir && areComparablePathsEqual(nestedAgentDir, liveDefaultAgentDir)) {
-          return false;
-        }
-        if (!configuredIds.has(agentId)) {
-          return true;
-        }
-        return !isReachableConfiguredAgentDir({
-          agentsRoot,
-          dirName,
-          agentId,
-        });
+        return [{ dirName, agentId }];
       })
       .toSorted(
         (left, right) =>
@@ -374,14 +377,7 @@ export function detectStateIntegrityHealthIssues(
   const homedir = () => resolveRequiredHomeDir(env, params?.homedir ?? os.homedir);
   const stateDir = resolveStateDir(env, homedir);
   const oauthDir = resolveOAuthDir(env, stateDir);
-  const agentId = tryResolveDefaultAgentId(cfg);
-  const sessionsDir = agentId
-    ? resolveSessionTranscriptsDirForAgent(agentId, env, homedir)
-    : undefined;
-  const storePath = agentId
-    ? resolveSessionStorePathCore(cfg.session?.store, { agentId, env })
-    : undefined;
-  const storeDir = storePath ? path.dirname(storePath) : undefined;
+  const dirCandidates = resolveSessionRuntimeDirectories(cfg, env, homedir);
   const requireOAuthDir = shouldRequireOAuthDir(cfg, env);
 
   const macCloud = detectMacCloudSyncedStateDir(stateDir);
@@ -396,7 +392,7 @@ export function detectStateIntegrityHealthIssues(
   const linuxVolatile = detectLinuxVolatileStateDir(stateDir);
   appendDetectedIssue(linuxVolatile && { kind: "linux-volatile-state-dir", ...linuxVolatile });
 
-  const stateDirExists = existsDir(stateDir);
+  const stateDirExists = safeStatSync(stateDir)?.isDirectory() === true;
   if (!stateDirExists) {
     issues.push({ kind: "missing-state-dir", path: stateDir });
   }
@@ -422,7 +418,11 @@ export function detectStateIntegrityHealthIssues(
     }
   }
 
-  if (params?.configPath && existsFile(params.configPath) && process.platform !== "win32") {
+  if (
+    params?.configPath &&
+    safeStatSync(params.configPath)?.isFile() &&
+    process.platform !== "win32"
+  ) {
     try {
       const mode = readGroupOrWorldAccessibleMode(params.configPath);
       if (mode !== null) {
@@ -434,18 +434,11 @@ export function detectStateIntegrityHealthIssues(
   }
 
   if (stateDirExists) {
-    const dirCandidates = new Map<string, RuntimeDirLabel>();
-    if (sessionsDir) {
-      dirCandidates.set(sessionsDir, "Sessions dir");
-    }
-    if (storeDir) {
-      dirCandidates.set(storeDir, "Session store dir");
-    }
     if (requireOAuthDir) {
       dirCandidates.set(oauthDir, "OAuth dir");
     }
     for (const [dir, label] of dirCandidates) {
-      if (!existsDir(dir)) {
+      if (!safeStatSync(dir)?.isDirectory()) {
         if (label === "OAuth dir") {
           issues.push({ kind: "missing-runtime-dir", label, path: dir });
           continue;
@@ -549,7 +542,7 @@ export function stateIntegrityIssueToHealthFinding(
         "error",
       );
   }
-  return assertNeverStateIntegrityIssue(issue);
+  return issue satisfies never;
 }
 
 export function stateIntegrityIssueToRepairEffect(
@@ -578,13 +571,7 @@ export function stateIntegrityIssueToRepairEffect(
     case "runtime-dir-not-writable":
       return effect("would-repair-runtime-state-dir-permissions");
   }
-  return assertNeverStateIntegrityIssue(issue);
-}
-
-function assertNeverStateIntegrityIssue(issue: never): never {
-  throw new Error(
-    `Unhandled state integrity issue kind: ${String((issue as { kind?: unknown }).kind)}`,
-  );
+  return issue satisfies never;
 }
 
 /** Emits state integrity warnings and applies selected runtime repairs. */
@@ -600,16 +587,8 @@ export async function noteStateIntegrity(
   const env = process.env;
   const homedir = () => resolveRequiredHomeDir(env, os.homedir);
   const stateDir = resolveStateDir(env, homedir);
-  const defaultStateDir = path.join(homedir(), ".openclaw");
   const oauthDir = resolveOAuthDir(env, stateDir);
-  const runtimeAgentId = tryResolveDefaultAgentId(cfg);
-  const runtimeSessionsDir = runtimeAgentId
-    ? resolveSessionTranscriptsDirForAgent(runtimeAgentId, env, homedir)
-    : undefined;
-  const runtimeStorePath = runtimeAgentId
-    ? resolveSessionStorePathCore(cfg.session?.store, { agentId: runtimeAgentId })
-    : undefined;
-  const runtimeStoreDir = runtimeStorePath ? path.dirname(runtimeStorePath) : undefined;
+  const dirCandidates = resolveSessionRuntimeDirectories(cfg, env, homedir);
   const displayStateDir = shortenHomePath(stateDir);
   const displayOauthDir = shortenHomePath(oauthDir);
   const displayConfigPath = configPath ? shortenHomePath(configPath) : undefined;
@@ -694,7 +673,7 @@ export async function noteStateIntegrity(
     warnings.push(formatLinuxVolatileStateDirWarning(displayStateDir, linuxVolatileStateDir));
   }
 
-  let stateDirExists = existsDir(stateDir);
+  let stateDirExists = safeStatSync(stateDir)?.isDirectory() === true;
   if (stateDirExists && options?.stateDirExistedAtStart === false) {
     warnings.push(
       `- State directory was missing at doctor start and was initialized during startup checks (${displayStateDir}).`,
@@ -737,7 +716,7 @@ export async function noteStateIntegrity(
     );
   }
 
-  if (configPath && existsFile(configPath) && process.platform !== "win32") {
+  if (configPath && safeStatSync(configPath)?.isFile() && process.platform !== "win32") {
     await tightenPermissions(
       configPath,
       displayConfigPath ?? configPath,
@@ -748,23 +727,16 @@ export async function noteStateIntegrity(
   }
 
   if (stateDirExists) {
-    const dirCandidates = new Map<string, RuntimeDirLabel>();
-    if (runtimeSessionsDir) {
-      dirCandidates.set(runtimeSessionsDir, "Sessions dir");
-    }
-    if (runtimeStoreDir) {
-      dirCandidates.set(runtimeStoreDir, "Session store dir");
-    }
     if (requireOAuthDir) {
       dirCandidates.set(oauthDir, "OAuth dir");
-    } else if (!existsDir(oauthDir)) {
+    } else if (!safeStatSync(oauthDir)?.isDirectory()) {
       warnings.push(
         `- OAuth dir not present (${displayOauthDir}). Skipping create because no WhatsApp/pairing channel config is active.`,
       );
     }
     for (const [dir, label] of dirCandidates) {
       const displayDir = shortenHomePath(dir);
-      if (!existsDir(dir)) {
+      if (!safeStatSync(dir)?.isDirectory()) {
         if (label !== "OAuth dir") {
           continue;
         }
@@ -785,17 +757,6 @@ export async function noteStateIntegrity(
       }
       await repairWritableDirectory(dir, displayDir, label);
     }
-  }
-
-  // Compare only the effective home's default; other accounts do not share this history.
-  if (path.resolve(stateDir) !== path.resolve(defaultStateDir) && existsDir(defaultStateDir)) {
-    warnings.push(
-      [
-        "- Multiple state directories detected. This can split session history.",
-        `  - ${shortenHomePath(defaultStateDir)}`,
-        `  Active state dir: ${displayStateDir}`,
-      ].join("\n"),
-    );
   }
 
   const orphanAgentDirs = listOrphanAgentDirs(cfg, stateDir);
@@ -848,7 +809,7 @@ export async function noteStateIntegrity(
     }
     const legacyStore =
       inspectLegacyStore &&
-      existsFile(absoluteStorePath) &&
+      safeStatSync(absoluteStorePath)?.isFile() &&
       !preserveDeferredPluginSessionSource({ cfg, env, target, pending })
         ? loadLegacySessionStore(absoluteStorePath)
         : {};
@@ -950,7 +911,7 @@ export async function noteStateIntegrity(
           const legacyKeys = wedgedSubagentSessions
             .map(({ key }) => key)
             .filter((key) => !sqliteSessionKeys.has(key));
-          if (legacyKeys.length > 0 && existsFile(absoluteStorePath)) {
+          if (legacyKeys.length > 0 && safeStatSync(absoluteStorePath)?.isFile()) {
             await updateLegacySessionStore(absoluteStorePath, (currentStore) => {
               for (const key of legacyKeys) {
                 const current = currentStore[key];
@@ -979,14 +940,14 @@ export async function noteStateIntegrity(
       }
 
       await runPluginSessionStateDoctorRepairs({
-        scan: sqlitePluginStateScanner.result(),
+        scan: await sqlitePluginStateScanner.result(),
         store: { kind: "sqlite", agentId, path: sqliteStorePath },
         prompter,
         warnings,
         changes,
       });
       await runPluginSessionStateDoctorRepairs({
-        scan: legacyPluginStateScanner.result(),
+        scan: await legacyPluginStateScanner.result(),
         store: { kind: "legacy", path: absoluteStorePath },
         prompter,
         warnings,
@@ -1022,7 +983,7 @@ export async function noteStateIntegrity(
           mainEntry,
           sessionPathOpts,
         );
-        if (!existsFile(transcriptPath)) {
+        if (!safeStatSync(transcriptPath)?.isFile()) {
           warnings.push(
             `- Main session transcript missing (${shortenHomePath(transcriptPath)}). History will appear to reset.`,
           );

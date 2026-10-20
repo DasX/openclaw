@@ -1,4 +1,3 @@
-// Doctor config-flow steps for legacy compatibility and unknown-key cleanup.
 import { isDeepStrictEqual } from "node:util";
 import { asOptionalObjectRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -12,6 +11,7 @@ import { formatConfigIssueLines } from "../../../config/issue-format.js";
 import { createMergePatch } from "../../../config/merge-patch.js";
 import { cloneConfigWithResolutionFacts } from "../../../config/resolution-facts.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../../config/types.openclaw.js";
+import { resolvePluginDoctorProviderRenames } from "../../../plugins/doctor-contract-registry.js";
 import { migratePluginConfigId } from "../../../plugins/update-config.js";
 import { protectActiveAuthProfileConfig } from "../../doctor-auth-profile-config.js";
 import { stripUnknownConfigKeys } from "../../doctor-config-analysis.js";
@@ -23,8 +23,8 @@ import {
 import type { InstalledPluginIdRecovery } from "./installed-plugin-id-recovery.js";
 import { applyLegacyDoctorMigrations } from "./legacy-config-compat.js";
 import { migrateLegacyConfig } from "./legacy-config-migrate.js";
+import { applyProviderRenames, planProviderRenames } from "./provider-rename.js";
 
-/** Apply legacy config migrations and update preview/fix state for doctor config flow. */
 export function applyLegacyCompatibilityStep(params: {
   snapshot: ConfigFileSnapshot;
   state: DoctorConfigMutationState;
@@ -118,13 +118,14 @@ export function applyUnknownConfigKeyStep(params: {
   state: DoctorConfigMutationState;
   shouldRepair: boolean;
   doctorFixCommand: string;
+  preservedPaths?: readonly (readonly string[])[];
 }): {
   state: DoctorConfigMutationState;
   removed: string[];
   repairs: string[];
   warnings: string[];
 } {
-  const unknown = stripUnknownConfigKeys(params.state.candidate);
+  const unknown = stripUnknownConfigKeys(params.state.candidate, params.preservedPaths);
   if (unknown.removed.length === 0) {
     return { state: params.state, removed: [], repairs: [], warnings: [] };
   }
@@ -238,8 +239,8 @@ export function restoreDoctorConfigEnvRefs(
       rootAuthoredConfig,
       sourceConfigBeforeMigrations: source.resolved,
     });
-  const canonicalAuthored = projectRoster(source.authored);
-  const canonicalResolved = projectRoster(source.resolved);
+  const canonicalAuthored = coerceConfig(projectRoster(source.authored));
+  const canonicalResolved = coerceConfig(projectRoster(source.resolved));
   const unchanged = restoreEnvVarRefsFromResolved(
     candidate,
     canonicalAuthored,
@@ -250,10 +251,17 @@ export function restoreDoctorConfigEnvRefs(
     sourceConfigBeforeMigrations: source.resolved,
     context: { authoredRaw: source.parsed, resolvedRaw: source.resolved },
   };
-  const migratedAuthored = applyLegacyDoctorMigrations(canonicalAuthored, options);
-  const migratedResolved = applyLegacyDoctorMigrations(canonicalResolved, options);
-  const authoredView = migratedAuthored.next ?? canonicalAuthored;
-  const resolvedView = migratedResolved.next ?? canonicalResolved;
+  // Replay the resolved routing decision on authored templates before plugin cleanup.
+  const providerRenames = planProviderRenames(
+    canonicalResolved,
+    resolvePluginDoctorProviderRenames({ config: canonicalResolved }),
+  );
+  const authoredProviderConfig = applyProviderRenames(canonicalAuthored, providerRenames).config;
+  const migratedAuthored = applyLegacyDoctorMigrations(authoredProviderConfig, options);
+  const resolvedProviderConfig = applyProviderRenames(canonicalResolved, providerRenames).config;
+  const migratedResolved = applyLegacyDoctorMigrations(resolvedProviderConfig, options);
+  const authoredView = migratedAuthored.next ?? authoredProviderConfig;
+  const resolvedView = migratedResolved.next ?? resolvedProviderConfig;
   if (!isRecord(authoredView) || !isRecord(resolvedView)) {
     throw new Error("Doctor reference migrations must preserve config object roots.");
   }

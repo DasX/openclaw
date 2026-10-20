@@ -4,12 +4,17 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { measureGatewayBootstrapStep } from "../cli/startup-trace.js";
 import { shouldManageGatewayService } from "../commands/doctor-service-repair-policy.js";
+import { isUpdateDoctorInspectionReportMode } from "../commands/doctor/shared/update-phase.js";
 import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
+import { copyConfigResolutionFactsThroughRewrite } from "../config/resolution-facts.js";
 import {
   DoctorStateMigrationRefusalError,
   throwIfDoctorStateMigrationRefused,
 } from "../infra/state-migrations.messages.js";
+import { recordUpdateDoctorDeferredInspectionChecks } from "../infra/update-doctor-result.js";
 import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
+import { resolveCommandProcessSignal } from "../process/exec-spawn.js";
+import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import {
   runAuthProfileMigration,
   runAuthProfileDiagnostics as runAuthProfileHealth,
@@ -152,7 +157,7 @@ async function runGatewayAuthHealth(ctx: DoctorHealthFlowContext): Promise<void>
         ctx.options.yes === true)
     ) {
       const { isRedactedSecretValue } = await import("../config/redact-sentinel.js");
-      const { readSecretStoreValue, writeSecretStoreEntryWithRollback } =
+      const { readSecretStoreValue, writeSecretStoreEntry } =
         await import("../secrets/store/secret-store.js");
       const { createVerifiedSqliteSnapshot } = await import("../infra/sqlite-snapshot.js");
       const { resolveOpenClawStateSqlitePath } =
@@ -160,7 +165,6 @@ async function runGatewayAuthHealth(ctx: DoctorHealthFlowContext): Promise<void>
       const { randomToken } = await import("../commands/onboard-helpers.js");
       const database = { env: ctx.env ?? process.env };
       const entry = { scope: { kind: "team" as const }, name: gatewayTokenRef.id, database };
-      let rollback: (() => Promise<boolean>) | undefined;
       try {
         const current = await readSecretStoreValue(entry);
         if (!current.ok || !isRedactedSecretValue(current.value)) {
@@ -177,34 +181,19 @@ async function runGatewayAuthHealth(ctx: DoctorHealthFlowContext): Promise<void>
           preserveRowIds: true,
         });
         const nextToken = randomToken();
-        ({ rollback } = await writeSecretStoreEntryWithRollback({
+        await writeSecretStoreEntry({
           ...entry,
           value: nextToken,
           expectedValue: current.value,
           kind: "secret",
           updatedBy: "doctor",
-        }));
-        const repaired = await readSecretStoreValue(entry);
-        if (!repaired.ok || repaired.value !== nextToken) {
-          throw new Error("the replacement token could not be verified");
-        }
-        rollback = undefined;
+        });
         note(
           `Regenerated Gateway token in secret store entry "${entry.name}"; gateway.auth.token remains a SecretRef. Backup: ${backup.path}\nRestart the Gateway, then reconnect or re-pair devices with the new token.`,
           "Gateway auth",
         );
       } catch (error) {
-        let recovery = "";
-        try {
-          if (rollback) {
-            recovery = (await rollback())
-              ? " The previous entry was restored."
-              : " The entry changed again and was left untouched.";
-          }
-        } catch (rollbackError) {
-          recovery = ` Rollback failed: ${scrubDoctorErrorMessage(rollbackError)}.`;
-        }
-        const warning = `Could not repair Gateway token in secret store entry "${entry.name}": ${scrubDoctorErrorMessage(error)}.${recovery} Rerun \`openclaw doctor --fix\` after resolving the reported problem.`;
+        const warning = `Could not repair Gateway token in secret store entry "${entry.name}": ${scrubDoctorErrorMessage(error)}. Rerun \`openclaw doctor --fix\` after resolving the reported problem.`;
         note(warning, "Gateway auth");
         recordDoctorHealthWarnings(ctx, [], [warning]);
       }
@@ -230,7 +219,7 @@ async function runGatewayAuthHealth(ctx: DoctorHealthFlowContext): Promise<void>
   }
   const { randomToken } = await import("../commands/onboard-helpers.js");
   const nextToken = randomToken();
-  ctx.cfg = {
+  const config: typeof ctx.cfg = {
     ...ctx.cfg,
     gateway: {
       ...ctx.cfg.gateway,
@@ -241,6 +230,8 @@ async function runGatewayAuthHealth(ctx: DoctorHealthFlowContext): Promise<void>
       },
     },
   };
+  copyConfigResolutionFactsThroughRewrite(ctx.cfg, config);
+  ctx.cfg = config;
   note("Gateway token configured.", "Gateway auth");
 }
 
@@ -277,6 +268,7 @@ async function runLegacyStateHealth(ctx: DoctorHealthFlowContext): Promise<void>
     if (migrate) {
       const migrated = await runLegacyStateMigrations({
         detected: legacyState,
+        integrityCheck: ctx.options.fullIntegrityCheck ? "full" : "quick",
         config: ctx.cfg,
         ...(doctorOnlyStateMigrations ? { doctorOnlyStateMigrations: true } : {}),
         legacySessionSurfaces,
@@ -434,13 +426,20 @@ async function runGatewayHealthChecks(ctx: DoctorHealthFlowContext): Promise<voi
   });
   ctx.gatewayHealthSkipped = false;
   ctx.healthOk = healthOk;
-  ctx.gatewayHealthAuthenticated = authenticated;
   ctx.gatewayStatus = status;
   ctx.gatewayMemoryProbe = authenticated
     ? await probeGatewayMemoryStatus({
         cfg: ctx.cfg,
       })
     : { checked: false, ready: false, skipped: healthOk };
+}
+
+function shouldDeferPostActivationInspections(env: NodeJS.ProcessEnv): boolean {
+  return (
+    isUpdateDoctorRun(env) &&
+    !resolveUpdateRehearsalRoot(env) &&
+    isUpdateDoctorInspectionReportMode(env)
+  );
 }
 
 function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
@@ -463,39 +462,80 @@ function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
   ];
 }
 
+async function loadCoreHealthChecksById(): Promise<ReadonlyMap<string, DoctorHealthCheck>> {
+  const { createCoreHealthChecks } = await import("./doctor-core-checks.js");
+  return new Map(createCoreHealthChecks().map((check) => [check.id, check]));
+}
+
+function resolveContributionHealthChecks(
+  contribution: DoctorHealthContribution,
+  checksById: ReadonlyMap<string, DoctorHealthCheck>,
+): DoctorHealthCheck[] {
+  if (contribution.healthChecks.length > 0) {
+    return contribution.healthChecks.map((check) => ({
+      ...normalizeHealthCheck(check),
+      updateWork: contribution.updateWork,
+    }));
+  }
+  return contribution.healthCheckIds.map((id) => {
+    const check = checksById.get(id);
+    if (check === undefined) {
+      throw new Error(
+        `doctor contribution ${contribution.id} references unknown core health check ${id}`,
+      );
+    }
+    return { ...check, updateWork: contribution.updateWork };
+  });
+}
+
 export async function resolveDoctorContributionHealthChecks(): Promise<
   readonly DoctorHealthCheck[]
 > {
-  const { createCoreHealthChecks } = await import("./doctor-core-checks.js");
-  const checksById = new Map(createCoreHealthChecks().map((check) => [check.id, check]));
-  const checks: DoctorHealthCheck[] = [];
-  for (const contribution of resolveDoctorHealthContributions()) {
-    if (contribution.healthChecks.length > 0) {
-      checks.push(
-        ...contribution.healthChecks.map((check) => ({
-          ...normalizeHealthCheck(check),
-          updateWork: contribution.updateWork,
-        })),
-      );
-      continue;
+  const checksById = await loadCoreHealthChecksById();
+  return resolveDoctorHealthContributions().flatMap((contribution) =>
+    resolveContributionHealthChecks(contribution, checksById),
+  );
+}
+
+/**
+ * Optional inspections whose every finding `doctor --lint` reproduces, so an
+ * updater can run them after the restarted Gateway is ready. Repairs, readiness
+ * checks and inspections without a lint check stay in the stopped window.
+ */
+async function selectPostActivationInspections(
+  contributions: readonly DoctorHealthContribution[],
+): Promise<{ contribution: DoctorHealthContribution; checks: DoctorHealthCheck[] }[]> {
+  const checksById = await loadCoreHealthChecksById();
+  return contributions.flatMap((contribution) => {
+    if (
+      contribution.required ||
+      contribution.updateWork?.kind !== "inspection" ||
+      contribution.updateWork.repairs
+    ) {
+      return [];
     }
-    for (const id of contribution.healthCheckIds) {
-      const check = checksById.get(id);
-      if (check === undefined) {
-        throw new Error(
-          `doctor contribution ${contribution.id} references unknown core health check ${id}`,
-        );
-      }
-      checks.push({ ...check, updateWork: contribution.updateWork });
+    // These runners also report diagnostics their lint checks do not preserve:
+    // snapshot scan errors and the identities of errored workspace plugins.
+    if (
+      contribution.id === "doctor:session-snapshots" ||
+      contribution.id === "doctor:workspace-status"
+    ) {
+      return [];
     }
-  }
-  return checks;
+    const checks = resolveContributionHealthChecks(contribution, checksById);
+    return checks.length > 0 &&
+      checks.every((check) => check.updateReadiness === undefined && check.repair === undefined)
+      ? [{ contribution, checks }]
+      : [];
+  });
 }
 
 async function runDoctorHealthContributionList(
   ctx: DoctorHealthFlowContext,
   contributions: readonly DoctorHealthContribution[],
 ): Promise<void> {
+  const signal = resolveCommandProcessSignal(getAsyncWorkSignal());
+  signal?.throwIfAborted();
   const runWithPluginMetadataSnapshot = ctx.runWithPluginMetadataSnapshot;
   throwIfDoctorStateMigrationRefused(ctx.configResult.stateMigrationStepReceipts);
   const env = ctx.env ?? process.env;
@@ -505,11 +545,23 @@ async function runDoctorHealthContributionList(
     preparedAgentCount: ctx.preparedAgentCount,
   });
   const updateDoctorRun = isUpdateDoctorRun(env);
+  const rehearsalRoot = resolveUpdateRehearsalRoot(env);
   const rehearsalInspections = new Set(
-    resolveUpdateRehearsalRoot(env)
+    rehearsalRoot
       ? contributions.filter(
           (entry) =>
             !entry.required && entry.updateWork?.kind === "inspection" && !entry.updateWork.repairs,
+        )
+      : [],
+  );
+  // Without an owned receipt, the marker cannot defer any inspections.
+  let deferredCheckIds = shouldDeferPostActivationInspections(env)
+    ? recordUpdateDoctorDeferredInspectionChecks([])
+    : undefined;
+  const postActivationInspections = new Map(
+    deferredCheckIds
+      ? (await selectPostActivationInspections(contributions)).map(
+          ({ contribution, checks }) => [contribution, checks.map((check) => check.id)] as const,
         )
       : [],
   );
@@ -537,6 +589,12 @@ async function runDoctorHealthContributionList(
     : contributions;
   try {
     for (const contribution of ordered) {
+      signal?.throwIfAborted();
+      const inspectionIds = postActivationInspections.get(contribution);
+      if (inspectionIds) {
+        deferredCheckIds = recordUpdateDoctorDeferredInspectionChecks(inspectionIds);
+        continue;
+      }
       // Skip before opening a plugin snapshot; these diagnostics cannot establish
       // required migration readiness and have their own standalone invocation.
       if (
@@ -560,6 +618,7 @@ async function runDoctorHealthContributionList(
       }
       try {
         const run = async () => {
+          signal?.throwIfAborted();
           try {
             await contribution.run(ctx);
           } finally {
@@ -579,12 +638,15 @@ async function runDoctorHealthContributionList(
             await runWithPluginMetadataSnapshot({ config: ctx.cfg, workspaceDir }, run);
           }
         });
+        signal?.throwIfAborted();
         if (ctx.configWriteRefusal) {
           // Later repairs consume the candidate. Stop before they persist state
           // derived from config that the writer deliberately left non-durable.
           return;
         }
       } catch (error) {
+        // Cancellation ends the command, including when an optional check reports a warning.
+        signal?.throwIfAborted();
         if (
           contribution.required ||
           error instanceof DoctorStateMigrationRefusalError ||
@@ -603,6 +665,11 @@ async function runDoctorHealthContributionList(
       // Scope notices must not displace actionable warnings from the bounded result.
       ctx.runtime.log(
         `Deferred advisory inspections during copied-state rehearsal: ${[...rehearsalInspections].map((entry) => entry.id).join(", ")}. The live post-swap Doctor retains these checks.`,
+      );
+    }
+    if (deferredCheckIds?.length) {
+      ctx.runtime.log(
+        `Deferred advisory inspections until the restarted Gateway is ready: ${deferredCheckIds.join(", ")}. The updater runs their \`openclaw doctor --lint\` checks after restart.`,
       );
     }
     const findings = [...(ctx.updateBudget?.deferred.values() ?? [])];

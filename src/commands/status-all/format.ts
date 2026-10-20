@@ -97,39 +97,6 @@ export function buildStatusUpdateSurface(params: {
   };
 }
 
-function formatStatusTailscaleValue(params: {
-  tailscaleMode: string;
-  dnsName?: string | null;
-  httpsUrl?: string | null;
-  includeBackendStateWhenOn?: boolean;
-  includeDnsNameWhenOff?: boolean;
-  decorateOff?: (value: string) => string;
-  decorateWarn?: (value: string) => string;
-}): string {
-  const decorateOff = params.decorateOff ?? ((value: string) => value);
-  const decorateWarn = params.decorateWarn ?? ((value: string) => value);
-  if (params.tailscaleMode === "off") {
-    // Off mode can still show DNS context when the caller wants diagnostic detail.
-    const suffix = params.includeDnsNameWhenOff ? params.dnsName : null;
-    return decorateOff(suffix ? `off · ${suffix}` : "off");
-  }
-  if (params.dnsName && params.httpsUrl) {
-    const parts = [
-      params.tailscaleMode,
-      params.includeBackendStateWhenOn ? "unknown" : null,
-      params.dnsName,
-      params.httpsUrl,
-    ].filter(Boolean);
-    return parts.join(" · ");
-  }
-  const parts = [
-    params.tailscaleMode,
-    params.includeBackendStateWhenOn ? "unknown" : null,
-    "magicdns unknown",
-  ].filter(Boolean);
-  return decorateWarn(parts.join(" · "));
-}
-
 function formatStatusServiceValue(params: StatusManagedService): string {
   const inspectionDetail =
     params.loadState?.status === "unknown"
@@ -160,7 +127,7 @@ function formatStatusServiceValue(params: StatusManagedService): string {
 }
 
 export function buildStatusOverviewSurfaceRows(params: {
-  cfg: Pick<OpenClawConfig, "update" | "gateway" | "telemetry">;
+  cfg: Pick<OpenClawConfig, "update" | "gateway" | "telemetry" | "database">;
   update: UpdateCheckResult;
   tailscaleMode: string;
   tailscaleDns?: string | null;
@@ -242,15 +209,24 @@ export function buildStatusOverviewSurfaceRows(params: {
       : null);
   const gatewayServiceValue = formatStatusServiceValue(params.gatewayService);
   const nodeServiceValue = formatStatusServiceValue(params.nodeService);
-  const tailscaleValue = formatStatusTailscaleValue({
-    tailscaleMode: params.tailscaleMode,
-    dnsName: params.tailscaleDns,
-    httpsUrl: params.tailscaleHttpsUrl,
-    includeBackendStateWhenOn: params.includeBackendStateWhenOn,
-    includeDnsNameWhenOff: params.includeDnsNameWhenOff,
-    decorateOff: params.decorateTailscaleOff,
-    decorateWarn: params.decorateTailscaleWarn,
-  });
+  const decorateTailscaleOff = params.decorateTailscaleOff ?? ((value: string) => value);
+  const decorateTailscaleWarn = params.decorateTailscaleWarn ?? ((value: string) => value);
+  let tailscaleValue: string;
+  if (params.tailscaleMode === "off") {
+    // Off mode can still show DNS context when the caller wants diagnostic detail.
+    const suffix = params.includeDnsNameWhenOff ? params.tailscaleDns : null;
+    tailscaleValue = decorateTailscaleOff(suffix ? `off · ${suffix}` : "off");
+  } else {
+    const hasAddress = params.tailscaleDns && params.tailscaleHttpsUrl;
+    const value = [
+      params.tailscaleMode,
+      params.includeBackendStateWhenOn ? "unknown" : null,
+      ...(hasAddress ? [params.tailscaleDns, params.tailscaleHttpsUrl] : ["magicdns unknown"]),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    tailscaleValue = hasAddress ? value : decorateTailscaleWarn(value);
+  }
   const gatewayAuthWarning =
     params.gatewayAuthWarningValue !== undefined
       ? params.gatewayAuthWarningValue

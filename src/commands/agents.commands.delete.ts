@@ -27,7 +27,7 @@ import {
   tryResolveSoleAgentId,
 } from "../agents/agent-scope.js";
 import {
-  resolveSharedAuthStoreOwnership,
+  prepareSharedAuthStoreOwnership,
   resolveSharedAuthStorePath,
 } from "../agents/auth-profiles/path-resolve.js";
 import { resolveAuthProfileDatabasePath } from "../agents/auth-profiles/sqlite.js";
@@ -60,7 +60,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { withAgentExecApprovalsRemoved } from "../infra/exec-approvals.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { normalizeAgentIdStrict } from "../routing/session-key.js";
-import { defaultRuntime, type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
+import { defaultRuntime as runtime, writeRuntimeJson } from "../runtime.js";
 import { readAgentDeletionJournalAsync } from "../state/agent-deletion-journal.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { createClackPrompter } from "../wizard/clack-prompter.js";
@@ -80,16 +80,6 @@ type AgentDeleteGatewayAttempt =
   | { kind: "deleted"; result: AgentsDeleteResult }
   | { kind: "fallback-unreachable" }
   | { kind: "fallback-credentials-required" };
-
-function failAgentsDelete(opts: AgentsDeleteOptions, runtime: RuntimeEnv, message: string): void {
-  if (opts.json) {
-    writeRuntimeJson(runtime, formatCliJsonFailure(message));
-    runtime.exit(1, { resetStream: process.stderr });
-  } else {
-    runtime.error(message);
-    runtime.exit(1);
-  }
-}
 
 async function maybeDeleteAgentThroughGateway(params: {
   config: OpenClawConfig;
@@ -129,10 +119,17 @@ async function maybeDeleteAgentThroughGateway(params: {
   }
 }
 
-export async function agentsDeleteCommand(
-  opts: AgentsDeleteOptions,
-  runtime: RuntimeEnv = defaultRuntime,
-) {
+export async function agentsDeleteCommand(opts: AgentsDeleteOptions) {
+  const failAgentsDelete = (message: string): void => {
+    if (opts.json) {
+      writeRuntimeJson(runtime, formatCliJsonFailure(message));
+      runtime.exit(1, { resetStream: process.stderr });
+    } else {
+      runtime.error(message);
+      runtime.exit(1);
+    }
+  };
+
   const writeSnapshot = await requireValidConfigForWrite(runtime);
   if (!writeSnapshot) {
     return;
@@ -142,8 +139,6 @@ export async function agentsDeleteCommand(
   const input = opts.id?.trim();
   if (!input) {
     failAgentsDelete(
-      opts,
-      runtime,
       `Agent id is required. Run ${formatCliCommand("openclaw agents list")} to choose one.`,
     );
     return;
@@ -152,8 +147,6 @@ export async function agentsDeleteCommand(
   const normalized = normalizeAgentIdStrict(input);
   if (!normalized.ok) {
     failAgentsDelete(
-      opts,
-      runtime,
       `Agent "${input}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,
     );
     return;
@@ -166,8 +159,6 @@ export async function agentsDeleteCommand(
   let existingJournal = configured ? undefined : await readAgentDeletionJournalAsync(agentId);
   if (!configured && (!existingJournal || existingJournal.cleanupCompleted)) {
     failAgentsDelete(
-      opts,
-      runtime,
       `Agent "${agentId}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,
     );
     return;
@@ -183,10 +174,10 @@ export async function agentsDeleteCommand(
     if (!(error instanceof AgentSharedStoreOwnerError)) {
       throw error;
     }
-    failAgentsDelete(opts, runtime, error.message);
+    failAgentsDelete(error.message);
     return;
   }
-  const sharedAuthOwnership = resolveSharedAuthStoreOwnership();
+  const sharedAuthOwnership = await prepareSharedAuthStoreOwnership();
   if (
     isSharedAuthStoreOwner({
       ownership: sharedAuthOwnership,
@@ -194,22 +185,16 @@ export async function agentsDeleteCommand(
       sharedAuthDbPath: resolveSharedAuthStorePath(),
     })
   ) {
-    failAgentsDelete(opts, runtime, formatSharedAuthStoreOwnerDeleteError(agentId));
+    failAgentsDelete(formatSharedAuthStoreOwnerDeleteError(agentId));
     return;
   }
 
   if (configured && agentId === tryResolveSoleAgentId(cfg)) {
-    failAgentsDelete(
-      opts,
-      runtime,
-      `Agent "${agentId}" is the only configured agent and cannot be deleted.`,
-    );
+    failAgentsDelete(`Agent "${agentId}" is the only configured agent and cannot be deleted.`);
     return;
   }
   if (isInheritedAuthStoreOwner(cfg, agentId)) {
     failAgentsDelete(
-      opts,
-      runtime,
       `Agent "${agentId}" owns inherited credentials through agents.defaults.authInheritance.agentId and cannot be deleted. Relocate those credentials, then re-point or remove that binding before retrying.`,
     );
     return;
@@ -228,7 +213,7 @@ export async function agentsDeleteCommand(
 
   if (!opts.force) {
     if (!isTerminalInteractive()) {
-      failAgentsDelete(opts, runtime, "Non-interactive session. Re-run with --force.");
+      failAgentsDelete("Non-interactive session. Re-run with --force.");
       return;
     }
     const prompter = createClackPrompter();
@@ -322,6 +307,13 @@ export async function agentsDeleteCommand(
     );
     let rosterCommitted = !configured;
     try {
+      if (deletion.entry.phase === "draining") {
+        // Offline recovery cannot cancel a serving process; its leases must already be gone.
+        await deletion.runWithWorker((scope, guard) =>
+          scope.execute({ type: "agentDeletion.assertNoDatabaseLeases", input: { guard } }),
+        );
+        await deletion.retire();
+      }
       await prepareAgentDeleteDatabases(cfg, agentId, agentDir, {}, deletion);
       await deletion.assertCurrentAsync();
       const commitRoster = async () =>

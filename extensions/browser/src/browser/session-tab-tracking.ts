@@ -48,7 +48,6 @@ import {
   type BrowserSessionTabRecord,
   type BrowserSessionTabSelection,
 } from "./session-tab-store.js";
-import { selectSessionTabToUntrack } from "./session-tab-untrack-selection.js";
 
 type SessionTabParams = {
   sessionKey?: string;
@@ -69,6 +68,13 @@ export type DurableTab = BrowserSessionTabRecord & {
 };
 
 type DurableOwnership = Extract<BrowserTabOwnership, { status: "durable" }>;
+
+function captureSessionTabParams<T extends SessionTabParams>(input: T) {
+  return {
+    ...input,
+    authority: captureBrowserSessionTabAuthority(input.authority),
+  };
+}
 
 function normalizeProfileAliases(values?: Array<string | undefined>): string[] {
   return [
@@ -347,10 +353,7 @@ export function withBrowserDashboardRegistration<T, Authority extends BrowserSes
 export async function trackSessionBrowserTab(
   input: SessionTabParams & { now?: number },
 ): Promise<DurableTab | undefined> {
-  const params = {
-    ...input,
-    authority: captureBrowserSessionTabAuthority(input.authority),
-  };
+  const params = captureSessionTabParams(input);
   const identity = resolveInteractionIdentity(params);
   if (!identity) {
     return undefined;
@@ -456,10 +459,7 @@ function canonicalStorageKey(
 export async function touchSessionBrowserTab(
   input: SessionTabParams & { now?: number },
 ): Promise<void> {
-  const params = {
-    ...input,
-    authority: captureBrowserSessionTabAuthority(input.authority),
-  };
+  const params = captureSessionTabParams(input);
   const identity = resolveInteractionIdentity(params);
   if (!identity) {
     return;
@@ -478,26 +478,20 @@ export async function touchSessionBrowserTab(
   const key = canonicalStorageKey(params, identity);
   if (
     key &&
-    (await withBrowserSessionTabSelection(key, params.authority, async (tab) => {
-      const candidate = parseBrowserSessionTabRecord(await tab.lookup());
-      if (!candidate) {
-        return false;
-      }
-      await tab.update(
-        (current) => {
-          const record = parseBrowserSessionTabRecord(current);
-          if (!record || !sameBrowserSessionTabRecord(record, candidate)) {
-            return undefined;
-          }
-          if (record.cleanupKind === "sweep") {
-            return { ...withoutBrowserSessionTabCleanup(record), lastUsedAt: now };
-          }
-          return { ...record, lastUsedAt: now };
-        },
-        () => activeDurableStorageKeys().add(key),
-      );
-      return true;
-    }))
+    (await updateBrowserSessionTab(
+      key,
+      (current) => {
+        const record = parseBrowserSessionTabRecord(current);
+        if (!record) {
+          return undefined;
+        }
+        return {
+          ...(record.cleanupKind === "sweep" ? withoutBrowserSessionTabCleanup(record) : record),
+          lastUsedAt: now,
+        };
+      },
+      { ...params.authority, onCommitted: () => activeDurableStorageKeys().add(key) },
+    ))
   ) {
     return;
   }
@@ -529,10 +523,7 @@ export async function touchSessionBrowserTab(
 }
 
 export async function untrackSessionBrowserTab(input: SessionTabParams): Promise<void> {
-  const params = {
-    ...input,
-    authority: captureBrowserSessionTabAuthority(input.authority),
-  };
+  const params = captureSessionTabParams(input);
   const identity = resolveInteractionIdentity(params);
   if (!identity) {
     return;
@@ -562,21 +553,26 @@ export async function untrackSessionBrowserTab(input: SessionTabParams): Promise
       await deleteSelected();
       return;
     }
-    const selection = selectSessionTabToUntrack({
-      volatileAvailable: Boolean(volatile),
-      durableAvailable: Boolean(record),
-      hasVolatileCandidate: Boolean(volatile) || readVolatileTabAlias(identity).hasCandidates,
-      hasDurableCandidate: Boolean(record) || readDurableTabAlias(identity).hasCandidates,
-      volatileIsExact: volatile?.isExact ?? false,
-      durableIsExact: Boolean(record && readDurableTabAlias(identity, "exact").target === key),
-      hasVolatileExactCandidate: readVolatileTabAlias(identity, "exact").hasCandidates,
-      hasDurableExactCandidate: readDurableTabAlias(identity, "exact").hasCandidates,
-    });
-    if (selection === "volatile" && volatile) {
+    const volatileExact = readVolatileTabAlias(identity, "exact");
+    const durableExact = readDurableTabAlias(identity, "exact");
+    if (volatile?.isExact && !durableExact.hasCandidates) {
       deleteVolatileSessionTab(identity.sessionKey, volatile.tabKey);
-    } else if (selection === "durable") {
+      return;
+    }
+    if (record && durableExact.target === key && !volatileExact.hasCandidates) {
       await deleteSelected();
-    } else if (selection === "missing" && identity.profile) {
+      return;
+    }
+    const volatileCandidate = Boolean(volatile) || readVolatileTabAlias(identity).hasCandidates;
+    const durableCandidate = Boolean(record) || readDurableTabAlias(identity).hasCandidates;
+    if (volatileCandidate && durableCandidate) {
+      return;
+    }
+    if (volatile) {
+      deleteVolatileSessionTab(identity.sessionKey, volatile.tabKey);
+    } else if (record) {
+      await deleteSelected();
+    } else if (!volatileCandidate && !durableCandidate && identity.profile) {
       const identityKey = browserSessionTabNativeIdentity({
         sessionKey: identity.sessionKey,
         profile: identity.profile,

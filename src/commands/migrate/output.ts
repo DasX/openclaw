@@ -1,6 +1,7 @@
 import { log } from "@clack/prompts";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { redactMigrationPlan } from "../../plugin-sdk/migration.js";
+import { groupPluginRecords as groupRecords } from "../../plugins/record-groups.js";
 import type { MigrationApplyResult, MigrationItem, MigrationPlan } from "../../plugins/types.js";
 import { writeRuntimeJson } from "../../runtime.js";
 import type { RuntimeEnv } from "../../runtime.js";
@@ -10,7 +11,8 @@ function formatCount(value: number, label: string): string {
   return `${value} ${label}${value === 1 ? "" : "s"}`;
 }
 
-function formatPlanHeader(plan: MigrationPlan, heading: string): string[] {
+function formatPlan(plan: MigrationPlan, mode: FormatMode): string[] {
+  const heading = mode === "preview" ? "Migration preview:" : "Migration plan:";
   const lines = [`${theme.heading(heading)} ${plan.providerId}`, `Source: ${plan.source}`];
   if (plan.target) {
     lines.push(`Target: ${plan.target}`);
@@ -22,7 +24,11 @@ function formatPlanHeader(plan: MigrationPlan, heading: string): string[] {
       formatCount(plan.summary.sensitive, "sensitive item"),
     ].join(", "),
   );
-  return lines;
+  return [
+    ...lines,
+    ...formatPlanItems(plan, mode),
+    ...formatPlanWarnings(plan, mode === "result" ? plan.nextSteps : undefined),
+  ];
 }
 
 const ITEM_GROUPS = [
@@ -42,13 +48,9 @@ type FormatMode = "preview" | "result";
 
 function formatPlanItems(plan: MigrationPlan, mode: FormatMode): string[] {
   const lines: string[] = [];
-  const buckets = new Map<string, MigrationItem[]>();
-  for (const item of plan.items) {
-    const kind = KNOWN_KINDS.has(item.kind) ? item.kind : "other";
-    const items = buckets.get(kind) ?? [];
-    items.push(item);
-    buckets.set(kind, items);
-  }
+  const buckets = groupRecords(plan.items, (item) =>
+    KNOWN_KINDS.has(item.kind) ? item.kind : "other",
+  );
   for (const group of [...ITEM_GROUPS, { kind: "other", heading: "Other:" }]) {
     const items = buckets.get(group.kind);
     if (!items || items.length === 0) {
@@ -80,22 +82,13 @@ function formatPlanWarnings(
 
 /** Formats a redaction-safe migration preview for terminal output. */
 export function formatMigrationPreview(plan: MigrationPlan): string[] {
-  const safePlan = redactMigrationPlan(plan);
-  return [
-    ...formatPlanHeader(safePlan, "Migration preview:"),
-    ...formatPlanItems(safePlan, "preview"),
-    ...formatPlanWarnings(safePlan),
-  ];
+  return formatPlan(redactMigrationPlan(plan), "preview");
 }
 
 /** Formats redaction-safe migration apply results for terminal output. */
 export function formatMigrationResult(plan: MigrationPlan): string[] {
   const safePlan = redactMigrationPlan(plan);
-  const lines = [
-    ...formatPlanHeader(safePlan, "Migration plan:"),
-    ...formatPlanItems(safePlan, "result"),
-    ...formatPlanWarnings(safePlan, safePlan.nextSteps),
-  ];
+  const lines = formatPlan(safePlan, "result");
   if (safePlan.nextSteps && safePlan.nextSteps.length > 0) {
     lines.push("");
     lines.push(theme.heading("Next:"));
@@ -243,12 +236,9 @@ export function assertApplySucceeded(result: MigrationApplyResult): void {
     return;
   }
   const reportHint = result.reportDir ? ` See report: ${result.reportDir}.` : "";
-  if (result.summary.errors > 0) {
-    throw new Error(
-      `Migration finished with ${formatCount(result.summary.errors, "error")}.${reportHint}`,
-    );
-  }
-  throw new Error(
-    `Migration finished with ${formatCount(result.summary.conflicts, "conflict")}.${reportHint}`,
-  );
+  const failureCount =
+    result.summary.errors > 0
+      ? formatCount(result.summary.errors, "error")
+      : formatCount(result.summary.conflicts, "conflict");
+  throw new Error(`Migration finished with ${failureCount}.${reportHint}`);
 }

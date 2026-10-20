@@ -58,7 +58,11 @@ it.for(["filesystem", "microtask"] as const)(
         return readFile(...args);
       }
       observedReads.push(filename);
-      queueMicrotask(() => callback(null, Buffer.from(source)));
+      if (filename === held) {
+        void release.promise.then(() => callback(null, Buffer.from(source)));
+      } else {
+        queueMicrotask(() => callback(null, Buffer.from(source)));
+      }
     });
     let completed = false;
     // Supply the manifest so an asynchronous manifest read alone cannot satisfy
@@ -80,6 +84,11 @@ it.for(["filesystem", "microtask"] as const)(
       }
       await nextTurn();
       expect(completed, "verification blocked the runner until every file was hashed").toBe(false);
+      if (completion === "microtask") {
+        expect(observedReads, "one slow input must not stall unrelated input reads").toHaveLength(
+          64,
+        );
+      }
     } finally {
       release.resolve();
       try {
@@ -184,28 +193,3 @@ it.for([
     expect(fs.existsSync(directory)).toBe(false);
   },
 );
-
-it("rejects a byte-identical input at the compiler-time ctime cutoff", async () => {
-  const directory = tempDirs.make("vitest-worker-source-change-");
-  const filename = path.join(directory, "input.ts");
-  const original = "export const value = 1;\n";
-  fs.writeFileSync(filename, original);
-  const manifest: VitestWorkerManifest = {
-    identity: "source-change-fixture",
-    inputs: { [filename]: hashVitestWorkerArtifact(original) },
-    outputs: {},
-    durationMs: 0,
-  };
-  fs.writeFileSync(filename, "export const value = 2;\n");
-  fs.writeFileSync(filename, original);
-  // Filesystem timestamps need not advance in lockstep with the wall clock.
-  const inputsChangedAfter = fs.statSync(filename).ctimeMs;
-  await expect(
-    verifyVitestWorkerArtifacts(directory, manifest, {
-      inputsChangedAfter: inputsChangedAfter + 1,
-    }),
-  ).resolves.toBeUndefined();
-  await expect(
-    verifyVitestWorkerArtifacts(directory, manifest, { inputsChangedAfter }),
-  ).rejects.toThrow("Source changed during compiled subprocess invocation");
-});

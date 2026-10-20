@@ -80,7 +80,6 @@ async function saveBrowserMedia(buffer: Buffer, contentType: string, maxBytes: n
 async function saveBrowserScreenshot(capture: ScreenshotCapture, type: "png" | "jpeg") {
   const normalized = await normalizeBrowserScreenshot(capture.buffer, {
     maxSide: DEFAULT_BROWSER_SCREENSHOT_MAX_SIDE,
-    maxBytes: DEFAULT_BROWSER_SCREENSHOT_MAX_BYTES,
   });
   const annotations = await rescaleAnnotationsForNormalization({
     annotations: capture.annotations,
@@ -430,9 +429,9 @@ export function registerBrowserAgentSnapshotRoutes(
               ...snapshot,
             });
           const snapshotOptions = {
-            interactive: plan.interactive ?? undefined,
-            compact: plan.compact ?? undefined,
-            maxDepth: plan.depth ?? undefined,
+            interactive: plan.interactive,
+            compact: plan.compact,
+            maxDepth: plan.depth,
           };
           const deltaFamily: SnapshotDeltaFamily | undefined =
             plan.format === "ai"
@@ -582,6 +581,10 @@ export function registerBrowserAgentSnapshotRoutes(
               );
             }
           };
+          const publishSnapshot = async (snapshot: () => Record<string, unknown>) => {
+            await assertDocumentIdentityUnchanged();
+            return jsonSnapshot({ ...browserStateFields, ...snapshot() });
+          };
           if (plan.format === "ai") {
             const roleSnapshotArgs = {
               ...playwrightTarget,
@@ -672,14 +675,11 @@ export function registerBrowserAgentSnapshotRoutes(
               image = await saveBrowserScreenshot(labeled, "png");
             }
 
-            await assertDocumentIdentityUnchanged();
-            if (deltaKey) {
-              recordSnapshotKeys(ctx, { ...deltaKey, refs: snap.refs ?? {} });
-            }
-            return jsonSnapshot({
-              ...browserStateFields,
-              ...image,
-              ...snap,
+            return await publishSnapshot(() => {
+              if (deltaKey) {
+                recordSnapshotKeys(ctx, { ...deltaKey, refs: snap.refs ?? {} });
+              }
+              return { ...image, ...snap };
             });
           }
 
@@ -715,11 +715,7 @@ export function registerBrowserAgentSnapshotRoutes(
                 : {}),
             });
           }
-          await assertDocumentIdentityUnchanged();
-          return jsonSnapshot({
-            ...browserStateFields,
-            ...resolved,
-          });
+          return await publishSnapshot(() => resolved);
         },
       });
     } catch (err) {
