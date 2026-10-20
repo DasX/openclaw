@@ -1,4 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   initializeGlobalHookRunner,
@@ -18,6 +22,7 @@ vi.mock("../auth-profiles/source-check.js", async (importOriginal) => ({
 }));
 
 afterEach(() => {
+  clearRuntimeConfigSnapshot();
   resetGlobalHookRunner();
   resetPluginRuntimeStateForTest();
   resetFallbackSkipCacheForTest();
@@ -68,6 +73,7 @@ it.each([
     });
     setActivePluginRegistry(registry);
     initializeGlobalHookRunner(registry);
+    setRuntimeConfigSnapshot(cfg);
     const attempts: Array<{ model: string; source: string | undefined }> = [];
     await runEmbeddedAgentEntry({
       selection: {
