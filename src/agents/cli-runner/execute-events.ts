@@ -1,3 +1,4 @@
+import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import { stripMixedSilentReplyTokens } from "../../auto-reply/reply/mixed-silent-reply-tokens.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { projectAgentToolActivity } from "../../infra/agent-activity-events.js";
@@ -30,6 +31,20 @@ import type { PreparedCliRunContext } from "./types.js";
 
 function resolveCliToolSource(name: string, kind?: CliToolUseStartDelta["kind"]): "core" | "mcp" {
   return kind === "mcp_tool_use" || name.startsWith("mcp__") ? "mcp" : "core";
+}
+
+// Live tool output text is read only from content block arrays; other shapes stay untouched.
+function withBrowserTabDetails(result: unknown, browserTab: unknown): unknown {
+  if (isRecord(result) && Array.isArray(result.content)) {
+    return { ...result, details: { ...asOptionalRecord(result.details), browserTab } };
+  }
+  if (Array.isArray(result)) {
+    return { content: result, details: { browserTab } };
+  }
+  if (typeof result === "string" || typeof result === "number" || typeof result === "boolean") {
+    return { content: [{ type: "text", text: String(result) }], details: { browserTab } };
+  }
+  return result;
 }
 
 export function createCliEventHandlers(params: {
@@ -227,7 +242,7 @@ export function createCliEventHandlers(params: {
           result:
             browserTab === undefined
               ? readResult()
-              : { content: readResult(), details: { browserTab } },
+              : withBrowserTabDetails(readResult(), browserTab),
           ...(tracked && startedArgs ? { args: startedArgs } : {}),
           ...(resultContentSource ? { resultContentSource } : {}),
         },

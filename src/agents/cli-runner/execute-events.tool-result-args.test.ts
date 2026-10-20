@@ -59,7 +59,7 @@ function startRecord(id: string, name: string, input: Record<string, unknown>) {
   );
 }
 
-function resultRecord(id: string, content: string, isError = false) {
+function resultRecord(id: string, content: unknown, isError = false) {
   return (
     JSON.stringify({
       type: "user",
@@ -81,6 +81,8 @@ function displayParser(handlers: ReturnType<typeof createCliEventHandlers>) {
 describe("cli tool result events", () => {
   it.each([
     "host",
+    "host-blocks",
+    "host-record",
     "node",
     "ambiguous",
     "late-ambiguous",
@@ -114,6 +116,13 @@ describe("cli tool result events", () => {
         url: "https://example.org/",
         title: "Shared tab",
       };
+      const cliText = [{ type: "text", text: "CLI result" }];
+      const cliResult =
+        mode === "host-blocks"
+          ? cliText
+          : mode === "host-record"
+            ? { content: cliText, details: { cli: "kept" } }
+            : "CLI result";
       try {
         parser.push(startRecord("tab", name, args));
         if (mode === "ambiguous") {
@@ -143,7 +152,7 @@ describe("cli tool result events", () => {
         if (mode === "late-ambiguous") {
           parser.push(startRecord("peer", name, args));
         }
-        parser.push(resultRecord("tab", "CLI result", mode === "cli-error"));
+        parser.push(resultRecord("tab", cliResult, mode === "cli-error"));
         const toolEvents = events.filter(
           (event) => event.stream === "tool" && event.data.toolCallId === "tab",
         );
@@ -151,10 +160,13 @@ describe("cli tool result events", () => {
           ["start", toolName],
           ["result", toolName],
         ]);
+        // Scalar CLI text becomes a text block so the Control UI still shows it as output.
         expect(toolEvents[1]?.data.result).toEqual(
-          mode === "host" || mode === "node"
-            ? { content: "CLI result", details: { browserTab } }
-            : "CLI result",
+          mode === "host-record"
+            ? { content: cliText, details: { cli: "kept", browserTab } }
+            : mode === "host" || mode === "host-blocks" || mode === "node"
+              ? { content: cliText, details: { browserTab } }
+              : "CLI result",
         );
       } finally {
         dispose();
