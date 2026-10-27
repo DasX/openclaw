@@ -20,16 +20,17 @@ import {
   waitForInputDialog,
 } from "../../test-helpers/modal-dialog.ts";
 import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
+import {
+  createGatewayBrowserClientFixture,
+  createInitializationContext,
+  createSessionContext,
+} from "./chat-application-context.test-support.ts";
 import { isExpiredIncognitoSession } from "./chat-history-state.ts";
 import { loadChatHistory } from "./chat-history.ts";
 import { ChatPaneRuntime } from "./chat-pane-render.ts";
 import { consumePaneSessionHandoff } from "./chat-pane-shared.ts";
 import { subscribeChatPaneSnapshotInvalidation } from "./chat-pane-startup-subscriptions.ts";
 import {
-  createGatewayBrowserClientFixture,
-  createInitializationContext,
-  createSessionCapabilityFixture,
-  createSessionContext,
   createTestChatPane,
   createPaneTestHost,
   getPaneTestRuntime,
@@ -37,6 +38,7 @@ import {
   nativeHistoryMessage,
   type TestChatPane,
 } from "./chat-pane.test-support.ts";
+import { createSessionCapabilityFixture } from "./chat-session-capability.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { openSessionWorkspacePreview } from "./components/chat-session-workspace-state.ts";
 import type { SidebarContent } from "./components/chat-sidebar-content-types.ts";
@@ -96,7 +98,7 @@ describe("chat pane retained presentation", () => {
           defaults: { modelProvider: null, model: null, contextTokens: null },
           sessions: [{ key: state.sessionKey, kind: "direct", updatedAt }],
         } satisfies NonNullable<ApplicationContext["sessions"]["state"]["result"]>;
-        pane.applySessionsState({
+        Object.assign(pane.context.sessions.state, {
           agentId: "main",
           deletedSessions: [],
           error: null,
@@ -107,6 +109,7 @@ describe("chat pane retained presentation", () => {
           result,
           sectionOrder: [],
         });
+        pane.applySessionsState(pane.context.sessions.state);
         expect(state.sessionsResult).toBe(result);
       }
 
@@ -666,7 +669,6 @@ describe("chat pane initialization", () => {
             agentId: "main",
             avatar: null,
             avatarReason: null,
-            avatarSource: null,
             avatarStatus: null,
             name: "Assistant",
           },
@@ -897,9 +899,11 @@ describe("chat pane session creation lifecycle", () => {
 
     const pending = pane.createSession();
     await expect(pane.createSession()).resolves.toBe(false);
-    expect(sessions.create).toHaveBeenCalledExactlyOnceWith(
-      { agentId: "main", incognito: true },
-      { signal: expect.any(AbortSignal) },
+    await vi.waitFor(() =>
+      expect(sessions.create).toHaveBeenCalledExactlyOnceWith(
+        { agentId: "main", incognito: true },
+        { signal: expect.any(AbortSignal) },
+      ),
     );
     const nextKey = "agent:main:dashboard:incognito-fresh";
     created.resolve(nextKey);

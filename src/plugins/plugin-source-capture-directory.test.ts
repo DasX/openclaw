@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
@@ -18,6 +19,7 @@ import {
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { retainGatewayPluginMetadata } from "./plugin-metadata-lifecycle.js";
 import { withPluginSourceCaptureDirectory } from "./plugin-package-metadata-capture.js";
+import { resolvePluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 import {
   createPluginNativeCaptureRoot,
   createPluginSourceCaptureRoot,
@@ -108,8 +110,14 @@ it("keeps update source copies in TMPDIR without relocating retained native capt
   ).toBe(true);
   const native = createPluginNativeCaptureRoot(stateDir);
   cleanups.push(() => native.disposeAsync());
+  const storage = resolvePluginSourceCaptureStorage();
+  const preparedNative = createPluginNativeCaptureRoot(storage.stateDir, storage.placement);
+  cleanups.push(() => preparedNative.disposeAsync());
   expect(
     native.directory.startsWith(path.join(stateDir, "tmp", "plugin-captures") + path.sep),
+  ).toBe(true);
+  expect(
+    preparedNative.directory.startsWith(path.join(stateDir, "tmp", "plugin-captures") + path.sep),
   ).toBe(true);
 });
 
@@ -404,10 +412,7 @@ async function startCliCapture(worker: boolean, legacy = false, signal = false) 
   child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
     stderr += chunk;
   });
-  const exited = new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", () => resolve());
-  });
+  const exited = once(child, "close");
   void exited.catch(() => {});
   const nextLine = async () => {
     const result = await lines.next();
