@@ -360,16 +360,16 @@ describe("app-tool-stream approval lifecycle", () => {
 
   it("keeps text output next to node browser tab details in a completed live result", () => {
     const host = createHost();
-    emitTool(host, "browser-text-run", 1, {
-      phase: "start",
+    const emit = toolEvents(host, "browser-text-run", {
       name: "browser",
       toolCallId: "browser-text-call",
+    });
+    emit(1, {
+      phase: "start",
       args: { action: "open" },
     });
-    emitTool(host, "browser-text-run", 2, {
+    emit(2, {
       phase: "result",
-      name: "browser",
-      toolCallId: "browser-text-call",
       result: {
         content: [{ type: "text", text: "CLI result" }],
         details: {

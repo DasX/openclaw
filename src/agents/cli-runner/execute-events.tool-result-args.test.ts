@@ -122,7 +122,7 @@ describe("cli tool result events", () => {
       const context = buildContext(`browser-tab-${mode}`);
       const tracking = createCliToolTracking(context);
       tracking.beginGatewayCapture(context.params.runId, () => {});
-      const { handlers, events, dispose } = eventFixture(context, tracking);
+      const { handlers, events } = eventFixture(context, tracking);
       const parser = createCliJsonlStreamingParser({
         providerId: "claude-cli",
         backend: { command: "claude", output: "jsonl", jsonlDialect: "claude-stream-json" },
@@ -194,7 +194,6 @@ describe("cli tool result events", () => {
               : "CLI result",
         );
       } finally {
-        dispose();
         tracking.finalizeCapture(() => {});
       }
     },
