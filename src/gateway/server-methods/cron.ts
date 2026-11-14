@@ -410,7 +410,10 @@ export const cronHandlers: GatewayRequestHandlers = {
             toolsAllowExecTarget: callerScope?.toolsAllowExecTarget,
           }
         : {}),
-      ...(inference?.inferenceBinding ? { inferenceBinding: inference.inferenceBinding } : {}),
+      // null is the validated native-adoption clear (local backport of openclaw#190904).
+      ...(inference?.inferenceBinding !== undefined
+        ? { inferenceBinding: inference.inferenceBinding }
+        : {}),
       commitGuard,
       ...(capture ? { captureRuntimeAuthority: capture.captureRuntimeAuthority } : {}),
     };

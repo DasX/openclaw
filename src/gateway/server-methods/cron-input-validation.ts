@@ -36,11 +36,13 @@ import { cronJobUsesToolRuntime } from "../../cron/tools-allow.js";
 import type { CronJob, CronJobCreate, CronJobPatch, CronStoredJob } from "../../cron/types.js";
 import { resolveTargetPrefixedChannel } from "../../infra/outbound/channel-target-prefix.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import { resolveHookExternalContentSource } from "../../security/external-content-source.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
   isAgentHarnessSessionKey,
 } from "../../sessions/agent-harness-session-key.js";
+import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { operatorScopeSatisfied } from "../../shared/operator-scope-compat.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import type { UserModelAccountSelection } from "../model-account-authority.js";
@@ -318,6 +320,12 @@ export async function captureCronCreatorSession(
     : resolveOperatorSessionCreation(caller.client).actor;
   const actorId = normalizeOptionalString(actor?.id);
   const createdActor = actor ? { ...actor, ...(actorId ? { id: actorId } : {}) } : undefined;
+  // Local backport of openclaw#180677: the execution target's model decides the account to capture.
+  const executionSessionKey = resolveCronSessionTargetSessionKey(job.sessionTarget) ?? "";
+  const executionSession =
+    !hasRuntimeAuthority && job.payload.kind === "agentTurn" && executionSessionKey
+      ? await loadGatewaySessionEntryReadOnlyInWorker({ cfg, key: executionSessionKey, agentId })
+      : undefined;
   const inference =
     // A creator runtime grant owns its own inference identity. Never bind an ambient host profile.
     !hasRuntimeAuthority && job.payload.kind === "agentTurn" && job.sessionTarget !== "main"
@@ -326,7 +334,13 @@ export async function captureCronCreatorSession(
             cfg,
             agentId: agentId ?? resolveDefaultAgentId(cfg),
             model: job.payload.model,
+            isGmailHook:
+              (job.payload.externalContentSource ??
+                resolveHookExternalContentSource(
+                  parseAgentSessionKey(executionSessionKey)?.rest ?? executionSessionKey,
+                )) === "gmail",
             sessionEntry: callerScope ? creatorSession : undefined,
+            executionSessionEntry: executionSession?.entry,
           },
           caller,
         )
@@ -395,15 +409,22 @@ export async function captureCronUpdatedInferenceBinding(
     }
     return undefined;
   }
+  // Local backport of openclaw#190904: a validated native CLI selection captures null, which
+  // releases a stored account; every other empty capture keeps rejecting the transition.
+  const executionKey = resolveCronSessionTargetSessionKey(nextJob.sessionTarget);
   const inference = await captureCronInferenceForCaller(
     {
       cfg,
       agentId: nextJob.agentId ?? resolveDefaultAgentId(cfg),
       model,
+      runtimeSessionEntry: executionKey
+        ? (await loadGatewaySessionEntryReadOnlyInWorker({ cfg, key: executionKey, agentId }))
+            ?.entry
+        : undefined,
     },
     caller,
   );
-  if (!inference.inferenceBinding) {
+  if (inference.inferenceBinding === undefined) {
     if (cliExecution && !nextJob.inferenceBinding) {
       return undefined;
     }

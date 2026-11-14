@@ -1,3 +1,4 @@
+import { resolveAgentConfig } from "../agents/agent-scope.js";
 import type { AuthProfileAuthorization } from "../agents/auth-profiles/authorization-contract.js";
 import { captureAuthProfileAuthorization } from "../agents/auth-profiles/authorization.js";
 import { resolveSessionAuthSelection } from "../agents/auth-profiles/session-override.js";
@@ -6,29 +7,66 @@ import {
   cliBackendAcceptsAuthProfileForwarding,
   resolveCliExecutionAuthProfileId,
 } from "../agents/cli-execution-auth.js";
+import { resolveBundledCliBackendAuthPolicy } from "../agents/cli-runner/cli-backend-auth-policy.js";
 import { resolveProviderModelAuthPolicy } from "../agents/model-auth-policy.js";
 import { resolveCliRuntimeExecutionProvider } from "../agents/model-runtime-aliases.js";
 import { isConfiguredKeyAuthSource } from "../agents/provider-model-auth-source-plan.js";
 import { prepareAgentRuntimeAuth } from "../agents/runtime-plan/prepare-auth.js";
-import { resolveSimpleCompletionSelectionForAgent } from "../agents/simple-completion-selection.js";
+import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CronInferenceBinding } from "./inference-binding.js";
+import {
+  resolveCronModelSelection,
+  resolveCronModelSelectionOwner,
+} from "./isolated-agent/model-selection.js";
 
-/** Capture only a selected, current credential owner; never infer a legacy job's history. */
+/**
+ * Capture a current owner; null means an explicit, validated native CLI account selection.
+ * Local backport of openclaw#180677 (capture follows scheduled-model selection) and
+ * openclaw#190904 (explicit native CLI account adoption) onto v2026.11.3.
+ */
 export async function captureCronInferenceBinding(params: {
   cfg: OpenClawConfig;
   agentId: string;
   model?: string;
+  isGmailHook?: boolean;
+  /** Creator conversation: supplies a same-provider account, never the scheduled model. */
   sessionEntry?: SessionEntry;
+  /** Persistent `session:` execution target: supplies model overrides only. */
+  executionSessionEntry?: Pick<SessionEntry, "modelOverride" | "providerOverride">;
+  /** Execution target whose runtime a native adoption must match. */
+  runtimeSessionEntry?: Parameters<typeof resolveSessionRuntimeOverrideForProvider>[0]["entry"];
   authorizeProfile?: (profileId: string, inherited: boolean) => Promise<(() => void) | undefined>;
   retainAuthorization?: (authority: AuthProfileAuthorization) => void;
-}): Promise<CronInferenceBinding | undefined> {
-  const { cfg, agentId } = params;
-  const model = resolveSimpleCompletionSelectionForAgent({ cfg, agentId, modelRef: params.model });
-  if (!model) {
-    throw new Error("Automation model could not be resolved.");
+}): Promise<CronInferenceBinding | null | undefined> {
+  const owner = await resolveCronModelSelectionOwner({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    requiredAgentId: params.agentId,
+  });
+  const { config: cfg, agentId, agentDir, workspaceDir } = owner;
+  // Capture follows the precedence the run uses: payload > Gmail hook > execution session >
+  // subagent/agent > default. Creator authorization stays separate from the target model.
+  const scheduled = await resolveCronModelSelection({
+    cfg,
+    owner,
+    agentConfigOverride: resolveAgentConfig(cfg, agentId),
+    agentId,
+    agentDir,
+    workspaceDir,
+    payload: { kind: "agentTurn", message: "", model: params.model },
+    sessionEntry: params.executionSessionEntry ?? {},
+    isGmailHook: params.isGmailHook === true,
+  });
+  if (!scheduled.ok) {
+    throw new Error(scheduled.error);
   }
+  const model = {
+    provider: scheduled.provider,
+    modelId: scheduled.model,
+    profileId: scheduled.configuredProfileId,
+  };
   const cliExecutionProvider = resolveCliRuntimeExecutionProvider({
     cfg,
     agentId,
@@ -52,9 +90,31 @@ export async function captureCronInferenceBinding(params: {
     params.sessionEntry?.providerOverride ?? params.sessionEntry?.modelProvider;
   const creatorSession =
     creatorProvider && creatorProvider !== model.provider ? undefined : params.sessionEntry;
-  const { agentDir } = model;
   let selection: Awaited<ReturnType<typeof resolveSessionAuthSelection>>;
   if (cliExecutionProvider) {
+    // An explicit native login id belongs to the CLI owner. Keep it apart from a missing
+    // selection: only this validated choice may release a stored account (null).
+    const nativeProfileId =
+      model.profileId &&
+      resolveBundledCliBackendAuthPolicy(cliExecutionProvider)?.nativeAuthProfileIds?.includes(
+        model.profileId,
+      )
+        ? model.profileId
+        : undefined;
+    if (nativeProfileId) {
+      // Validate the runtime the next run inherits from its execution target.
+      const sessionRuntime = resolveSessionRuntimeOverrideForProvider({
+        provider: model.provider,
+        entry: params.runtimeSessionEntry,
+        cfg,
+      });
+      if (sessionRuntime && sessionRuntime !== cliExecutionProvider) {
+        throw new Error(
+          `The selected native account is unavailable on automation runtime ${sessionRuntime}.`,
+        );
+      }
+      return null;
+    }
     // Record the stored account this backend would forward, chosen by the same selector
     // interactive CLI turns use; a native CLI login leaves no host account to record.
     const selectedProfileId = model.profileId ?? creatorSession?.authProfileOverride;

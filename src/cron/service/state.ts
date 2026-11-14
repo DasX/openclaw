@@ -457,7 +457,8 @@ export type CronAddInput = CronJobCreate;
 /** Caller-specific declaration-key visibility and explicit enablement metadata. */
 export type CronAddOptions = {
   operatorSource?: NonNullable<CronStoredJob["operatorSource"]>["source"];
-  inferenceBinding?: CronStoredJob["inferenceBinding"];
+  /** Null authorizes a native CLI account transition on explicit updates only. */
+  inferenceBinding?: CronStoredJob["inferenceBinding"] | null;
   sourceConversation?: CronStoredJob["sourceConversation"];
   /** Selected revisions captured from a validated caller session, never public input. */
   skillLibrarySelections?: CronStoredJob["skillLibrarySelections"];

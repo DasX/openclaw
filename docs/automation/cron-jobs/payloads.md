@@ -196,8 +196,16 @@ from an explicit user profile pin. Token refresh within the same authorization i
 allowed; deleting, replacing, or revoking that authorization stops the job rather
 than falling back to another account. Model and route compatibility still apply.
 
+At creation, account capture follows scheduled-model selection, including the model
+of a `session:` execution target. A disallowed scheduled model falls back without
+retaining that model's account.
+
 To change an account deliberately, update the job with a model/profile selection,
 for example `--model "openai/gpt-4.1@work"`. This captures a fresh authorization.
+To return a job to a native CLI login, select it explicitly, for example
+`--model "anthropic/claude-opus-5-5@anthropic:claude-cli"`. The edit validates the
+CLI route of the job's execution target and then releases the recorded stored account;
+an unavailable or mismatched selection leaves the recorded account unchanged.
 For legacy jobs, repairing Doctor records the currently selected eligible shared account,
 or the first eligible account from the normal runtime planner. It does not use past
 run telemetry to guess an account, pin inherited models, or change fallback lists.

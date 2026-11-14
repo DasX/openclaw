@@ -160,6 +160,9 @@ export function planCronJobMutation(
     // Declarative re-registration is not a fresh authorization of an existing account.
     if (options.inferenceBinding && (!previousJob || mutation.kind === "update")) {
       nextJob.inferenceBinding = options.inferenceBinding;
+    } else if (mutation.kind === "update" && options.inferenceBinding === null) {
+      // An explicit, validated native CLI selection releases the stored account (openclaw#190904).
+      delete nextJob.inferenceBinding;
     }
     const explicitlyMutatesToolsAllow =
       mutation.kind === "add"
