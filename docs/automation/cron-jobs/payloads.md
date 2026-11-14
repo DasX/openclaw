@@ -206,6 +206,9 @@ To return a job to a native CLI login, select it explicitly, for example
 `--model "anthropic/claude-opus-5-5@anthropic:claude-cli"`. The edit validates the
 CLI route of the job's execution target and then releases the recorded stored account;
 an unavailable or mismatched selection leaves the recorded account unchanged.
+On this local backport, a `session:` job should then clear its model again so it follows
+its session's native login; its session turn does not accept a persistent native profile
+pin (upstream #190956 is not included). Isolated jobs may keep the native pin.
 For legacy jobs, repairing Doctor records the currently selected eligible shared account,
 or the first eligible account from the normal runtime planner. It does not use past
 run telemetry to guess an account, pin inherited models, or change fallback lists.
